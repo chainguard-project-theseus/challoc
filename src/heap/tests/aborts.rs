@@ -160,6 +160,7 @@ fn a_scheduled_pop_aborts_when_the_run_reaches_past_the_length() {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
     }
 }

@@ -13,7 +13,7 @@ file.
 
 ## `HeapPerm`
 
-src/heap/thread.rs:129. Kind: external_body type. Category: allocator invariant.
+src/heap/thread.rs:130. Kind: external_body type. Category: allocator invariant.
 Tool: none (assumption). Status: trusted (partly checked, const assert: `HeapPerm` in src/vspec/notcopy.rs; not checked: what its `addr` and `value` stand for, which `HeapPerm::assemble`, `slot_heap_ref` and `TlsSlot::entry` (through `slot_ok`) state; and linearity across tokens, which it does not have: each token `TlsSlot::entry` makes holds a heap's permission anew, so verified code cannot duplicate one within a token, but two tokens may each hold one with the same `addr`).
 
 > Ghost: the permission to a thread heap, linear: the heap loan of the thread's TLS slot token holds it while the slot holds the heap ([`HeapLoan`](crate::sys::tls::HeapLoan), [`slot_ok`]), and [`slot_heap_ref`] lends the heap out of the loan, for as long as the loan is lent.
@@ -26,7 +26,7 @@ pub tracked struct HeapPerm
 
 ## `HeapPerm::assemble`
 
-src/heap/thread.rs:164. Kind: axiom. Category: allocator invariant.
+src/heap/thread.rs:165. Kind: axiom. Category: allocator invariant.
 Tool: Kani. Status: trusted (partly checked, Kani: heap::fresh::kani_assemble::writers_store_the_assembled_fields; not checked: any order of the writers but `Heap::create`'s, the one the harness runs; the join itself, that the token's raw permission to the head and `perms`' home headers stand for the whole-heap permission, a premise of Verus's own model that no tool checks; that nothing else writes those fields between the writers and the axiom, which the token's linear permission gives verified code; and the provenance of `shared`, which Kani does not observe).
 
 > The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound` and `mark_rehome`, verified), and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)).
@@ -49,7 +49,7 @@ pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super
 
 ## `slot_heap_ref`
 
-src/heap/thread.rs:216. Kind: external_body. Category: raw pointer (internal).
+src/heap/thread.rs:217. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_slot_heap_ref::slot_heap_ref_is_the_heap; not checked: the abstract value of the loan's `HeapPerm` (that it describes the heap at `h` before the call and what the reference holds when it ends), a premise of Verus's own model that no tool checks; that nothing else reaches the heap while the reference lives, which the loan's linear `HeapPerm` gives verified code; and the provenance of `h` and of the reference, which Kani cannot observe (the harness compares addresses)).
 
 > The heap whose permission the heap loan holds, at `h`, as a reference, for as long as the loan is lent.

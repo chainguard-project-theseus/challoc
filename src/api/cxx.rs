@@ -56,6 +56,7 @@ use core::ptr;
 
 use super::libc;
 use crate::heap::Live;
+use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::meta::is_pow2;
 use crate::vspec::cbuf::CCall;
@@ -269,12 +270,15 @@ fn oom(
     nothrow: bool,
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         align == 0 || is_pow2(align),
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
         align != 0 ==> crate::heap::fits(r, size as int, align as int),
         final(blk).gives(r, size as int),
@@ -285,6 +289,8 @@ fn oom(
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             align == 0 || is_pow2(align),
+            *ord == *old(ord),
+            old(ord).top() == 0,
     {
         let Some(handler) = installed_handler() else {
             if nothrow {
@@ -300,9 +306,9 @@ fn oom(
             call_handler(handler, Tracked(&mut *errno));
         }
         let p = if align == 0 {
-            libc::malloc_block(size, Tracked(blk), Tracked(errno))
+            libc::malloc_block(size, Tracked(blk), Tracked(errno), Tracked(&mut *ord))
         } else {
-            libc::alloc_aligned(align, size, Tracked(blk), Tracked(errno))
+            libc::alloc_aligned(align, size, Tracked(blk), Tracked(errno), Tracked(&mut *ord))
         };
         if !p.is_null() {
             return p;
@@ -318,18 +324,21 @@ fn new_slow(
     nothrow: bool,
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
         !nothrow ==> r@.addr != 0,
+        *final(ord) == *old(ord),
 {
-    let p = libc::malloc_slow(size, Tracked(blk), Tracked(errno));
+    let p = libc::malloc_slow(size, Tracked(blk), Tracked(errno), Tracked(&mut *ord));
     if p.is_null() {
-        oom(size, 0, nothrow, Tracked(blk), Tracked(errno))
+        oom(size, 0, nothrow, Tracked(blk), Tracked(errno), Tracked(ord))
     } else {
         p
     }
@@ -339,30 +348,34 @@ fn new_slow(
 /// inline, everything else one tail call away. The block's token goes to
 /// C++ with it.
 #[inline(always)]
-pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         // The C++ contract: a throwing `operator new` never returns null.
         r@.addr != 0,
+        *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
-    new_block(size, false, Tracked(&mut blk), Tracked(errno))
+    new_block(size, false, Tracked(&mut blk), Tracked(errno), Tracked(ord))
 }
 
 /// The `nothrow_t` forms: null on failure after the handler loop.
 #[inline(always)]
-pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
-    new_block(size, true, Tracked(&mut blk), Tracked(errno))
+    new_block(size, true, Tracked(&mut blk), Tracked(errno), Tracked(ord))
 }
 
 /// [`new`] (`nothrow` false) and [`new_nothrow`] with the block's token,
@@ -373,18 +386,21 @@ pub fn new_block(
     nothrow: bool,
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
         !nothrow ==> r@.addr != 0,
+        *final(ord) == *old(ord),
 {
     match libc::malloc_fast(size, Tracked(blk)) {
         Some(p) => p,
-        None => new_slow(size, nothrow, Tracked(blk), Tracked(errno)),
+        None => new_slow(size, nothrow, Tracked(blk), Tracked(errno), Tracked(ord)),
     }
 }
 
@@ -398,17 +414,20 @@ pub fn new_aligned(
     align: usize,
     nothrow: bool,
     Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         !is_pow2(align) ==> r@.addr == 0,
         !nothrow ==> r@.addr != 0,
+        *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
-    new_aligned_block(size, align, nothrow, Tracked(&mut blk), Tracked(errno))
+    new_aligned_block(size, align, nothrow, Tracked(&mut blk), Tracked(errno), Tracked(ord))
 }
 
 /// [`new_aligned`] with the block's token, as `libc::aligned_alloc_block`.
@@ -418,15 +437,18 @@ pub fn new_aligned_block(
     nothrow: bool,
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         !is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
         !nothrow ==> r@.addr != 0,
+        *final(ord) == *old(ord),
 {
     if !align.is_power_of_two() {
         if nothrow {
@@ -437,9 +459,9 @@ pub fn new_aligned_block(
     proof {
         crate::meta::lemma_pow2_bits(align);
     }
-    let p = libc::alloc_aligned(align, size, Tracked(blk), Tracked(errno));
+    let p = libc::alloc_aligned(align, size, Tracked(blk), Tracked(errno), Tracked(&mut *ord));
     if p.is_null() {
-        oom(size, align, nothrow, Tracked(blk), Tracked(errno))
+        oom(size, align, nothrow, Tracked(blk), Tracked(errno), Tracked(ord))
     } else {
         p
     }
@@ -449,50 +471,56 @@ pub fn new_aligned_block(
 /// C++ holds the token of the block it frees
 /// ([`crate::heap::live::axiom_c_claim`]).
 #[inline(always)]
-pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
+pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
+        *final(ord) == *old(ord),
 {
-    libc::free(p, Tracked(c), Tracked(errno))
+    libc::free(p, Tracked(c), Tracked(errno), Tracked(ord))
 }
 
 /// `operator delete(void*, size_t)` and its array form: `free_sized`. The
 /// size is the one the matching `operator new(size)` was called with, so
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
-pub fn delete_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
+pub fn delete_sized(p: *mut u8, size: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, libc::spec_class_for(size, 1)),
+        *final(ord) == *old(ord),
 {
-    libc::free_sized(p, size, Tracked(c), Tracked(errno))
+    libc::free_sized(p, size, Tracked(c), Tracked(errno), Tracked(ord))
 }
 
 /// `operator delete(void*, size_t, std::align_val_t)` and its array form:
 /// `free_aligned_sized` with the arguments the matching aligned `new`
 /// passed to `aligned_alloc`.
 #[inline(always)]
-pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
+pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         c.block() == Some(p),
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> crate::heap::hint_ok(p, if is_pow2(align) { libc::spec_class_for(size, align) } else { None }),
+        *final(ord) == *old(ord),
 {
-    libc::free_aligned_sized(p, align, size, Tracked(c), Tracked(errno))
+    libc::free_aligned_sized(p, align, size, Tracked(c), Tracked(errno), Tracked(ord))
 }
 
 } // verus!
@@ -693,7 +721,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new(size, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new(size, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator new[](size_t)`
@@ -708,7 +737,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new(size, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new(size, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator new(size_t, const std::nothrow_t&)`
@@ -722,7 +752,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new_nothrow(size, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator new[](size_t, const std::nothrow_t&)`
@@ -736,7 +767,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new_nothrow(size, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new_nothrow(size, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t)`
@@ -752,7 +784,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new_aligned(size, align, false, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t)`
@@ -768,7 +801,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new_aligned(size, align, false, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new_aligned(size, align, false, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t, const std::nothrow_t&)`
@@ -787,7 +821,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new_aligned(size, align, true, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t, const std::nothrow_t&)`
@@ -806,7 +841,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::new_aligned(size, align, true, Tracked(&mut errno)) as *mut c_void
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::new_aligned(size, align, true, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
     }
 
     /// `operator delete(void*)`
@@ -820,7 +856,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete[](void*)`
@@ -834,7 +871,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete(void*, const std::nothrow_t&)`
@@ -848,7 +886,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete[](void*, const std::nothrow_t&)`
@@ -862,7 +901,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete(void*, size_t)`
@@ -877,7 +917,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete[](void*, size_t)`
@@ -892,7 +933,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete_sized(p as *mut u8, size, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete(void*, std::align_val_t)`
@@ -906,7 +948,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete[](void*, std::align_val_t)`
@@ -920,7 +963,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete(void*, std::align_val_t, const std::nothrow_t&)`
@@ -934,7 +978,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete[](void*, std::align_val_t, const std::nothrow_t&)`
@@ -952,7 +997,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::delete(p as *mut u8, Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })), Tracked(&mut errno), Tracked(&mut ord))
     }
 
     /// `operator delete(void*, size_t, std::align_val_t)`
@@ -967,12 +1013,14 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
+        let tracked mut ord = crate::lock::axiom_c_entry();
         super::delete_sized_aligned(
             p as *mut u8,
             size,
             align,
             Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })),
             Tracked(&mut errno),
+            Tracked(&mut ord),
         )
     }
 
@@ -988,12 +1036,14 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
+        let tracked mut ord = crate::lock::axiom_c_entry();
         super::delete_sized_aligned(
             p as *mut u8,
             size,
             align,
             Tracked(axiom_c_call(CEntry::Frees { ptr: p as *mut u8 })),
             Tracked(&mut errno),
+            Tracked(&mut ord),
         )
     }
     } // verus!

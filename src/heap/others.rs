@@ -600,6 +600,8 @@ impl Heap {
     /// `arena` ([`Heap::other_caches`]), never the flush-only one.
     #[cold]
     #[inline(never)]
+    // The ghost tokens are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn alloc_other(
         &mut self,
         shared: &Shared,
@@ -608,6 +610,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut super::Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -616,7 +619,9 @@ impl Heap {
             class < NCLASSES,
             arena != FOREIGN,
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -640,10 +645,10 @@ impl Heap {
             let len = unsafe { self.hdr_ref(cache) }.len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
-                return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
+                return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord)) };
             }
         }
-        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
+        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
     }
 
     /// Free of a slot whose slab belongs to another arena than the home
@@ -656,6 +661,9 @@ impl Heap {
     /// its flush routes every slot to its slab's arena.
     #[cold]
     #[inline(never)]
+    // The tracked tokens (`blk`, `errno`, the slot cell, `ord`) are ghost:
+    // erased from the build.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn free_other(
         &mut self,
         shared: &Shared,
@@ -664,6 +672,7 @@ impl Heap {
         Tracked(blk): Tracked<super::Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -673,10 +682,12 @@ impl Heap {
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
             final(errno).val() == old(errno).val(),
             final(self).wf(),
             final(cell).kept(*old(cell)),
+            *final(ord) == *old(ord),
     {
         // As in `Heap::push`.
         let tracked mut blk = blk;
@@ -711,7 +722,7 @@ impl Heap {
         proof {
             blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
         }
-        self.free_slow_in(shared, FOREIGN, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
+        self.free_slow_in(shared, FOREIGN, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
     }
 
     /// The header for `(arena, class)`, creating the `others` node if

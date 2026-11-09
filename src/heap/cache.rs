@@ -378,6 +378,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -390,7 +391,9 @@ impl Heap {
             len == old(self).hdr(cache).len,
             len > 0,
             pac ==> pac::pac_available(),
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -399,10 +402,10 @@ impl Heap {
     {
         if shared.double_free_scan() {
             // SAFETY: guaranteed by the caller.
-            return unsafe { self.pop_state(shared, cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell)) };
+            return unsafe { self.pop_state(shared, cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord)) };
         }
         // SAFETY: guaranteed by the caller.
-        unsafe { self.pop_plain(cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell)) }
+        unsafe { self.pop_plain(cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord)) }
     }
 
     /// [`Heap::pop`] under `double_free_scan`: the pop, scheduled or not
@@ -425,6 +428,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -437,7 +441,9 @@ impl Heap {
             len == old(self).hdr(cache).len,
             len > 0,
             pac ==> pac::pac_available(),
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -445,7 +451,7 @@ impl Heap {
             r.0@.addr != 0 && pac == pac_mode() ==> final(blk).slot_block(r.0, class as int),
     {
         // SAFETY: guaranteed by the caller.
-        let r = unsafe { self.pop_plain(cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell)) };
+        let r = unsafe { self.pop_plain(cache, class, len, pac, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord)) };
         if !r.0.is_null() {
             super::slotstate::pop(shared, class, r.0);
         }
@@ -478,6 +484,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -490,7 +497,9 @@ impl Heap {
             len == old(self).hdr(cache).len,
             len > 0,
             pac ==> pac::pac_available(),
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -517,7 +526,7 @@ impl Heap {
                 Heap::lemma_poppable_same(*old(self), *self, class as int, cache);
             }
             // SAFETY: guaranteed by the caller.
-            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell)) };
+            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord)) };
         }
         proof {
             CachePerms::lemma_update(old_perms, self.perms@, cache);
@@ -651,6 +660,9 @@ impl Heap {
 
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
+    // The tracked tokens (`blk`, `errno`, the slot cell, `ord`) are ghost:
+    // erased from the build.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn push(
         &mut self,
         shared: &Shared,
@@ -659,6 +671,7 @@ impl Heap {
         Tracked(blk): Tracked<Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -668,10 +681,12 @@ impl Heap {
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
             final(errno).val() == old(errno).val(),
             final(self).keeps(*old(self)),
             final(cell).kept(*old(cell)),
+            *final(ord) == *old(ord),
         // With `free_slow`, `free_slow_in` and `Heap::rehome_on_free`, whose
         // push follows a move of the home, which clears `rehome`.
         decreases (if old(self).spec_rehome() { 1int } else { 0int }), 3int,
@@ -692,7 +707,7 @@ impl Heap {
             proof {
                 blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
             }
-            self.free_slow(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell));
+            self.free_slow(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord));
         }
     }
 

@@ -115,7 +115,13 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
         bytes_of(p, size).iter().all(|&b| b == 0xA5),
         "the declined push touched the slot"
     );
-    s.check_size_hint(p, size, Some(c), Tracked::assume_new());
+    s.check_size_hint(
+        p,
+        size,
+        Some(c),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     t.free(p);
     assert!(
         bytes_of(p, size).iter().all(|&b| b == 0),
@@ -137,7 +143,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     // Direct release (`MALLOCX_TCACHE_NONE`), with no cache involved.
     // SAFETY: `p` is live again (the `alloc` above), `size` bytes.
     unsafe { ptr::write_bytes(p, 0xA5, size) };
-    super::free_direct(s, p, Tracked::assume_new());
+    super::free_direct(s, p, Tracked::assume_new(), Tracked::assume_new());
     assert!(
         bytes_of(p, size).iter().all(|&b| b == 0),
         "direct free left bytes"
@@ -167,7 +173,7 @@ fn zero_on_free_clears_a_huge_run() {
         // SAFETY: `usable` is the huge allocation's usable size.
         unsafe { ptr::write_bytes(p, 0xA5, usable) };
         if direct {
-            super::free_direct(s, p, Tracked::assume_new())
+            super::free_direct(s, p, Tracked::assume_new(), Tracked::assume_new())
         } else {
             t.free(p)
         }
@@ -269,6 +275,7 @@ fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
             t.heap().alloc_zeroed(
                 s,
                 c,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),

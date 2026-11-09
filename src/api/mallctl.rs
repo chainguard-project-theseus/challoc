@@ -2735,7 +2735,9 @@ fn thread_heap(shared: &Shared) -> (r: Result<&mut Heap, c_int>)
         r matches Err(e) ==> e == EAGAIN,
         r matches Ok(h) ==> h.wf(),
 {
-    heap::heap_for_thread(shared).ok_or(EAGAIN)
+    // Premise (lock order): called from the `mallctl` readers and
+    // operations, which hold no allocator lock.
+    heap::heap_for_thread(shared, Tracked(&mut axiom_entry())).ok_or(EAGAIN)
 }
 
 /// Copy a reading out with its type's size, through the call's token.

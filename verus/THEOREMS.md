@@ -2653,8 +2653,8 @@ build a token; the handoff axioms below are the other source.
   release.
 - *The lock-order root.* `fork_prepare` takes its lock-order token from
   its own axiom, `lock::axiom_fork_entry` (`lock.rs`), the one root
-  token; `axiom_entry` (`lock.rs`), every other entry point's, ensures
-  `!o.root()`.
+  token; every other entry point's (`axiom_c_entry` and `axiom_entry`,
+  `lock.rs`) ensures `!o.root()`.
 - *The arena table* is not a premise: `arena_held` and
   `count_held` (`api/mod.rs`) verify. `fork_prepare` takes the creation
   lock with `Arenas::lock_held`, which also hands it the permission of
@@ -2674,9 +2674,12 @@ build a token; the handoff axioms below are the other source.
   and only a release consumes (`axiom_fork_resumed` restates it for the
   release), so each read is checked to hold the creation lock's token.
   That the holder takes no guard of the creation lock meanwhile rests on
-  `lock::axiom_entry`'s premise (no allocator lock held at an entry
-  point; `lock::tests::entry_lock_order_uses_are_listed` pins its call
-  sites). No such read runs in the fork window: the guards the window
+  the lock order's entry premises (no allocator lock held at an entry
+  point: `lock::axiom_c_entry` at a C call, minted only in export
+  bodies, which `api::tests::c_call_tokens_only_in_export_bodies`
+  checks, and `lock::axiom_entry` elsewhere,
+  whose call sites `lock::tests::entry_lock_order_uses_are_listed`
+  pins). No such read runs in the fork window: the guards the window
   serves stand for the hold (`lock::axiom_acquired`), and that they
   leave the count and the table as read is `axiom_fork_resumed`'s
   premise.
@@ -2972,9 +2975,10 @@ pub open spec fn reentry_benign(v: usize) -> bool {
 }
 
 pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(cell): Tracked<&mut TlsCell>,
-    Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
-    requires shared.wf(), slot_ok(*old(cell), *old(loan)),
+    Tracked(loan): Tracked<&'a mut HeapLoan>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a mut Heap>)
+    requires shared.wf(), slot_ok(*old(cell), *old(loan)), old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         r matches Some(h) ==> h.wf(),
         reentry_benign(old(cell).value()) ==> r is None && *final(cell) == *old(cell) && *final(loan) == *old(loan),
         old(cell).value() > TLS_EXITED ==> r is Some && *final(cell) == *old(cell) && final(loan).lent(*old(loan)),
@@ -2991,13 +2995,14 @@ pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut
         r is Some ==> final(tls).lent(*old(tls)),
 
 fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tracked<&mut TlsCell>,
-    Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
-    requires shared.wf(), slot == old(cell).value(), slot_ok(*old(cell), *old(loan)),
+    Tracked(loan): Tracked<&'a mut HeapLoan>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a mut Heap>)
+    requires shared.wf(), slot == old(cell).value(), slot_ok(*old(cell), *old(loan)), old(ord).top() == 0,
     ensures
         r matches Some(h) ==> h.wf(),
         slot != 0 ==> r is None && *final(cell) == *old(cell) && *final(loan) == *old(loan),
         slot == 0 ==> final(cell).creates() == old(cell).creates() + 1,
         slot == 0 && r is None ==> final(cell).value() == 0,
+        *final(ord) == *old(ord),
 
 pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsCell>) -> (r: bool)  // ThreadKey
     requires reentry_benign(old(tls).value()),
@@ -4678,8 +4683,8 @@ pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
 
 // Composed as C calls it (verification only, cfg(verus_keep_ghost)):
 // n = malloc_usable_size(p) (usable_size with p's token), then realloc(p, n).
-fn theorem_realloc_to_usable_size(p, blk: Live, errno) -> (r: (usize, *mut u8))
-    requires may_abort(), may_syscall(), blk.claims(p), p@.addr != 0,
+fn theorem_realloc_to_usable_size(p, blk: Live, errno, ord) -> (r: (usize, *mut u8))
+    requires may_abort(), may_syscall(), blk.claims(p), p@.addr != 0, old(ord).top() == 0,
     ensures
         free_target(p),
         usable_of(p, r.0 as int),
@@ -6228,17 +6233,33 @@ the Sets locks after all the Table locks, in arena order, through
 states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
 
 **Premises beyond the common ones.**
+- *A C call's caller holds no allocator lock* (`axiom_c_entry`,
+  `lock.rs`; ledger category "C-program contract"). Each export body of
+  the allocation and free paths, the `mallocx` family, the realloc and
+  usable-size paths and the C++ operators mints one token
+  (`api::tests::c_call_tokens_only_in_export_bodies`) and passes it
+  down: every function between the export and a lock it takes gets its
+  caller's token (`Tracked<&mut LockOrder>`, requiring top 0 or the
+  lowest rank it takes), so that no allocator lock is held where those
+  paths take theirs is checked, not assumed. Among them are
+  `alloc_slow_in`, `free_slow_in`, `alloc_huge_in`, `Heap::free_huge`,
+  `paths::free_direct` and the no-heap `alloc_direct` arms
+  (`heap/paths.rs`), `pop_compact`, `pop_compact_run` and `rebuild_run`
+  (`heap/compact.rs`), the `mallocx` routes (`heap/mallocx.rs`),
+  `libc::alloc_huge`, `Huge::usable_size` (`huge/free.rs`),
+  `Shared::check_size_hint` (`heap/shared.rs`) and
+  `create_heap_for_thread` (`heap/thread.rs`). The fast paths take no
+  lock (theorem 9), and no allocator entry point is re-entered while a
+  lock is held: allocator code calls nothing that may allocate with a
+  lock held (theorem 16 for the reports' calls out, by inspection
+  elsewhere), and a signal handler that allocates is outside the C
+  contract (the fork handlers block signals).
 - *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs`;
-  ledger category "allocator invariant"). The roots: `alloc_slow_in`,
-  `free_slow_in`, `alloc_huge_in`, `Heap::free_huge`, `paths::free_direct`
-  and the no-heap `alloc_direct` arms of `paths::alloc`,
-  `alloc_declined`, `alloc_zeroed` (`heap/paths.rs`); `pop_compact`,
-  `pop_compact_run`, `rebuild_run` (`heap/compact.rs`); the `mallocx`
-  routes (`heap/mallocx.rs`); `libc::alloc_huge`,
-  `malloc_trim` (`api/libc.rs`); `Huge::usable_size` (`huge/free.rs`,
-  called from the `api::libc` and `api::jemalloc` entry points and
-  `Shared::zero_huge` on the free paths); `Shared::check_size_hint`
-  (`heap/shared.rs`, the sized frees' slow paths); `ctl`,
+  ledger category "allocator invariant"), for the entry points that do
+  not take their token from the export. The roots:
+  `malloc_trim` (`api/libc.rs`); `ctl`, `thread_heap` (for its
+  `heap::heap_for_thread` call, which the `thread.*` readers and
+  operations go through),
   `utilization`, `owner_of`, `arena_stats`, `arena_figure` (for its
   `stats::Scratch` record), and the named readers
   `cgroup_empty_bytes`, `tracked` (the seven `stats.cgroup.*` readers'
@@ -6249,18 +6270,14 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   doc); the report call sites (`api/print.rs`), and the same
   call in theorem 32's verification-only witness
   `theorem_read_only_never_aborts` (`api/mod.rs`);
-  `Shared::init` (no lock exists yet); `create_heap_for_thread` and
-  `heap_destructor` (`heap/thread.rs`); the background thread's `main`;
+  `Shared::init` (no lock exists yet); `heap_destructor`
+  (`heap/thread.rs`); the background thread's `main`;
   `fork_prepare`; and `fork_child` once
-  `fork_release` has handed back every token of the fork hold. The fast paths take no lock (theorem 9), and no
-  allocator entry point is re-entered while a lock is held: allocator
-  code calls nothing that may allocate with a lock held (theorem 16 for
-  the reports' calls out, by inspection elsewhere), and a signal
-  handler that allocates is outside the C contract (the fork handlers
-  block signals).
+  `fork_release` has handed back every token of the fork hold, under
+  the same no-re-entry argument.
 - *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs`):
-  the one root token; every other entry point's `axiom_entry` token is
-  not a root.
+  the one root token; every other entry point's token (`axiom_c_entry`,
+  `axiom_entry`) is not a root.
 - *Functions that state the lowest rank they take*: `assign_home`,
   `Meta::commit`, `Heap::destroy`, `Set::ensure`, `Heap::set_arena`
   (the call `thread.arena` makes) and `policy::empty_bytes` (an index
@@ -6428,7 +6445,7 @@ In words:
 
 With theorems 32 and 33: `assign` takes the creation lock with a
 `LockOrder` token that allows `rank_arenas()`, which `assign_home` and
-`Heap::create` take from `create_heap_for_thread`'s `axiom_entry` root
+`Heap::create` take from the token `create_heap_for_thread` is passed
 and pass down; the counter operations take no lock. `unbind` and its
 abort (`unbind_unbound`) require `may_abort_pending()`, which `create`
 carries and which `set_arena`'s and `destroy`'s `may_abort()` and
@@ -8148,8 +8165,9 @@ pub proof fn theorem_nallocx_zero(size: usize, lg_align: u32)
         nalloc_usable(size, lg_align) == 0
             <==> spec_class_for(size, 1usize << lg_align) is None && !huge_placeable(size, 1usize << lg_align),
 #[cfg(verus_keep_ghost)]
-fn theorem_nallocx_zero_rejects(size: usize, flags: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)   // body: n = nallocx; p = mallocx;
-    requires may_abort(), may_syscall(),                       // assert(n == 0 ==> p@.addr == 0)
+fn theorem_nallocx_zero_rejects(size: usize, flags: c_int, Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>)                     // body: n = nallocx; p = mallocx;
+    requires may_abort(), may_syscall(), old(ord).top() == 0,  // assert(n == 0 ==> p@.addr == 0)
 
 // huge/mod.rs
 proof fn theorem_placeable_fits_empty(&self, g: &Inner, size: usize, align: usize)
@@ -8221,8 +8239,9 @@ How it is proved:
 **Premises beyond the common ones.** The run token and
 `axiom_c_claim` (the C contract of a live block, "Bad input"), and the
 lock invariant of the huge allocator (theorems 23 and 29); `check_size_hint`
-is a root of the lock-order premise (`axiom_entry`, theorem 33: the
-sized frees' slow paths hold no lock). The sized frees, `mallocx` and
+takes its caller's lock-order token, which the sized frees mint from
+`axiom_c_entry` (theorem 33: a C call's caller holds no allocator
+lock). The sized frees, `mallocx` and
 `theorem_nallocx_zero_rejects` take the thread's `errno` token.
 
 **Scope and where the statement is weaker than the code.**
@@ -8299,7 +8318,8 @@ pub fn abort_pending(args: fmt::Arguments<'_>) -> !
         crate::sys::may_abort_pending(),
 
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>,
+    Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -8307,10 +8327,12 @@ fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tr
         crate::sys::integrity_aborts(),
         shared.wf(),
         blk.block(p),
+        old(ord).top() == 0,
 // body: free_direct(shared, p, blk)
 
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>)
+fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>,
+    Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -8319,11 +8341,13 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
         old(h).wf(),
         blk.block(p),
         process_regions().is_huge_block(p@.addr, 1),
+        old(ord).top() == 0,
 // body: classify_free, then h.free_huge(shared, page, blk)
 
 #[cfg(verus_keep_ghost)]
 fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>,
-    Tracked(errno): Tracked<&mut ThreadErrno>)
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(cell): Tracked<&mut TlsCell>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -8331,11 +8355,13 @@ fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         shared.wf(),
         old(h).wf(),
         blk.block(p),
+        old(ord).top() == 0,
 // body: h.free(shared, p, blk)
 
 #[cfg(verus_keep_ghost)]
 fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>,
-    Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(cell): Tracked<&mut TlsCell>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -8346,10 +8372,12 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         hint matches Some(c) ==> c < NCLASSES,
         hint_ok(p, hint),
         super::huge_hint_ok(blk, p, size),
+        old(ord).top() == 0,
 // body: free_sized_fast when hinted, then shared.check_size_hint and h.free
 
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>,
+    Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -8359,16 +8387,19 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
         blk.block(p),
         hint_ok(p, hint),
         super::huge_hint_ok(blk, p, size),
+        old(ord).top() == 0,
 // body: shared.check_size_hint, then free_direct
 
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>)
+fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>,
+    Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
         crate::sys::pending_aborts(),
         shared.wf(),
         blk.block(p),
+        old(ord).top() == 0,
 // body: usable_size, old_size_or_keep (realloc) and realloc_old
 ```
 
@@ -8908,11 +8939,13 @@ pub fn check_zero() -> (r: bool)
 
 #[cfg(verus_keep_ghost)]
 fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8,
-    Tracked(claim): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    Tracked(claim): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         claim.block() == Some(p),
+        old(ord).top() == 0,
 ```
 
 (Bodies elided, line breaks added.) `may_read_user()` is a capability,
@@ -9113,9 +9146,10 @@ pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)
 assert(tls.value() == TLS_EXITED && tls.loan.heap() is None && slot_ok(tls.cell, tls.loan));
 
 // heap/thread.rs (verification only, cfg(verus_keep_ghost))
-fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tracked<&mut TlsSlot>)
+fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tracked<&mut TlsSlot>,
+    Tracked(ord): Tracked<&mut LockOrder>)
     requires may_abort(), may_syscall(), shared.wf(), sp == Shared::storage() as *const Shared,
-        slot_ok(old(tls).cell, old(tls).loan), old(tls).value() == TLS_EXITED,
+        slot_ok(old(tls).cell, old(tls).loan), old(tls).value() == TLS_EXITED, old(ord).top() == 0,
     ensures *final(tls) == *old(tls),
         forall|v: usize| slot_step(old(tls).value(), v) ==> v == TLS_EXITED,
 {
@@ -9124,7 +9158,7 @@ fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tra
     }
     let fast = existing_heap_in(sp, Tracked(&mut *tls));
     assert(fast is None);
-    let slow = heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan));
+    let slow = heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(ord));
     assert(slow is None);
 }
 ```
@@ -9332,9 +9366,10 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
 
 // heap/paths.rs (verification only, cfg(verus_keep_ghost))
 fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>,
-    Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+    Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(cell): Tracked<&mut TlsCell>, Tracked(ord): Tracked<&mut LockOrder>)
     requires may_abort(), may_syscall(), shared.wf(), shared.exact_sized_free(), old(h).wf(),
-        hint matches Some(c) ==> c < NCLASSES, blk.claims(p),
+        hint matches Some(c) ==> c < NCLASSES, blk.claims(p), old(ord).top() == 0,
     ensures final(errno).val() == old(errno).val(), free_target(p), hint_ok(p, hint), blk.block(p),
 {
     let tracked mut blk = blk;
@@ -9343,8 +9378,8 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
         let pushed = free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk));
         assert(!pushed && *h == h0 && blk == b0);
     }
-    shared.check_size_hint(p, size, hint, Tracked(&blk));
-    h.free(shared, p, Tracked(blk), Tracked(errno));
+    shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
+    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
 }
 ```
 

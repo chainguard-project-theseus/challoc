@@ -30,8 +30,6 @@ use super::{
 use super::{FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
-#[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
 
 verus! {
 
@@ -46,6 +44,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         errno: Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: *mut u8)
         requires
             crate::sys::may_abort(),
@@ -53,18 +52,20 @@ impl Heap {
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
             r@.addr != 0 ==> final(blk).slot_block(r, class as int),
+            *final(ord) == *old(ord),
     {
         proof {
             shared.lemma_wf();
         }
         match self.alloc_fast(class, shared.push_flags(), Tracked(blk)) {
             Some(p) => p,
-            None => self.alloc_slow(shared, class, Tracked(blk), errno, Tracked(cell)).0,
+            None => self.alloc_slow(shared, class, Tracked(blk), errno, Tracked(cell), Tracked(ord)).0,
         }
     }
 
@@ -201,6 +202,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         errno: Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -208,7 +210,9 @@ impl Heap {
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -227,7 +231,7 @@ impl Heap {
                 }
                 r
             },
-            None => self.alloc_slow(shared, class, Tracked(blk), errno, Tracked(cell)),
+            None => self.alloc_slow(shared, class, Tracked(blk), errno, Tracked(cell), Tracked(ord)),
         }
     }
 
@@ -236,19 +240,21 @@ impl Heap {
     /// [`FOREIGN`] cache for the class (design 6.3 step 4). `blk` is the
     /// caller's token for `p` ([`Live::claims`]).
     #[inline(always)]
-    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
+    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
             blk.claims(p),
+            old(ord).top() == 0,
         ensures
             final(errno).val() == old(errno).val(),
             final(cell).kept(*old(cell)),
             final(self).wf(),
             free_target(p),
             blk.block(p),
+            *final(ord) == *old(ord),
     {
         proof {
             shared.lemma_wf();
@@ -262,16 +268,16 @@ impl Heap {
                 }
                 // The freed slot's token, with the permission to its bytes.
                 if arena == self.arena {
-                    self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
+                    self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
                 } else {
-                    self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
+                    self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
                 }
             }
             Err(page) => {
                 proof {
                     blk.lemma_run_block(p, page);
                 }
-                self.free_huge(shared, page, Tracked(blk))
+                self.free_huge(shared, page, Tracked(blk), Tracked(ord))
             },
         }
     }
@@ -280,14 +286,16 @@ impl Heap {
     /// lock, counted in the thread's statistics. `blk` gets the run's token.
     #[cold]
     #[inline(never)]
-    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, zero: bool, Tracked(blk): Tracked<&mut Live>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, zero: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             old(self).wf(),
             shared.wf(),
             crate::meta::is_pow2(align),
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
             r.0@.addr != 0 ==> size <= shared.huge_usable(size),
@@ -297,7 +305,7 @@ impl Heap {
             r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
         let arena = self.arena;
-        self.alloc_huge_in(shared, size, align, arena, zero, Tracked(blk))
+        self.alloc_huge_in(shared, size, align, arena, zero, Tracked(blk), Tracked(ord))
     }
 
     /// Allocation of `class` from `arena` through this heap's cache for
@@ -306,6 +314,8 @@ impl Heap {
     /// gets the block's token. `arena` is never [`FOREIGN`] (cache
     /// routing: `MALLOCX_ARENA` names arenas below 4095), so the pop is
     /// from the home cache or the `others` node keyed `arena`.
+    // The ghost tokens are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn alloc_in(
         &mut self,
         shared: &Shared,
@@ -314,6 +324,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -322,7 +333,9 @@ impl Heap {
             class < NCLASSES,
             old(self).wf(),
             arena != FOREIGN,
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
@@ -334,7 +347,7 @@ impl Heap {
             shared.lemma_wf();
         }
         if arena != self.arena {
-            return self.alloc_other(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell));
+            return self.alloc_other(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord));
         }
         let cache = self.cache_ptr(class);
         proof {
@@ -344,14 +357,16 @@ impl Heap {
         let len = unsafe { self.hdr_ref(cache) }.len;
         if len != 0 {
             // SAFETY: a real cache with `len` entries.
-            return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
+            return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord)) };
         }
         // Not `alloc_slow`: an explicit arena is kept even for a shared
         // class (design 13.3).
-        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
+        self.alloc_slow_in(shared, arena, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
     }
 
     /// Huge allocation on this thread in `arena` (which must exist).
+    // The ghost tokens are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub fn alloc_huge_in(
         &mut self,
         shared: &Shared,
@@ -360,6 +375,7 @@ impl Heap {
         arena: u16,
         zero: bool,
         Tracked(blk): Tracked<&mut Live>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
@@ -367,7 +383,9 @@ impl Heap {
             old(self).wf(),
             shared.wf(),
             crate::meta::is_pow2(align),
+            old(ord).top() == 0,
         ensures
+            *final(ord) == *old(ord),
             final(self).keeps(*old(self)),
             final(self).caches_same(*old(self)),
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
@@ -377,9 +395,7 @@ impl Heap {
             r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
             r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
-        // Premise (lock order): huge allocations come from the entry points
-        // and the slow paths, which hold no lock.
-        let (p, zero, z) = shared.alloc_huge(size, align, arena, zero, Tracked(blk), Tracked(&mut axiom_entry()));
+        let (p, zero, z) = shared.alloc_huge(size, align, arena, zero, Tracked(blk), Tracked(ord));
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }
@@ -389,7 +405,7 @@ impl Heap {
     /// Free of a huge run on this thread.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(blk): Tracked<Live>)
+    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(blk): Tracked<Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
@@ -397,23 +413,23 @@ impl Heap {
             shared.wf(),
             page <= shared.huge_pages(),
             blk.run_block(page as int),
+            old(ord).top() == 0,
         ensures
             final(self).keeps(*old(self)),
             final(self).caches_same(*old(self)),
+            *final(ord) == *old(ord),
     {
         let tracked mut blk = blk;
         if shared.zero_on_free() {
             // The token for the cleared run (`theorem_zero_on_free_huge`).
-            let Tracked(z) = shared.zero_huge(page, Tracked(&mut blk));
+            let Tracked(z) = shared.zero_huge(page, Tracked(&mut blk), Tracked(&mut *ord));
             proof {
                 super::zero::theorem_zero_on_free_huge(&z, blk, page as int);
             }
         }
         // The run's token; the permission to its bytes is dropped with it.
         let tracked tok = blk.into_run(page as int);
-        // Premise (lock order): a free of a huge run comes from an entry
-        // point, which holds no lock.
-        let n = shared.free_huge(page, Tracked(tok), Tracked(&mut axiom_entry()));
+        let n = shared.free_huge(page, Tracked(tok), Tracked(ord));
         self.count_uncached_free(n);
     }
 
@@ -483,6 +499,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -490,19 +507,21 @@ impl Heap {
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
             r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+            *final(ord) == *old(ord),
     {
         // The default path's one routing decision: a shared class (above
         // `tcache_max`, uncached everywhere) comes from arena 0 whatever
         // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
         // allocations (`alloc_in`) keep theirs.
         if shared.config.shared_class(class) {
-            return self.alloc_slow_in(shared, 0, class, Tracked(blk), Tracked(errno), Tracked(cell));
+            return self.alloc_slow_in(shared, 0, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord));
         }
         // A non-empty home cache means `pop_fast` declined the scheduled
         // pop (design 6.4) rather than found the cache empty: count the
@@ -515,7 +534,7 @@ impl Heap {
         // not; a cold path of its own serves it, so this one keeps its
         // size with the key off.
         if shared.double_free_scan() {
-            return self.alloc_slow_state(shared, class, Tracked(blk), Tracked(errno), Tracked(cell));
+            return self.alloc_slow_state(shared, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord));
         }
         let ghost old_perms = self.perms@;
         proof {
@@ -538,7 +557,7 @@ impl Heap {
             }
             // SAFETY: `cache` is this heap's home cache for `class`, with
             // `len` entries.
-            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell)) };
+            return unsafe { self.pop_compact(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord)) };
         }
         proof {
             CachePerms::lemma_update(old_perms, self.perms@, cache);
@@ -547,7 +566,7 @@ impl Heap {
             CachePerms::lemma_claimed_hdr(old_perms, self.perms@, cache);
             CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
         }
-        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
+        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
     }
 
     /// [`Heap::alloc_slow`] under `double_free_scan`, where `pop_fast`
@@ -563,6 +582,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -570,12 +590,14 @@ impl Heap {
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
             r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+            *final(ord) == *old(ord),
     {
         let cache = self.cache_ptr(class);
         proof {
@@ -585,14 +607,16 @@ impl Heap {
         let len = unsafe { self.hdr_ref(cache) }.len;
         if len != 0 {
             // SAFETY: a real cache with `len` entries.
-            return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell)) };
+            return unsafe { self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord)) };
         }
-        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell))
+        self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
     }
 
     /// The slow allocation path for any arena: the home arena or an arena
     /// that is not [`FOREIGN`] (cache routing; the cache it pops is the one
     /// [`Heap::ensure_cache`] routes `arena` to).
+    // The ghost tokens are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn alloc_slow_in(
         &mut self,
         shared: &Shared,
@@ -601,6 +625,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -609,22 +634,21 @@ impl Heap {
             shared.wf(),
             old(self).wf(),
             arena != FOREIGN || arena == old(self).home(),
+            old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
             r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+            *final(ord) == *old(ord),
     {
         broadcast use lemma_handed_ok;
         proof {
             shared.lemma_wf();
         }
-        // Premise (lock order): the slow allocation path is entered from a
-        // fast path or an entry point, none of which holds a lock.
-        let tracked mut ord = axiom_entry();
-        self.tick::<true>(shared, Tracked(&mut ord), Tracked(&mut *errno), Tracked(Some(&mut *cell)));
-        let Some((a, w)) = shared.arena(arena, Tracked(&mut ord)) else {
+        self.tick::<true>(shared, Tracked(&mut *ord), Tracked(&mut *errno), Tracked(Some(&mut *cell)));
+        let Some((a, w)) = shared.arena(arena, Tracked(&mut *ord)) else {
             if arena != self.arena {
                 // An index `MALLOCX_ARENA` named that does not exist, or
                 // an automatic arena not built yet named in the fork
@@ -636,7 +660,7 @@ impl Heap {
             // uncached from arena 0; the next slow path tries the build
             // again, so the thread is back on its own arena once there is
             // room.
-            let (p, zero, t) = shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut ord));
+            let (p, zero, t) = shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut *ord));
             if !p.is_null() {
                 self.count_direct_alloc(class);
             }
@@ -644,10 +668,10 @@ impl Heap {
             self.put_handed(t, Ghost(put), Ghost(p), Ghost(class as int));
             return (p, zero);
         };
-        let cache = self.ensure_cache(shared, arena, class, Tracked(&mut ord));
+        let cache = self.ensure_cache(shared, arena, class, Tracked(&mut *ord));
         let ghost s1 = *self;
         if cache.is_null() {
-            let (p, zero, t) = shared.alloc_direct(a, w, class, Tracked(blk), Tracked(&mut ord));
+            let (p, zero, t) = shared.alloc_direct(a, w, class, Tracked(blk), Tracked(&mut *ord));
             if !p.is_null() {
                 self.count_direct_alloc(class);
             }
@@ -657,7 +681,7 @@ impl Heap {
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            let len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
+            let len = self.refill(shared, a, w, cache, class, Tracked(&mut *ord));
             proof {
                 Heap::lemma_keeps_routes(s1, *self, arena, class as int, cache);
                 self.lemma_poppable(arena, class as int, cache);
@@ -665,7 +689,7 @@ impl Heap {
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
-            self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell))
+            self.pop(shared, cache, class, len, shared.pac(), Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
         }
     }
 
@@ -674,6 +698,9 @@ impl Heap {
     /// Releases directly to the slab when there is no cache to be had.
     #[cold]
     #[inline(never)]
+    // The tracked tokens (`blk`, `errno`, the slot cell, `ord`) are ghost:
+    // erased from the build.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn free_slow(
         &mut self,
         shared: &Shared,
@@ -682,6 +709,7 @@ impl Heap {
         Tracked(blk): Tracked<Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -691,10 +719,12 @@ impl Heap {
             shared.wf(),
             class < NCLASSES,
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
             final(errno).val() == old(errno).val(),
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
+            *final(ord) == *old(ord),
         decreases (if old(self).spec_rehome() { 1int } else { 0int }), 2int,
     {
         proof {
@@ -707,7 +737,7 @@ impl Heap {
             }
         }
         let arena = self.arena;
-        self.free_slow_in(shared, arena, class, p, Tracked(blk), Tracked(errno), Tracked(cell))
+        self.free_slow_in(shared, arena, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
     }
 
     /// The slow free path for any arena. With `zero_on_free` every cached
@@ -717,7 +747,7 @@ impl Heap {
     /// on the plain path; the size hint on the sized path, as the push
     /// trusts it, so a stale pointer of the right shape is cleared as it
     /// is cached, exactly as it would be handed out; design 6.3).
-    // The tracked tokens (`blk`, `errno`, the slot cell) are ghost:
+    // The tracked tokens (`blk`, `errno`, the slot cell, `ord`) are ghost:
     // erased from the build.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn free_slow_in(
@@ -729,6 +759,7 @@ impl Heap {
         Tracked(blk): Tracked<Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -738,6 +769,7 @@ impl Heap {
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
+            old(ord).top() == 0,
         ensures
             final(errno).val() == old(errno).val(),
             final(cell).kept(*old(cell)),
@@ -745,12 +777,10 @@ impl Heap {
             // Only a young heap's cross-arena free can move the home
             // (`rehome_on_free`).
             arena != FOREIGN || !old(self).spec_rehome() ==> final(self).keeps(*old(self)),
+            *final(ord) == *old(ord),
         decreases (if old(self).spec_rehome() { 1int } else { 0int }), 1int,
     {
         let tracked mut blk = blk;
-        // Premise (lock order): the slow free path is entered from a fast
-        // path or an entry point, none of which holds a lock.
-        let tracked mut ord = axiom_entry();
         // Under `double_free_scan` a heap never moves on a free: the move's
         // flush and re-test would run before the state check below, and a
         // refill on another thread between them could make a double free
@@ -758,7 +788,7 @@ impl Heap {
         if arena == FOREIGN
             && self.rehome
             && !shared.double_free_scan()
-            && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut ord), Tracked(&mut *errno), Tracked(&mut *cell))
+            && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut *ord), Tracked(&mut *errno), Tracked(&mut *cell))
         {
             return;
         }
@@ -788,8 +818,8 @@ impl Heap {
         // `ensure_cache` reads its class state for the header (a heap
         // whose first allocation is huge, or whose home moved, may not
         // have built it).
-        let cache = if arena == FOREIGN || shared.arena(arena, Tracked(&mut ord)).is_some() {
-            self.ensure_cache(shared, arena, class, Tracked(&mut ord))
+        let cache = if arena == FOREIGN || shared.arena(arena, Tracked(&mut *ord)).is_some() {
+            self.ensure_cache(shared, arena, class, Tracked(&mut *ord))
         } else {
             ptr::null_mut()
         };
@@ -800,20 +830,20 @@ impl Heap {
         }
         let tracked tok = blk.take_slot(class as int);
         if cache.is_null() {
-            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
+            self.tick::<false>(shared, Tracked(&mut *ord), Tracked(errno), Tracked(Some(&mut *cell)));
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to (the state goes on to `FREE`).
             if shared.double_free_scan() {
                 super::slotstate::release(shared, class, p);
             }
-            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut ord));
+            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut *ord));
             self.count_direct_free(class);
             crate::purge::background::note_released(class_size(class) as u64);
             return;
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
-            self.tick::<false>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
+            self.tick::<false>(shared, Tracked(&mut *ord), Tracked(errno), Tracked(Some(&mut *cell)));
             if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
@@ -822,7 +852,7 @@ impl Heap {
                 } else {
                     (self.hdr_ref(cache).cap / 2).max(1)
                 };
-                self.flush(shared, arena, cache, class, n as usize, Tracked(&mut ord));
+                self.flush(shared, arena, cache, class, n as usize, Tracked(&mut *ord));
                 // Towards the lazy start's early look (design 8.1).
                 crate::purge::background::note_released((n as u64).wrapping_mul(class_size(class) as u64));
                 proof {
@@ -1099,22 +1129,22 @@ proof fn lend_slot(tracked blk: &mut Live, tracked tk: &mut Map<int, GhostSingle
 /// `malloc` of a non-huge class on the calling thread. `blk` gets the
 /// block's token.
 #[inline(always)]
-pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, errno: Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         class < NCLASSES,
         shared.wf(),
+        old(ord).top() == 0,
     ensures
         r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
         r@.addr != 0 ==> final(blk).slot_block(r, class as int),
+        *final(ord) == *old(ord),
 {
     let tracked tls = TlsSlot::entry();
-    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
-        Some(h) => h.alloc(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell)),
-        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
-        // allocator lock.
-        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())).0,
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(&mut *ord)) {
+        Some(h) => h.alloc(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord)),
+        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(ord)).0,
     }
 }
 
@@ -1128,22 +1158,22 @@ pub fn alloc(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, er
 /// operation for the one pop in eight the compacting mode schedules).
 /// `blk` gets the block's token.
 #[inline(always)]
-pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, errno: Tracked<&mut ThreadErrno>) -> (r: *mut u8)
+pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, errno: Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         class < NCLASSES,
+        old(ord).top() == 0,
     ensures
         r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
         r@.addr != 0 ==> final(blk).slot_block(r, class as int),
+        *final(ord) == *old(ord),
 {
     let tracked tls = TlsSlot::entry();
-    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
-        Some(h) => h.alloc_slow(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell)).0,
-        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
-        // allocator lock.
-        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())).0,
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(&mut *ord)) {
+        Some(h) => h.alloc_slow(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord)).0,
+        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(ord)).0,
     }
 }
 
@@ -1154,31 +1184,31 @@ pub fn alloc_declined(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut 
 /// `alloc_direct`) handed out, before any write to it: fresh for its bytes,
 /// which `covers` alone does not say.
 #[inline(always)]
-pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, errno: Tracked<&mut ThreadErrno>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Live>, errno: Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         class < NCLASSES,
         shared.wf(),
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
 {
     let tracked tls = TlsSlot::entry();
-    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(&mut *ord)) {
         Some(h) => {
             proof {
                 h.lemma_wf_regions();
             }
-            let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell));
+            let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
             let ghost take = p@.addr != 0 && zero;
             let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
             (p, zero, z)
         },
-        // Premise (lock order, `lock::axiom_entry`): the C caller holds no
-        // allocator lock.
-        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut axiom_entry())),
+        None => shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(ord)),
     }
 }
 
@@ -1186,23 +1216,25 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 /// is an allocated slab slot or a live huge run. `blk` is the caller's
 /// token for `p` ([`Live::claims`]).
 #[inline(always)]
-pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
+        old(ord).top() == 0,
     ensures
         final(errno).val() == old(errno).val(),
         free_target(p),
         blk.block(p),
+        *final(ord) == *old(ord),
 {
     // The slot's cell goes down the free path for its tick, which may
     // start the background thread (`purge::on_tick`).
     let tracked tls = TlsSlot::entry();
-    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
-        Some(h) => h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell)),
-        None => free_direct(shared, p, Tracked(blk)),
+    match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(&mut *ord)) {
+        Some(h) => h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord)),
+        None => free_direct(shared, p, Tracked(blk), Tracked(ord)),
     }
 }
 
@@ -1210,25 +1242,24 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(er
 /// allocator, through no cache (`MALLOCX_TCACHE_NONE`, or a thread without
 /// a heap). Counted in the thread's statistics when it has a heap. `blk`
 /// as for [`free`].
-pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
+        old(ord).top() == 0,
     ensures
         free_target(p),
         blk.block(p),
+        *final(ord) == *old(ord),
 {
     proof {
         shared.lemma_wf();
         shared.lemma_regions_ok();
         shared.lemma_wf_ready();
     }
-    // Premise (lock order): called from the entry points, which hold no
-    // lock.
-    let tracked mut ord = axiom_entry();
     match shared.classify_free(p, Tracked(&blk)) {
         Ok((class, arena)) => {
             proof {
@@ -1257,7 +1288,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
                 blk.lemma_mem();
             }
             let tracked tok = blk.take_slot(class as int);
-            shared.free_direct(arena, class, p, Tracked(tok), Tracked(&mut ord));
+            shared.free_direct(arena, class, p, Tracked(tok), Tracked(&mut *ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_direct_free(class);
             }
@@ -1269,7 +1300,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
             let tracked mut blk = blk;
             if shared.zero_on_free() {
                 // The token for the cleared run (`theorem_zero_on_free_huge`).
-                let Tracked(z) = shared.zero_huge(page, Tracked(&mut blk));
+                let Tracked(z) = shared.zero_huge(page, Tracked(&mut blk), Tracked(&mut *ord));
                 proof {
                     super::zero::theorem_zero_on_free_huge(&z, blk, page as int);
                 }
@@ -1277,7 +1308,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
             // The run's token; the permission to its bytes is dropped with
             // it.
             let tracked t = blk.into_run(page as int);
-            let n = shared.free_huge(page, Tracked(t), Tracked(&mut ord));
+            let n = shared.free_huge(page, Tracked(t), Tracked(&mut *ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_uncached_free(n);
             }
@@ -1299,7 +1330,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>)
+fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -1307,12 +1338,13 @@ fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tr
         crate::sys::integrity_aborts(),
         shared.wf(),
         blk.block(p),
+        old(ord).top() == 0,
 {
     proof {
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    free_direct(shared, p, Tracked(blk));
+    free_direct(shared, p, Tracked(blk), Tracked(&mut *ord));
 }
 
 /// The free of a live huge run on a thread with a heap, as
@@ -1322,7 +1354,7 @@ fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tr
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>)
+fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -1331,6 +1363,7 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
         old(h).wf(),
         blk.block(p),
         process_regions().is_huge_block(p@.addr, 1),
+        old(ord).top() == 0,
 {
     proof {
         shared.lemma_wf();
@@ -1348,7 +1381,7 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
             proof {
                 blk.lemma_run_block(p, page);
             }
-            h.free_huge(shared, page, Tracked(blk))
+            h.free_huge(shared, page, Tracked(blk), Tracked(&mut *ord))
         },
     }
 }
@@ -1364,7 +1397,7 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
+fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -1372,12 +1405,13 @@ fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         shared.wf(),
         old(h).wf(),
         blk.block(p),
+        old(ord).top() == 0,
 {
     proof {
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell));
+    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
 }
 
 /// A sized free (`free_sized`, `sdallocx`, `free_aligned_sized`) of a
@@ -1397,7 +1431,7 @@ fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
+fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -1408,6 +1442,7 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         hint matches Some(c) ==> c < NCLASSES,
         hint_ok(p, hint),
         super::huge_hint_ok(blk, p, size),
+        old(ord).top() == 0,
 {
     let tracked mut blk = blk;
     proof {
@@ -1425,8 +1460,8 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         // usable size: `p`'s block.
         blk.lemma_claimed_block(p);
     }
-    shared.check_size_hint(p, size, hint, Tracked(&blk));
-    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell));
+    shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
+    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
 }
 
 /// The sized free of [`theorem_valid_sized_free_never_aborts`] through no
@@ -1439,7 +1474,7 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>)
+fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -1449,13 +1484,14 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
         blk.block(p),
         hint_ok(p, hint),
         super::huge_hint_ok(blk, p, size),
+        old(ord).top() == 0,
 {
     proof {
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    shared.check_size_hint(p, size, hint, Tracked(&blk));
-    free_direct(shared, p, Tracked(blk));
+    shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
+    free_direct(shared, p, Tracked(blk), Tracked(&mut *ord));
 }
 
 /// With `exact_sized_free` (the configuration key), a sized free
@@ -1477,7 +1513,7 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>)
+fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1486,6 +1522,7 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
         old(h).wf(),
         hint matches Some(c) ==> c < NCLASSES,
         blk.claims(p),
+        old(ord).top() == 0,
     ensures
         final(errno).val() == old(errno).val(),
         free_target(p),
@@ -1498,8 +1535,8 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
         let pushed = free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk));
         assert(!pushed && *h == h0 && blk == b0);
     }
-    shared.check_size_hint(p, size, hint, Tracked(&blk));
-    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell));
+    shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
+    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
 }
 
 /// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`

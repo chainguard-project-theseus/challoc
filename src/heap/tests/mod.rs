@@ -69,6 +69,7 @@ impl TestHeap {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         assert!(!p.is_null());
         p
@@ -78,6 +79,7 @@ impl TestHeap {
         let (p, z) = self.heap().alloc_zeroed(
             self.s,
             c,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
@@ -93,13 +95,19 @@ impl TestHeap {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         )
     }
 
     pub(crate) fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
-        let (p, zero, _) = self
-            .heap()
-            .alloc_huge(self.s, size, align, true, Tracked::assume_new());
+        let (p, zero, _) = self.heap().alloc_huge(
+            self.s,
+            size,
+            align,
+            true,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         (p, zero)
     }
 

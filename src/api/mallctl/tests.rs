@@ -147,7 +147,11 @@ fn read_only_subtrees_are_roots_4_5_and_7() {
 #[test]
 fn batch_query_rejects_a_count_whose_triples_overflow() {
     let mib = mib_of("experimental.utilization.batch_query");
-    let p = malloc(16, vstd::prelude::Tracked::assume_new());
+    let p = malloc(
+        16,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let ptrs = [p as *const c_void];
     let mut out = [0usize; 1];
     let mut outlen = size_of::<usize>();
@@ -169,6 +173,7 @@ fn batch_query_rejects_a_count_whose_triples_overflow() {
     assert_eq!(rc, EINVAL);
     free(
         p,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -205,10 +210,16 @@ fn an_epoch_write_runs_the_callers_cache_gc_when_due() {
         };
         // A batch through the thread's cache, all but one back in.
         let ptrs: Vec<*mut u8> = (0..64)
-            .map(|_| mallocx(100, 0, Tracked::assume_new()))
+            .map(|_| mallocx(100, 0, Tracked::assume_new(), Tracked::assume_new()))
             .collect();
         for p in &ptrs[1..] {
-            dallocx(*p, 0, Tracked::assume_new(), Tracked::assume_new());
+            dallocx(
+                *p,
+                0,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         let c = crate::layout::class_of(100).unwrap();
         let len = || heap().cache(c).map_or(0, |k| k.len());
@@ -231,7 +242,13 @@ fn an_epoch_write_runs_the_callers_cache_gc_when_due() {
         heap().set_last_gc(0);
         epoch();
         assert_eq!(len(), after_first - (after_first - after_first / 4));
-        dallocx(ptrs[0], 0, Tracked::assume_new(), Tracked::assume_new());
+        dallocx(
+            ptrs[0],
+            0,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     })
     .join()
     .unwrap();
@@ -885,7 +902,13 @@ fn stats_are_frozen_between_epochs_and_arenas_all_sums() {
         let e0 = epoch();
         let a0: usize = get("stats.allocated");
         live = (0..300)
-            .map(|_| malloc(200, vstd::prelude::Tracked::assume_new()))
+            .map(|_| {
+                malloc(
+                    200,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                )
+            })
             .collect();
         assert_eq!(get::<usize>("stats.allocated"), a0, "no epoch, no change");
         let e1 = epoch();
@@ -899,6 +922,7 @@ fn stats_are_frozen_between_epochs_and_arenas_all_sums() {
         for p in live.drain(..) {
             free(
                 p,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );
@@ -955,6 +979,7 @@ fn stats_are_frozen_between_epochs_and_arenas_all_sums() {
     for p in live {
         free(
             p,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -1030,11 +1055,13 @@ fn arena_keys_create_lookup_purge_decay_and_destroy() {
         500,
         mallocx_arena(a as u16) as c_int,
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert!(!p.is_null());
     let h = mallocx(
         2 << 20,
         mallocx_arena(a as u16) as c_int,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
     // arenas.lookup finds both tiers; garbage is EFAULT, not an abort.
@@ -1101,10 +1128,12 @@ fn arena_keys_create_lookup_purge_decay_and_destroy() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     dallocx(
         h,
         0,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1182,6 +1211,7 @@ fn arena_keys_create_lookup_purge_decay_and_destroy() {
         500,
         mallocx_arena(a as u16) as c_int,
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert!(
         !again.is_null(),
@@ -1202,6 +1232,7 @@ fn arena_keys_create_lookup_purge_decay_and_destroy() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
 }
 
@@ -1211,7 +1242,7 @@ fn thread_and_tcache_keys() {
     // `api::heap_at_tests` creates explicit caches under this guard.
     let _serial = crate::testutil::global_state();
     let s = shared();
-    let h = heap::heap_for_thread(s).unwrap();
+    let h = heap::heap_for_thread(s, Tracked::assume_new()).unwrap();
     let before = h.stats();
     let a0: u64 = get("thread.allocated");
     let d0: u64 = get("thread.deallocated");
@@ -1223,7 +1254,11 @@ fn thread_and_tcache_keys() {
     // SAFETY: `thread.allocatedp` points at this thread's counter, live
     // while the thread runs.
     assert_eq!(unsafe { *ap }, a0);
-    let p = malloc(1000, vstd::prelude::Tracked::assume_new());
+    let p = malloc(
+        1000,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let size = crate::layout::class_size_of(1000).unwrap() as u64;
     // The pointer is stale until a counter is read again.
     // SAFETY: as above.
@@ -1235,23 +1270,31 @@ fn thread_and_tcache_keys() {
         p,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(get::<u64>("thread.deallocated"), d0 + size);
     // SAFETY: as above, for `thread.deallocatedp`.
     assert_eq!(unsafe { *dp }, d0 + size);
     // thread.tcache.flush empties this thread's caches.
     let many: Vec<*mut u8> = (0..64)
-        .map(|_| malloc(48, vstd::prelude::Tracked::assume_new()))
+        .map(|_| {
+            malloc(
+                48,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
     for q in many {
         free(
             q,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
     }
     let c = crate::layout::class_of(48).unwrap();
-    let h = heap::heap_for_thread(s).unwrap();
+    let h = heap::heap_for_thread(s, Tracked::assume_new()).unwrap();
     assert!(h.cache(c).map_or(0, |cc| cc.len()) >= 64);
     assert_eq!(call("thread.tcache.flush"), 0);
     assert_eq!(h.cache(c).map_or(0, |cc| cc.len()), 0);
@@ -1261,23 +1304,33 @@ fn thread_and_tcache_keys() {
     let a_before: u64 = get("thread.allocated");
     assert_eq!(set("thread.tcache.enabled", false), 0);
     assert!(!get::<bool>("thread.tcache.enabled"));
-    let h = heap::heap_for_thread(s).unwrap();
+    let h = heap::heap_for_thread(s, Tracked::assume_new()).unwrap();
     assert!(h.cache(c).is_none(), "caches were freed");
     assert_eq!(get::<u64>("thread.allocated"), a_before);
-    let q = malloc(48, vstd::prelude::Tracked::assume_new());
+    let q = malloc(
+        48,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert!(h.cache(c).is_none(), "no cache is created while disabled");
     assert_eq!(get::<u64>("thread.allocated"), a_before + 48);
     free(
         q,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert!(h.cache(c).is_none());
     assert_eq!(set("thread.tcache.enabled", true), 0);
-    let q = malloc(48, vstd::prelude::Tracked::assume_new());
+    let q = malloc(
+        48,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert!(h.cache(c).is_some(), "caches come back");
     free(
         q,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1288,7 +1341,11 @@ fn thread_and_tcache_keys() {
     assert_eq!(set("thread.arena", a), 0);
     assert_eq!(get::<c_uint>("thread.arena"), a);
     // Plain malloc comes from that arena through the thread's own caches.
-    let q = malloc(200, vstd::prelude::Tracked::assume_new());
+    let q = malloc(
+        200,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert_eq!(
         s.classify_free(q, vstd::prelude::Tracked::assume_new())
             .map(|x| x.1),
@@ -1296,6 +1353,7 @@ fn thread_and_tcache_keys() {
     );
     free(
         q,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1306,11 +1364,17 @@ fn thread_and_tcache_keys() {
     // Explicit caches.
     let t: c_uint = get("tcache.create");
     let flags = mallocx_tcache(t as u16) as c_int;
-    let e = mallocx(200, flags, vstd::prelude::Tracked::assume_new());
+    let e = mallocx(
+        200,
+        flags,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let c = crate::layout::class_of(200).unwrap();
     dallocx(
         e,
         flags,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1343,7 +1407,14 @@ fn utilization_queries_answer_valkeys_defragmenter() {
         .expect("arenas.create");
     let flags = (mallocx_arena(first) | MALLOCX_TCACHE_NONE) as c_int;
     let ptrs: Vec<*mut u8> = (0..500)
-        .map(|_| mallocx(100, flags, vstd::prelude::Tracked::assume_new()))
+        .map(|_| {
+            mallocx(
+                100,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
     assert_eq!(owner_of(s, ptrs[0] as *const c_void), Some(first));
     // Verbose query on one pointer.
@@ -1445,8 +1516,18 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     // A huge run is one region of its own, and so is a slot of a class
     // above BIN_MAX (reported like jemalloc's large extents); a
     // non-allocation is zeros.
-    let h = mallocx(3 << 20, 0, vstd::prelude::Tracked::assume_new());
-    let m = mallocx(100 << 10, 0, vstd::prelude::Tracked::assume_new());
+    let h = mallocx(
+        3 << 20,
+        0,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
+    let m = mallocx(
+        100 << 10,
+        0,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let cm = crate::layout::class_of(100 << 10).unwrap();
     assert!((NBINS..crate::layout::NCLASSES).contains(&cm));
     let stack = 0u64;
@@ -1484,12 +1565,18 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     // the thread's own arena.
     assert_eq!(owner_of(s, m as *const c_void), Some(0));
     let home = crate::heap::existing_heap(s).unwrap().arena();
-    let mid = mallocx(8 << 10, 0, vstd::prelude::Tracked::assume_new());
+    let mid = mallocx(
+        8 << 10,
+        0,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
     assert_eq!(owner_of(s, mid as *const c_void), Some(home));
     dallocx(
         mid,
         0,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1498,10 +1585,12 @@ fn utilization_queries_answer_valkeys_defragmenter() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     dallocx(
         h,
         0,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1510,6 +1599,7 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     dallocx(
         ptrs[2],
         flags,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1521,6 +1611,7 @@ fn utilization_queries_answer_valkeys_defragmenter() {
             dallocx(
                 p,
                 flags,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );

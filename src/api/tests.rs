@@ -1473,7 +1473,8 @@ fn passes_own_arguments(call: &str, helper: &str, at: &str) {
 }
 
 /// The C-call tokens (`axiom_c_call` of each `api` module, `libc`'s
-/// `axiom_c_out`) and the errno loan (`vspec::errno::lend`) are minted
+/// `axiom_c_out`), the errno loan (`vspec::errno::lend`) and the C
+/// call's lock-order token (`lock::axiom_c_entry`) are minted
 /// only in an export body, the Rust side of one C call: an
 /// `extern "C" fn` or an arm `fn x / je_x(..)` of a
 /// `verified_export_pair!`, or one of the helpers such an arm calls
@@ -1500,6 +1501,7 @@ fn c_call_tokens_only_in_export_bodies() {
         concat!("axiom_", "c_call("),
         concat!("axiom_", "c_out("),
         concat!("errno::", "lend()"),
+        concat!("axiom_", "c_entry("),
     ] {
         let sites: Vec<_> = crate::testutil::grant_sites(mint)
             .into_iter()
@@ -1535,7 +1537,7 @@ fn c_call_tokens_only_in_export_bodies() {
                 n, 1,
                 "{file} `{sig}`: got = {n} calls of `{mint}`, want = 1 (one token per C call)"
             );
-            if !mint.starts_with("errno") {
+            if mint.contains("c_call") || mint.contains("c_out") {
                 own_arguments(mint, at);
             }
             // Out-pointer tokens, each in its one spelling: directly in
@@ -2919,7 +2921,8 @@ fn out_tokens() -> [(String, String); 2] {
 /// (`axiom_errno_at_return`, named in `axiom`) and whether it hands an
 /// out-pointer token back ([`out_tokens`]). The body sets up its call
 /// (the root grants, the token it lends, the C caller's out-pointer
-/// token), then calls its Rust entry point once, through `super::`,
+/// token, the C call's lock-order token), then calls its Rust entry
+/// point once, through `super::`,
 /// and returns what the call returned: as the body's tail, or bound to
 /// `r`, followed by the axiom on its `errno` token and the hand-back of
 /// the out-pointer token it minted, then `r`.
@@ -2937,6 +2940,7 @@ fn check_export_body(at: &str, body: &[String], axiom: &str) -> (bool, bool) {
         outs[0].0.clone(),
         outs[1].0.clone(),
         String::from("let tracked mut left = Ghost(crate::purge::Left::none());"),
+        std::format!("let tracked mut ord = crate::lock::{}();", "axiom_c_entry"),
     ];
     let call = body
         .iter()

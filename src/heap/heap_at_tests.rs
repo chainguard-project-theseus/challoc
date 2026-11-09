@@ -974,6 +974,7 @@ fn xalloc(s: &Shared, size: usize, arena: Option<u16>, t: u16) -> *mut u8 {
                 mallocx::Tcache::Explicit(t),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
+                Tracked::assume_new(),
             )
             .0
         }
@@ -985,6 +986,7 @@ fn xalloc(s: &Shared, size: usize, arena: Option<u16>, t: u16) -> *mut u8 {
                 arena,
                 mallocx::Tcache::Explicit(t),
                 false,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
             )
             .0
@@ -1000,6 +1002,7 @@ fn xfree(s: &Shared, p: *mut u8, t: u16) {
         s,
         p,
         mallocx::Tcache::Explicit(t),
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
     );
@@ -1095,7 +1098,13 @@ fn fill_thread_heap(s: &Shared, a1: u16) {
     let c = class_of(64).unwrap();
     let mut ps = Vec::new();
     for _ in 0..8 {
-        ps.push(alloc(s, c, Tracked::assume_new(), Tracked::assume_new()));
+        ps.push(alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        ));
     }
     let h = existing_heap(s).expect("the thread's heap");
     for _ in 0..4 {
@@ -1106,12 +1115,19 @@ fn fill_thread_heap(s: &Shared, a1: u16) {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         assert!(!p.is_null());
         ps.push(p);
     }
     for p in ps {
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     }
 }
 
@@ -1206,11 +1222,13 @@ fn created_heap_passes_the_checker_before_destroy() {
                     Tracked::assume_new(),
                     Tracked::assume_new(),
                     Tracked::assume_new(),
+                    Tracked::assume_new(),
                 ),
                 Some(a) => heap.alloc_in(
                     s,
                     a,
                     c,
+                    Tracked::assume_new(),
                     Tracked::assume_new(),
                     Tracked::assume_new(),
                     Tracked::assume_new(),
@@ -1226,6 +1244,7 @@ fn created_heap_passes_the_checker_before_destroy() {
         unsafe { &mut *h }.free(
             s,
             p,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),

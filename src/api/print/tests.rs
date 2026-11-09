@@ -117,7 +117,13 @@ fn slabs_are_never_smaller_than_the_page() {
 #[test]
 fn text_report_has_every_section_and_live_figures() {
     let live: Vec<*mut u8> = (0..100)
-        .map(|_| malloc(700, vstd::prelude::Tracked::assume_new()))
+        .map(|_| {
+            malloc(
+                700,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
     let text = report("");
     assert!(
@@ -195,6 +201,7 @@ fn text_report_has_every_section_and_live_figures() {
     for p in live {
         free(
             p,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -491,12 +498,19 @@ fn stats_print_does_not_allocate() {
     // Make sure this thread has a heap (the counters live in it), then
     // read them through the same materialisation `mallctl` uses.
     free(
-        malloc(64, vstd::prelude::Tracked::assume_new()),
+        malloc(
+            64,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        ),
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
     let counters = || {
-        let st = crate::heap::heap_for_thread(s).unwrap().materialise_stats();
+        let st = crate::heap::heap_for_thread(s, Tracked::assume_new())
+            .unwrap()
+            .materialise_stats();
         (st.allocated, st.deallocated)
     };
     let before = counters();
@@ -616,9 +630,19 @@ fn report_callbacks_run_with_cancellation_disabled() {
 #[test]
 fn malloc_info_writes_glibc_xml_to_the_stream() {
     let live: Vec<*mut u8> = (0..50)
-        .map(|_| malloc(3000, vstd::prelude::Tracked::assume_new()))
+        .map(|_| {
+            malloc(
+                3000,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
-    let big = malloc(1 << 20, vstd::prelude::Tracked::assume_new());
+    let big = malloc(
+        1 << 20,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     // SAFETY: `tmpfile` has no preconditions.
     let f = unsafe { libc::tmpfile() };
     assert!(!f.is_null());
@@ -661,10 +685,12 @@ fn malloc_info_writes_glibc_xml_to_the_stream() {
         big,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     for p in live {
         free(
             p,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -689,12 +715,19 @@ const REENTRY_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 fn reenter() {
     let live: Vec<*mut u8> = [16usize, 3000, 64 << 10, 4 << 20]
         .iter()
-        .map(|&n| malloc(n, vstd::prelude::Tracked::assume_new()))
+        .map(|&n| {
+            malloc(
+                n,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
     for p in live {
         assert!(!p.is_null());
         free(
             p,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -792,7 +825,13 @@ fn a_malloc_info_stream_may_reenter_the_allocator() {
     }
     finishes("malloc_info", || {
         let live: Vec<*mut u8> = (0..NBINS)
-            .map(|c| malloc(CLASSES[c].size(), vstd::prelude::Tracked::assume_new()))
+            .map(|c| {
+                malloc(
+                    CLASSES[c].size(),
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                )
+            })
             .collect();
         let calls = core::sync::atomic::AtomicUsize::new(0);
         let io = CookieIo {
@@ -815,6 +854,7 @@ fn a_malloc_info_stream_may_reenter_the_allocator() {
         for p in live {
             free(
                 p,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );
@@ -1094,7 +1134,13 @@ fn json_and_xml_checkers_reject_what_they_should() {
 #[test]
 fn every_option_string_gives_a_well_formed_report() {
     let live: Vec<*mut u8> = (0..20)
-        .map(|i| malloc(64 << (i % 8), vstd::prelude::Tracked::assume_new()))
+        .map(|i| {
+            malloc(
+                64 << (i % 8),
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
     let inert = ["", "m", "d", "l", "x", "e", "h", "mdlxeh"];
     for mask in 0..8u32 {
@@ -1129,6 +1175,7 @@ fn every_option_string_gives_a_well_formed_report() {
     for p in live {
         free(
             p,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
