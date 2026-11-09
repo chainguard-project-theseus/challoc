@@ -34,8 +34,10 @@ const PR_SET_NAME: i32 = 15;
 const MIN_SLEEP_NS: u64 = 1_000_000;
 
 /// Bookkeeping behind the state lock (the lock `fork_prepare` takes
-/// last, design 9).
-struct State {
+/// last, design 9). Crate-visible so the fork handlers can name
+/// [`STATE`]'s type ([`state`]); the fields are private, so only this
+/// module (with the modules inside it) builds a `State`.
+pub(crate) struct State {
     present: bool,
     creating: bool,
     /// The thread being created has already exited: it found the request
@@ -1049,7 +1051,7 @@ fn detach_from_starter()
 /// [`STATE`], for specifications. Uninterpreted (Verus does not read
 /// statics in specifications); `STATE`'s postcondition pins it
 /// ([`axiom_state_lock`]).
-uninterp spec fn state_static() -> Lock<State>;
+pub uninterp spec fn state_static() -> Lock<State>;
 
 /// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
 pub closed spec fn state_lock() -> RawLock {
@@ -1059,10 +1061,15 @@ pub closed spec fn state_lock() -> RawLock {
 /// Assumption: [`state_static`] is [`STATE`]. Called once, in `STATE`'s
 /// initialiser, for the lock it builds: a static is one object,
 /// initialised once (at compile time), so every read of it returns that
-/// lock. Private: in this module `STATE` is the only `Lock<State>`
-/// (`State` is private too) and the only lock of rank [`rank_state`],
-/// which the requirement pins (`purge::tests::
-/// state_lock_axiom_names_the_one_state_lock` checks them by name).
+/// lock. Sound while `STATE` is the one `Lock<State>` the program
+/// builds, which the requirement narrows to its rank: only this module
+/// (with the modules inside it) can build a `State`, its fields being
+/// private; `State` has no `Clone` or `Default`, and no function returns
+/// one, so no other code gets a `State` to lock; and this module builds
+/// one `State` and one lock, `STATE`. The axiom is private, so no code
+/// outside this module calls it
+/// (`purge::tests::state_lock_axiom_names_the_one_state_lock` backs
+/// these by counting source text).
 axiom fn axiom_state_lock(l: Lock<State>)
     requires
         l.rank() == rank_state(),
@@ -1073,7 +1080,7 @@ axiom fn axiom_state_lock(l: Lock<State>)
 /// `&STATE`: [`state_static`], whose raw lock is [`state_lock`] and rank
 /// the one `STATE` is created with (the static's postcondition).
 #[inline(always)]
-fn state() -> (r: &'static Lock<State>)
+pub(crate) fn state() -> (r: &'static Lock<State>)
     ensures
         *r == state_static(),
         r.spec_raw() == state_lock(),
@@ -1123,7 +1130,8 @@ pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (h: Tracked<StateHold
         final(ord).top() == rank_state(),
         crate::lock::fork_prepared(*final(ord)),
 {
-    let Tracked(r) = state().lock_held_perm(Tracked(ord));
+    let l = state();
+    let Tracked(r) = l.lock_held_perm(Tracked(ord));
     let tracked (tok, perm) = r;
     Tracked(StateHold { tok, perm })
 }
@@ -1134,10 +1142,13 @@ pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (h: Tracked<StateHold
 /// lock invariant ([`StateHold::wf`]), which that release
 /// (`Lock::unlock_held_perm`) requires. The state lock's rank leaves the
 /// root `ord`'s raw holds.
-pub fn fork_unlock(Tracked(h): Tracked<StateHold>, Tracked(ord): Tracked<&mut LockOrder>)
+/// `l` is the lock [`state`] returns ([`state_static`]).
+pub fn fork_unlock(l: &Lock<State>, Tracked(h): Tracked<StateHold>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         h.wf(),
+        *l == state_static(),
+        l.rank() == rank_state(),
         crate::lock::window_closed(),
         old(ord).root(),
     ensures
@@ -1146,7 +1157,7 @@ pub fn fork_unlock(Tracked(h): Tracked<StateHold>, Tracked(ord): Tracked<&mut Lo
         final(ord).ranks() == old(ord).ranks().remove(rank_state()),
 {
     let tracked StateHold { tok, perm } = h;
-    state().unlock_held_perm(Tracked(tok), Tracked(perm), Tracked(ord))
+    l.unlock_held_perm(Tracked(tok), Tracked(perm), Tracked(ord))
 }
 
 } // verus!
@@ -1169,13 +1180,15 @@ verus! {
 /// leaves the state's lock invariant true ([`StateHold::wf`]), so the
 /// value the child's next locker reads is consistent and describes no
 /// thread.
-pub fn fork_child(Tracked(hold): Tracked<&mut StateHold>)
+/// `l` is the lock [`state`] returns ([`state_static`]).
+pub fn fork_child(l: &Lock<State>, Tracked(hold): Tracked<&mut StateHold>)
     requires
         old(hold).wf(),
+        *l == state_static(),
     ensures
         final(hold).wf(),
 {
-    let st = state().value_held_mut(Tracked(&mut hold.perm));
+    let st = l.value_held_mut(Tracked(&mut hold.perm));
     st.present = false;
     st.creating = false;
     st.exited = false;

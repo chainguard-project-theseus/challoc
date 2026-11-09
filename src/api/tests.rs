@@ -395,6 +395,29 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// The guarded statics whose accessor is crate-visible, as (the lock,
+/// its accessor `file:fn`, the functions that keep the accessor's
+/// result as `l` and hand it on, `file:fn`): the fork handlers, which
+/// hold the state lock from `fork_prepare` to the release. They take it
+/// by its raw token (`Lock::lock_held_perm`), write it through
+/// `Lock::value_held_mut` and release it with `Lock::unlock_held_perm`,
+/// never through a guard, so none of them is a holder in
+/// [`UNLOCKED_LOCKS`]; [`guards_end_in_unlock`] checks that none
+/// acquires a guard through `l` or hands it to a function off this
+/// list.
+const LOCK_PASSERS: &[(&str, &str, &[&str])] = &[(
+    "purge/background.rs:static.STATE",
+    "purge/background.rs:state",
+    &[
+        "purge/background.rs:fork_lock",
+        "purge/background.rs:fork_unlock",
+        "purge/background.rs:fork_child",
+        "api/mod.rs:fork_release",
+        "api/mod.rs:fork_parent",
+        "api/mod.rs:fork_child",
+    ],
+)];
+
 /// Every guard of a lock in [`UNLOCKED_LOCKS`], outside the tests and
 /// `#[cfg(test)]` items, ends in an explicit `unlock()`. An acquisition
 /// (`x.field.lock(`, `.try_lock(` or `.lock_t(`, a method chain read as
@@ -403,7 +426,7 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
 /// under it), and for `self.field` by the type of the enclosing `impl`.
 /// A static may also be acquired through its accessor (`state().lock(`):
 /// a private function of the static's file whose body ends in
-/// `&NAME`. Each acquisition is bound by a `let` that ends with it (a
+/// `&NAME`, or a crate-visible one that [`LOCK_PASSERS`] names. Each acquisition is bound by a `let` that ends with it (a
 /// guard chained into a call drops at the end of the statement), and
 /// the guard's scope runs to the end of the block the `let` stands in.
 /// In that scope every `return` follows the guard's `unlock();`, one
@@ -416,10 +439,22 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
 /// The functions so checked are exactly the holders the list names. Nor
 /// does the owner hand out a reference to such a lock: no `self.field`
 /// of one is borrowed, nor a static of one outside its accessor, whose
-/// result is used at once (`.lock(`, `.value_held_mut(`, ..). Not seen: an
-/// acquisition through a reference taken elsewhere, a path-qualified
-/// or raw borrow (`&self::NAME`, `&raw const NAME`), a path-qualified
-/// accessor call (`self::state().lock(`), a static used directly
+/// result is used at once (`.lock(`, `.value_held_mut(`, ..) in its
+/// file. The one other use is `let l = <the call>;` in a function
+/// [`LOCK_PASSERS`] lists, the only use a crate-visible accessor may
+/// have in another file, where its calls are found by the end of their
+/// path (`background::state()`) and no one-line `use` imports it. In
+/// each function the list names (all of which exist), `l` is only bound
+/// so, a parameter (`l: &Lock<..>`), the receiver of a method other
+/// than an acquisition, read as a value (`*l`, never `(*l)`, `&*l` or
+/// `&mut *l`; only a specification can, `Lock` being no `Copy`), or the
+/// first argument of a call of a function of that name.
+/// Not seen: an acquisition through a reference taken elsewhere, a
+/// path-qualified or raw borrow (`&self::NAME`, `&raw const NAME`), a
+/// path-qualified accessor call in its own file
+/// (`self::state().lock(`), a crate-visible accessor imported by a
+/// `use` that spans lines, a call of an unlisted function that shares a
+/// listed one's name, a static used directly
 /// (`NAME.raw()`; no raw-token path reaches the value), UFCS
 /// (`Lock::lock(&x, ..)`), and macros. A panic aborts outside the tests
 /// (`panic = "abort"`), so it never releases.
@@ -494,6 +529,8 @@ fn guards_end_in_unlock() {
     let code = |l: &str| l.split("//").next().unwrap().trim().to_string();
     let acquire = [".lock(", ".try_lock(", ".lock_t("];
     let mut checked: Vec<(String, String)> = Vec::new();
+    // The functions of [`LOCK_PASSERS`] found, as `file:fn`.
+    let mut passers: Vec<String> = Vec::new();
     for (rel, text) in &lock_sources() {
         if rel == "lock.rs" {
             continue;
@@ -609,11 +646,19 @@ fn guards_end_in_unlock() {
         }
         // Each accessor of a guarded static, as (its name, the lock, the
         // line of its `&NAME`): a private function whose body ends in
-        // `&NAME`, a static of this file in [`UNLOCKED_LOCKS`]. A public
-        // one is no accessor, and its `&NAME` fails as an escape below.
+        // `&NAME`, a static of this file in [`UNLOCKED_LOCKS`], or a
+        // crate-visible one [`LOCK_PASSERS`] names. Another public one is
+        // no accessor, and its `&NAME` fails as an escape below.
         let accessors: Vec<(String, String, usize)> = fns
             .iter()
-            .filter(|(_, _, from, _)| code(&lines[from - 1]).starts_with("fn "))
+            .filter(|(name, _, from, _)| {
+                let head = code(&lines[from - 1]);
+                head.starts_with("fn ")
+                    || (head.starts_with("pub(crate) fn ")
+                        && LOCK_PASSERS
+                            .iter()
+                            .any(|(_, a, _)| *a == std::format!("{rel}:{name}")))
+            })
             .filter_map(|(name, _, from, to)| {
                 let k = (*from..*to).rev().find(|&k| !code(&lines[k]).is_empty())?;
                 let t = code(&lines[k]);
@@ -624,6 +669,20 @@ fn guards_end_in_unlock() {
                 Some((name.clone(), key, k))
             })
             .collect();
+        for (lock, accessor, _) in LOCK_PASSERS {
+            if let Some(f) = accessor.strip_prefix(&std::format!("{rel}:")) {
+                assert!(
+                    accessors.iter().any(|(a, key, _)| a == f && key == lock),
+                    "{accessor} is not an accessor of {lock}"
+                );
+            }
+        }
+        // The function each line is in, if any.
+        let fn_at = |k: usize| {
+            fns.iter()
+                .find(|(_, _, from, to)| *from <= k && k < *to)
+                .map(|(name, ..)| name.as_str())
+        };
         // The locks a use of the path ending at byte `end` of line `k`
         // may be, and the first of them in [`UNLOCKED_LOCKS`], if any.
         // A path that is a call `f()` of an accessor is its static.
@@ -709,21 +768,131 @@ fn guards_end_in_unlock() {
             ".unlock_held_perm(",
             ".value_held_mut(",
         ];
-        for line in &lines {
+        // Each accessor call to look for here, as (the call, the lock,
+        // its `file:fn`, whether it is of this file): this file's own by
+        // name, and every crate-visible one of another file by the end
+        // of its path (`background::state()`, whatever comes before),
+        // which no `use` here imports.
+        let mut calls: Vec<(String, String, String, bool)> = accessors
+            .iter()
+            .map(|(f, key, _)| {
+                (
+                    std::format!("{f}()"),
+                    key.clone(),
+                    std::format!("{rel}:{f}"),
+                    true,
+                )
+            })
+            .collect();
+        for (lock, accessor, _) in LOCK_PASSERS {
+            let (file, f) = accessor.split_once(':').unwrap();
+            if file != rel {
+                let m = module(file);
+                let parent = m.rsplit('/').next().unwrap();
+                for line in &lines {
+                    let t = code(line);
+                    if t.starts_with("use ") || t.starts_with("pub use ") {
+                        assert!(
+                            !(t.contains(&std::format!("{parent}::"))
+                                && t.match_indices(f).any(|(i, _)| {
+                                    !t[..i].ends_with(ident) && !t[i + f.len()..].starts_with(ident)
+                                })),
+                            "{rel}: the accessor {accessor} is imported: `{t}`"
+                        );
+                    }
+                }
+                calls.push((
+                    std::format!("{parent}::{f}()"),
+                    lock.to_string(),
+                    accessor.to_string(),
+                    false,
+                ));
+            }
+        }
+        // Whether line `k` binds `let l = ` to a call of `accessor` in a
+        // function that [`LOCK_PASSERS`] lists for it.
+        let binds = |k: usize, accessor: &str| {
+            let f = accessor.rsplit(':').next().unwrap();
+            let t = code(&lines[k]);
+            let bound = t
+                .strip_prefix("let l = ")
+                .and_then(|r| r.strip_suffix(&std::format!("{f}();")))
+                .is_some_and(|p| {
+                    p.is_empty() || (p.ends_with("::") && p.chars().all(|c| ident(c) || c == ':'))
+                });
+            bound
+                && fn_at(k).is_some_and(|name| {
+                    LOCK_PASSERS.iter().any(|(_, a, fs)| {
+                        *a == accessor && fs.contains(&std::format!("{rel}:{name}").as_str())
+                    })
+                })
+        };
+        for (k, line) in lines.iter().enumerate() {
             let l = line.split("//").next().unwrap();
-            for (f, key, _) in &accessors {
-                let call = std::format!("{f}()");
+            for (call, key, accessor, own) in &calls {
                 for (i, _) in l.match_indices(call.as_str()) {
                     if (i > 0 && ident(l[..i].chars().next_back().unwrap()))
                         || l[..i].ends_with("fn ")
                     {
                         continue;
                     }
+                    // A call from another file acquires nothing: the
+                    // acquisitions are matched to their lock only in the
+                    // accessor's file.
                     assert!(
-                        uses.iter().any(|u| l[i + call.len()..].starts_with(u)),
-                        "{rel}: the accessor {f} of {key} is used other than at once: `{}`",
+                        (*own && uses.iter().any(|u| l[i + call.len()..].starts_with(u)))
+                            || binds(k, accessor),
+                        "{rel}: the accessor {call} of {key} is used other than at once: `{}`",
                         l.trim()
                     );
+                }
+            }
+        }
+        // In each function [`LOCK_PASSERS`] lists, the state lock's `l`
+        // is bound by `let l = ` to its accessor, a parameter, the
+        // receiver of a method other than an acquisition, read as a
+        // value (`*l`, which only a specification can do), or the first
+        // argument of a call of a function the list names.
+        for (lock, accessor, fs) in LOCK_PASSERS {
+            let names: Vec<&str> = fs.iter().map(|f| f.rsplit(':').next().unwrap()).collect();
+            for (name, _, from, to) in &fns {
+                let at = std::format!("{rel}:{name}");
+                if !fs.contains(&at.as_str()) {
+                    continue;
+                }
+                passers.push(at.clone());
+                for (k, line) in lines.iter().enumerate().take(*to).skip(*from) {
+                    let t = code(line);
+                    for (i, _) in t.match_indices('l') {
+                        let (before, after) = (&t[..i], &t[i + 1..]);
+                        if before.chars().next_back().is_some_and(ident)
+                            || after.starts_with(ident)
+                            || before.matches('"').count() % 2 == 1
+                        {
+                            continue;
+                        }
+                        let callee = before
+                            .strip_suffix('(')
+                            .map(|b| b.rsplit(|c: char| !ident(c)).next().unwrap());
+                        let ok = (before.ends_with("let ")
+                            && after.starts_with(" = ")
+                            && binds(k, accessor))
+                            || (after.starts_with(": &Lock<")
+                                && (before.trim_end().is_empty()
+                                    || before.trim_end().ends_with(['(', ','])))
+                            || (after.starts_with('.')
+                                && !acquire.iter().any(|a| after.starts_with(a)))
+                            || (before.ends_with('*')
+                                && !before[..i - 1].trim_end().ends_with(['&', '('])
+                                && !before[..i - 1].trim_end().ends_with("&mut")
+                                && !after.starts_with(')'))
+                            || (callee.is_some_and(|c| names.contains(&c))
+                                && after.starts_with([',', ')']));
+                        assert!(
+                            ok,
+                            "{at}: {lock}'s `l` is used other than as the list allows: `{t}`"
+                        );
+                    }
                 }
             }
         }
@@ -888,6 +1057,14 @@ fn guards_end_in_unlock() {
         found.sort_unstable();
         want.sort_unstable();
         assert_eq!(found, want, "{key}: the holders found differ from the list");
+    }
+    for (lock, _, fs) in LOCK_PASSERS {
+        for f in *fs {
+            assert!(
+                passers.iter().any(|p| p == f),
+                "{lock}: {f} is not a function in src/"
+            );
+        }
     }
 }
 

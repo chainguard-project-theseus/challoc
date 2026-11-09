@@ -116,11 +116,11 @@ use crate::arena::Arena;
 use crate::config;
 use crate::heap::Shared;
 use crate::layout::{self, NCLASSES, Regions};
-use crate::lock::{LockHeld, LockOrder};
+use crate::lock::{Lock, LockHeld, LockOrder};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{RawLock, rank_arena_stats, rank_class, rank_sets, rank_state, rank_table};
 use crate::purge;
-use crate::purge::background::StateHold;
+use crate::purge::background::{State, StateHold};
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 #[cfg(verus_keep_ghost)]
@@ -2536,11 +2536,16 @@ fn saved_sigmask(
 /// it unlocks; with every lock of the hold unlocked it has none left, and
 /// becomes the token at top 0 this returns ([`LockOrder::unroot`]): the
 /// thread holds no allocator lock afterwards.
-fn fork_release(Tracked(state): Tracked<StateHold>) -> (o: Tracked<LockOrder<'static>>)
+///
+/// `l` is the state lock, the one `purge::background::state` returns,
+/// which the release unlocks first.
+fn fork_release(l: &Lock<State>, Tracked(state): Tracked<StateHold>) -> (o: Tracked<LockOrder<'static>>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         state.wf(),
+        *l == purge::background::state_static(),
+        l.rank() == rank_state(),
     ensures
         o@.top() == 0,
         !o@.root(),
@@ -2559,7 +2564,7 @@ fn fork_release(Tracked(state): Tracked<StateHold>) -> (o: Tracked<LockOrder<'st
     // Written by the `fork_prepare` that paired with this release, and
     // still ours because every lock is held until the unlocks below.
     let mask = saved_sigmask(slot, Ghost(*s), Tracked(&held), Tracked(&state));
-    purge::background::fork_unlock(Tracked(state), Tracked(&mut root));
+    purge::background::fork_unlock(l, Tracked(state), Tracked(&mut root));
     proof {
         assert(root.ranks().subset_of(held.held_ranks()));
     }
@@ -2759,8 +2764,9 @@ extern "C" fn fork_parent() {
     if !fork_was_locked() {
         return;
     }
+    let l = purge::background::state();
     let tracked state = axiom_fork_resumed_state();
-    fork_release(Tracked(state));
+    fork_release(l, Tracked(state));
 }
 
 /// The child has one thread; the locks were held by the forking thread, so
@@ -2777,8 +2783,9 @@ extern "C" fn fork_child() {
     if !fork_was_locked() {
         return;
     }
+    let l = purge::background::state();
     let tracked mut state = axiom_fork_resumed_state();
-    purge::background::fork_child(Tracked(&mut state));
+    purge::background::fork_child(l, Tracked(&mut state));
     let s = shared();
     proof {
         // The child's fork handler is where `in_fork_child` holds: only the
@@ -2793,7 +2800,7 @@ extern "C" fn fork_child() {
         published = axiom_published();
     }
     feature_line_fork_child(Tracked(published));
-    let Tracked(mut ord) = fork_release(Tracked(state));
+    let Tracked(mut ord) = fork_release(l, Tracked(state));
     // The dirty bytes this child inherited, the lazy start's baseline: read
     // after the release (the sum takes the class and huge locks), while
     // the child is still single-threaded, so nothing has moved them. Only

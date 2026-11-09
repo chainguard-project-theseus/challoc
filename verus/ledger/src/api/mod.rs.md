@@ -295,7 +295,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ## `axiom_line_orphaned`
 
-src/api/mod.rs:2878. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:2885. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, the line word's permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
@@ -316,7 +316,7 @@ axiom fn axiom_line_orphaned(before: BytePerm, tracked perm: &BytePerm, tracked 
 
 ## `axiom_fork_resumed`
 
-src/api/mod.rs:2950. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2957. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address; passed any other word, it would mint a second permission to it, which is why it is private to this module.

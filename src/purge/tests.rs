@@ -259,12 +259,19 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 /// `background::axiom_state_lock` names every `Lock<State>` of rank
 /// `rank_state` as `state_static()` (whose raw lock is `state_lock()`),
-/// which is sound only while `STATE` is the one such lock: the axiom is
-/// called once (in `STATE`'s initialiser), `STATE` is the only
-/// `Lock<State>` (besides its specification name), and the only lock
-/// created with that rank. The axiom is trusted, not proved, and
-/// this source count is its only guard: if a count changes, re-audit the
-/// axiom's soundness before updating the expected numbers.
+/// which is sound only while `STATE` is the one `Lock<State>` the
+/// program builds. Only `background.rs` (with the modules inside it)
+/// can build a `State`, its fields being private (the compiler checks
+/// that), and no other file gets one from it: `State` has no `Clone`,
+/// `Copy` or `Default`, and no function returns one (`-> State`,
+/// `-> (r: State)`). `background.rs` builds one `State` (one struct
+/// literal, no `ptr::read` copy) and one lock (one `Lock::new`, no
+/// `Lock::<..>` path), `STATE`, at that rank. The axiom is private,
+/// called once, in `STATE`'s initialiser. It is trusted, not proved,
+/// and these source counts are its only guard: if a count changes,
+/// re-audit the axiom's soundness before updating the expected numbers.
+/// Not seen: a `State` inside a returned tuple or `Option`, and a
+/// trait impl written by a macro.
 #[test]
 fn state_lock_axiom_names_the_one_state_lock() {
     let src = include_str!("background.rs");
@@ -272,9 +279,121 @@ fn state_lock_axiom_names_the_one_state_lock() {
     let count = |s: &str| code().filter(|l| l.contains(s)).count();
     assert_eq!(count("axiom_state_lock("), 2, "the axiom and its one call");
     assert_eq!(
-        count("Lock<State>"),
-        4,
-        "STATE, the axiom, state_static and state()"
+        code()
+            .filter(|l| l.starts_with("axiom fn axiom_state_lock("))
+            .count(),
+        1,
+        "the axiom is private, at the module's top level"
     );
+    assert_eq!(count("Lock::new("), 1, "STATE's initialiser");
+    assert_eq!(count("Lock::<"), 0, "no other path to the constructor");
+    assert_eq!(
+        count("State {"),
+        3,
+        "the struct, STATE's initial value and the LockSpec impl"
+    );
+    assert_eq!(count("State{"), 0, "a literal has a space before its brace");
+    assert_eq!(count("ptr::read"), 0, "no bitwise copy of a value");
     assert_eq!(count("Ghost(rank_state())"), 1);
+    // `State` derives nothing: its attributes and doc stand right above it.
+    let lines: std::vec::Vec<&str> = src.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == "pub(crate) struct State {")
+        .expect("State's declaration");
+    for l in lines[..at].iter().rev().map(|l| l.trim()) {
+        if !(l.starts_with("#[") || l.starts_with("//")) {
+            break;
+        }
+        assert!(!l.contains("derive"), "State derives a trait: {l}");
+    }
+    // No impl in src/ gives this `State` `Clone`, `Copy` or `Default`,
+    // and no function returns one: in `background.rs` and in each file
+    // that imports it (`use ..background::{.., State, ..}`) by its name,
+    // elsewhere by its path (`background::State`). Other modules have
+    // types of their own named `State`.
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let word = |l: &str, p: &str| {
+        l.match_indices(p)
+            .any(|(i, _)| !l[..i].ends_with(ident) && !l[i + p.len()..].starts_with(ident))
+    };
+    // Whether the path `t` is `ty`, or ends in it when `ty` is a path.
+    let is =
+        |t: &str, ty: &str| t == ty || (ty.contains("::") && t.ends_with(&std::format!("::{ty}")));
+    // Whether `l` names `Tr for ty`, the head of an impl.
+    let impl_of = |l: &str, tr: &str, ty: &str| {
+        let p = std::format!("{tr} for ");
+        l.match_indices(p.as_str()).any(|(i, _)| {
+            let t = &l[i + p.len()..];
+            is(t.split(|c: char| !ident(c) && c != ':').next().unwrap(), ty)
+        })
+    };
+    // Whether `l` returns `ty` (`-> ty` or `-> (r: ty)`).
+    let returns = |l: &str, ty: &str| {
+        l.match_indices("-> ").any(|(i, _)| {
+            let r = &l[i + 3..];
+            let r = match r.strip_prefix('(') {
+                Some(r) => r.split_once(": ").map_or("", |(_, t)| t),
+                None => r,
+            };
+            is(r.split(|c: char| !ident(c) && c != ':').next().unwrap(), ty)
+        })
+    };
+    let mut files = std::vec::Vec::new();
+    crate::testutil::walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    let name = std::format!("{}{}", "Sta", "te");
+    let path = std::format!("background::{name}");
+    let mut scanned = 0;
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap();
+        let code: std::vec::Vec<&str> = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        // Each `use` statement, joined up to its `;`.
+        let mut uses: std::vec::Vec<std::string::String> = std::vec::Vec::new();
+        let mut open = false;
+        for l in &code {
+            let t = l.trim();
+            if !open && (t.starts_with("use ") || t.contains(" use ")) {
+                uses.push(std::string::String::new());
+                open = true;
+            }
+            if open {
+                uses.last_mut().unwrap().push_str(t);
+                open = !t.contains(';');
+            }
+        }
+        let imports = f.ends_with("purge/background.rs")
+            || uses
+                .iter()
+                .any(|u| u.contains("background::") && word(u, &name));
+        let mut tys = std::vec![path.as_str()];
+        if imports {
+            tys.push(name.as_str());
+            scanned += 1;
+        }
+        for l in &code {
+            for ty in &tys {
+                for tr in ["Clone", "Copy", "Default"] {
+                    assert!(
+                        !impl_of(l, tr, ty),
+                        "{}: `{tr} for {ty}`: {}",
+                        f.display(),
+                        l.trim()
+                    );
+                }
+                assert!(
+                    !returns(l, ty),
+                    "{}: returns a `{ty}`: {}",
+                    f.display(),
+                    l.trim()
+                );
+            }
+        }
+    }
+    assert!(scanned >= 2, "background.rs and the files importing State");
 }
