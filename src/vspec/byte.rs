@@ -2,8 +2,11 @@
 //! the deferred cgroup record (`sys::cgroup::Deferred`, `PENDING` to
 //! `RUNNING` to `DONE`), whose invariant hands the cell's permission to
 //! the exchange's winner and freezes it at the `DONE` store
-//! (`sys::cgroup::PhasePred`), and for `double_free_scan`'s slot-state
-//! bytes (`heap::slotstate::step`).
+//! (`sys::cgroup::PhasePred`), for `double_free_scan`'s slot-state
+//! bytes (`heap::slotstate::step`), and for the feature line's state
+//! (`api/mod.rs`, `STATE.line`, `LINE_UNBUILT` to `LINE_BUILDING` to
+//! `LINE_READY`), whose invariant does the same for the line's statics
+//! (`api::LinePred`).
 //!
 //! A [`BytePerm`] names the byte's identity and value, each operation is
 //! an `#[verifier::atomic]` function (so it can run inside an
@@ -25,7 +28,8 @@
 //!   `PAtomicU8::id`: a function of the atomic's value, so fixed when
 //!   `AtomicU8::new` makes the atomic and kept when the atomic is moved
 //!   into place (`Deferred::now` and `Deferred::later`'s struct literals,
-//!   then `Shared::put_cgroup`'s `ptr::write`), not its address;
+//!   then `Shared::put_cgroup`'s `ptr::write`; `STATE`'s initialiser's
+//!   struct literal), not its address;
 //! - atomics made by different calls have different identities: assumed,
 //!   as no code makes two atomics Verus can prove equal (it knows nothing
 //!   of `AtomicU8::new`'s result); a `const` item holding [`new`]'s or
@@ -43,7 +47,12 @@
 //!   (`sys::cgroup::PhasePred`), as do `Deferred::get`'s and a waiting
 //!   `Deferred::discover`'s loads (`Deferred::load_phase`); every access
 //!   to a slot-state byte is one of these wrappers in
-//!   `heap::slotstate::step`.
+//!   `heap::slotstate::step`; and every access to `STATE.line` is one of
+//!   these wrappers (`api::load_line`, `claim_line`, `publish_line`,
+//!   `feature_line_fork_child`), inside the line's invariant
+//!   (`api::LinePred`), which `init` builds with the permission `STATE`'s
+//!   initialiser got from [`new`] (`STATE`'s invariant holds it until
+//!   then).
 
 use crate::sync::atomic::{AtomicU8, Ordering};
 use vstd::prelude::*;

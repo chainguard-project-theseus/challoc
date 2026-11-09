@@ -161,10 +161,11 @@ a compiler barrier.
 
 ### P4. Publishing `Shared`
 
-- `api::init_slow`: `compare_exchange(UNINIT, INITIALISING, Acquire,
-  Acquire)` (`state_claim`), `init()`, then `STATE.word.store(READY,
-  Release)` (`state_publish`). Readers load `Acquire` (`load_state`,
-  `state_load`), and waiters spin on an `Acquire` load. The `READY`
+- `api::init_slow`: `STATE.word`'s `compare_exchange(UNINIT,
+  INITIALISING, Acquire, Acquire)` (`claim_init`, through
+  `vspec::count::compare_exchange`), `init()`, then its `store(READY,
+  Release)` (`publish_ready`, `vspec::count::store`). Readers load
+  `Acquire` (`load_state`, `vspec::count::load`), and waiters spin on an `Acquire` load. The `READY`
   store publishes `SHARED`, `FEATURES` and `FEATURE_LINE` (`UnsafeCell`
   statics in `api/mod.rs`), the class table's page geometry
   (`layout::adopt_page_geometry`), and the init-time `Relaxed`
@@ -173,7 +174,9 @@ a compiler barrier.
   `shared_deref`, `shared_ptr`): the thread's own TLS heap pointer is
   the witness, since heaps are created under `shared()`. This crosses
   no thread, because the TLS slot is per thread (`sys/tls.rs`).
-- `STATE`'s invariant (`api::axiom_state`) states this premise for the
+- `STATE`'s invariant (`api::StatePred`, which `STATE`'s verified
+  initialiser builds with the process-start token, `api::axiom_start`)
+  states this premise for the
   proofs: a thread that loads `READY` gets the permissions `init` froze
   (`api::Published`), so the published value is the one `Shared::init`
   built (`api::shared_ref`). The proofs carry the fact as `api::ready()`
@@ -433,11 +436,10 @@ the wrappers, `src/sync.rs`, the files the harnesses copy steps from,
 `Cargo.toml`, `tests/genmc/` or `tests/loom/src/vspec.rs`. GenMC found no bug in challoc.
 
 The seam ledger cites the `pass` cases next to loom, as evidence only
-(`GenMC: <case> [<models>]`, [SEAMS.md](SEAMS.md), "Status"), in 25
+(`GenMC: <case> [<models>]`, [SEAMS.md](SEAMS.md), "Status"), in 22
 statuses (`grep -rh 'Status: .*GenMC:' verus/ledger/src`): the 19
 `vspec` atomic wrappers whose bodies a case runs;
-`table::store_owner`, `api::state_load`, `api::state_claim` and
-`api::state_publish`, whose atomic line a harness copies; and
+`table::store_owner`, whose atomic line a harness copies; and
 `api::init_slow` and `background::main`, whose steps `init.rs` and the
 P3 harnesses copy; each copy pinned in `GENMC_PINS`. The P3 citations
 also rest on the futex stand-in's assumptions, which their statuses
@@ -554,7 +556,7 @@ ordering says, and the allocator likewise computes a slot's address from
 the claimed bits. That holds only while the compiler keeps the
 dependency. A model checker sees that mutant (`tests/loom/src/bitmap.rs`
 has it as a control). `Shared`'s publication (P4) has no hardware stress
-test: a fork-based one, with `api::state_publish`'s `READY` store
+test: a fork-based one, with `api::publish_ready`'s `READY` store
 (`src/api/mod.rs`) weakened to `Relaxed`, caught nothing in 5,905 rounds
 on aarch64.
 
@@ -681,8 +683,8 @@ shows the check can fail.
   (`exited ==> !present` in `purge::background::State`'s lock invariant,
   which `lemma_state_inv_unpublishes_exited` reads from it).
 - The once-cells, `oncecell.rs`. The feature line (copies of
-  `line_ready`, `feature_line_fork_child` and the `STATE.line` wrappers
-  `line_load`, `line_compare_exchange` and `line_store`): the line is
+  `line_ready`, `feature_line_fork_child` and their `vspec/byte.rs`
+  calls on `STATE.line`, `load`, `compare_exchange` and `store`): the line is
   built once, and every reader that sees `LINE_READY` reads it
   race-free. The deferred cgroup record (`vspec/byte.rs`'s wrappers as
   they are, driven by copies of `Deferred::get`, `discover` and
@@ -720,14 +722,13 @@ citation makes a seam at most partly checked; the status names what the models
 leave unchecked. Where the ledger also cites Kani, the Kani harness
 checks the wrapper's own body on one thread. Where it also cites GenMC
 (`GenMC: <case> [<models>]`, "GenMC" above), the cases run the wrapper's
-own body, or for `store_owner`, `state_load`, `state_claim` and
-`state_publish` a pinned copy of its atomic line, and for `init_slow`
+own body, or for `store_owner` a pinned copy of its atomic line, and for `init_slow`
 and `background::main` a pinned copy of their steps, over `core`'s
 atomics with the
 permissions erased: evidence for the callers' hand-offs under the models
 named, which moves no status (the "status" column marks a copy).
 
-41 seams cite loom, and every one is partly checked
+37 seams cite loom, and every one is partly checked
 (`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
 (`lock.rs.md`, tool loom/GenMC) stays trusted: its contract is
 termination, and the lock models show deadlock freedom only. Drepper's
@@ -736,12 +737,6 @@ another thread's exchange as often as other threads retake the lock.
 
 | ledger file (`verus/ledger/src/`) | seam | status |
 |---|---|---|
-| `api/mod.rs.md` | `state_load` | partly checked (loom, GenMC copy) |
-| `api/mod.rs.md` | `state_claim` | partly checked (loom, GenMC copy) |
-| `api/mod.rs.md` | `state_publish` | partly checked (loom, GenMC copy) |
-| `api/mod.rs.md` | `line_load` | partly checked (loom) |
-| `api/mod.rs.md` | `line_compare_exchange` | partly checked (loom) |
-| `api/mod.rs.md` | `line_store` | partly checked (loom) |
 | `api/mod.rs.md` | `init_slow` | partly checked (loom, GenMC copy) |
 | `class/table.rs.md` | `store_owner` | partly checked (loom, GenMC copy) |
 | `lock.rs.md` | `RawLock::lock_slow` | trusted |
@@ -782,12 +777,15 @@ another thread's exchange as often as other threads retake the lock.
 The arguments, by group (the overrides comments give each in full):
 
 - `init_slow` (P4 models): it terminates given `init` returns, a fair
-  scheduler and visible stores. `state_claim`: the exchange reads the
-  last value in `STATE`'s modification order, for every ordering, so the
-  permission carries it; at most one success follows from `STATE`'s
-  invariant, given `axiom_state` denotes one invariant (assumed).
-  `state_load`, `state_publish` and the `line_*` wrappers give the
-  release/acquire pairs the init and once-cell models check.
+  scheduler and visible stores. `claim_init`'s exchange on `STATE.word`
+  (`vspec::count::compare_exchange`) reads the last value in its
+  modification order, for every ordering, so the permission carries it;
+  at most one success follows from `STATE`'s invariant, which `STATE`'s
+  verified initialiser builds once (`axiom_start`, assumed, is the token
+  it takes). The loads and stores on `STATE.word` and `STATE.line`
+  (`vspec/count.rs`, `vspec/byte.rs`) give the release/acquire pairs the
+  init and once-cell models check on copies of the steps
+  (`count.rs.overrides`, `byte.rs.overrides`).
 - `background::main` (exit models): it returns after a final
   `request(false)`, given each pass returns and the exit takes the state
   lock.

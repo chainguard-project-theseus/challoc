@@ -9,15 +9,7 @@ file.
 |---|---|---|---|---|
 | `axiom_ready` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_published` | axiom | allocator invariant | none (assumption) | trusted |
-| `LinePerm` | external_body type | atomics primitive | loom/GenMC | trusted |
-| `StatePerm` | external_body type | atomics primitive | loom/GenMC | trusted |
-| `axiom_state` | axiom | allocator invariant | none (assumption) | trusted |
-| `state_load` | external_body | atomics primitive | loom/GenMC | trusted |
-| `state_claim` | external_body | atomics primitive | loom/GenMC | trusted |
-| `state_publish` | external_body | atomics primitive | loom/GenMC | trusted |
-| `line_load` | external_body | atomics primitive | loom/GenMC | trusted |
-| `line_co...change` | external_body | atomics primitive | loom/GenMC | trusted |
-| `line_store` | external_body | atomics primitive | loom/GenMC | trusted |
+| `axiom_start` | axiom | allocator invariant | none (assumption) | trusted |
 | `shared_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | trusted |
 | `shared_base` | external_body | inline asm | Islaris/Isla | trusted |
 | `line_ready` | no_decreases | termination | loom/GenMC | trusted |
@@ -26,7 +18,6 @@ file.
 | `shared_...ge_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `features_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
 | `line_ptr` | external_body | UnsafeCell/volatile/transmute | Kani | discharged |
-| `axiom_statics` | axiom | allocator invariant | none (assumption) | trusted |
 | `pthread_...andlers` | external_body | function pointer | Kani | discharged |
 | `init_gate_enter` | no_decreases | termination | loom/GenMC | trusted |
 | `fork_gate_enter` | no_decreases | termination | loom/GenMC | trusted |
@@ -37,7 +28,7 @@ file.
 
 ## `axiom_ready`
 
-src/api/mod.rs:304. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:344. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: a thread that holds the frozen permissions ([`Published`], which `init` builds when it freezes them and `STATE`'s invariant holds from `READY` on, [`load_state`]) may state [`ready`].
@@ -55,7 +46,7 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 
 ## `axiom_published`
 
-src/api/mod.rs:329. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:369. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: the frozen permissions, for a thread that knows the allocator is published ([`ready`]): a `&'static` reference to the `Published` `init` froze, the only one there is.
@@ -71,170 +62,31 @@ pub axiom fn axiom_published() -> (tracked r: &'static Published)
 ;
 ```
 
-## `LinePerm`
+## `axiom_start`
 
-src/api/mod.rs:378. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, const assert: `LinePerm` in src/vspec/notcopy.rs; not checked: that its value is `STATE.line`'s last write, the C11 argument its wrappers' statuses rest on (`line_load`, `line_compare_exchange` and `line_store`); and that `axiom_statics` is the only seam that makes one).
-
-> Ghost permission to `STATE.line`: its current [`value`](LinePerm::value).
-
-Hashes: contract 1065980795, body 1324333092.
-
-```rust
-pub tracked struct LinePerm
-```
-
-## `StatePerm`
-
-src/api/mod.rs:469. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, const assert: `StatePerm` in src/vspec/notcopy.rs; not checked: that its value is `STATE.word`'s last write, the C11 argument its wrappers' statuses rest on (`state_load`, `state_claim` and `state_publish`); and that the one `axiom_state`'s invariant holds is the only one any seam makes).
-
-> Ghost permission to `STATE.word`: its current [`value`](StatePerm::value).
-
-Hashes: contract 3870767310, body 1324333092.
-
-```rust
-pub tracked struct StatePerm
-```
-
-## `axiom_state`
-
-src/api/mod.rs:538. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:482. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> `STATE`'s invariant.
+> The process-start token, taken once, by [`STATE`]'s initialiser.
 
-Hashes: contract 764506434, body none.
+Hashes: contract 635498175, body none.
 
 ```rust
-axiom fn axiom_state() -> (tracked r: &'static AtomicInvariant<(), StateVal, StatePred>)
+axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
     ensures
-        r.namespace() == state_ns(),
+        crate::vspec::count::count_id(word) == state_word_id(),
+        crate::vspec::byte::byte_id(line) == line_word_id(),
+        once::all_steps(s.steps),
+        s.auth.id() == ready_mark(),
+        !s.auth@,
+        s.half.id() == ready_mark(),
+        s.statics.fresh(),
 ;
-```
-
-## `state_load`
-
-src/api/mod.rs:621. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready, and GenMC: flags1 [rc11 imm], flags2 [rc11 imm arm8], init3 [rc11+live imm+live arm8+live] and init3_readback [rc11+live imm+live]; not checked: this body, which the models replace with loom's `load` inside a copy of the init steps, with the callers tests/loom/src/init.rs states, and the GenMC cases with `core`'s `load` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the dispatch byte's steps, which publishes `put_flags`' writes only, and inside a copy of the init steps with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); the callers neither copy has, and what `init` writes besides the one value the copies publish, which no case runs; the C11 argument above that the permission's value is `STATE.word`'s last write, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only).
-
-> `STATE.word.load(Acquire)`: the permission's value.
-
-Hashes: contract 3749283829, body 4146854669.
-
-```rust
-fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
-    ensures
-        r == perm.value(),
-    opens_invariants none
-    no_unwind
-```
-
-## `state_claim`
-
-src/api/mod.rs:637. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init2 [rc11+live imm+live] and init3 [rc11+live imm+live arm8+live]; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the init steps, with the callers tests/loom/src/init.rs states, and the GenMC cases with `core`'s `compare_exchange` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the init steps, with the callers tests/genmc/init.rs states, each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); that it never fails spuriously, which loom's compare-and-swap cannot show, GenMC's strong exchange assumes, and rests on `core`'s documentation of the strong form; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only).
-
-> `STATE.word`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)` when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value it has otherwise, left unchanged.
-
-Hashes: contract 85710167, body 3985027897.
-
-```rust
-fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
-    ensures
-        old(perm).value() == UNINIT ==> r == Ok::<u32, u32>(UNINIT) && final(perm).value() == INITIALISING,
-        old(perm).value() != UNINIT ==> r == Err::<u32, u32>(old(perm).value()) && final(perm).value() == old(perm).value(),
-    opens_invariants none
-    no_unwind
-```
-
-## `state_publish`
-
-src/api/mod.rs:652. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready, and GenMC: flags1 [rc11 imm], flags2 [rc11 imm arm8], init3 [rc11+live imm+live arm8+live] and init3_readback [rc11+live imm+live]; not checked: this body, which the models replace with loom's `store` inside a copy of the init steps, with the callers tests/loom/src/init.rs states (the readback after the store is a load the model adds), and the GenMC cases with `core`'s `store` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the dispatch byte's steps, which publishes `put_flags`' writes only, and inside a copy of the init steps with the callers tests/genmc/init.rs states (its readback is a load the harness adds too), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); what `init` writes besides the one value the copies publish, which no case runs; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only).
-
-> `STATE.word`'s `READY` store, `Release`.
-
-Hashes: contract 2256376580, body 1682955642.
-
-```rust
-fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
-    ensures
-        final(perm).value() == READY,
-    opens_invariants none
-    no_unwind
-```
-
-## `line_load`
-
-src/api/mod.rs:710. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `load` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above that the permission's value is `STATE.line`'s last write, which tests/loom/tests/access.rs backs by matching source text only).
-
-> `STATE.line.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
-
-Hashes: contract 2771109588, body 3354413835.
-
-```rust
-fn line_load(ordering: Ordering, Tracked(perm): Tracked<&LinePerm>) -> (r: u8)
-    requires
-        !(ordering is Release),
-        !(ordering is AcqRel),
-    ensures
-        r == perm.value(),
-    opens_invariants none
-    no_unwind
-```
-
-## `line_compare_exchange`
-
-src/api/mod.rs:731. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
-
-> `STATE.line.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when it held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
-
-Hashes: contract 1382960686, body 2052045836.
-
-```rust
-fn line_compare_exchange(
-    current: u8,
-    new: u8,
-    success: Ordering,
-    failure: Ordering,
-    Tracked(perm): Tracked<&mut LinePerm>,
-) -> (r: Result<u8, u8>)
-    requires
-        !(failure is Release),
-        !(failure is AcqRel),
-    ensures
-        r matches Ok(prev) ==> prev == current && old(perm).value() == current && final(perm).value() == new,
-        r matches Err(prev) ==> prev == old(perm).value() && prev != current && final(perm).value() == prev,
-    opens_invariants none
-    no_unwind
-```
-
-## `line_store`
-
-src/api/mod.rs:756. Kind: external_body. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `store` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
-
-> `STATE.line.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
-
-Hashes: contract 3106292439, body 2019719528.
-
-```rust
-fn line_store(v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut LinePerm>)
-    requires
-        !(ordering is Acquire),
-        !(ordering is AcqRel),
-    ensures
-        final(perm).value() == v,
-    opens_invariants none
-    no_unwind
 ```
 
 ## `shared_ptr`
 
-src/api/mod.rs:948. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:959. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: trusted (partly checked, Kani: api::kani_statics::shared_ptrs_agree; not checked: that it carries the provenance of `shared_storage_ptr`'s pointer, which it derives another way (the harness compares addresses)).
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
@@ -250,7 +102,7 @@ pub fn shared_ptr() -> (r: *const Shared)
 
 ## `shared_base`
 
-src/api/mod.rs:990. Kind: external_body. Category: inline asm.
+src/api/mod.rs:1001. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: shared_base in src/api/mod.rs; not checked: that `shared_ptr` returns that pointer (itself trusted, its address checked by a Kani harness), and the pointer's provenance; the check shows only that the asm! block emits no instruction).
 
 > [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
@@ -266,7 +118,7 @@ pub fn shared_base() -> (r: *const Shared)
 
 ## `line_ready`
 
-src/api/mod.rs:1116. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1127. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > [`feature_line_ready`] after its `shared()`, whose published permissions (`published`) have the line's invariant: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
@@ -284,7 +136,7 @@ fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'
 
 ## `wait_line`
 
-src/api/mod.rs:1155. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1166. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Wait for the thread building the line: its permissions, frozen at `LINE_READY`; or `None` when the caller is a fork child's handler in the fork window (`lock::in_child_fork_window`), where that thread is not in the child and the wait would never end: the line is then reset as the child handler would ([`feature_line_fork_child`]), for the caller to build.
@@ -302,12 +154,12 @@ fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Trac
 
 ## `init_slow`
 
-src/api/mod.rs:1398. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1419. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which no case runs; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
 
-Hashes: contract 1867649379, body 4001748639.
+Hashes: contract 1867649379, body 574998675.
 
 ```rust
 fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
@@ -322,7 +174,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
 
 ## `shared_storage_ptr`
 
-src/api/mod.rs:1456. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1477. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -338,7 +190,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ## `features_ptr`
 
-src/api/mod.rs:1472. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1493. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURES`].
@@ -354,7 +206,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ## `line_ptr`
 
-src/api/mod.rs:1484. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1505. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURE_LINE`].
@@ -368,39 +220,9 @@ fn line_ptr() -> (p: *mut FeatureLine)
     opens_invariants none
 ```
 
-## `axiom_statics`
-
-src/api/mod.rs:1520. Kind: axiom. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
-
-> The permissions to the storage of the statics `init` writes itself, for `once`, the process's token of this step: [`FEATURES`] and [`FEATURE_LINE`], uninitialised, the class table ([`layout::CLASSES`]), initialised, whose entries are well formed and sized ([`layout::table_ok`]: its initial value is [`layout::BASE_CLASSES`], `ClassTable::new`), and `STATE.line`'s permission, at `LINE_UNBUILT`.
-
-Hashes: contract 1652217840, body none.
-
-```rust
-axiom fn axiom_statics(tracked once: once::Once) -> (tracked r: (
-    PointsTo<Features>,
-    PointsTo<FeatureLine>,
-    PointsTo<[layout::Class; NCLASSES]>,
-    LinePerm,
-))
-    requires
-        once.step() == once::Step::Statics,
-    ensures
-        r.0.ptr() == features_storage(),
-        r.0.is_uninit(),
-        r.1.ptr() == line_storage(),
-        r.1.is_uninit(),
-        r.2.ptr() == layout::classes_storage(),
-        r.2.is_init(),
-        layout::table_ok(r.2.value()),
-        r.3.value() == LINE_UNBUILT,
-;
-```
-
 ## `pthread_atfork_handlers`
 
-src/api/mod.rs:1580. Kind: external_body. Category: function pointer.
+src/api/mod.rs:1554. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged on premises (Kani: api::kani_atfork::atfork_registers_the_handlers; premises: C8 (glibc's pthread_atfork records the three handlers and returns 0 without calling into challoc)).
 
 > The `pthread_atfork` call itself, which may wait on glibc's atfork lock (a futex).
@@ -415,7 +237,7 @@ fn pthread_atfork_handlers() -> i32
 
 ## `init_gate_enter`
 
-src/api/mod.rs:1617. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1591. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > Before init's claim: open an init under way as this thread's (`GATE_IDLE` to its `sys::pthread_self`), or go on to the claim when challoc is initialised (`GATE_DONE`), when this thread already holds the gate (a re-entrant call: the claim finds `INITIALISING` and aborts), or when a `fork` holds it and this is the forking thread; wait while another thread's init or another thread's `fork` holds it.
@@ -428,7 +250,7 @@ fn init_gate_enter()
 
 ## `fork_gate_enter`
 
-src/api/mod.rs:1653. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1627. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The prepare handler, before it looks at `STATE`: with challoc initialised (`GATE_DONE`) nothing; with an init under way on another thread, wait until it publishes, so the child gets the finished state; with this thread's own init under way (a `fork` from a signal handler that interrupted it), nothing (design 9, residuals); with none (`GATE_IDLE`), close the gate (`GATE_FORKING`) so that none starts until the parent and child handlers (`fork_gate_exit`).
@@ -441,7 +263,7 @@ fn fork_gate_enter()
 
 ## `axiom_fork_resumed_state`
 
-src/api/mod.rs:2139. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2114. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between (the handlers call this only when `FORK_LOCKED` says this fork's prepare took the locks: glibc serialises one fork's handlers under its atfork lock and runs them on the forking thread, so a `true` read there is this fork's; a stale `true` would mint a hold that does not exist): signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) release none: an allocation of theirs takes the held locks as acquired and its releases do nothing (`lock::fork_holder_is_me`, whose premise is that the forking thread has no allocator critical section open in the window).
@@ -457,7 +279,7 @@ axiom fn axiom_fork_resumed_state() -> (tracked state: StateHold)
 
 ## `axiom_fork_resumed_sig`
 
-src/api/mod.rs:2167. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2142. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -473,15 +295,15 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ## `axiom_line_orphaned`
 
-src/api/mod.rs:2902. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:2878. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, `STATE.line`'s permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
+> Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, the line word's permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
 
-Hashes: contract 272733662, body none.
+Hashes: contract 2225863648, body none.
 
 ```rust
-axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked cell: &Option<LineCell>) -> (tracked c: LineCell)
+axiom fn axiom_line_orphaned(before: BytePerm, tracked perm: &BytePerm, tracked cell: &Option<LineCell>) -> (tracked c: LineCell)
     requires
         crate::sys::cgroup::in_fork_child(),
         cell is None,
@@ -494,7 +316,7 @@ axiom fn axiom_line_orphaned(before: LinePerm, tracked perm: &LinePerm, tracked 
 
 ## `axiom_fork_resumed`
 
-src/api/mod.rs:2974. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2950. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address; passed any other word, it would mint a second permission to it, which is why it is private to this module.

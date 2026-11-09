@@ -1,13 +1,9 @@
 axiom_published	allocator invariant	none (assumption)
-# Ghost permissions to the two init-once atomics; their wrappers are the only accesses.
-# The const asserts check that neither type is Copy or Clone, so verified
-# code cannot duplicate the one permission there is.
-LinePerm	atomics primitive	loom/GenMC	trusted (partly checked, const assert: `LinePerm` in src/vspec/notcopy.rs; not checked: that its value is `STATE.line`'s last write, the C11 argument its wrappers' statuses rest on (`line_load`, `line_compare_exchange` and `line_store`); and that `axiom_statics` is the only seam that makes one)	contract 1065980795, body 1324333092
-StatePerm	atomics primitive	loom/GenMC	trusted (partly checked, const assert: `StatePerm` in src/vspec/notcopy.rs; not checked: that its value is `STATE.word`'s last write, the C11 argument its wrappers' statuses rest on (`state_load`, `state_claim` and `state_publish`); and that the one `axiom_state`'s invariant holds is the only one any seam makes)	contract 3870767310, body 1324333092
-# The init-once protocol: what STATE's and the statics' invariants hold.
+# The init-once protocol: the process-start token STATE's initialiser takes,
+# and the published fact. The two words' permissions are vspec/count.rs's and
+# vspec/byte.rs's, whose wrappers are the only accesses (tests/loom/tests/access.rs).
 axiom_ready	allocator invariant	none (assumption)
-axiom_state	allocator invariant	none (assumption)
-axiom_statics	allocator invariant	none (assumption)
+axiom_start	allocator invariant	none (assumption)
 # Passes function pointers, which Verus does not support. Kani runs the
 # body with glibc's pthread_atfork replaced by a recording stand-in; what
 # glibc's function does is C8.
@@ -31,38 +27,6 @@ line_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics:
 # Empty-template register hint: verus/emptyasm/run.sh checks the block adds
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
 shared_base	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: shared_base in src/api/mod.rs; not checked: that `shared_ptr` returns that pointer (itself trusted, its address checked by a Kani harness), and the pointer's provenance; the check shows only that the asm! block emits no instruction)	contract 534596380, body 2091081502
-# loom and C11 (verus/WEAKMEM.md, P4): `STATE.word` has two writes,
-# `state_claim`'s exchange and `state_publish`'s `READY` store
-# (tests/loom/tests/access.rs), so its modification order is `UNINIT`,
-# `INITIALISING`, `READY`, each written once, and the permission's value
-# reads as the last of them. C++20's exchange is a read-modify-write,
-# which reads the last value for every ordering ([atomics.order] p10), in
-# the strong form, which fails only when the value differs; a load reads a
-# write no older than the last one that happens before it (coherence,
-# [intro.races]); the `Release` store of `READY` with an `Acquire` load or
-# exchange that reads it orders `init`'s plain writes before the reader (a
-# release/acquire pair, [atomics.order] p2). The init models check this on
-# a copy of `init_slow`, `shared` and `shared_if_ready` (`STATE`,
-# `INIT_TID` and `SHARED` are statics built in `const` context, which loom
-# cannot construct). The GenMC flags cases copy the two bodies' atomic
-# lines, `STATE`'s `Acquire` load and `READY` store, onto `core`'s atomic,
-# pinned to these bodies (tests/genmc/flags.rs, `GENMC_PINS`), as the
-# publication of `put_flags`' writes to the dispatch byte's readers. The
-# GenMC init cases (tests/genmc/init.rs) copy the init steps themselves,
-# `init_slow`, `shared` and `shared_if_ready`, onto `core`'s atomics,
-# pinned to these bodies in `GENMC_PINS` the same way.
-state_load	atomics primitive	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready, and GenMC: flags1 [rc11 imm], flags2 [rc11 imm arm8], init3 [rc11+live imm+live arm8+live] and init3_readback [rc11+live imm+live]; not checked: this body, which the models replace with loom's `load` inside a copy of the init steps, with the callers tests/loom/src/init.rs states, and the GenMC cases with `core`'s `load` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the dispatch byte's steps, which publishes `put_flags`' writes only, and inside a copy of the init steps with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); the callers neither copy has, and what `init` writes besides the one value the copies publish, which no case runs; the C11 argument above that the permission's value is `STATE.word`'s last write, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only)	contract 3749283829, body 4146854669
-state_claim	atomics primitive	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init2 [rc11+live imm+live] and init3 [rc11+live imm+live arm8+live]; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the init steps, with the callers tests/loom/src/init.rs states, and the GenMC cases with `core`'s `compare_exchange` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the init steps, with the callers tests/genmc/init.rs states, each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); that it never fails spuriously, which loom's compare-and-swap cannot show, GenMC's strong exchange assumes, and rests on `core`'s documentation of the strong form; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only)	contract 85710167, body 3985027897
-state_publish	atomics primitive	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers, init::loom_init_reentry_aborts and init::loom_init_publisher_reads_ready, and GenMC: flags1 [rc11 imm], flags2 [rc11 imm arm8], init3 [rc11+live imm+live arm8+live] and init3_readback [rc11+live imm+live]; not checked: this body, which the models replace with loom's `store` inside a copy of the init steps, with the callers tests/loom/src/init.rs states (the readback after the store is a load the model adds), and the GenMC cases with `core`'s `store` (a line tests/loom/tests/pins.rs pins to this body's) inside a copy of the dispatch byte's steps, which publishes `put_flags`' writes only, and inside a copy of the init steps with the callers tests/genmc/init.rs states (its readback is a load the harness adds too), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); what `init` writes besides the one value the copies publish, which no case runs; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only)	contract 2256376580, body 1682955642
-# The same for the feature line: `STATE.line` has two writes outside the
-# tests, `line_compare_exchange`'s and `line_store`'s, and no other file
-# names it (tests/loom/tests/access.rs); the `Release` store of
-# `LINE_READY` with an `Acquire` load or exchange publishes the line the
-# builder wrote. The oncecell models check that hand-off and the fork
-# child's reset on a copy of the line steps.
-line_load	atomics primitive	loom/GenMC	trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `load` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above that the permission's value is `STATE.line`'s last write, which tests/loom/tests/access.rs backs by matching source text only)	contract 2771109588, body 3354413835
-line_compare_exchange	atomics primitive	loom/GenMC	trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `compare_exchange` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; that it never fails spuriously, which loom's compare-and-swap cannot show and rests on `core`'s documentation of the strong form; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)	contract 1382960686, body 2052045836
-line_store	atomics primitive	loom/GenMC	trusted (partly checked, loom: oncecell::loom_oncecell_line_two_requests and oncecell::loom_oncecell_line_fork_child_rebuilds; not checked: this body, which the models replace with loom's `store` inside a copy of the line steps, with the requests tests/loom/src/oncecell.rs states; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only)	contract 3106292439, body 2019719528
 # Termination of `init_slow`'s wait, given that `init` returns, a fair
 # scheduler and that a store becomes visible in finite time (C++20
 # [intro.progress] says it should): a waiter read `INITIALISING`, which
@@ -71,4 +35,4 @@ line_store	atomics primitive	loom/GenMC	trusted (partly checked, loom: oncecell:
 # read its own tid (read-after-write coherence) and it would abort. The
 # init models check that no waiter is left spinning and that only the
 # initialising thread takes the re-entry abort, on a copy.
-init_slow	termination	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which no case runs; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract)	contract 1867649379, body 4001748639
+init_slow	termination	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which no case runs; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract)	contract 1867649379, body 574998675

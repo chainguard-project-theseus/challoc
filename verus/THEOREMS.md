@@ -136,9 +136,10 @@ add.
   (`api::Published`, see "One-shot tokens" below). That `init_slow`
   runs `init` once before the `READY` release store, and that nothing
   writes a field `wf` reads afterwards, is proved from narrower
-  premises: `axiom_state` (one invariant, its
-  initial state), the `STATE` wrappers (under sequential consistency),
-  and `heap::shared::axiom_shared_built`'s join, whose `shared_at`
+  premises: `axiom_start` (the process-start token `STATE`'s verified
+  initialiser takes to build the one invariant at its initial state),
+  `vspec/count.rs`'s wrappers on `STATE.word` (under sequential
+  consistency), and `heap::shared::axiom_shared_built`'s join, whose `shared_at`
   carries the "nothing unverified writes it" assumption. `shared` and
   `shared_if_ready` load `READY` and get the permission. The fact
   that it was published travels in
@@ -162,9 +163,10 @@ add.
   `heap::thread::fast_flags` and `heap::paths::shared_of`.
   The feature line (written not by `init` but at its first request)
   has its own once-cell invariant (`api::LinePred`,
-  ONCECELL): `init` makes it with `STATE.line`'s permission
-  (`api::LinePerm`, from `api::axiom_statics`, through the wrappers
-  `line_load`, `line_compare_exchange` and `line_store`) and the
+  ONCECELL): `init` makes it with `STATE.line`'s permission (a
+  `vspec::byte::BytePerm`, which `STATE`'s initialiser mints and
+  `claim_init` hands its winner, through `vspec/byte.rs`'s `load`,
+  `compare_exchange` and `store`) and the
   permissions to `FEATURES` and `FEATURE_LINE`, and publishes it with
   `STATE` (`api::Published::line`); a request reaches it through
   `axiom_published`, from the `ready()` in its `shared()`'s
@@ -226,9 +228,14 @@ add.
   the statics, at `Shared::storage()`, `features_storage()`,
   `line_storage()` and `classes_storage()`.
 - One-shot tokens (`vspec/once.rs`) and `STATE`'s invariant
-  (`api::axiom_state`, `api::StatePred`): the invariant holds `STATE`'s
-  permission (`api::StatePerm`, through the wrappers `state_load`,
-  `state_claim` and `state_publish`), every step's `Once` token while
+  (`api::StatePred`), which `STATE`'s initialiser (`exec static STATE`,
+  verified) builds at `UNINIT` from the two words' permissions it mints
+  (`vspec::count::new`, `vspec::byte::new`) and the process-start token
+  (`api::axiom_start`): the invariant holds `STATE.word`'s
+  permission (a `vspec::count::CountPerm`, through `vspec/count.rs`'s
+  `load`, `compare_exchange` and `store`), every step's `Once` token,
+  `STATE.line`'s permission and the statics' permissions
+  (`api::Statics`) while
   `STATE` is `UNINIT`, and from `READY` on the permissions `init` froze
   (`api::Published`: the built `Shared`, from `axiom_shared_built`'s
   join, the class table, whose value is `layout::class_table()`
@@ -240,24 +247,30 @@ add.
   at the `READY` store (`publish_ready`); a thread that loads `READY`
   gets the frozen half, `api::ReadyMark` (`marks_ready`). `api::claim_init`
   (verified) is `init_slow`'s compare-exchange from `UNINIT`, and takes
-  the tokens out of the invariant for its winner, which `init` passes
-  on: `Step::Statics` to `api::axiom_statics` (the class table and
-  feature statics' storage and `STATE.line`'s permission; `init` writes `FEATURES` through its
-  permission and puts it, with the line's and `STATE.line`'s, into the line's
-  invariant), the rest to `Shared::init`.
-  `Shared::begin`, `table::axiom_fresh_words` (one token per class) and
-  `axiom_statics` each use up their step's token, so Verus checks that
+  the tokens and the permissions out of the invariant for its winner,
+  which `init` uses: it writes the class table and `FEATURES` through
+  the statics' permissions and puts `FEATURES`', `FEATURE_LINE`'s and
+  `STATE.line`'s into the line's invariant, and passes the tokens to
+  `Shared::init`.
+  `Shared::begin` and `table::axiom_fresh_words` (one token per class)
+  each use up their step's token, so Verus checks that
   each runs at most once per process (a second call does not verify:
   `verus/audit/invariants.md`, "Per seam"). That the exchange
-  succeeds once is proved given `axiom_state` (one invariant; it holds
-  the tokens only in `UNINIT`, which nothing writes); what stays
-  assumed is that premise, `axiom_state`'s initial state, the
-  wrappers (trusted, partly checked by the loom models of
-  `tests/loom/src/init.rs`; `verus/ledger/src/api/mod.rs.md`) and that
-  `STATE` has no other writer (the source test
-  `access_init_once_words_written_twice` in `tests/loom/tests/access.rs`
-  checks that its only writes in shipped code are `state_claim`'s and
-  `state_publish`'s).
+  succeeds once is proved given `axiom_start` and the initialiser (one
+  invariant; it holds the tokens and the permissions only in `UNINIT`,
+  which nothing writes); what stays assumed is `axiom_start` (the
+  words' identities, the tokens, the ghost variable's halves, and the
+  statics' storage and initial values), that a `static`'s initialiser
+  runs once (so the token is taken once: the source test
+  `access_init_once_words_written_by_their_protocol` in
+  `tests/loom/tests/access.rs` checks that `axiom_start` has that one
+  call), and the wrappers (`vspec/count.rs` and `vspec/byte.rs`, trusted;
+  the loom models of `tests/loom/src/init.rs` and `oncecell.rs` check
+  copies of the steps that call them), with `STATE.word`'s and
+  `STATE.line`'s writes only theirs (the same test checks that the
+  only writes in shipped code are `claim_init`'s and `publish_ready`'s
+  on `STATE.word`, and `claim_line`'s, `publish_line`'s and
+  `feature_line_fork_child`'s on `STATE.line`).
 
 **The `free` contract.** `heap::live::axiom_c_claim`
 (`heap/live.rs`) is the one trusted step at the C ABI boundary: for
@@ -429,7 +442,8 @@ the call does not return (theorem 3, which is not voided for it).
   the table after init when that table is `table_ok`, and otherwise a
   spec table that is `table_ok` (`layout::spec_ok_table`).
   `adopt_page_geometry` (verified) writes the table through the
-  permission `api::axiom_statics` gives and keeps `table_ok`; `api::init`
+  permission `api::axiom_start` gives (`api::Statics`, which
+  `api::claim_init` hands `api::init`) and keeps `table_ok`; `api::init`
   freezes that permission right after, `layout::axiom_class_table`
   requires `table_ok` of it, and `api::Published` carries it from
   `READY` on.
@@ -6065,11 +6079,10 @@ bounds, and `Sink::write_str` (verified) keeps it.
   bodies): the futex wait and wake (`sys/mod.rs`; their
   results are discarded, so `EAGAIN` or `EINTR` loops) under
   `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, the static
-  projections, `shared_base` and `shared_deref`, the `STATE.word`
-  wrappers (`state_load`, `state_claim`, `state_publish`: one bare
-  atomic operation each), the `STATE.line` wrappers (`line_load`,
-  `line_compare_exchange`, `line_store`) and the deferred record's
-  phase wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
+  projections, `shared_base` and `shared_deref`, `STATE.word`'s
+  wrappers (`vspec::count::load`, `compare_exchange`, `store`: one bare
+  atomic operation each), and `STATE.line`'s and the deferred record's
+  phase's wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
   atomic operation each), `class_entry`,
   the watermark's load `vspec::atom::load_usize` (the registry is read
   through `Arenas::get_existing` and the verified `arena_ref`),

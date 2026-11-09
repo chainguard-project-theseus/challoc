@@ -7,7 +7,7 @@
 //! - [`Model::init`] is `init`'s `Shared::put_flags`: plain writes of
 //!   `push_flags` and of the byte `flags::new(push_flags)` made, into the
 //!   unpublished storage (here one loom `UnsafeCell`), then `init_slow`'s
-//!   `READY` store (`api::state_publish`, `Release` as shipped);
+//!   `READY` store (`api::publish_ready`, `Release` as shipped);
 //! - [`Model::build`] is `Arenas::build`'s `Shared::set_multi_arena`,
 //!   which runs with the published `Shared` (`api::shared`'s `Acquire`
 //!   load of `STATE` saw `READY` earlier in the thread):

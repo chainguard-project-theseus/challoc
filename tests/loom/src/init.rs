@@ -3,12 +3,12 @@
 //! construct). Each step names the code it mirrors:
 //!
 //! - [`Statics::init_slow`] is `api::init_slow`: `claim_init`'s
-//!   `compare_exchange(UNINIT, INITIALISING, Acquire, Acquire)`
-//!   (`state_claim`); the winner stores its tid in `INIT_TID` `Relaxed`,
-//!   runs `init` and stores `READY` `Release` (`publish_ready`,
-//!   `state_publish`); a loser that sees `READY` returns, one whose tid
+//!   `compare_exchange(UNINIT, INITIALISING, Acquire, Acquire)` on
+//!   `STATE.word` (a `vspec::count` call); the winner stores its tid in
+//!   `INIT_TID` `Relaxed`, runs `init` and stores `READY` `Release`
+//!   (`publish_ready`); a loser that sees `READY` returns, one whose tid
 //!   is `INIT_TID` aborts (re-entry), any other spins on an `Acquire`
-//!   load of `STATE` (`load_state`, `state_load`) with `spin_loop` until
+//!   load of `STATE.word` (`load_state`) with `spin_loop` until
 //!   `READY`;
 //! - [`Statics::shared`] is `api::shared`: an `Acquire` load of `STATE`,
 //!   `shared_ref` on `READY`, `init_slow` otherwise;
@@ -26,9 +26,9 @@
 //! `spin_loop` yields, and a thread that only yields while no other can
 //! run exceeds it); a re-entrant call from `init` aborts and never waits
 //! for itself; no other thread takes the re-entry abort. And, for the
-//! `STATE` wrappers' contracts (`state_load`, `state_publish`): every access
-//! to `STATE` reads one of its three values, and a thread's accesses
-//! never go back in `STATE`'s modification order (`UNINIT`, then
+//! `vspec::count` wrappers' contracts on `STATE.word` (`load`, `store`):
+//! every access to it reads one of its three values, and a thread's
+//! accesses never go back in its modification order (`UNINIT`, then
 //! `INITIALISING`, then `READY`, each written once) from the last value
 //! it read or wrote (coherence: [`Statics::state_load`] checks each
 //! load, `init_slow` each exchange); and, in
@@ -116,7 +116,8 @@ impl Statics {
         self.shared.with(|p| unsafe { *p })
     }
 
-    /// `api::state_load`: an `Acquire` load of `STATE`. `seen` is the
+    /// `api::load_state`'s `vspec::count::load`: an `Acquire` load of
+    /// `STATE.word`. `seen` is the
     /// thread's last value of `STATE`, read or written (model
     /// bookkeeping): the load reads one of the three values, never one
     /// before `seen` in the modification order, and becomes `seen`.
@@ -164,7 +165,7 @@ impl Statics {
                 self.state.store(READY, v.publish);
                 *seen = READY;
                 if v.readback {
-                    // `state_publish`'s `final(perm).value() == READY`: the
+                    // `vspec::count::store`'s `final(perm).value() == v`: the
                     // publisher's next load reads it (a load the model adds).
                     assert_eq!(self.state_load(seen), READY);
                 }
@@ -245,8 +246,8 @@ fn run(callers: u32, v: Variant) {
 /// One caller initialises while a free races with it: `shared_if_ready`
 /// returns `None` or the built value.
 ///
-/// Covers copies of `api::init_slow`, `api::state_claim`, `api::state_load`
-/// and `api::state_publish`.
+/// Covers copies of `api::init_slow`, `api::claim_init`, `api::load_state`
+/// and `api::publish_ready`.
 #[test]
 fn loom_init_free_races_init() {
     run(1, SHIPPED);
@@ -257,8 +258,8 @@ fn loom_init_free_races_init() {
 /// `INITIALISING`), and its `Relaxed` `INIT_TID` load never matches its
 /// own tid.
 ///
-/// Covers copies of `api::init_slow`, `api::state_claim`, `api::state_load`
-/// and `api::state_publish`.
+/// Covers copies of `api::init_slow`, `api::claim_init`, `api::load_state`
+/// and `api::publish_ready`.
 #[test]
 fn loom_init_two_callers() {
     run(2, SHIPPED);
@@ -268,8 +269,8 @@ fn loom_init_two_callers() {
 /// (which would spin for ever on its own `INITIALISING`), while another
 /// caller waits for the outer `init`.
 ///
-/// Covers copies of `api::init_slow`, `api::state_claim`, `api::state_load`
-/// and `api::state_publish`.
+/// Covers copies of `api::init_slow`, `api::claim_init`, `api::load_state`
+/// and `api::publish_ready`.
 #[test]
 fn loom_init_reentry_aborts() {
     run(
@@ -281,13 +282,13 @@ fn loom_init_reentry_aborts() {
     );
 }
 
-/// `state_publish`'s contract as the publisher sees it: two callers and a
+/// `publish_ready`'s store as the publisher sees it: two callers and a
 /// free as in [`loom_init_two_callers`], with the initialiser loading
 /// `STATE` right after its `READY` store: it reads `READY`. (Every model
 /// also checks each load and exchange of `STATE` against the thread's
 /// last value: [`Statics::state_load`].)
 ///
-/// Covers copies of `api::state_load` and `api::state_publish`.
+/// Covers copies of `api::load_state` and `api::publish_ready`.
 #[test]
 fn loom_init_publisher_reads_ready() {
     run(

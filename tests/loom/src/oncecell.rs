@@ -8,8 +8,9 @@
 //! it mirrors:
 //!
 //! - [`Line::line_load`], [`Line::line_compare_exchange`] and
-//!   [`Line::line_store`] are `api::line_load`, `api::line_compare_exchange`
-//!   and `api::line_store` (the bare `core` calls on `STATE.line`);
+//!   [`Line::line_store`] are the line's `vspec::byte` calls on
+//!   `STATE.line` (`load`, `compare_exchange` and `store`), here bare loom
+//!   calls on the copy's state byte;
 //! - [`Line::line_ready`] is `api::line_ready`: an `Acquire` load
 //!   (`load_line`), `LINE_READY` returns; else the exchange from
 //!   `LINE_UNBUILT` to `LINE_BUILDING`, `Acquire` both ways
@@ -105,12 +106,12 @@ impl Line {
         }
     }
 
-    /// `api::line_load`.
+    /// `vspec::byte::load` on `api::STATE.line`.
     fn line_load(&self, ordering: Ordering) -> u8 {
         self.state.load(ordering)
     }
 
-    /// `api::line_compare_exchange`.
+    /// `vspec::byte::compare_exchange` on `api::STATE.line`.
     fn line_compare_exchange(
         &self,
         current: u8,
@@ -121,7 +122,7 @@ impl Line {
         self.state.compare_exchange(current, new, success, failure)
     }
 
-    /// `api::line_store`.
+    /// `vspec::byte::store` on `api::STATE.line`.
     fn line_store(&self, v: u8, ordering: Ordering) {
         self.state.store(v, ordering)
     }
@@ -204,8 +205,8 @@ fn run_line(publish: Ordering) {
 /// Two requests race: one builds, the other returns the line it built
 /// (on `LINE_READY`, or after spinning on `LINE_BUILDING`).
 ///
-/// Covers copies of `api::line_load`, `api::line_compare_exchange` and
-/// `api::line_store`.
+/// Covers copies of `api::load_line`, `api::claim_line` and
+/// `api::publish_line`.
 #[test]
 fn loom_oncecell_line_two_requests() {
     run_line(Ordering::Release);
@@ -224,8 +225,8 @@ fn loom_oncecell_line_relaxed_publish_is_a_race() {
 /// the child's request build it, not wait for ever; a reset of a ready
 /// line leaves it ready and built once.
 ///
-/// Covers copies of `api::line_load`, `api::line_compare_exchange` and
-/// `api::line_store`.
+/// Covers copies of `api::load_line`, `api::claim_line`,
+/// `api::publish_line` and `api::feature_line_fork_child`.
 #[test]
 fn loom_oncecell_line_fork_child_rebuilds() {
     model(|| {

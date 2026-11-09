@@ -350,25 +350,20 @@ const PINS: &[(&str, &[&str])] = &[
             "match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {",
         ],
     ),
-    // The STATE.word wrappers, load_state, the STATE.line wrappers,
-    // load_line, claim_line, publish_line, shared, shared_if_ready (then
-    // shared_published and shared_marked, shared's body with the mark),
-    // line_ready,
-    // claim_init, publish_ready, init_slow and feature_line_fork_child
+    // load_state (its `vspec::count::load`), load_line, claim_line and
+    // publish_line (their `vspec::byte` calls on the line's word), shared,
+    // shared_if_ready (then shared_published and shared_marked, shared's
+    // body with the mark), line_ready,
+    // claim_init and publish_ready (their `vspec::count` calls on
+    // `STATE`'s word), init_slow and feature_line_fork_child
     // (tests/loom/src/init.rs, oncecell.rs).
     (
         "src/api/mod.rs",
         &[
-            "STATE.word.load(Ordering::Acquire)",
-            "STATE.word.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)",
-            "STATE.word.store(READY, Ordering::Release);",
-            "s = state_load(Tracked(&v.perm));",
-            "STATE.line.load(ordering)",
-            "STATE.line.compare_exchange(current, new, success, failure)",
-            "STATE.line.store(v, ordering)",
-            "s = line_load(Ordering::Acquire, Tracked(&v.perm));",
-            "won = line_compare_exchange(LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
-            "line_store(LINE_READY, Ordering::Release, Tracked(&mut v.perm));",
+            "s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));",
+            "s = crate::vspec::byte::load(w, Ordering::Acquire, Tracked(&v.perm));",
+            "won = crate::vspec::byte::compare_exchange(w, LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
+            "crate::vspec::byte::store(w, LINE_READY, Ordering::Release, Tracked(&mut v.perm));",
             "if load_state(Tracked(&mut seen)) == READY {",
             "init_slow().0",
             "if load_state(Tracked(&mut seen)) == READY {",
@@ -386,20 +381,20 @@ const PINS: &[(&str, &[&str])] = &[
             "if crate::lock::in_child_fork_window() {",
             "feature_line_fork_child(Tracked(published));",
             "core::hint::spin_loop();",
-            "won = state_claim(Tracked(&mut v.perm));",
-            "state_publish(Tracked(&mut v.perm));",
+            "won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
+            "crate::vspec::count::store(word, READY, Ordering::Release, Tracked(&mut v.perm));",
             "let (won, Tracked(parts)) = claim_init(Tracked(&mut seen));",
             "match won {",
             "Ok(_) => {",
             "INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);",
-            "init(Tracked(steps), Tracked(&mut seen));",
+            "init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen));",
             "let Tracked(m) = publish_ready(Tracked(seen.published.tracked_unwrap()), Tracked(half.tracked_unwrap()));",
             "Err(READY) => {}",
             "if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {",
             "sys::abort(\"allocation during initialisation (re-entrant init)\");",
             "while load_state(Tracked(&mut seen)) != READY {",
             "core::hint::spin_loop();",
-            "let _reset = line_compare_exchange(LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.perm));",
+            "let _reset = crate::vspec::byte::compare_exchange(w, LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.perm));",
         ],
     ),
     // `Deferred`: get, discover, published, fork_child, load_phase, claim,
@@ -641,7 +636,7 @@ fn copied_lines_in_place() {
 /// ordering the harness takes from a case constant (`PUBLISH`, `ENTRY`)
 /// is pinned in `GENMC_SHIPPED`.
 const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
-    // `READY`'s publication and load (`api::state_publish`, `state_load`).
+    // `READY`'s publication and load (`api::publish_ready`, `load_state`).
     (
         "flags.rs",
         "src/api/mod.rs",
@@ -649,19 +644,19 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("pub const UNINIT: u32 = 0;", "const UNINIT: u32 = 0;"),
             ("pub const READY: u32 = 2;", "const READY: u32 = 2;"),
             (
-                "fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)",
+                "fn load_state(Tracked(seen): Tracked<&mut Seen>) -> (s: u32)",
                 "",
             ),
             (
-                "STATE.word.load(Ordering::Acquire)",
+                "s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));",
                 "self.state.load(Ordering::Acquire) == READY",
             ),
             (
-                "fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)",
+                "fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half): Tracked<GhostVar<bool>>) -> (r: Tracked<&'static ReadyMark>)",
                 "",
             ),
             (
-                "STATE.word.store(READY, Ordering::Release);",
+                "crate::vspec::count::store(word, READY, Ordering::Release, Tracked(&mut v.perm));",
                 "self.state.store(READY, PUBLISH);",
             ),
         ],
@@ -1117,8 +1112,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
         ],
     ),
-    // `api::state_load`, `state_claim`, `state_publish`, `shared`,
-    // `shared_if_ready` and `init_slow`.
+    // `api::load_state`, `shared`, `shared_if_ready`, `claim_init`,
+    // `publish_ready` and `init_slow`.
     (
         "init.rs",
         "src/api/mod.rs",
@@ -1130,28 +1125,12 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
             ("pub const READY: u32 = 2;", "const READY: u32 = 2;"),
             (
-                "fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)",
+                "fn load_state(Tracked(seen): Tracked<&mut Seen>) -> (s: u32)",
                 "",
             ),
             (
-                "STATE.word.load(Ordering::Acquire)",
+                "s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));",
                 "let s = self.state.load(Ordering::Acquire);",
-            ),
-            (
-                "fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)",
-                "",
-            ),
-            (
-                "STATE.word.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)",
-                "self.state\n.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);",
-            ),
-            (
-                "fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)",
-                "",
-            ),
-            (
-                "STATE.word.store(READY, Ordering::Release);",
-                "self.state.store(READY, PUBLISH);",
             ),
             ("pub fn shared() -> (r: &'static Shared)", ""),
             (
@@ -1168,6 +1147,22 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "if self.state_load(&mut seen) == READY {",
             ),
             (
+                "fn claim_init(Tracked(seen): Tracked<&mut Seen>) -> (r: (Result<u32, u32>, Tracked<ClaimTokens>))",
+                "",
+            ),
+            (
+                "won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
+                "self.state\n.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);",
+            ),
+            (
+                "fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half): Tracked<GhostVar<bool>>) -> (r: Tracked<&'static ReadyMark>)",
+                "",
+            ),
+            (
+                "crate::vspec::count::store(word, READY, Ordering::Release, Tracked(&mut v.perm));",
+                "self.state.store(READY, PUBLISH);",
+            ),
+            (
                 "fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))",
                 "",
             ),
@@ -1182,7 +1177,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "self.init_tid.store(tid, Ordering::Relaxed);",
             ),
             (
-                "init(Tracked(steps), Tracked(&mut seen));",
+                "init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen));",
                 "self.init(tid, seen);",
             ),
             (

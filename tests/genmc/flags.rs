@@ -7,10 +7,11 @@
 //
 // The seam ledger cites this template's pass cases (verus/SEAMS.md,
 // "Status") for `flags::new`, `flags::load` and `flags::fetch_or`, whose
-// bodies run, and for `api::state_load` and `api::state_publish`
-// (`src/api/mod.rs`), whose `STATE` load and `READY` store the harness
-// copies onto `core`'s atomic. It is evidence only: the permissions are
-// erased (`Tracked::assume_new()`), so no case checks a seam's contract.
+// bodies run. The harness also copies `api::load_state`'s `STATE.word`
+// load and `api::publish_ready`'s `READY` store (`src/api/mod.rs`) onto
+// `core`'s atomic, pinned in `GENMC_PINS`. It is evidence only: the
+// permissions are erased (`Tracked::assume_new()`), so no case checks a
+// seam's contract.
 
 use crate::vspec::flags::{ROUTE, RouteByte, fetch_or, load, new};
 use core::cell::UnsafeCell;
@@ -36,7 +37,7 @@ unsafe impl Sync for Model {}
 
 impl Model {
     /// `put_flags` (plain writes into unpublished storage), then the
-    /// `READY` store (`api::state_publish`).
+    /// `READY` store (`api::publish_ready`).
     fn init(&self, push: u8) {
         // SAFETY: the storage is not published yet.
         unsafe {
