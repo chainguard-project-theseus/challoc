@@ -360,7 +360,17 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 /// would duplicate them; none can exist, since a `LineInv` needs a
 /// permission to the line's word ([`line_word_id`]), whose only one `STATE`'s initialiser mints (`vspec::byte::new`) and [`claim_init`] hands out once, and `init` puts
 /// it in the invariant it publishes, so every reference this returns is
-/// to that one invariant. That the fact reaches a thread only after it,
+/// to that one invariant. That the initialiser's is the only one also
+/// rests on the other place a `BytePerm` is minted,
+/// `heap::slotstate::axiom_slot_bytes`: its permissions have the
+/// identities `heap::slotstate::slot_byte_id` names, and that none of
+/// them is the identity of an atomic `vspec::byte::new` made, as the line
+/// word is, is a premise its contract does not state (Verus can prove
+/// neither that one is [`line_word_id`] nor that none is). The axiom is
+/// taken once, by `SLOTS`' initialiser, which keeps the permissions in an
+/// invariant private to `heap::slotstate`
+/// (`heap::slotstate::tests::slot_bytes_axiom_is_taken_only_by_slots`
+/// pins that, counting occurrences). That the fact reaches a thread only after it,
 /// or a thread it happens after, saw `READY` is what [`ready`]'s producers
 /// ensure (see there), carried along in contracts. It hands back the
 /// statics' permissions only, not the [`ReadyMark`], so a proof that
@@ -2116,8 +2126,12 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) 
 /// window's holders of the state lock write nothing under it: `start`
 /// and `start_requested` refuse there, and `request` and `auto_tick`
 /// store only atomics; each of them ends in a `LockGuard::unlock`,
-/// which checks the invariant). Each handler calls them once, which
-/// nothing enforces: that permission is exclusive (vstd's
+/// which checks the invariant). Each handler calls them once, which the
+/// contract does not enforce: `api::tests::fork_hold_is_resumed_once`
+/// pins one call in each handler, counting every call spelled in full
+/// (`axiom_fork_resumed_state(`; not a `use` alias) in every file
+/// under `src/` (`api`'s child modules can call this private premise
+/// through `super::`). That permission is exclusive (vstd's
 /// `PointsTo::is_exclusive`), so a second call would give two
 /// permissions of one cell, a contradiction that is derivable where
 /// `Lock::has_perm` unfolds, in `lock.rs` (it is closed here and in
@@ -2152,7 +2166,10 @@ pub(crate) open spec fn fork_sig_holds(sig: SigMask, held: ForkHeld, orig: u64) 
 /// registered before ours (whose prepare runs after ours and whose parent
 /// and child handlers run before ours) leave the mask as they found it.
 /// The slot's content is [`resume::axiom_fork_resumed`]'s. Each handler calls
-/// this once, which nothing enforces.
+/// this once, through its one call in `fork_release`, which the contract
+/// does not enforce: `api::tests::fork_hold_is_resumed_once` pins that
+/// call, counting every call spelled in full (not a `use` alias) in
+/// every file under `src/`.
 axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
     ensures
         sig.mask() == all_blocked(),

@@ -2651,8 +2651,9 @@ build a token; the handoff axioms below are the other source.
   lock cell's permission it restates is exclusive), and the test
   `fork_hold_is_resumed_once` (`api/tests.rs`) checks that its
   wrapper `resume::resumed` has one call site; for
-  `axiom_fork_resumed_state` the same test counts the call sites (one
-  per handler), and nothing enforces the run-time count.
+  `axiom_fork_resumed_state` the same test counts the calls in every
+  file under `src/` (one per handler), and nothing enforces the
+  run-time count.
 - *The fork window* (`lock::fork_holder_is_me`, premise).
   From `fork_prepare`'s `fork_window_open` to `fork_release`'s
   `fork_window_close`, the forking thread's contended acquires are
@@ -7574,8 +7575,8 @@ handoff premises).
   and `abort` (which unblocks `SIGABRT` and never returns), and no other
   code runs on the thread inside the handler. One call per handler
   entry; nothing enforces it at run time (`fork_hold_is_resumed_once`,
-  `api/mod.rs`, checks there is one call site of each of the thread-mask
-  and handoff axioms). `SigMask`'s field is private to a module of its own
+  `api/tests.rs`, checks there is one call site of each of the thread-mask
+  and handoff axioms, counting every call in every file under `src/`). `SigMask`'s field is private to a module of its own
   (`sys::sigmask`), so no code builds a token.
 - *The kernel's `rt_sigprocmask`* (`sigprocmask_block`, `sys/mod.rs`, and
   `sigprocmask_setmask`, in `sys::linux`, private;
