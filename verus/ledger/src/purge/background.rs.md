@@ -8,7 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `single_...d_addr` | external_body | inline asm | Islaris/Isla | discharged |
-| `pthread_join` | external_body | FFI/syscall | none (assumption) | trusted |
+| `pthread_join` | external_body | FFI/syscall | Kani | trusted |
 | `spawn` | external_body | FFI/syscall | none (assumption) | trusted |
 | `shared_arg` | external_body | raw pointer from C caller | none (assumption) | trusted |
 | `main` | no_decreases | termination | loom/GenMC | trusted |
@@ -29,8 +29,8 @@ fn single_threaded_addr() -> *const u8
 
 ## `pthread_join`
 
-src/purge/background.rs:668. Kind: external_body. Category: FFI/syscall.
-Tool: none (assumption). Status: trusted.
+src/purge/background.rs:673. Kind: external_body. Category: FFI/syscall.
+Tool: Kani. Status: trusted (partly checked, Kani: purge::background::kani_join::join_passes_the_thread; not checked: what glibc's pthread_setcancelstate and pthread_join do (premises C9 and C15 of verus/kani/premises.md), that the frees glibc's join makes into challoc on the calling thread keep the slot cell (`TlsCell::kept`; the slot premise), that no nested entry glibc's join makes starts or joins a thread, which its return rests on (read off the code: `purge::on_tick` starts the thread on a `free`'s tick only while `background::single_threaded()` reads glibc's `__libc_single_threaded` set, which `pthread_create` cleared before the thread `create` joins was made, and the outer `start` holds `g.creating` across `create`, which `start` refuses on), and the `# Safety` clause that `t` is a joinable thread this module created and never joined).
 
 > `pthread_join(t, NULL)`: 0 or an error number.
 
@@ -47,12 +47,12 @@ unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell
 
 ## `spawn`
 
-src/purge/background.rs:850. Kind: external_body. Category: FFI/syscall.
+src/purge/background.rs:855. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > `pthread_create` on the committed `[base, base + len)`, joinable so a restart can wait for its exit.
 
-Body mints Tracked at line 873; mints Tracked at line 881.
+Body mints Tracked at line 878; mints Tracked at line 886.
 
 Hashes: contract 2847973412, body 1049282638.
 
@@ -72,7 +72,7 @@ fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut T
 
 ## `shared_arg`
 
-src/purge/background.rs:943. Kind: external_body. Category: raw pointer from C caller.
+src/purge/background.rs:948. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
@@ -87,7 +87,7 @@ fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
 
 ## `main`
 
-src/purge/background.rs:959. Kind: no_decreases. Category: termination.
+src/purge/background.rs:964. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: exit::loom_exit_after_withdrawal and exit::loom_exit_after_withdrawal_with_waker, and GenMC: background [rc11+live imm+live arm8+live], exit [rc11+live imm+live arm8+live], exit_waker [rc11+live imm+live arm8+live] and publish [rc11+live imm+live arm8+live]; not checked: this body, which the models and the GenMC cases replace with a copy of the loop (its lines pinned by tests/loom/tests/pins.rs) whose pass is its worst case for this property (no deadline); that each pass and the exit's state lock return; a `request(true)` after the withdrawal, which rightly keeps the thread running; the kernel's futex, which the models replace with a stand-in, loom's a mutex and condition variable, GenMC's tests/genmc/prelude.rs's `futex_wait`, which assumes no lost wake-up given the value check, wakes the waiter at the word's change rather than at a wake, so it rests on `kick` being `SEQ`'s only writer (review, not a test), adds no ordering, and returns spuriously only at the thread's first waits; a lost wake-up whose wait the compiler emptied of loads, which GenMC's liveness check (`+live`) cannot see, and which the stand-in's `black_box` guards against only for its own word (verus/WEAKMEM.md, "GenMC"); the thread's creation, which the GenMC cases replace with a `Release` store its creator makes and an `Acquire` wait in the thread; each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build)).
 
 > The thread's body: decay and sample until the request is withdrawn.
@@ -100,7 +100,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:1060. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:1065. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_static`] is [`STATE`].

@@ -621,18 +621,19 @@ mod glibc {
 
     unsafe extern "C" {
         /// glibc's `pthread_join(3)`, with the `libc` crate's signature
-        /// and the same symbol. Declared in this crate rather than taken
-        /// from the `libc` crate so that a Kani harness can stub it: Kani
-        /// 0.68 stubs a foreign function only where this crate declares
-        /// it, and silently ignores a stub on `libc::pthread_join`. In a
-        /// module of its own because the trusted wrapper that calls it,
+        /// and the same symbol (premise C15 of `verus/kani/premises.md`).
+        /// Declared in this crate rather than taken from the `libc` crate
+        /// so that `kani_join` can stub it: Kani 0.68 stubs a foreign
+        /// function only where this crate declares it, and silently
+        /// ignores a stub on `libc::pthread_join`. In a module of its own
+        /// because the trusted wrapper that calls it,
         /// `super::pthread_join`, has its name.
         pub(super) fn pthread_join(
             native: libc::pthread_t,
             value: *mut *mut c_void,
         ) -> core::ffi::c_int;
         /// glibc's `pthread_setcancelstate(3)`, which the `libc` crate
-        /// does not bind.
+        /// does not bind (premise C9).
         pub(super) fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
     }
 }
@@ -651,7 +652,8 @@ verus! {
 /// program's next cancellation point instead of unwinding out of
 /// [`start`] with its `creating` flag set (design 8.1, 14.1).
 /// `cell` is the calling thread's slot cell: the join frees the exited
-/// thread's key data, which may re-enter the allocator on this thread, so
+/// thread's TLS (its dynamic thread vector, which glibc allocated with
+/// `calloc`), which re-enters the allocator on this thread, so
 /// the slot must be empty or hold a sentinel ([`crate::heap::reentry_benign`]),
 /// as for `pthread_setspecific`. At a sentinel a nested entry leaves the
 /// cell alone; at an empty slot a nested free's slow path (`heap::free`,
@@ -659,7 +661,10 @@ verus! {
 /// That path (`create_heap_for_thread`) parks the slot on `TLS_CREATING`
 /// only while it registers the heap and leaves it empty or holding the
 /// heap, never a sentinel, and so does a nested `create`, which puts back
-/// what it parks ([`TlsCell::kept`]).
+/// what it parks ([`TlsCell::kept`]). `kani_join` checks the calls on
+/// premises C9 and C15 of `verus/kani/premises.md`; the `ensures` rests on
+/// those nested frees (the slot premise), and the call on the `# Safety`
+/// clause.
 ///
 /// # Safety
 /// `t` is a joinable thread this module created and never joined.
@@ -733,7 +738,7 @@ fn create(
     }
     // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
     // `pthread_create` allocates the new thread's DTV with `calloc`
-    // and `pthread_join` frees an exited thread's key data, neither of
+    // and `pthread_join` frees an exited thread's DTV, neither of
     // which may re-enter this thread's heap mid-operation.
     let ghost cell0 = *cell;
     let mut saved = crate::sys::tls::get(Tracked(&*cell));
@@ -1250,3 +1255,112 @@ proof fn lemma_state_inv_unpublishes_exited(v: State)
 }
 
 } // verus!
+
+/// Kani check of `pthread_join` (`verus/ledger/src/purge/background.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_join {
+    use super::pthread_join;
+    use core::ffi::{c_int, c_void};
+    use vstd::prelude::Tracked;
+
+    /// What the stand-in for `pthread_setcancelstate` returns at its
+    /// first and second call, and the old state it stores when that is
+    /// 0; what the stand-in for `pthread_join` returns.
+    static mut RC: [c_int; 2] = [0; 2];
+    static mut OLD: c_int = 0;
+    static mut JOIN_RC: c_int = 0;
+    /// How many calls either stand-in has seen: each records the count
+    /// as its call's place in the order.
+    static mut STEP: usize = 0;
+    /// `pthread_setcancelstate`'s calls, and the place and `state` of
+    /// its first two.
+    static mut CANCEL_CALLS: usize = 0;
+    static mut STATES: [(usize, c_int); 2] = [(0, 0); 2];
+    /// `pthread_join`'s calls, and the last one's place, thread and the
+    /// address of its `retval`.
+    static mut JOINS: usize = 0;
+    static mut JOINED: (usize, libc::pthread_t, usize) = (0, 0, 0);
+
+    /// A stand-in for glibc's `pthread_setcancelstate` (premise C9): it
+    /// records its call, its place and `state`, checks that `oldstate`
+    /// is writable, and returns its call's entry of `RC`, storing `OLD`
+    /// in `*oldstate` only when that is 0.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn setcancelstate_model(state: i32, oldstate: *mut i32) -> i32 {
+        assert!(kani::mem::can_write(oldstate));
+        // SAFETY: the harness's own statics, and `oldstate`, writable
+        // (checked above); no other code runs in a harness.
+        unsafe {
+            let i = CANCEL_CALLS;
+            CANCEL_CALLS += 1;
+            let rc = if i < 2 {
+                STATES[i] = (STEP, state);
+                RC[i]
+            } else {
+                0
+            };
+            STEP += 1;
+            if rc == 0 {
+                *oldstate = OLD;
+            }
+            rc
+        }
+    }
+
+    /// A stand-in for glibc's `pthread_join` (premise C15): it records
+    /// its call, its place, the thread and the address of `retval`,
+    /// without writing through it, and returns `JOIN_RC`.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn join_model(native: libc::pthread_t, value: *mut *mut c_void) -> c_int {
+        // SAFETY: the harness's own statics; no other code runs in a
+        // harness.
+        unsafe {
+            JOINS += 1;
+            JOINED = (STEP, native, value as usize);
+            STEP += 1;
+            JOIN_RC
+        }
+    }
+
+    /// `pthread_join`: its `requires` are about ghost state, and its
+    /// `ensures` (the slot cell kept) is about the nested frees C15
+    /// describes, which no stand-in runs, so the harness does not cover
+    /// it. For any thread, it disables cancellation, calls glibc's
+    /// `pthread_join` once with that thread and a null `retval`, then
+    /// gives back the state the first call stored (or 0 when it
+    /// failed), and returns the join's result unchanged, for any return
+    /// values and old state.
+    #[kani::proof]
+    #[kani::stub(super::glibc::pthread_setcancelstate, setcancelstate_model)]
+    #[kani::stub(super::glibc::pthread_join, join_model)]
+    fn join_passes_the_thread() {
+        let t: libc::pthread_t = kani::any();
+        let rc: [c_int; 2] = kani::any();
+        let old: c_int = kani::any();
+        let join_rc: c_int = kani::any();
+        kani::cover!(join_rc == 0);
+        kani::cover!(join_rc != 0);
+        kani::cover!(rc[0] == 0);
+        kani::cover!(rc[0] != 0);
+        // SAFETY: as in `setcancelstate_model`.
+        unsafe {
+            RC = rc;
+            OLD = old;
+            JOIN_RC = join_rc;
+        }
+        // SAFETY: the stand-in neither reads the thread nor writes through
+        // `retval`.
+        let r = unsafe { pthread_join(t, Tracked::assume_new()) };
+        // SAFETY: as in `setcancelstate_model`.
+        let (cancel_calls, states, joins, joined) =
+            unsafe { (CANCEL_CALLS, STATES, JOINS, JOINED) };
+        assert_eq!(r, join_rc);
+        assert_eq!(cancel_calls, 2);
+        assert_eq!(joins, 1);
+        // glibc's `PTHREAD_CANCEL_DISABLE` (C9), not this file's constant.
+        assert_eq!(states[0], (0, 1));
+        assert_eq!(joined, (1, t, 0));
+        assert_eq!(states[1], (2, if rc[0] == 0 { old } else { 0 }));
+    }
+}

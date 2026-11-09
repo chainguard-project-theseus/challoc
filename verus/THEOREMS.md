@@ -3262,7 +3262,9 @@ for `call_back`'s and `write_file`'s premise.
   locks the callees take.
 - `call_back`, `write_file` and `call_hook` (`external_body`): a call
   through the caller's function pointer when it gave one, one `fwrite`,
-  and a one-line call of the hook, claiming nothing. `emit` is verified,
+  and a one-line call of the hook, claiming nothing (`call_back` is
+  discharged on premise C3 of `verus/kani/premises.md`, `call_hook` on
+  C1 and C3, `write_file` on C9, C13 and C14). `emit` is verified,
   and the NUL a callback or hook reads is checked (`Sink::flush` stores
   it; `emit`, the two wrappers, `call_back` and `call_hook` require it).
 - `cancel_disable` and `cancel_restore` (`external_body`): one
@@ -9170,7 +9172,10 @@ unchanged). The theorem follows from the readers' `ensures`: at a
   challoc's key is 32 or above and the thread has no block for it
   (there glibc's `calloc` re-enters the allocator); trusted:
   `pthread_join` and `spawn` (`purge/background.rs`) keep a non-empty
-  cell (`TlsCell::kept`).
+  cell (`TlsCell::kept`). `pthread_join`'s calls are checked with Kani
+  on premises C9 and C15, partly: its `ensures` is about the frees
+  glibc's join makes into the allocator (the exited thread's TLS),
+  which no harness runs.
 - The slot accessors (`get`, `get_tp`, `set`): inline asm, partly
   checked by Isla (`verus/isla/seams.md`); that only these sequences
   touch the slot (no exported accessor; `shared_object_uses_initial_exec_tls`

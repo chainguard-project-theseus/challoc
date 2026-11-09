@@ -3,8 +3,13 @@ axiom_state_lock	allocator invariant	none (assumption)
 # The GOT load of glibc's weak `__libc_single_threaded` (verus/isla/seams.md,
 # "The GOT functions"); the byte it names is read through config::byte_at.
 single_threaded_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 3506077324, body 2942983301
-# libc's thread calls and the argument C passes the thread.
-pthread_join	FFI/syscall	none (assumption)
+# Kani runs pthread_join's body with glibc's pthread_setcancelstate and
+# pthread_join replaced by recording stand-ins (C9, C15). Its `ensures`
+# (the slot cell kept) is about the frees glibc's join makes into
+# challoc on this thread (the exited thread's TLS), which C15 states and
+# no stand-in runs: it rests on the slot premise, as spawn's does.
+pthread_join	FFI/syscall	Kani	trusted (partly checked, Kani: purge::background::kani_join::join_passes_the_thread; not checked: what glibc's pthread_setcancelstate and pthread_join do (premises C9 and C15 of verus/kani/premises.md), that the frees glibc's join makes into challoc on the calling thread keep the slot cell (`TlsCell::kept`; the slot premise), that no nested entry glibc's join makes starts or joins a thread, which its return rests on (read off the code: `purge::on_tick` starts the thread on a `free`'s tick only while `background::single_threaded()` reads glibc's `__libc_single_threaded` set, which `pthread_create` cleared before the thread `create` joins was made, and the outer `start` holds `g.creating` across `create`, which `start` refuses on), and the `# Safety` clause that `t` is a joinable thread this module created and never joined)	contract 2838171325, body 3874947256
+# libc's thread creation and the argument C passes the thread.
 spawn	FFI/syscall	none (assumption)
 shared_arg	raw pointer from C caller	none (assumption)
 # The thread's loop ends only when another thread withdraws the request.
