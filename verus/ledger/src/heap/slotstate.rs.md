@@ -8,12 +8,12 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `NO_ARRAYS` | external_body const | core library | Kani | discharged |
-| `axiom_slot_byte` | axiom | allocator invariant | none (assumption) | trusted |
+| `axiom_slot_bytes` | axiom | allocator invariant | none (assumption) | trusted |
 | `byte_at` | external_body | raw pointer (internal) | Kani | trusted |
 
 ## `NO_ARRAYS`
 
-src/heap/slotstate.rs:102. Kind: external_body const. Category: core library.
+src/heap/slotstate.rs:109. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (Kani: heap::slotstate::kani_arrays::no_arrays_are_zero).
 
 > [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
@@ -29,32 +29,33 @@ const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
 }; MAX_SHARED];
 ```
 
-## `axiom_slot_byte`
+## `axiom_slot_bytes`
 
-src/heap/slotstate.rs:247. Kind: axiom. Category: allocator invariant.
+src/heap/slotstate.rs:311. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
-> Premise (the slot-state bytes are trusted values): a permission to `b`, a slot's state byte that [`byte`] computed, which holds a state.
+> Premise (the slot-state bytes' first value): a permission to the slot-state byte at every address, each `FREE`.
 
-Hashes: contract 170951343, body none.
+Hashes: contract 3078565529, body none.
 
 ```rust
-axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
+axiom fn axiom_slot_bytes() -> (tracked m: Map<usize, BytePerm>)
     ensures
-        perm.id() == byte_id(b),
-        is_state(perm.value()),
+        forall|a: usize| #![trigger m.dom().contains(a)] #![trigger m[a]] m.dom().contains(a) && m[a].id() == slot_byte_id(a) && m[a].value() == FREE,
 ;
 ```
 
 ## `byte_at`
 
-src/heap/slotstate.rs:633. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: heap::slotstate::kani_byte_at::byte_at_is_the_byte; not checked: the `# Safety` contract, that `at` is a byte of a slot-state array that `commit` made writable and that the arrays live for the process, which is the protocol of `init`, `commit` and the watermark: the harness passes a byte of its own array).
+src/heap/slotstate.rs:718. Kind: external_body. Category: raw pointer (internal).
+Tool: Kani. Status: trusted (partly checked, Kani: heap::slotstate::kani_byte_at::byte_at_is_the_byte; not checked: the `# Safety` contract, that `at` is a byte of a slot-state array that `commit` made writable and that the arrays live for the process, which is the protocol of `init`, `commit` and the watermark: the harness passes a byte of its own array; and the ghost identity its `ensures` names, `slot_byte_id(at)`).
 
 > The `AtomicU8` at address `at`.
 
-Hashes: contract 344538265, body 4214957818.
+Hashes: contract 5560191, body 4214957818.
 
 ```rust
-unsafe fn byte_at(at: usize) -> &'static AtomicU8
+unsafe fn byte_at(at: usize) -> (r: &'static AtomicU8)
+    ensures
+        byte_id(r) == slot_byte_id(at),
 ```
