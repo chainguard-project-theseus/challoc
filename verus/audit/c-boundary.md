@@ -36,7 +36,7 @@ Totals for the 52 seams listed: 50 sound, 2 fixed.
 | seam | ledger file | verdict | reason |
 |---|---|---|---|
 | `throw_bad_alloc_addr` | `api/cxx.rs` | sound | GOT load of a weak symbol (null when undefined); ensures only `is_throw_bad_alloc(r)`, an uninterpreted name for that address. |
-| `axiom_fork_resumed_state` | `api/mod.rs` | sound | Mints a `StateHold`, which carries the state lock's cell `PointsTo`, so two calls give two permissions of one cell, which vstd's `PointsTo::is_exclusive` makes contradict (see "Notes"); `get_unlocked` is gone. It asserts `lock_inv` of the held value, which `axiom_held` used to assume at the read. |
+| `axiom_fork_resumed_state` | `api/mod.rs` | sound | Mints a `StateHold`, which carries the state lock's cell `PointsTo`, so two calls give two permissions of one cell, which vstd's `PointsTo::is_exclusive` makes contradict (see "Notes"); `get_unlocked` is gone. It asserts `lock_inv` of the held value, which `axiom_held` used to assume at the read, and that the hold is of the lock the handler passes (`purge::background::state`'s `&STATE`, required to be of rank `rank_state`). |
 | `axiom_fork_resumed` | `api/mod.rs` | fixed | Requires the state hold to be the state lock's (`state.wf()`; see details). |
 | `read_slot` | `config.rs` | sound | Claims nothing. |
 | `malloc_conf_addr` | `config.rs` | sound | GOT load; claims nothing. |
@@ -92,8 +92,9 @@ Totals for the 52 seams listed: 50 sound, 2 fixed.
 
 ### `axiom_fork_resumed`: the state hold is required
 
-`fork_holds` includes `state.wf()`: the hold is the state lock's token
-(`purge::background::state_lock()`) with the permission of its cell and
+`fork_holds` includes `state.wf()`: the hold is the token of a lock of
+the state lock's rank (`purge::background::StateHold::lock`) with the
+permission of its cell and
 a value that keeps the lock invariant. An axiom that ensured
 `fork_holds(*s, held, *state)` for any `state` would state a conclusion
 about a hold the caller already has, and this scratch proof would verify:

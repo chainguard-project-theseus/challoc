@@ -257,33 +257,38 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// `background::axiom_state_lock` names every `Lock<State>` of rank
-/// `rank_state` as `state_static()` (whose raw lock is `state_lock()`),
-/// which is sound only while `STATE` is the one `Lock<State>` the
-/// program builds. Only `background.rs` (with the modules inside it)
+/// `api::axiom_fork_resumed_state` takes the `Lock<State>` its handler
+/// passes (`purge::background::state`'s `&STATE`; the test
+/// `api::tests::fork_hold_is_resumed_once` pins the argument) to be the
+/// lock `fork_prepare` held, which is sound only while `STATE` is the one
+/// `Lock<State>` the program builds. Only `background.rs` (with the modules inside it)
 /// can build a `State`, its fields being private (the compiler checks
 /// that), and no other file gets one from it: `State` has no `Clone`,
 /// `Copy` or `Default`, and no function returns one (`-> State`,
 /// `-> (r: State)`). `background.rs` builds one `State` (one struct
 /// literal, no `ptr::read` copy) and one lock (one `Lock::new`, no
-/// `Lock::<..>` path), `STATE`, at that rank. The axiom is private,
-/// called once, in `STATE`'s initialiser. It is trusted, not proved,
-/// and these source counts are its only guard: if a count changes,
-/// re-audit the axiom's soundness before updating the expected numbers.
+/// `Lock::<..>` path), `STATE`, at that rank. The premise is private to
+/// `api` (declared at the top level of `api/mod.rs`, without `pub`). It
+/// is trusted, not proved, and these source counts, with the argument
+/// pin above, are its only guard: if a count changes, re-audit the
+/// premise's soundness before updating the expected numbers.
 /// Not seen: a `State` inside a returned tuple or `Option`, and a
 /// trait impl written by a macro.
 #[test]
-fn state_lock_axiom_names_the_one_state_lock() {
+fn state_lock_is_the_one_lock_of_its_type() {
     let src = include_str!("background.rs");
     let code = || src.lines().filter(|l| !l.trim_start().starts_with("//"));
     let count = |s: &str| code().filter(|l| l.contains(s)).count();
-    assert_eq!(count("axiom_state_lock("), 2, "the axiom and its one call");
+    assert_eq!(count("static STATE: Lock<State>"), 1);
+    let premise = std::format!("axiom fn {}(", "axiom_fork_resumed_state");
     assert_eq!(
-        code()
-            .filter(|l| l.starts_with("axiom fn axiom_state_lock("))
-            .count(),
-        1,
-        "the axiom is private, at the module's top level"
+        include_str!("../api/mod.rs")
+            .lines()
+            .filter(|l| l.contains(&premise))
+            .map(|l| l.starts_with(&premise))
+            .collect::<std::vec::Vec<_>>(),
+        std::vec![true],
+        "the premise is declared once, private, at the module's top level"
     );
     assert_eq!(count("Lock::new("), 1, "STATE's initialiser");
     assert_eq!(count("Lock::<"), 0, "no other path to the constructor");

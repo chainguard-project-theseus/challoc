@@ -404,7 +404,8 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
 /// never through a guard, so none of them is a holder in
 /// [`UNLOCKED_LOCKS`]; [`guards_end_in_unlock`] checks that none
 /// acquires a guard through `l` or hands it to a function off this
-/// list.
+/// list. The handoff premise (`axiom_fork_resumed_state`, no body)
+/// takes `l` to name the lock of the hold it restates.
 const LOCK_PASSERS: &[(&str, &str, &[&str])] = &[(
     "purge/background.rs:static.STATE",
     "purge/background.rs:state",
@@ -412,6 +413,7 @@ const LOCK_PASSERS: &[(&str, &str, &[&str])] = &[(
         "purge/background.rs:fork_lock",
         "purge/background.rs:fork_unlock",
         "purge/background.rs:fork_child",
+        "api/mod.rs:axiom_fork_resumed_state",
         "api/mod.rs:fork_release",
         "api/mod.rs:fork_parent",
         "api/mod.rs:fork_child",
@@ -1314,6 +1316,24 @@ fn fork_hold_is_resumed_once() {
     let entry = std::format!("{}{}(", "axiom_fork_", "entry");
     let mask = std::format!("{}{}(", "axiom_thread_", "mask");
     assert_eq!(calls(&state), 2, "calls of the state hold's premise");
+    // Each of those passes the `l` its handler bound, on the line before,
+    // to the state lock `purge::background::state` returns: the premise
+    // is that the hold is of that lock.
+    let code: Vec<&str> = src
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("//"))
+        .collect();
+    let bind = std::format!("let l = purge::background::{}();", "state");
+    let pass = std::format!("{}l);", state);
+    for (i, l) in code.iter().enumerate() {
+        if l.contains(&state) && !l.contains("fn ") {
+            assert!(
+                l.ends_with(&pass) && i > 0 && code[i - 1] == bind,
+                "the state hold's premise must take `l` bound by `{bind}` on the line before: {l}"
+            );
+        }
+    }
     assert_eq!(calls(&sig), 1, "calls of the mask token's premise");
     let lock = include_str!("../lock.rs");
     let sys = include_str!("../sys/mod.rs");

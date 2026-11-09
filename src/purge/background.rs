@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::{Lock, LockHeld, LockOrder, Padded};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{RawLock, axiom_thread_entry, lock_inv, rank_class, rank_meta, rank_state};
+use crate::lock::{axiom_thread_entry, lock_inv, rank_class, rank_meta, rank_state};
 use crate::sys::tls::TlsCell;
 use crate::sys::{self, Timespec};
 use crate::vspec::addr::addr_to_ptr;
@@ -53,20 +53,15 @@ pub(crate) struct State {
 
 exec static STATE: Lock<State>
     ensures
-        STATE == state_static(),
         STATE.rank() == rank_state(),
 {
-    let l = Lock::new(State {
+    Lock::new(State {
         present: false,
         creating: false,
         exited: false,
         stack: 0,
         thread: None,
-    }, Ghost(rank_state()));
-    proof {
-        axiom_state_lock(l);
-    }
-    l
+    }, Ghost(rank_state()))
 }
 /// Mirror of `STATE.present` for the lock-free check on every tick.
 exec static PRESENT: AtomicBool = AtomicBool::new(false);
@@ -1048,69 +1043,50 @@ fn detach_from_starter()
     }
 }
 
-/// [`STATE`], for specifications. Uninterpreted (Verus does not read
-/// statics in specifications); `STATE`'s postcondition pins it
-/// ([`axiom_state_lock`]).
-pub uninterp spec fn state_static() -> Lock<State>;
-
-/// The state lock, as [`fork_lock`] takes it: [`STATE`]'s raw lock.
-pub closed spec fn state_lock() -> RawLock {
-    state_static().spec_raw()
-}
-
-/// Assumption: [`state_static`] is [`STATE`]. Called once, in `STATE`'s
-/// initialiser, for the lock it builds: a static is one object,
-/// initialised once (at compile time), so every read of it returns that
-/// lock. Sound while `STATE` is the one `Lock<State>` the program
-/// builds, which the requirement narrows to its rank: only this module
-/// (with the modules inside it) can build a `State`, its fields being
-/// private; `State` has no `Clone` or `Default`, and no function returns
-/// one, so no other code gets a `State` to lock; and this module builds
-/// one `State` and one lock, `STATE`. The axiom is private, so no code
-/// outside this module calls it
-/// (`purge::tests::state_lock_axiom_names_the_one_state_lock` backs
-/// these by counting source text).
-axiom fn axiom_state_lock(l: Lock<State>)
-    requires
-        l.rank() == rank_state(),
-    ensures
-        l == state_static(),
-;
-
-/// `&STATE`: [`state_static`], whose raw lock is [`state_lock`] and rank
-/// the one `STATE` is created with (the static's postcondition).
+/// `&STATE`, whose rank is the one `STATE` is created with (the static's
+/// postcondition). Which lock it is, Verus cannot say (it does not read
+/// statics in specifications): a fork hold names the lock it holds
+/// ([`StateHold::lock`]), and the fork handlers pass this reference back
+/// to the handoff (`api::axiom_fork_resumed_state`), which ties the two.
 #[inline(always)]
 pub(crate) fn state() -> (r: &'static Lock<State>)
     ensures
-        *r == state_static(),
-        r.spec_raw() == state_lock(),
         r.rank() == rank_state(),
 {
     &STATE
 }
 
 /// The fork handlers' hold of the state lock, from `fork_prepare` to the
-/// release: the token of the hold and the permission of [`STATE`]'s cell
-/// (`Lock::lock_held_perm`), through which [`fork_child`] reads and
-/// writes the value. Built only by [`fork_lock`] (the fields are private
-/// to this module) and by the fork handlers' handoff
-/// (`api::axiom_fork_resumed_state`). The permission is exclusive
+/// release: the lock held ([`StateHold::lock`], the one [`state`]
+/// returned to [`fork_lock`]), the token of the hold and the permission
+/// of that lock's cell (`Lock::lock_held_perm`), through which
+/// [`fork_child`] reads and writes the value. Built only by [`fork_lock`]
+/// (the fields are private to this module) and by the fork handlers'
+/// handoff (`api::axiom_fork_resumed_state`). The permission is exclusive
 /// (vstd's `PointsTo::is_exclusive`), so two holds alive at once are a
 /// contradiction, derivable where `Lock::has_perm` unfolds, in `lock.rs`
 /// (in this module, where it is closed, it is not).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct StateHold {
+    ghost lock: Lock<State>,
     tracked tok: LockHeld,
     tracked perm: vstd::cell::pcell::PointsTo<State>,
 }
 
 impl StateHold {
-    /// The hold is of the state lock, with the permission of its cell,
-    /// whose value satisfies the lock invariant.
+    /// The lock held: the [`state`] lock [`fork_lock`] took.
+    pub closed spec fn lock(self) -> Lock<State> {
+        self.lock
+    }
+
+    /// The hold is of a lock of the state lock's rank ([`rank_state`]),
+    /// with the permission of its cell, whose value satisfies the lock
+    /// invariant.
     pub closed spec fn wf(self) -> bool {
-        &&& self.tok.held() == state_lock()
-        &&& state_static().has_perm(self.perm)
+        &&& self.lock.rank() == rank_state()
+        &&& self.tok.held() == self.lock.spec_raw()
+        &&& self.lock.has_perm(self.perm)
         &&& lock_inv(*self.perm.value())
     }
 }
@@ -1118,7 +1094,7 @@ impl StateHold {
 /// Take the state lock (fork prepare, last: after the arena statistics
 /// locks), with the permission of its cell; `ord` (a root) is raised to
 /// its rank. The last acquisition, after which the fork window may open
-/// (`lock::fork_prepared`).
+/// (`lock::fork_prepared`). The hold names the lock taken, [`state`]'s.
 pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (h: Tracked<StateHold>)
     requires
         crate::sys::may_syscall(),
@@ -1133,22 +1109,21 @@ pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (h: Tracked<StateHold
     let l = state();
     let Tracked(r) = l.lock_held_perm(Tracked(ord));
     let tracked (tok, perm) = r;
-    Tracked(StateHold { tok, perm })
+    Tracked(StateHold { lock: *l, tok, perm })
 }
 
-/// Release the state lock (fork parent and child, before the others),
+/// Release the state lock `l` (fork parent and child, before the others),
 /// handing back the hold's token and cell permission, once the fork
-/// window has closed (`lock::window_closed`). The hold's value keeps the
-/// lock invariant ([`StateHold::wf`]), which that release
-/// (`Lock::unlock_held_perm`) requires. The state lock's rank leaves the
-/// root `ord`'s raw holds.
-/// `l` is the lock [`state`] returns ([`state_static`]).
+/// window has closed (`lock::window_closed`). `l` must be the lock the
+/// hold names ([`StateHold::lock`]), and the hold's value keeps the lock
+/// invariant ([`StateHold::wf`]); that release (`Lock::unlock_held_perm`)
+/// requires both. The state lock's rank leaves the root `ord`'s raw
+/// holds.
 pub fn fork_unlock(l: &Lock<State>, Tracked(h): Tracked<StateHold>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         h.wf(),
-        *l == state_static(),
-        l.rank() == rank_state(),
+        h.lock() == *l,
         crate::lock::window_closed(),
         old(ord).root(),
     ensures
@@ -1156,7 +1131,7 @@ pub fn fork_unlock(l: &Lock<State>, Tracked(h): Tracked<StateHold>, Tracked(ord)
         final(ord).top() == old(ord).top(),
         final(ord).ranks() == old(ord).ranks().remove(rank_state()),
 {
-    let tracked StateHold { tok, perm } = h;
+    let tracked StateHold { tok, perm, .. } = h;
     l.unlock_held_perm(Tracked(tok), Tracked(perm), Tracked(ord))
 }
 
@@ -1174,19 +1149,19 @@ verus! {
 /// get one until it asks again or, under the lazy start, until it holds
 /// enough dirty memory of its own: the dirty bytes at the fork are the
 /// baseline ([`set_fork_base`], after the locks are released). Called
-/// with the state lock held by this thread (`fork_prepare` took it;
-/// `hold` is the hold, with the permission of the lock's cell). Writes
-/// the state through `Lock::value_held_mut`, keeping the stack, and
+/// with the state lock `l` held by this thread (`fork_prepare` took it;
+/// `hold` is the hold, which names `l`, with the permission of its cell).
+/// Writes the state through `Lock::value_held_mut`, keeping the stack, and
 /// leaves the state's lock invariant true ([`StateHold::wf`]), so the
 /// value the child's next locker reads is consistent and describes no
 /// thread.
-/// `l` is the lock [`state`] returns ([`state_static`]).
 pub fn fork_child(l: &Lock<State>, Tracked(hold): Tracked<&mut StateHold>)
     requires
         old(hold).wf(),
-        *l == state_static(),
+        old(hold).lock() == *l,
     ensures
         final(hold).wf(),
+        final(hold).lock() == *l,
 {
     let st = l.value_held_mut(Tracked(&mut hold.perm));
     st.present = false;

@@ -13,6 +13,9 @@ pthread_atfork_handlers	function pointer	Kani	discharged on premises (Kani: api:
 # The handlers call axiom_fork_resumed_state only when FORK_LOCKED (verified
 # atomics) says this fork's prepare took the locks: glibc serialises one
 # fork's handlers under its atfork lock, so the flag read is this fork's.
+# The state hold is of the lock each handler names, `&STATE`: a static is
+# one object, and STATE is the one Lock<State>
+# (purge::tests::state_lock_is_the_one_lock_of_its_type).
 axiom_fork_resumed_state	platform/kernel fact	none (assumption)
 axiom_fork_resumed_sig	platform/kernel fact	none (assumption)
 axiom_fork_resumed	platform/kernel fact	none (assumption)
