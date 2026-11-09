@@ -262,8 +262,8 @@ pub closed spec fn lock_rs_only() -> bool {
 
 /// The root token `ord` has taken the lock of [`rank_state`] (the
 /// background thread's state lock, which `api::fork_prepare` takes last;
-/// the test `purge::tests::state_lock_axiom_names_the_one_state_lock`
-/// checks it is the one lock of that rank): the requirement of
+/// the test `purge::tests::state_lock_is_the_one_lock_of_its_type`
+/// checks it is the one `Lock<State>`): the requirement of
 /// [`fork_window_open`]. The body is closed, so outside this module only
 /// the postcondition of [`Lock::lock_held_perm`] of a lock at
 /// `rank_state` gives it; a root's top is raised only by that and
