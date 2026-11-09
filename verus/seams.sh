@@ -60,7 +60,10 @@
 # also fails when a
 # status cites `Kani: <harness>` and no `#[kani::proof]` fn has that path,
 # or `const assert: <label> in <file>` and not exactly one assertion there
-# carries that label, or `Isla: <file>` and that file lists no such seam
+# carries that label, or, for a `tracked` type, no assertion it cites
+# names both `<T as NotCopy<_>>::HOLDS` and `<T as NotClone<_>>::HOLDS`
+# for the type's name T (src/vspec/notcopy.rs's check that the type is
+# neither Copy nor Clone), or `Isla: <file>` and that file lists no such seam
 # or the seam's asm! calls differ from the templates.txt next to it, or
 # `emptyasm: <fn> in <file>` and the seam is not `<fn>` of `<file>`, not
 # exactly one row of verus/emptyasm/blocks.txt names them, or the seam's
@@ -621,6 +624,7 @@ function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, rc, nc, what) {
         ok = eok[e]; rec = ok != "" ? ohash[ok] : ""
         cn = estat[e] ~ /^trusted \(claims nothing/
         if (cn) claimsnothing(e, ok)
+        if (ehc[e] ~ /(^|[^A-Za-z0-9_])tracked (struct|enum) / && index(estat[e], "const assert: ")) notcopycites(e, ok)
         chk = estat[e] ~ /^discharged/ || estat[e] ~ /^trusted \(partly checked/ || cn
         if (chk && rec == "")
             print "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): the status " (cn ? "claims nothing" : "cites a check") " but records no hashes; once it holds for the item as it is, add them as a fifth column: " ehash[e] > drift
@@ -632,6 +636,26 @@ function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, rc, nc, what) {
             print "seams: " ofile[ok] ": " oname[ok] ": hashes on a status that cites no check" > drift
     }
     printf "" > drift; close(drift)
+    printf "" > (hashdir "/notcopy"); close(hashdir "/notcopy")
+}
+
+# A `tracked` struct or enum whose status cites `const assert: a, b and
+# c` (verus/SEAMS.md, "Status"): one line per cited assertion into
+# HASHDIR/notcopy, `<overrides file> TAB <seam> (<file>:<line>) TAB
+# <type> TAB <label> in FILE`, the list read as cites reads it;
+# notcopycheck checks that one of them is the type's not-Copy check.
+function notcopycites(e, ok,    s, i, l, h, k, j, ty) {
+    ty = match(ehc[e], /(struct|enum) [A-Za-z_][A-Za-z0-9_]*/) ? substr(ehc[e], RSTART, RLENGTH) : ""
+    sub(/^[a-z]+ /, "", ty)
+    s = estat[e]
+    while ((i = index(s, "const assert: ")) > 0) {
+        s = substr(s, i + length("const assert: ")); l = s; sub(/[;)].*$/, "", l)
+        k = split(l, h, /,? and |, */)
+        for (j = 1; j <= k; j++) {
+            if (index(h[j], ": ")) break
+            if (h[j] != "") print ofile[ok] "\t" oname[ok] " (" efile[e] ":" eline[e] ")\t" ty "\t" h[j] > (hashdir "/notcopy")
+        }
+    }
 }
 
 # A status `trusted (claims nothing: <why>)` (verus/SEAMS.md, "Status")
@@ -878,7 +902,8 @@ islatemplates() {
 }
 
 # assertion '<label> in FILE': exit 0 if exactly one top-level
-# `const _: () = assert!(` in FILE sits under a `//` comment block whose
+# `const _: () = assert!(` in FILE, alone on its line or with the whole
+# assertion on that line, sits under a `//` comment block whose
 # first line starts with `// <label>`. An attribute right above the
 # comment block (a line starting `#[` or ending `]`, as a multi-line
 # `cfg` does), even across blank lines, fails it: a gated assertion is
@@ -888,10 +913,58 @@ assertion() {
   [ -f "$file" ] || return 1
   awk -v l="// $label" '
     /^\/\// { if (!c) g = (prev ~ /^#\[/ || prev ~ /\]$/); if (!c && index($0, l) == 1) h = 1; c = 1; prev = $0; next }
-    h && /^const _: \(\) = assert!\($/ { n += g ? 2 : 1 }
+    h && /^const _: \(\) = assert!\(($|.*\);$)/ { n += g ? 2 : 1 }
     { c = 0; h = 0; if (NF) prev = $0 }
     END { exit n != 1 }
   ' "$file"
+}
+
+# notcopy TYPE '<label> in FILE': exit 0 if exactly one top-level
+# assertion of FILE sits under the label, as for assertion, and its
+# text, from `const _` to the line ending `);`, `//` comments dropped,
+# names both `<TYPE as NotCopy<_>>::HOLDS` and `<TYPE as
+# NotClone<_>>::HOLDS`, TYPE alone or after a path: the checks of
+# src/vspec/notcopy.rs, which fail to compile when TYPE is Copy or Clone.
+# FILE must also hold the second impls, `impl<T: Copy> NotCopy<..> for T
+# {}` and `impl<T: Clone> NotClone<..> for T {}`, without which the
+# checks compile for any type. That the names resolve to these traits,
+# and that rustc rejects the ambiguity, is verus/notcopy-control.sh's.
+notcopy() {
+  label=${2% in *}; file=${2##* in }
+  [ -f "$file" ] || return 1
+  awk -v l="// $label" -v t="$1" '
+    /^\/\// { if (!c && index($0, l) == 1) h = 1; c = 1; next }
+    h && /^const _: \(\) = assert!\(/ { n++; in_ = 1 }
+    in_ { x = $0; sub(/\/\/.*$/, "", x); s = s " " x; if (x ~ /\);[ \t]*$/) in_ = 0 }
+    /^impl<T: Copy> NotCopy<[A-Za-z_]+> for T \{\}$/ { ic = 1 }
+    /^impl<T: Clone> NotClone<[A-Za-z_]+> for T \{\}$/ { il = 1 }
+    { c = 0; h = 0 }
+    END {
+      if (n != 1 || !ic || !il) exit 1
+      exit !(s ~ ("[<:]" t " as NotCopy<_>>::HOLDS") && s ~ ("[<:]" t " as NotClone<_>>::HOLDS"))
+    }
+  ' "$file"
+}
+
+# notcopycheck HASHDIR: for each `tracked` struct or enum (a ghost token)
+# whose status cites a const assert, the error when none of the
+# assertions it cites checks that the type is neither Copy nor Clone
+# (notcopy). HASHDIR/notcopy, from scan, holds one line per cited
+# assertion: `<overrides file> TAB <seam> (<file>:<line>) TAB <type> TAB
+# <label> in FILE`.
+notcopycheck() {
+  while IFS="$tab" read -r o s ty c; do
+    if notcopy "$ty" "$c"; then r=ok; else r=no; fi
+    printf '%s\t%s\t%s\t%s\n' "$r" "$o" "$s" "$ty"
+  done < "$1/notcopy" | awk -F '\t' '
+    $1 == "ok" { ok[$2 FS $3] = 1 }
+    $1 == "no" { k = $2 FS $3; if (!(k in ty)) { ty[k] = $4; keys[++n] = k } }
+    END {
+      for (i = 1; i <= n; i++) if (!(keys[i] in ok)) {
+        split(keys[i], p, FS)
+        print "seams: " p[1] ": " p[2] ": a tracked type, whose status cites no const assert that checks it is neither Copy nor Clone (`<" ty[keys[i]] " as NotCopy<_>>::HOLDS` and `<" ty[keys[i]] " as NotClone<_>>::HOLDS`, src/vspec/notcopy.rs)"
+      }
+    }'
 }
 
 # emptyasm OVERRIDES '<seam> @ <fn> in FILE': exit 0 if FILE is the source
@@ -1170,6 +1243,8 @@ case $mode in
     # A status cites a check that is gone (renamed or removed), or none.
     # shellcheck disable=SC2086 # one word per overrides file
     cites $ovfiles | while read -r o t c; do checkcite "$o" "$t" "$c"; done > "$tmp/cites"
+    # A ghost token's const assert is its not-Copy check.
+    notcopycheck "$tmp/hash" >> "$tmp/cites"
     # A status that cites a check records the hashes of the item it
     # checked, so an edit to the item's contract or body fails here, even
     # after --write, until the status is revisited and the hashes updated.
@@ -1590,9 +1665,53 @@ case $mode in
     printf '#[cfg(any(\n    target_arch = "riscv64",\n))]\n// `gated`, checked.\nconst _: () = assert!(\n    true\n);\n' > "$tmp/g2.rs"
     # shellcheck disable=SC2016
     printf '#[cfg(target_arch = "riscv64")]\n\n// `gated`, checked.\nconst _: () = assert!(\n    true\n);\n' > "$tmp/g3.rs"
-    for c in "\`gated\` in $tmp/g1.rs" "\`gated\` in $tmp/g2.rs" "\`gated\` in $tmp/g3.rs"; do
+    # shellcheck disable=SC2016
+    printf '#[cfg(target_arch = "riscv64")]\n// `gated`, checked.\nconst _: () = assert!(true);\n' > "$tmp/g4.rs"
+    for c in "\`gated\` in $tmp/g1.rs" "\`gated\` in $tmp/g2.rs" "\`gated\` in $tmp/g3.rs" "\`gated\` in $tmp/g4.rs"; do
       if assertion "$c"; then echo "seams: self-test: $c resolved, want rejected"; fi
     done >> "$tmp/cites"
+    # A one-line assertion resolves, but not one whose line goes on past
+    # its `);`.
+    # shellcheck disable=SC2016
+    printf '// `one`, checked.\nconst _: () = assert!(true);\n\n// `more`, checked.\nconst _: () = assert!(true); // x\n' > "$tmp/one.rs"
+    {
+      assertion "\`one\` in $tmp/one.rs" || echo "seams: self-test: const assert: one line: an assertion on one line rejected, want resolved"
+      if assertion "\`more\` in $tmp/one.rs"; then echo "seams: self-test: const assert: one line: a line going on past its assertion resolved, want rejected"; fi
+    } >> "$tmp/cites"
+    # Self-test: a tracked struct whose status cites a const assert passes
+    # when one cited assertion checks it is neither Copy nor Clone (alone
+    # or after a path, on one line or several), and fails when the cited
+    # one checks another type, a type whose name ends in its own, Copy
+    # alone, or names the checks only in a comment; a struct that is not
+    # tracked is not held to it.
+    # shellcheck disable=SC2016
+    printf '%s\n' '// `F` checked.' 'const _: () = assert!(<F as NotCopy<_>>::HOLDS && <F as NotClone<_>>::HOLDS);' \
+      '// `path` checked.' 'const _: () = assert!(' '    <crate::m::F as NotCopy<_>>::HOLDS && <crate::m::F as NotClone<_>>::HOLDS' ');' \
+      '// `G` another type.' 'const _: () = assert!(<G as NotCopy<_>>::HOLDS && <G as NotClone<_>>::HOLDS);' \
+      '// `FF` a longer name.' 'const _: () = assert!(<FF as NotCopy<_>>::HOLDS && <FF as NotClone<_>>::HOLDS);' \
+      '// `copyonly` Copy alone.' 'const _: () = assert!(<F as NotCopy<_>>::HOLDS);' \
+      '// `comment` in a comment.' 'const _: () = assert!(' '    true // <F as NotCopy<_>>::HOLDS && <F as NotClone<_>>::HOLDS' ');' > "$tmp/nc0.rs"
+    # The second impls, without which no check rejects anything; the
+    # fixture without them (nc0.rs) fails even the `F` check.
+    printf '%s\n' 'impl<T: Copy> NotCopy<IfCopy> for T {}' 'impl<T: Clone> NotClone<IfClone> for T {}' |
+      cat - "$tmp/nc0.rs" > "$tmp/nc.rs"
+    for c in "pass:\`F\`" "pass:\`path\`" "pass:\`G\` in $tmp/nc.rs and \`F\`" "fail:\`G\`" "fail:\`FF\`" \
+        "fail:\`copyonly\`" "fail:\`comment\`" "untracked:\`G\`"; do
+      want=${c%%:*}; l=${c#*:}
+      src='pub tracked struct F { _no_copy: () }'
+      [ "$want" = untracked ] && src='pub struct F { _no_copy: () }'
+      printf '%s\n' 'verus! {' '#[verifier::external_body]' "$src" '}' |
+        hs "trusted (partly checked, const assert: $l in $tmp/nc.rs; not checked: x)" '' F > /dev/null
+      r=$(notcopycheck "$tmp/hs-hash")
+      case $want:$r in
+        pass:|untracked:) ;;
+        fail:*': F (src/t.rs:3): a tracked type, whose status cites no const assert that checks it is neither Copy nor Clone (`<F as NotCopy'*) ;;
+        *) echo "seams: self-test: not Copy: $want $l: got: $r" ;;
+      esac
+    done >> "$tmp/cites"
+    if notcopy F "\`F\` in $tmp/nc0.rs"; then
+      echo "seams: self-test: not Copy: a file without the second impls accepted" >> "$tmp/cites"
+    fi
     bad=0
     if [ -s "$tmp/cites" ]; then cat "$tmp/cites" >&2; bad=1; fi
     if [ $stale = 0 ] && [ $bad = 0 ]; then

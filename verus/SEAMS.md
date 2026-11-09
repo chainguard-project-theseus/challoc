@@ -107,7 +107,8 @@ do so, which `.chainguard/ci/kani.yaml` runs at both quanta (`kani-ignoring`
 runs those in the hot files `src/kani/mod.rs` lists, after a change
 lands; `seams.sh --check` fails when a path names no `#[kani::proof]`
 fn). `discharged (const assert: <label> in <file>)` names a top-level
-`const _: () = assert!(..)` in `<file>`, the one whose `//` comment
+`const _: () = assert!(..)` in `<file>` (on one line, or with
+`assert!(` ending its first), the one whose `//` comment
 block starts with `<label>` (a name in backquotes, and as many of the
 words after it as it takes to single out one assertion). The compiler
 evaluates the assertion in every build, at each quantum and on each
@@ -334,3 +335,35 @@ it fails when the item's hashes differ from the ones the status records,
 so an edit to the item fails until the status is revisited. The hashes
 cover the item itself: for a specification of a crate-local type (the
 `Ex` wrapper of a function-pointer type), not the type's own definition.
+
+A ghost token, a `tracked` struct or enum, is linear because its type
+is not `Copy`: verified code can copy a value of a `Copy` type. The
+check below also rules out `Clone`, which `Copy` requires, so no
+explicit duplicate exists either.
+`src/vspec/notcopy.rs` checks that at compile time, one assertion per
+token, `const _: () = assert!(<T as NotCopy<_>>::HOLDS && <T as
+NotClone<_>>::HOLDS);` under a comment that starts with `` `T` ``.
+`<T as NotCopy<_>>::HOLDS` names one item when `T` is not `Copy` and
+two when it is, an ambiguity rustc rejects, so the build fails, under
+Verus too, once `T` gains either impl; `NotClone` is the same for
+`Clone`. `sh verus/notcopy-control.sh` builds the file's controls, a
+`Copy` type and a `Clone` one, and checks that the build fails on
+exactly their three assertions. The check covers the token's linearity
+only, not what its spec functions stand for, which the seams that make
+and use it state, so a token that cites it is `trusted (partly checked,
+const assert: <label> in src/vspec/notcopy.rs; not checked: <what>)`,
+`<label>` the type's name in backquotes and `<what>` naming those facts.
+`seams.sh --check` fails when a `tracked` type's status cites `const
+assert:` and no assertion it cites names both `<T as NotCopy<_>>::HOLDS`
+and `<T as NotClone<_>>::HOLDS` outside `//` comments, `T` the type's
+name, alone or after a path, in a file that also holds the two impls
+for `Copy` and `Clone` types, without which the checks compile for any
+type. It reads text only: that those names resolve to the file's traits
+and that rustc rejects the ambiguity is what the control script shows,
+which CI runs on x86_64 on every pull request under both toolchains:
+lint.yaml's `notcopy-control` check under rust-1.98, and a step of
+verus.yaml's `verus` check under the verus package's rust stream.
+`--check` does not require a tracked type to cite one. `sh verus/seams-mutants.sh` checks that `--check`'s self-tests
+catch weakened forms of this rule, and that, in a copy of the tree, a
+check that drops `NotClone`, names another type or is removed, or a
+removed `Clone` impl, fails `--check`.

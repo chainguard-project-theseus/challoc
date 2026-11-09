@@ -2063,6 +2063,8 @@ fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usi
 
 } // verus!
 
+pub(crate) use linux::Reserved;
+
 mod linux {
     use super::{
         LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN,

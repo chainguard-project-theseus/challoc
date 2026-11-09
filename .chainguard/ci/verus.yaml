@@ -25,7 +25,8 @@ checks:
       make verus: the seam ledger check (verus/ledger/), cargo verus
       verify over challoc, then verus/count's tests and its coverage floor
       (verus/FLOOR, against the pull request's base); then cargo verus
-      verify of the quantum-8 build.
+      verify of the quantum-8 build; then the not-Copy control
+      (verus/notcopy-control.sh) under the package's rust stream.
     trigger: [presubmit]
     resources: large-amd64
     timeout: 45m
@@ -49,6 +50,12 @@ checks:
         # The quantum-8 build (`--features quantum8`) has its own class
         # table, so its proofs are checked too.
         cmd: [cargo, verus, verify, --locked, --no-default-features, --features, quantum8]
+      - name: not-Copy control
+        # The not-Copy checks of src/vspec/notcopy.rs hold only while
+        # rustc rejects their ambiguous impls; lint.yaml's
+        # notcopy-control shows that for rust-1.98, and this step for
+        # the rust stream the verus package brings.
+        cmd: [sh, verus/notcopy-control.sh]
 
   # The same on aarch64: the package's arm64 build, run natively.
   verus-arm64:
