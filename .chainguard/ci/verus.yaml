@@ -2,9 +2,8 @@
 # above verus/FLOOR, and verus/ledger/ is current. All three are `make
 # verus` (verus/README.md): `sh verus/seams.sh --check`, then `cargo
 # verus verify`, then verus/count --floor, which also compares
-# verus/FLOOR with the base revision's copy so that lowering it needs a
-# stated reason. FLOOR rises in its own pull requests between merges, to the
-# figures the step's output names.
+# verus/FLOOR with the base revision's copy; verus/FLOOR's header says
+# when its figures rise and when one may be lowered.
 #
 # The verus package is pinned to the release whose vstd Cargo.toml pins
 # (bump both together), and it brings the rust stream (rust-1.99) and

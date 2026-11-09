@@ -118,22 +118,18 @@ the counter does not know.
 `--floor FILE` holds the crate to [FLOOR](FLOOR): the verified share of
 functions and of lines (`functions`, `lines`), and the combined share of
 each (`combined-functions`, `combined-lines`). The run fails below any
-figure, and above one it names the figure to record. A FLOOR without the
-combined figures reads them as 0.0, so a base revision from before they
-existed still compares. `--base-rev REV` (`make verus
-VERUS_BASE=REV`; the check passes the pull request's base) also reads
-`REV:verus/FLOOR` and fails a figure set below it, unless FLOOR has a
-`lowered FIGURE P REASON` line for that figure and value that REV's copy
-does not have. A REV that does not resolve to a commit fails the run.
-FLOOR rises in its own pull requests between merges, to the figures the
-check names, so parallel pull requests do not conflict on it; the floor is
-lowered only on purpose, with the reason in FLOOR.
+figure, and above one it names the figure to record. `--base-rev REV`
+(`make verus VERUS_BASE=REV`; the check passes the pull request's base)
+also holds FLOOR to `REV:verus/FLOOR`, and a REV that does not resolve
+to a commit fails the run. The header of [FLOOR](FLOOR) is the rule:
+when its figures rise, and when a `lowered` line lets one fall below
+the base revision's.
 
 The [README badge](../README.md) shows a snapshot of the verified shares,
 as `verus-main` reported them on main. The repository is private,
 so shields.io cannot read the counts; the badge carries them in its
-URL. It changes in the pull requests that raise FLOOR, to the figures
-the check names, so parallel pull requests do not conflict on it. Each
+URL. It changes in the pull requests that raise FLOOR, to the same
+figures. Each
 `verus-main` log has the current figures.
 
 The counter comes from pcre3's `verus/count`, cut to challoc's single

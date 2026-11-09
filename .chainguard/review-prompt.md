@@ -69,7 +69,11 @@ get wrong.
   Question.
 - The floor. `verus/FLOOR` falls only with a new `lowered FIGURE P
   REASON` line, and rises only in its own pull requests. A lowered figure
-  with no reason is Blocking.
+  with no reason is Blocking. The verus check enforces the `lowered` line
+  but not the own-pull-request rule, so review holds that one. The rule
+  is stated here rather than read from the pull request's copy of
+  FLOOR, whose header the pull request can edit; a change to that header
+  changes the rule and is a Question for a maintainer.
 - Specifications. A new or changed specification needs a mutation check
   reported in the pull request body: the code broken the ways the
   specification is meant to catch, each rejected by Verus

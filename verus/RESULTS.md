@@ -201,7 +201,7 @@ The [counter](count) includes executable functions under `src/` and excludes tes
 | Trusted with no check | 74 | 704 |
 | Ghost functions, counted separately | 2253 | — |
 
-The combined row adds only trusted functions whose seam is discharged, on premises included. The [FLOOR](FLOOR) file holds `functions 86.3`, `lines 94.4`, `combined-functions 91.6` and `combined-lines 96.6`, the figures the counter measures at `3a71dfd6`. Each later raise to measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
+The combined row adds only trusted functions whose seam is discharged, on premises included. The [FLOOR](FLOOR) file holds `functions 86.3`, `lines 94.4`, `combined-functions 91.6` and `combined-lines 96.6`, the figures the counter measures at `3a71dfd6`. The Verus check fails when coverage drops below any figure; the header of [FLOOR](FLOOR) says when the figures rise and when one may be set lower. The [README badge](../README.md) shows the `functions` and `lines` figures.
 
 ## Trust base
 

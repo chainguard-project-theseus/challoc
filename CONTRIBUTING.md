@@ -157,6 +157,13 @@ both architectures (`PLATFORM=linux/amd64` for the second one).
 add a C test program. A test that cannot check its claim on a host prints
 a `SKIP` line; it never passes silently.
 
+The `verus` check fails when a proof fails, when the seam ledger is
+stale, when the verified share drops below a `verus/FLOOR` figure, or
+when a figure is set below the base revision's with no new `lowered`
+line (`verus/README.md`, "Coverage"). `verus/FLOOR`'s header also says
+its figures rise in their own pull requests; that is a review rule, not
+a check.
+
 ## Sending a change
 
 - Keep a pull request to one logical change, with a description of what
