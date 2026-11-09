@@ -94,6 +94,7 @@ impl Env {
                 Ghost::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
+                Tracked::assume_new(),
             )
             .expect("set table"),
         ))
@@ -106,6 +107,7 @@ impl Env {
                 &self.regions,
                 c,
                 guard_interval,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             )
@@ -1216,6 +1218,7 @@ fn metadata_exhaustion_is_reported_not_fatal() {
             0,
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         )
         .is_none()
     );
@@ -1281,7 +1284,10 @@ fn set_table_of_many_classes_touches_one_page_per_slab_size() {
         let s = cs.stats();
         s.nonfull + s.empty > 0
     }));
-    let mut groups_used: Vec<usize> = classes.iter().map(|&c| SetTable::group_of(c)).collect();
+    let mut groups_used: Vec<usize> = classes
+        .iter()
+        .map(|&c| SetTable::group_of(c, Tracked::assume_new()))
+        .collect();
     groups_used.sort_unstable();
     groups_used.dedup();
     let mut pages: Vec<usize> = Vec::new();

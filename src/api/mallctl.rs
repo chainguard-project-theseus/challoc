@@ -281,6 +281,7 @@ fn call(read: Reader, mib: &[usize], Tracked(mark): Tracked<&'static ReadyMark>)
         crate::sys::may_abort() || !read.aborts(),
         crate::api::marks_ready(*mark),
         crate::sys::may_syscall(),
+        crate::api::ready(),
 {
     match read {
         Reader::BinSize => bin_size(mib),
@@ -461,6 +462,7 @@ verus! {
 fn bin_size(m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::api::ready(),
 {
     Ok(Size(bin_class(m)?.size()))
 }
@@ -468,6 +470,7 @@ fn bin_size(m: &[usize]) -> Result<Reading, c_int>
 fn bin_nregs(m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::api::ready(),
 {
     Ok(U32(bin_class(m)?.nslots() as u32))
 }
@@ -475,6 +478,7 @@ fn bin_nregs(m: &[usize]) -> Result<Reading, c_int>
 fn bin_slab_size(m: &[usize]) -> Result<Reading, c_int>
     requires
         crate::sys::may_syscall(),
+        crate::api::ready(),
 {
     Ok(Size(bin_class(m)?.slab_size()))
 }
@@ -2557,6 +2561,8 @@ fn opt_value(mib: &[usize], Tracked(mark): Tracked<&'static ReadyMark>) -> Resul
 // cannot see `NBINS`'s value.
 #[allow(clippy::redundant_comparisons)]
 fn bin_class(mib: &[usize]) -> (r: Result<crate::layout::Class, c_int>)
+    requires
+        crate::api::ready(),
     ensures
         r matches Err(e) ==> e == ENOENT,
         r matches Ok(c) ==> c.wf(),
@@ -2811,6 +2817,9 @@ fn ctl(
         Entry::Dir(_) => return Err(ENOENT),
         Entry::Read(read) => {
             io.read_only()?;
+            proof {
+                shared.lemma_wf_ready();
+            }
             return read_out(io, call(read, mib, Tracked(mark))?, Tracked(cc));
         },
         Entry::Op(op) => op,
@@ -3348,6 +3357,9 @@ fn theorem_mallctl_reads_never_abort(
         }
     }
     // `call`'s readers for those keys.
+    proof {
+        shared.lemma_wf_ready();
+    }
     let _ = opt_value(m, Tracked(mark));
     let _ = bin_size(m);
     let _ = bin_nregs(m);

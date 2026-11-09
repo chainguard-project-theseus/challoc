@@ -4503,7 +4503,10 @@ impl Heap {
         clippy::while_let_loop,
         reason = "the desugared `for`, which Verus needs for `continue`"
     )]
-    fn fold_counters(into: &mut ThreadStats, caches: &[CacheHeader; NCLASSES]) {
+    fn fold_counters(into: &mut ThreadStats, caches: &[CacheHeader; NCLASSES])
+        requires
+            crate::api::ready(),
+    {
         // `for (class, c) in caches.iter().enumerate()`, spelled out: Verus
         // has no `Enumerate` and rejects `continue` in a `for` loop. The
         // count is taken and bumped as `Enumerate::next` does.
@@ -4512,6 +4515,7 @@ impl Heap {
         loop
             invariant
                 count + vstd::std_specs::iter::IteratorSpec::remaining(&iter).len() == NCLASSES,
+                crate::api::ready(),
             decreases NCLASSES - count,
         {
             let c = match iter.next() {

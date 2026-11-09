@@ -1196,9 +1196,11 @@ impl Arena {
         decay_ns: u64,
         Tracked(slot): Tracked<&mut Held<Arena>>,
         Tracked(ord): Tracked<&mut LockOrder>,
+        Tracked(frozen): Tracked<&'static PointsTo<[crate::layout::Class; NCLASSES]>>,
     ) -> (r: bool)
         requires
             crate::sys::may_syscall(),
+            crate::layout::frozen_table(*frozen),
             old(ord).allows(rank_meta()),
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
             this@.addr + size_of::<Arena>() <= usize::MAX,
@@ -1237,7 +1239,7 @@ impl Arena {
             // Ghost: the permissions to the class sets' slots, each taken
             // once, by its class's `ClassState::new`.
             let tracked mut slots: Map<(int, int), ZeroRaw> = Map::tracked_empty();
-            let Tracked(sets_perm) = match SetTable::new(meta, regions, Ghost(index), Tracked(&mut slots), Tracked(ord)) {
+            let Tracked(sets_perm) = match SetTable::new(meta, regions, Ghost(index), Tracked(&mut slots), Tracked(ord), Tracked(frozen)) {
                 Some(sets) => {
                     ptr_mut_write(sets_ptr, Tracked(&mut perm), sets);
                     // Frozen: nothing writes or frees the table again; the
@@ -3923,6 +3925,10 @@ impl Arenas {
         }
         let (used0, _) = meta_used_free(shared.meta.stats(Tracked(&mut *ord)));
         let (tables, Tracked(tperms)) = shared.arena0.classes[0].tables();
+        proof {
+            shared.lemma_wf_ready();
+        }
+        let tracked frozen = crate::layout::ready_table();
         // SAFETY: exclusively owned storage of the right size and
         // alignment, fresh or left by a failed build (never published;
         // `init` writes every field); the tables live in `Shared` for the
@@ -3938,6 +3944,7 @@ impl Arenas {
                 shared.default_decay_ns(),
                 Tracked(&mut slot),
                 Tracked(ord),
+                Tracked(frozen),
             )
         };
         if !ok {

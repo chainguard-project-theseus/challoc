@@ -746,13 +746,15 @@ impl Regions {
         1 << self.lg_page
     }
 
-    /// Slabs that fit in a class region.
+    /// Slabs that fit in a class region, from the slab size read through
+    /// `classes`, the class table's frozen permission
+    /// ([`super::frozen_table`]).
     #[inline]
-    pub fn nslabs(&self, class: usize) -> (r: usize)
-        requires self.wf(), class < NCLASSES,
+    pub fn nslabs(&self, class: usize, Tracked(classes): Tracked<&'static vstd::raw_ptr::PointsTo<[super::Class; NCLASSES]>>) -> (r: usize)
+        requires self.wf(), class < NCLASSES, super::frozen_table(*classes),
         ensures r == (1usize << self.lg_region) >> class_table()[class as int].lg_slab,
     {
-        let table = CLASSES.table();
+        let table = CLASSES.table_with(Tracked(classes));
         proof {
             crate::vspec::class::lemma_class_table_wf(class as int);
             assert(table[class as int].wf());
@@ -774,6 +776,7 @@ impl Regions {
         requires
             self.wf(),
             class < NCLASSES,
+            crate::api::ready(),
             slab < (1usize << self.lg_region) >> class_table()[class as int].lg_slab,
         ensures r == self.class_base[class as int] + (slab << class_table()[class as int].lg_slab),
     {
@@ -2595,7 +2598,8 @@ mod linux {
                 r.ready(),
                 r.mapped(),
         {
-            Regions::reserve_owning(page_size, anon_name).0
+            // The permission is ghost; the tests carry no proof.
+            Regions::reserve_owning(page_size, anon_name, Tracked::assume_new()).0
         }
 
         /// Probe and reserve every region (design 10 step 2). Never
@@ -2612,13 +2616,21 @@ mod linux {
         /// (`sys::features::page_size`); [`Regions::separated`] carries that
         /// bound. At run time, a page that is not a power of two from 4 KiB,
         /// the smallest page of any Linux target, to `MAX_SLAB` aborts.
+        /// `classes` is the class table's frozen permission
+        /// ([`crate::layout::frozen_table`]), through which the colours
+        /// read the slab sizes.
         // The index carries a Verus invariant.
         #[allow(clippy::needless_range_loop)]
-        pub fn reserve_owning(page_size: usize, anon_name: bool) -> (res: (Regions, Tracked<Unbacked>))
+        pub fn reserve_owning(
+            page_size: usize,
+            anon_name: bool,
+            Tracked(classes): Tracked<&'static vstd::raw_ptr::PointsTo<[crate::layout::Class; NCLASSES]>>,
+        ) -> (res: (Regions, Tracked<Unbacked>))
             requires
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 page_size <= 0x1_0000,
+                crate::layout::frozen_table(*classes),
             ensures
                 res.0.wf(),
                 res.0.separated(),
@@ -2771,6 +2783,7 @@ mod linux {
             let coloured = crate::thp::decision().mode != crate::thp::Mode::Chunks;
             for c in 0..NCLASSES
                 invariant
+                    crate::layout::frozen_table(*classes),
                     gap >> 22 > 2,
                     gap & 0x3f_ffff == 0,
                     gap <= 0x100_0000_0000,
@@ -2790,7 +2803,7 @@ mod linux {
                         requires a + 0x80_0000 <= g, g & 0x3f_ffff == 0;
                 }
                 if coloured {
-                    let lg_slab = CLASSES.table()[c].lg_slab as u32;
+                    let lg_slab = CLASSES.table_with(Tracked(classes))[c].lg_slab as u32;
                     proof {
                         crate::vspec::class::lemma_class_table_wf(c as int);
                     }

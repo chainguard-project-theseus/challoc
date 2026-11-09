@@ -57,7 +57,7 @@ fn the_watermark_compare_alone_bounds_the_region() {
     let h = t.heap();
     for c in 0..NCLASSES {
         let committed = s.arena0.class(c).committed_slabs();
-        let last = s.regions.nslabs(c) - 1;
+        let last = s.regions.nslabs(c, Tracked::assume_new()) - 1;
         let base = s.regions.slab_addr(c, 0);
         let len = s.regions.region_len();
         let mut ps = std::vec::Vec::new();
@@ -92,7 +92,10 @@ fn free_into_the_last_slab_of_a_region_aborts() {
     let t = TestHeap::new(s);
     let c = class_with(64);
     let _ = t.alloc(c);
-    t.free(s.regions.slab_addr(c, s.regions.nslabs(c) - 1) as *mut u8);
+    t.free(
+        s.regions
+            .slab_addr(c, s.regions.nslabs(c, Tracked::assume_new()) - 1) as *mut u8,
+    );
 }
 
 #[test]

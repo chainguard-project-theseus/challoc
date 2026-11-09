@@ -68,7 +68,7 @@
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use super::Shared;
-use crate::layout::{CLASSES, NCLASSES, Regions};
+use crate::layout::{CLASSES, Class, NCLASSES, Regions};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::byte::{BytePerm, byte_id};
 use vstd::prelude::verus;
@@ -256,12 +256,13 @@ axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
 /// slab. Aborts when the reservation fails (no address space).
 #[cold]
 #[inline(never)]
-pub(super) fn init(regions: &Regions)
+pub(super) fn init(regions: &Regions, Tracked(classes): Tracked<&'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>)
     requires
         crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
         regions.wf(),
         regions.separated(),
+        crate::layout::frozen_table(*classes),
 {
     let page = regions.page_size();
     proof {
@@ -283,13 +284,14 @@ pub(super) fn init(regions: &Regions)
             crate::sys::may_abort_kernel(),
             crate::sys::may_syscall(),
             regions.wf(),
+            crate::layout::frozen_table(*classes),
             i < MAX_SHARED,
             page > 0,
             page & sub(page, 1) == 0,
             page <= 0x1_0000,
     {
-        let n = regions.nslabs(c);
-        let bits = CLASSES.table()[c].slab_bits();
+        let n = regions.nslabs(c, Tracked(classes));
+        let bits = CLASSES.table_with(Tracked(classes))[c].slab_bits();
         proof {
             // The array fits well inside the address space: at most
             // 2^38 slabs (the region) of at most 2^13 bits each.
@@ -334,17 +336,24 @@ pub(super) fn init(regions: &Regions)
 /// `class_base`. Nothing without the key. Aborts when the commit fails.
 #[cold]
 #[inline(never)]
-pub(crate) fn commit(class: usize, class_base: usize, s: usize, end: usize)
+pub(crate) fn commit(
+    class: usize,
+    class_base: usize,
+    s: usize,
+    end: usize,
+    Tracked(classes): Tracked<&'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>>,
+)
     requires
         crate::sys::may_abort_kernel(),
         crate::sys::may_syscall(),
         class < NCLASSES,
+        crate::layout::frozen_table(*classes),
 {
     let base = array_of(class, class_base);
     if base == 0 {
         return;
     }
-    let bits = CLASSES.table()[class].slab_bits();
+    let bits = CLASSES.table_with(Tracked(classes))[class].slab_bits();
     // The page rounding of `[base + s * bits, base + end * bits)`, by
     // mask (the page is a power of two).
     let mask = PAGE.load(Ordering::Relaxed).wrapping_sub(1);
@@ -378,6 +387,7 @@ fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: b
     requires
         class < NCLASSES,
         transition(from, to),
+        crate::api::ready(),
     ensures
         r != PAST ==> is_state(final(obs)@.0) && r == seen(final(obs)@.0, from) && final(obs)@.1 == after(final(obs)@.0, from, to),
 {
@@ -432,6 +442,7 @@ pub(super) fn free(shared: &Shared, class: usize, p: *mut u8, to: u8)
         crate::sys::may_abort_pending(),
         class < NCLASSES,
         to == CACHED || to == FREE,
+        crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
     let r = step(shared, class, p, LIVE, to, true, Tracked(&mut obs));
@@ -458,6 +469,7 @@ pub(super) fn claim(shared: &Shared, class: usize, p: *mut u8, to: u8)
         crate::sys::may_abort_pending(),
         class < NCLASSES,
         to == CACHED || to == LIVE,
+        crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
     if step(shared, class, p, FREE, to, false, Tracked(&mut obs)) != MOVED {
@@ -477,6 +489,7 @@ pub(super) fn pop(shared: &Shared, class: usize, p: *mut u8)
     requires
         crate::sys::may_abort_pending(),
         class < NCLASSES,
+        crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
     if step(shared, class, p, CACHED, LIVE, false, Tracked(&mut obs)) != MOVED {
@@ -496,6 +509,7 @@ pub(super) fn release(shared: &Shared, class: usize, p: *mut u8)
     requires
         crate::sys::may_abort_pending(),
         class < NCLASSES,
+        crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
     if step(shared, class, p, CACHED, FREE, false, Tracked(&mut obs)) != MOVED {
@@ -515,12 +529,14 @@ pub(super) fn claim_all(shared: &Shared, class: usize, ps: &[*mut u8], n: usize)
         crate::sys::may_abort_pending(),
         class < NCLASSES,
         n <= ps@.len(),
+        crate::api::ready(),
 {
     let mut i = 0;
     while i < n
         invariant
             crate::sys::may_abort_pending(),
             class < NCLASSES,
+            crate::api::ready(),
             n <= ps@.len(),
             i <= n,
         decreases n - i,
@@ -537,12 +553,14 @@ pub(super) fn release_all(shared: &Shared, class: usize, ps: &[*mut u8])
     requires
         crate::sys::may_abort_pending(),
         class < NCLASSES,
+        crate::api::ready(),
 {
     let mut i = 0;
     while i < ps.len()
         invariant
             crate::sys::may_abort_pending(),
             class < NCLASSES,
+            crate::api::ready(),
             i <= ps@.len(),
         decreases ps@.len() - i,
     {
@@ -560,6 +578,7 @@ pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
     requires
         crate::sys::may_abort_pending(),
         class < NCLASSES,
+        crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
     // A step from a value no byte holds stores nothing: a read.
@@ -574,6 +593,7 @@ pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
 fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8>
     requires
         class < NCLASSES,
+        crate::api::ready(),
 {
     let cls = &CLASSES.table()[class];
     proof {

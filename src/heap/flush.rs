@@ -1110,6 +1110,7 @@ verus! {
 pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8]) -> (low: *mut u8)
     requires
         class < NCLASSES,
+        crate::api::ready(),
         old(high)@.len() > 0,
         old(high)@.len() <= crate::config::MAX_NSLOTS,
     ensures
