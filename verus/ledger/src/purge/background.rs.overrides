@@ -1,5 +1,3 @@
-# The name of the state lock: a premise about the one static.
-axiom_state_lock	allocator invariant	none (assumption)
 # The GOT load of glibc's weak `__libc_single_threaded` (verus/isla/seams.md,
 # "The GOT functions"); the byte it names is read through config::byte_at.
 single_threaded_addr	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 3506077324, body 2942983301

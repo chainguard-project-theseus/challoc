@@ -2094,7 +2094,18 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) 
 /// the state lock's hold, then [`resume::axiom_fork_resumed`] for the rest, at
 /// the `&Shared` the release reads, which must be the process's one
 /// value (`Shared::built_at(Shared::storage())`, what `shared` ensures).
-/// The state lock's hold has the permission of its cell that
+/// The state lock's hold is of `l`, which must be the lock
+/// `purge::background::state` returns (each handler passes its
+/// reference, which `api::tests::fork_hold_is_resumed_once` checks by
+/// text): `fork_prepare`'s `purge::background::fork_lock` took the
+/// lock `state` returned to it, and `state` returns `&STATE` on every
+/// call, a static being one object, initialised once (at compile time).
+/// Verus does not check what `l` is: the requirement pins only its rank.
+/// `STATE` is the one `Lock<State>` (`State`'s fields are private to
+/// `purge::background`, which creates one `Lock<State>`), which
+/// `purge::tests::state_lock_is_the_one_lock_of_its_type` backs by
+/// counting source text.
+/// The hold has the permission of its cell that
 /// `fork_prepare` took (`purge::background::fork_lock`, through
 /// [`StateHold::wf`]): restated, as the tokens are, and still the only
 /// one, since the prepare's hold kept it. Its value keeps the state's
@@ -2111,9 +2122,12 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) 
 /// permissions of one cell, a contradiction that is derivable where
 /// `Lock::has_perm` unfolds, in `lock.rs` (it is closed here and in
 /// `purge::background`).
-axiom fn axiom_fork_resumed_state() -> (tracked state: StateHold)
+axiom fn axiom_fork_resumed_state(l: &Lock<State>) -> (tracked state: StateHold)
+    requires
+        l.rank() == rank_state(),
     ensures
         state.wf(),
+        state.lock() == *l,
 ;
 
 /// The signal half of the fork hold: `sig` (the calling thread's mask)
@@ -2537,15 +2551,14 @@ fn saved_sigmask(
 /// becomes the token at top 0 this returns ([`LockOrder::unroot`]): the
 /// thread holds no allocator lock afterwards.
 ///
-/// `l` is the state lock, the one `purge::background::state` returns,
-/// which the release unlocks first.
+/// `l` is the state lock, the lock the hold `state` names
+/// (`StateHold::lock`), which the release unlocks first.
 fn fork_release(l: &Lock<State>, Tracked(state): Tracked<StateHold>) -> (o: Tracked<LockOrder<'static>>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         state.wf(),
-        *l == purge::background::state_static(),
-        l.rank() == rank_state(),
+        state.lock() == *l,
     ensures
         o@.top() == 0,
         !o@.root(),
@@ -2765,7 +2778,7 @@ extern "C" fn fork_parent() {
         return;
     }
     let l = purge::background::state();
-    let tracked state = axiom_fork_resumed_state();
+    let tracked state = axiom_fork_resumed_state(l);
     fork_release(l, Tracked(state));
 }
 
@@ -2784,7 +2797,7 @@ extern "C" fn fork_child() {
         return;
     }
     let l = purge::background::state();
-    let tracked mut state = axiom_fork_resumed_state();
+    let tracked mut state = axiom_fork_resumed_state(l);
     purge::background::fork_child(l, Tracked(&mut state));
     let s = shared();
     proof {

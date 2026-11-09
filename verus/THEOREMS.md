@@ -2625,7 +2625,16 @@ build a token; the handoff axioms below are the other source.
   `&Shared` the release reads, which it requires to be the process's
   one value, `Shared::built_at(Shared::storage())`: `shared` ensures
   that, so the prepare's hold and the release's are over the same
-  `Shared` by proof. The
+  `Shared` by proof. `axiom_fork_resumed_state` takes the state lock
+  each handler names, the `&STATE` that `purge::background::state`
+  returns, which it requires to be of rank `rank_state`, and ensures
+  the hold is of that lock (`StateHold::lock`); the release unlocks the
+  lock the hold names. That it is the lock `fork_prepare` took (through
+  `fork_lock`, from `state` too) is part of the premise, as Verus does
+  not read statics in specifications: a static is one object, and
+  `STATE` is the only `Lock<State>`, which
+  `purge::tests::state_lock_is_the_one_lock_of_its_type` backs by
+  counting source text. The
   premise includes that the bundle's `n` and `arenas` are what
   `fork_prepare` read, which the ensures does not name. glibc runs the
   parent and child handlers on the forking thread (in the child, its
@@ -2702,12 +2711,10 @@ build a token; the handoff axioms below are the other source.
   serves stand for the hold (`lock::axiom_acquired`), and that they
   leave the count and the table as read is `axiom_fork_resumed`'s
   premise.
-- `axiom_state_lock` (`purge/background.rs`, an axiom, used in
-  `STATE`'s initialiser): the static is `state_static()`, whose raw
-  lock is `state_lock()` (Verus does not read statics in
-  specifications); its rank is proved,
-  and `purge::background::state` verifies over the static's
-  postcondition.
+- The state lock's rank is proved (`STATE`'s postcondition, which
+  `purge::background::state` ensures), and `fork_lock`'s hold names
+  the lock it took (`StateHold::wf`, `StateHold::lock`), which
+  `fork_child` writes through and `fork_unlock` releases.
 - The background state's invariant in the child is checked:
   `purge::background::fork_child` ensures it of the value it stores
   (`StateHold::wf`), and `fork_unlock`'s `Lock::unlock_held_perm`
