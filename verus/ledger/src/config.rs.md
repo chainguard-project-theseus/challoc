@@ -82,7 +82,7 @@ pub fn get(&self, key: &[u8]) -> Option<Value>
 
 ## `Parse`
 
-src/config.rs:563. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:565. Kind: ext_type_spec. Category: function pointer.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 451832648, body none.
@@ -93,7 +93,7 @@ struct ExParse(Parse);
 
 ## `Read`
 
-src/config.rs:569. Kind: ext_type_spec. Category: function pointer.
+src/config.rs:571. Kind: ext_type_spec. Category: function pointer.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 3732856044, body none.
@@ -104,7 +104,7 @@ struct ExRead(Read);
 
 ## `TABLE`
 
-src/config.rs:822. Kind: external_body const. Category: function pointer.
+src/config.rs:824. Kind: external_body const. Category: function pointer.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque constant; Verus sees no value of it, and the compiler evaluates it).
 
 > [`ENTRIES`], the tunables.
@@ -117,7 +117,7 @@ pub exec const TABLE: &'static [Key] = ENTRIES;
 
 ## `KEYS`
 
-src/config.rs:857. Kind: external_body const. Category: function pointer.
+src/config.rs:859. Kind: external_body const. Category: function pointer.
 Tool: Kani. Status: discharged (Kani: config::kani_config::keys_are_the_table_names).
 
 > Every key readable through [`Config::get`], in table order, for the `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at compile time, by position) and the tests: the names of [`TABLE`].
@@ -130,7 +130,7 @@ pub exec const KEYS: &'static [&'static str] = &NAMES;
 
 ## `conf_buffer`
 
-src/config.rs:1644. Kind: external_body. Category: raw pointer (internal).
+src/config.rs:1646. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: config::linux::kani_conf_buffer::conf_buffer_is_conf_buf; not checked: that no two references are live at once, which rests on `load`'s one caller, `api::init`, running once (its exchange on `STATE` lets one thread through)).
 
 > The buffer [`load`] reads `/etc/challoc.conf` into: a static, so init's frame does not carry 4 KiB of it (design 13.8: init's frame is capped, though challoc initialises before `main`, so init does not normally run on a program's small thread).
@@ -143,7 +143,7 @@ fn conf_buffer() -> (r: &'static mut [u8; MAX_TEXT + 1])
 
 ## `read_slot`
 
-src/config.rs:1768. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1770. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `const char *` at `slot` (a symbol, or an `environ` entry).
@@ -156,7 +156,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ## `malloc_conf_addr`
 
-src/config.rs:1781. Kind: external_body. Category: inline asm.
+src/config.rs:1783. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -169,7 +169,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ## `je_malloc_conf_addr`
 
-src/config.rs:1806. Kind: external_body. Category: inline asm.
+src/config.rs:1808. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -182,7 +182,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ## `byte_at`
 
-src/config.rs:1869. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1871. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The byte at `p + n`.
@@ -195,7 +195,7 @@ pub(crate) unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ## `bytes_at`
 
-src/config.rs:1881. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1883. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -210,7 +210,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ## `environ_array`
 
-src/config.rs:1893. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1895. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > glibc's `environ`, null before libc has set it up.
@@ -223,7 +223,7 @@ fn environ_array() -> *const *const c_char
 
 ## `env_var`
 
-src/config.rs:1916. Kind: no_decreases. Category: C-program contract.
+src/config.rs:1918. Kind: no_decreases. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.

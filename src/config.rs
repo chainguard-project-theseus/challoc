@@ -425,6 +425,7 @@ impl Config {
     pub fn shared_class(&self, class: usize) -> (r: bool)
         requires
             class < crate::layout::NCLASSES,
+            crate::api::ready(),
         ensures
             r == (crate::layout::class_table()[class as int].size > self.tcache_max),
     {
@@ -450,6 +451,7 @@ impl Config {
     pub fn cap_for(&self, home: u16, arena: u16, class: usize) -> (r: u32)
         requires
             class < crate::layout::NCLASSES,
+            crate::api::ready(),
             LG_NSLOTS_MUL_MIN <= self.lg_tcache_nslots_mul <= LG_NSLOTS_MUL_MAX,
         ensures
             !self.tcache ==> r == 0,

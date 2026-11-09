@@ -966,6 +966,7 @@ impl Heap {
         proof {
             shared.lemma_wf();
             shared.lemma_wf_slow();
+            shared.lemma_wf_ready();
             CachePerms::lemma_keeps_refl(self.perms@);
         }
         // The capacity first: a class that is never cached for this arena

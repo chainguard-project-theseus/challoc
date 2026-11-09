@@ -403,12 +403,15 @@ the call does not return (theorem 3, which is not voided for it).
   leaves its ghost fields alone (theorem 15), nothing more.
 
 **Class table.**
-- `ClassTable::table` (`layout/mod.rs`, `external_body`): returns
-  `class_table()`, trusting that the table `init` left is `table_ok`
-  (as `adopt_page_geometry` keeps it). (Its readers
-  include `Shared::init`, before `READY`, and the `Deref` impl, which
-  can state no precondition, so it does not read through the frozen
-  permission.)
+- `ClassTable::table_with` (`layout/mod.rs`, `external_body`, `requires
+  layout::frozen_table`): returns `class_table()` to a reader that
+  holds the class table's permission, which `api::init` freezes right
+  after `adopt_page_geometry` writes the table, trusting that such a
+  reader sees the value the permission holds. Readers before `READY`
+  (`Regions::reserve_owning`, `Shared::init` and what it calls) get the
+  permission from `init`, the class layer from the `SlabTable` that
+  keeps it, and every other reader from `READY` (`ClassTable::table`,
+  verified, `requires api::ready()`, through `api::axiom_published`).
 - `layout::regions::class_entry` (verified, `requires
   api::ready()`): the entry, through the class table's permission
   frozen at `READY` (`api::axiom_published`), its element
@@ -425,9 +428,10 @@ the call does not return (theorem 3, which is not voided for it).
   the table after init when that table is `table_ok`, and otherwise a
   spec table that is `table_ok` (`layout::spec_ok_table`).
   `adopt_page_geometry` (verified) writes the table through the
-  permission `api::axiom_statics` gives and keeps `table_ok`, which
-  `api::Published` freezes at `READY`, and `layout::axiom_class_table`
-  requires it.
+  permission `api::axiom_statics` gives and keeps `table_ok`; `api::init`
+  freezes that permission right after, `layout::axiom_class_table`
+  requires `table_ok` of it, and `api::Published` carries it from
+  `READY` on.
 
 **Class lines.** The `free` fast paths read each
 class's slot geometry, bitmap and owner bases, hand-out group and a
@@ -6052,7 +6056,7 @@ bounds, and `Sink::write_str` (verified) keeps it.
   atomic operation each), the `LINE_STATE` wrappers (`line_load`,
   `line_compare_exchange`, `line_store`) and the deferred record's
   phase wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
-  atomic operation each), `ClassTable::table`, `class_entry`,
+  atomic operation each), `ClassTable::table_with`, `class_entry`,
   the watermark's load `vspec::atom::load_usize` (the registry is read
   through `Arenas::get_existing` and the verified `arena_ref`),
   `Config::get` and `KEYS`, `vspec::ptr::ref_ptr`

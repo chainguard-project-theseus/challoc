@@ -685,6 +685,7 @@ impl Heap {
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
+            crate::api::ready(),
             old(ord).allows(rank_class(0, 0)),
         ensures
             *final(ord) == *old(ord),
@@ -714,6 +715,7 @@ impl Heap {
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
             class < NCLASSES,
+            crate::api::ready(),
             old(ord).allows(rank_class(0, 0)),
         ensures
             *final(ord) == *old(ord),

@@ -2342,13 +2342,14 @@ impl ClassState {
             assert(sets.holds_set(*slots, class as int, 1));
             assert(sets.holds_set(*slots, class as int, 2));
         }
-        debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class)]);
+        let Tracked(classes) = table.frozen_classes();
+        debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class, table.frozen_classes())]);
         let tracked w0 = slots.tracked_remove((class as int, 0));
         let tracked w1 = slots.tracked_remove((class as int, 1));
         let tracked w2 = slots.tracked_remove((class as int, 2));
-        let partial = Set::in_table(sets_ptr, Tracked(sets_perm), class, 0, Tracked(w0));
-        let empty = Set::in_table(sets_ptr, Tracked(sets_perm), class, 1, Tracked(w1));
-        let purged = Set::in_table(sets_ptr, Tracked(sets_perm), class, 2, Tracked(w2));
+        let partial = Set::in_table(sets_ptr, Tracked(sets_perm), class, 0, Tracked(w0), Tracked(classes));
+        let empty = Set::in_table(sets_ptr, Tracked(sets_perm), class, 1, Tracked(w1), Tracked(classes));
+        let purged = Set::in_table(sets_ptr, Tracked(sets_perm), class, 2, Tracked(w2), Tracked(classes));
         let tracked im = table.empty_marks();
         let tracked dm = Map::<nat, DescPerm>::tracked_empty();
         let tracked zm = Map::<int, Zeroed>::tracked_empty();
@@ -2466,7 +2467,8 @@ impl ClassState {
         proof {
             use_type_invariant(self);
         }
-        &CLASSES.table()[self.class as usize]
+        // The table's frozen permission to the class table; no load.
+        &CLASSES.table_with(self.table().frozen_classes())[self.class as usize]
     }
 
     /// The state's slab count is its class region's in the process's
