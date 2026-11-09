@@ -1,7 +1,8 @@
 # Lint, on every pull request: rustfmt, clippy with -D warnings (which
 # also fails the build on any rustc warning), the ctest-cc.sh cache race
 # test, the loom models, shellcheck, the codegen-fncmp fixtures, the Kani
-# bool-comparison lint and the bench harness's unit tests all block.
+# bool-comparison lint, the not-Copy control and the bench harness's unit
+# tests all block.
 # msrv-build builds the shipped cdylib with the rust-version toolchain.
 # loom-count, the slow loom count model, blocks too but runs only on pull
 # requests that change what it models.
@@ -143,6 +144,19 @@ checks:
       packages: [busybox]
     timeout: 5m
     cmd: [sh, ci/kani-boolcmp-test.sh]
+
+  notcopy-control:
+    description: >-
+      verus/notcopy-control.sh: the not-Copy checks of
+      src/vspec/notcopy.rs reject a Copy type and a Clone type. cargo
+      check with --cfg challoc_notcopy_control builds the file's
+      controls, which must fail with exactly their three E0283 errors and
+      no other error. verus.yaml's verus check runs it again under the
+      Verus package's rust stream.
+    resources: medium
+    timeout: 15m
+    network: *crates
+    cmd: [sh, verus/notcopy-control.sh]
 
   bench-unit:
     description: >-

@@ -1,6 +1,8 @@
 # An abstract linear token: its `addr` and `value` get meaning only from
-# `HeapPerm::assemble` and `slot_heap_ref`; no separation fact is stated.
-HeapPerm	allocator invariant	none (assumption)
+# `HeapPerm::assemble`, `slot_heap_ref` and `TlsSlot::entry`; no
+# separation fact is stated.
+# The const assert checks that it is neither Copy nor Clone.
+HeapPerm	allocator invariant	none (assumption)	trusted (partly checked, const assert: `HeapPerm` in src/vspec/notcopy.rs; not checked: what its `addr` and `value` stand for, which `HeapPerm::assemble`, `slot_heap_ref` and `TlsSlot::entry` (through `slot_ok`) state; and linearity across tokens, which it does not have: each token `TlsSlot::entry` makes holds a heap's permission anew, so verified code cannot duplicate one within a token, but two tokens may each hold one with the same `addr`)	contract 513221394, body 1324333092
 # The whole-heap permission is abstract: that its value holds what
 # `init_fields` wrote through the raw permission (borrowed here, then kept
 # in the heap's ghost state, `Heap::head`) is trusted. Called once per heap,

@@ -57,7 +57,9 @@ verify = true
 # Kani sets `kani` for its harnesses (`src/kani/` and the `kani_*`
 # modules of other files). The loom crate (`tests/loom`) sets `loom` when
 # it compiles the `vspec` atomic wrappers (`src/sync.rs`).
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(kani)", "cfg(loom)", "cfg(challoc_tls_check)"] }
+# `verus/notcopy-control.sh` sets `challoc_notcopy_control` to build the
+# controls of `src/vspec/notcopy.rs`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(kani)", "cfg(loom)", "cfg(challoc_tls_check)", "cfg(challoc_notcopy_control)"] }
 
 [lints.clippy]
 # CONTRIBUTING.md, "Code style": every `unsafe` block names the invariant it

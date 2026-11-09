@@ -1,6 +1,7 @@
 # The kernel's `mmap` contract: a reservation's token stands for a live
-# mapping of its own, which no other token shares.
-Reserved	platform/kernel fact	none (assumption)
+# mapping of its own, which no other token shares. The const assert checks
+# that it is neither Copy nor Clone, so verified code cannot duplicate one.
+Reserved	platform/kernel fact	none (assumption)	trusted (partly checked, const assert: `Reserved` in src/vspec/notcopy.rs; not checked: that each token stands for a live mapping of its own at its `addr` and `len`, the kernel's `mmap` contract, which `try_reserve` (the one place that makes a token), `Reserved::is_disjoint` and `Reserved::is_apart_from_static` assume)	contract 2542402515, body 1324333092
 Reserved::is_apart_from_static	platform/kernel fact	none (assumption)
 Reserved::is_disjoint	platform/kernel fact	none (assumption)
 Reserved::into_unbacked	platform/kernel fact	none (assumption)
