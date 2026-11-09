@@ -424,27 +424,27 @@ fn value_ptr_called_only_by_put_stats() {
     );
 }
 
-/// `axiom_entry` asserts that no allocator lock is held where it is
-/// called, which only its caller's context shows: each use is pinned
-/// to the functions its doc lists, so a new one fails here until the
-/// doc argues its premise (a count of 1 where the doc says one token,
-/// otherwise none: some take one token per call they make).
+/// `axiom_init_entry` and `axiom_thread_entry` assert that no
+/// allocator lock is held where they are called, which only the
+/// caller's context shows: each use is pinned to the function its doc
+/// names, one token each, so a new one fails here until the doc argues
+/// its premise. (`axiom_c_entry`'s uses are the export bodies:
+/// `api::tests::c_call_tokens_only_in_export_bodies`.)
 #[test]
-fn entry_lock_order_uses_are_listed() {
-    use crate::testutil::{ANY, assert_only_at};
+fn root_lock_order_uses_are_listed() {
+    use crate::testutil::assert_only_at;
     assert_only_at(
-        concat!("axiom_", "entry("),
+        concat!("axiom_", "init_entry("),
+        &[("heap/shared.rs:", "pub unsafe fn init(", 1)],
+    );
+    assert_only_at(
+        concat!("axiom_", "thread_entry("),
         &[
-            // `Shared::init`, the background thread's `main`.
-            ("heap/shared.rs:", "pub unsafe fn init(", ANY),
-            ("purge/background.rs:", "extern \"C\" fn main(", ANY),
-            // `api::fork_child`.
-            ("api/mod.rs:", "extern \"C\" fn fork_child(", ANY),
-            // A thread's heap destructor.
+            ("purge/background.rs:", "extern \"C\" fn main(", 1),
             (
                 "heap/thread.rs:",
                 "pub unsafe extern \"C\" fn heap_destructor(",
-                ANY,
+                1,
             ),
         ],
     );

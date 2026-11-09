@@ -1507,8 +1507,8 @@ case $mode in
         echo "seams: self-test: callers: a guard-test row for lock::tests::no_such_test found, want none"
       fi
       # A real row without the two parts is no guard-test row for a status.
-      if guardrow lock::tests::entry_lock_order_uses_are_listed; then
-        echo "seams: self-test: callers: the row of lock::tests::entry_lock_order_uses_are_listed (no Mutants killed: or Known escapes:) accepted, want refused"
+      if guardrow lock::tests::root_lock_order_uses_are_listed; then
+        echo "seams: self-test: callers: the row of lock::tests::root_lock_order_uses_are_listed (no Mutants killed: or Known escapes:) accepted, want refused"
       fi
       # End to end, through cites and checkcite: a status whose callers
       # test is gone is refused, and one naming the guard test this tree

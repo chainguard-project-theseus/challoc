@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::{Lock, LockHeld, LockOrder, Padded};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{RawLock, axiom_entry, lock_inv, rank_class, rank_meta, rank_state};
+use crate::lock::{RawLock, axiom_thread_entry, lock_inv, rank_class, rank_meta, rank_state};
 use crate::sys::tls::TlsCell;
 use crate::sys::{self, Timespec};
 use crate::vspec::addr::addr_to_ptr;
@@ -967,8 +967,9 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         crate::sys::grant_aborts();
     }
     let shared = shared_arg(arg);
-    // Premise (lock order): a new thread holds no allocator lock.
-    let tracked mut ord = axiom_entry();
+    // Premise (lock order, `lock::axiom_thread_entry`): a new thread holds
+    // no allocator lock.
+    let tracked mut ord = axiom_thread_entry();
     // SAFETY: the name is NUL-terminated.
     let _ = unsafe { sys::prctl(PR_SET_NAME, THREAD_NAME.as_ptr() as usize, 0, 0, 0) };
     detach_from_starter();
@@ -1131,15 +1132,21 @@ pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (h: Tracked<StateHold
 /// handing back the hold's token and cell permission, once the fork
 /// window has closed (`lock::window_closed`). The hold's value keeps the
 /// lock invariant ([`StateHold::wf`]), which that release
-/// (`Lock::unlock_held_perm`) requires.
-pub fn fork_unlock(Tracked(h): Tracked<StateHold>)
+/// (`Lock::unlock_held_perm`) requires. The state lock's rank leaves the
+/// root `ord`'s raw holds.
+pub fn fork_unlock(Tracked(h): Tracked<StateHold>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         h.wf(),
         crate::lock::window_closed(),
+        old(ord).root(),
+    ensures
+        final(ord).root(),
+        final(ord).top() == old(ord).top(),
+        final(ord).ranks() == old(ord).ranks().remove(rank_state()),
 {
     let tracked StateHold { tok, perm } = h;
-    state().unlock_held_perm(Tracked(tok), Tracked(perm))
+    state().unlock_held_perm(Tracked(tok), Tracked(perm), Tracked(ord))
 }
 
 } // verus!
