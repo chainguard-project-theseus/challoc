@@ -438,33 +438,7 @@ fn entry_lock_order_uses_are_listed() {
             // `Shared::init`, the background thread's `main`.
             ("heap/shared.rs:", "pub unsafe fn init(", ANY),
             ("purge/background.rs:", "extern \"C\" fn main(", ANY),
-            // The report entry points of `api::print`, one token per report.
-            ("api/print.rs:", "fn stats_print(", 1),
-            ("api/print.rs:", "pub fn malloc_info(", 1),
-            ("api/print.rs:", "pub fn malloc_stats(", 1),
-            // The readers of `api::mallctl`.
-            ("api/mallctl.rs:", "fn cgroup_empty_bytes(", ANY),
-            ("api/mallctl.rs:", "fn stats_allocated(", ANY),
-            ("api/mallctl.rs:", "fn stats_active(", ANY),
-            ("api/mallctl.rs:", "fn stats_metadata(", ANY),
-            ("api/mallctl.rs:", "fn stats_resident(", ANY),
-            ("api/mallctl.rs:", "fn stats_mapped(", ANY),
-            ("api/mallctl.rs:", "fn stats_retained(", ANY),
-            ("api/mallctl.rs:", "pub fn utilization(", ANY),
-            ("api/mallctl.rs:", "pub fn owner_of(", ANY),
-            ("api/mallctl.rs:", "fn tracked(", ANY),
-            ("api/mallctl.rs:", "fn arena_stats_into(", ANY),
-            ("api/mallctl.rs:", "fn arena_figure(", ANY),
-            ("api/mallctl.rs:", "fn ctl(", ANY),
-            ("api/mallctl.rs:", "fn thread_heap(", 1),
-            // `api::libc::malloc_trim`.
-            ("api/libc.rs:", "pub fn malloc_trim(", ANY),
-            // `api::jemalloc::get_defrag_hint`.
-            ("api/jemalloc.rs:", "pub fn get_defrag_hint(", ANY),
-            // `api::glibc::mallinfo2`'s `stats::collect_all` call.
-            ("api/glibc.rs:", "pub fn mallinfo2(", 1),
-            // `api::theorem_read_only_never_aborts`, `api::fork_child`.
-            ("api/mod.rs:", "fn theorem_read_only_never_aborts(", ANY),
+            // `api::fork_child`.
             ("api/mod.rs:", "extern \"C\" fn fork_child(", ANY),
             // A thread's heap destructor.
             (

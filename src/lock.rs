@@ -442,50 +442,13 @@ pub(crate) axiom fn axiom_c_entry<'a>() -> (tracked o: LockOrder<'a>)
 /// Premise (an entry point): the calling thread holds no allocator lock.
 /// Stands in for the token an entry point would hold for its whole call.
 /// Each use is reached from a C entry point (or a thread's start) through
-/// code that holds no allocator lock at that point. The allocation and
-/// free paths take their token from the export instead
-/// ([`axiom_c_entry`]). Its uses:
+/// code that holds no allocator lock at that point. Every C call's entry
+/// point takes its token from the export instead ([`axiom_c_entry`]).
+/// Its uses:
 /// - `Shared::init`, which runs before the `Shared` is published, so no
 ///   allocator lock exists yet;
 /// - the background thread's `main` (`purge::background`), since a new
 ///   thread holds no allocator lock;
-/// - the report entry points of `api::print` (`malloc_stats_print`,
-///   `malloc_info` and `malloc_stats`), one token per report: their C
-///   caller holds no allocator lock, and `api::shared`, called first,
-///   releases every lock it takes before it returns. `stats::Scratch::new`
-///   takes the token before the sink is made; then the report's sink
-///   holds the token and lends it to each call that may take a lock
-///   (`stats::collect`, `stats::collect_arena`, `stats::collect_all`,
-///   `Shared::cgroup_now`, `ClassState::is_partial`, `stats::Scratch::free`
-///   and `policy::empty_bytes`) through `LockOrder::lend`, whose token
-///   borrows the sink and is not a root, and the sink's flush (`emit`)
-///   requires top 0;
-/// - the readers of `api::mallctl` (under `mallctl` and `mallctlbymib`,
-///   `batch_query` and `experimental.utilization.query` among them), one
-///   token per reader or per `utilization` and `owner_of` call, and one
-///   in `arena_figure` for its `stats::Scratch`'s `new` and `free` (which
-///   take the metadata lock): the entry point holds no allocator lock,
-///   `ctl` and the readers take none themselves, and each call the token
-///   is passed to releases every lock it takes before it returns; and one
-///   in `thread_heap` for `heap::heap_for_thread`, called by the
-///   `thread.*` readers and operations, which hold no allocator lock;
-/// - the entry point `malloc_trim`: its caller holds no allocator lock,
-///   and its `Heap::flush_all` and `purge::purge_all` leave the token
-///   unchanged;
-/// - `api::jemalloc`'s `get_defrag_hint`, one token for its
-///   `heap::Heap::gc_for_defrag`, `ClassState::lowest_partial` and
-///   `ClassState::bin_stats` calls: a C entry point, which holds no
-///   allocator lock, `Heap::gc_for_defrag` leaves the token unchanged, and
-///   each of the other two releases the class lock before it returns;
-/// - `api::glibc::mallinfo2`'s `stats::Scratch` and `stats::collect_all`
-///   calls: its callers (the C exports `mallinfo2` and `mallinfo`, the
-///   latter through `api::glibc::mallinfo`, and the tests) hold no
-///   allocator lock, and `api::shared`, called first, releases its locks
-///   before it returns;
-/// - the verification-only `api::theorem_read_only_never_aborts`, one
-///   token for its `libc::malloc_usable_size` call, which stands for that
-///   export's own token, and for its `stats::Scratch` and
-///   `stats::collect_all` calls, which restate `mallinfo2`'s;
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes

@@ -24,6 +24,7 @@ fn mallctl(
         newlen,
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     )
 }
 
@@ -46,6 +47,7 @@ fn mallctlbymib(
         oldlenp,
         newp,
         newlen,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
     )
@@ -316,6 +318,7 @@ fn concurrent_epoch_writes_read_back_their_own_numbers() {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         )
         .map(|()| e)
     };
@@ -370,6 +373,7 @@ fn arena_decay_uses_the_periods_of_the_decay_driver() {
                 node,
                 &mib[..len],
                 &io,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new()
@@ -1416,7 +1420,10 @@ fn utilization_queries_answer_valkeys_defragmenter() {
             )
         })
         .collect();
-    assert_eq!(owner_of(s, ptrs[0] as *const c_void), Some(first));
+    assert_eq!(
+        owner_of(s, ptrs[0] as *const c_void, Tracked::assume_new()),
+        Some(first)
+    );
     // Verbose query on one pointer.
     let cname = CString::new("experimental.utilization.query").unwrap();
     let mut u = Utilization::ZERO;
@@ -1554,7 +1561,7 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     assert_eq!(&out4[3..6], &[0, 0, 0]);
     assert_eq!(out4[7], open(ptrs[1] as *const c_void));
     assert_eq!(&out4[9..12], &[0, 1, CLASSES[cm].size()]);
-    let um = utilization(s, m as *const c_void, true);
+    let um = utilization(s, m as *const c_void, true, Tracked::assume_new());
     assert_eq!(
         (um.nfree, um.nregs, um.size, um.bin_nfree, um.bin_nregs),
         (0, 1, CLASSES[cm].size(), 0, 0)
@@ -1563,7 +1570,10 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     // A class above tcache_max comes from arena 0 on the default path
     // whatever the thread's arena (design 13.3); a cached class from
     // the thread's own arena.
-    assert_eq!(owner_of(s, m as *const c_void), Some(0));
+    assert_eq!(
+        owner_of(s, m as *const c_void, Tracked::assume_new()),
+        Some(0)
+    );
     let home = crate::heap::existing_heap(s).unwrap().arena();
     let mid = mallocx(
         8 << 10,
@@ -1572,7 +1582,10 @@ fn utilization_queries_answer_valkeys_defragmenter() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
-    assert_eq!(owner_of(s, mid as *const c_void), Some(home));
+    assert_eq!(
+        owner_of(s, mid as *const c_void, Tracked::assume_new()),
+        Some(home)
+    );
     dallocx(
         mid,
         0,
@@ -1603,9 +1616,15 @@ fn utilization_queries_answer_valkeys_defragmenter() {
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
-    assert_eq!(utilization(s, gone, true), Utilization::ZERO);
-    assert_eq!(owner_of(s, gone), None);
-    assert_eq!(owner_of(s, ptrs[3] as *const c_void), Some(first));
+    assert_eq!(
+        utilization(s, gone, true, Tracked::assume_new()),
+        Utilization::ZERO
+    );
+    assert_eq!(owner_of(s, gone, Tracked::assume_new()), None);
+    assert_eq!(
+        owner_of(s, ptrs[3] as *const c_void, Tracked::assume_new()),
+        Some(first)
+    );
     for (i, p) in ptrs.into_iter().enumerate() {
         if i != 2 {
             dallocx(

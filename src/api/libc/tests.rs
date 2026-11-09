@@ -1036,10 +1036,20 @@ fn malloc_trim_reports_whether_anything_was_purged() {
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
-        malloc_trim(0, vstd::prelude::Tracked::assume_new()) == 1
+        malloc_trim(
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        ) == 1
     });
     assert!(purged, "malloc_trim never reported the freed run purged");
-    let quiet = (0..32).any(|_| malloc_trim(0, vstd::prelude::Tracked::assume_new()) == 0);
+    let quiet = (0..32).any(|_| {
+        malloc_trim(
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        ) == 0
+    });
     assert!(quiet, "malloc_trim never found nothing to purge");
 }
 
