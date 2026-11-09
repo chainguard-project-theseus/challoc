@@ -3326,23 +3326,25 @@ impl Shared {
     /// cleared bytes.
     #[cold]
     #[inline(never)]
-    pub fn zero_huge(&self, page: usize, Tracked(blk): Tracked<&mut Live>) -> (z: Tracked<Zeroed>)
+    pub fn zero_huge(&self, page: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (z: Tracked<Zeroed>)
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
             old(blk).run_block(page as int),
+            old(ord).allows(rank_huge()),
         ensures
             self.huge_run_zero(z@, page),
             final(blk).run_block(page as int),
             z@.addr() == final(blk).addr() as int,
             z@.len() == final(blk).len(),
+            *final(ord) == *old(ord),
     {
         proof {
             self.lemma_wf_slow();
         }
-        let n = self.huge.usable_size(page, Tracked(blk.run_ref()));
+        let n = self.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(ord));
         proof {
             broadcast use vstd::layout::align_of_u8;
             // The run's usable bytes end inside the huge region.
@@ -3452,14 +3454,16 @@ impl Shared {
     /// ([`crate::heap::huge_hint_ok`]).
     #[cold]
     #[inline(never)]
-    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<&Live>)
+    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): Tracked<&Live>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p) && crate::heap::hint_ok(p, hint) && crate::heap::huge_hint_ok(*blk, p, size)),
             crate::sys::may_syscall(),
             self.wf(),
+            old(ord).top() == 0,
         ensures
             crate::heap::hint_ok(p, hint),
             crate::heap::huge_hint_ok(*blk, p, size),
+            *final(ord) == *old(ord),
     {
         proof {
             self.lemma_wf_slow();
@@ -3503,10 +3507,7 @@ impl Shared {
                         blk.lemma_run_block(p, page);
                     }
                 }
-                // Premise (lock order): called from the sized frees' slow
-                // paths, which hold no allocator lock.
-                let tracked mut ord = axiom_entry();
-                let Some(run) = self.huge.lookup(page, Tracked(blk.run_ref()), Tracked(&mut ord)) else {
+                let Some(run) = self.huge.lookup(page, Tracked(blk.run_ref()), Tracked(&mut *ord)) else {
                     return;
                 };
                 proof {

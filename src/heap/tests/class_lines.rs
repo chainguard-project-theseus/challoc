@@ -321,7 +321,13 @@ fn exact_sized_free_declines_every_sized_fast_free() {
             ),
             "class {c}"
         );
-        s.check_size_hint(p, size, Some(c), Tracked::assume_new());
+        s.check_size_hint(
+            p,
+            size,
+            Some(c),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         t.free(p);
     }
     t.destroy();
@@ -350,6 +356,7 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
         s,
         a1,
         c,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -388,10 +395,12 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.free(
         s,
         p1,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),

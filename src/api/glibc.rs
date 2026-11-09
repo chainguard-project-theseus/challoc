@@ -306,10 +306,22 @@ mod tests {
         // Other tests allocate concurrently, so only our own live blocks
         // give bounds; the identities must hold for any single collection.
         let small: Vec<*mut u8> = (0..200)
-            .map(|_| malloc(900, vstd::prelude::Tracked::assume_new()))
+            .map(|_| {
+                malloc(
+                    900,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                )
+            })
             .collect();
         let huge: Vec<*mut u8> = (0..3)
-            .map(|_| malloc(MEDIUM_MAX + 1, vstd::prelude::Tracked::assume_new()))
+            .map(|_| {
+                malloc(
+                    MEDIUM_MAX + 1,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new(),
+                )
+            })
             .collect();
         let m = mallinfo2(Tracked::assume_new());
         let size = crate::layout::class_size_of(900).unwrap();
@@ -329,6 +341,7 @@ mod tests {
         for p in small.into_iter().chain(huge) {
             free(
                 p,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );

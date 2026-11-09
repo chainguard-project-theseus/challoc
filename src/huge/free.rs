@@ -1688,13 +1688,15 @@ impl Huge {
     /// the usable pages of the run token `tok` holds, if it is this run's.
     /// With that token neither abort can fire, so the caller needs only
     /// `valid_aborts`.
-    pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>) -> (r: usize)
+    pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_run(*tok, page as int)),
             crate::sys::may_syscall(),
             page <= self.spec_npages(),
             self.runs_process(),
+            old(ord).allows(rank_huge()),
         ensures
+            *final(ord) == *old(ord),
             page < self.spec_npages(),
             self.spec_run_usable(page, r),
             tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> r == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page(),
@@ -1703,11 +1705,7 @@ impl Huge {
             use_type_invariant(self);
             self.lemma_page();
         }
-        // Premise (lock order): the callers (`api::libc`'s `usable_size`,
-        // realloc and `free_usable` paths, and `Shared::zero_huge`) hold no
-        // allocator lock.
-        let tracked mut ord = axiom_entry();
-        let g = self.inner.lock(Tracked(&mut ord), Tracked(&mut LockOrder::spare()));
+        let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
         let d = g.table.get(page);
         let _gi: &Inner = &g;
         proof {

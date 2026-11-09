@@ -39,34 +39,78 @@ fn mallocx_tcache_paths_pass_the_heap_checker() {
     let fa = f | mallocx_arena(lua) as c_int;
     let mut live = Vec::new();
     for size in [8usize, 16, 100, 1000, 4096, 30_000] {
-        let p = mallocx(size, f, Tracked::assume_new());
+        let p = mallocx(size, f, Tracked::assume_new(), Tracked::assume_new());
         assert!(!p.is_null());
         assert_tcache_ok(s, t, "mallocx");
-        let q = mallocx(size, fa, Tracked::assume_new());
+        let q = mallocx(size, fa, Tracked::assume_new(), Tracked::assume_new());
         assert!(!q.is_null());
         assert_tcache_ok(s, t, "mallocx with MALLOCX_ARENA");
-        let r = rallocx(p, size * 3, f, Tracked::assume_new(), Tracked::assume_new());
+        let r = rallocx(
+            p,
+            size * 3,
+            f,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!r.is_null());
         assert_tcache_ok(s, t, "rallocx");
-        dallocx(r, f, Tracked::assume_new(), Tracked::assume_new());
+        dallocx(
+            r,
+            f,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_tcache_ok(s, t, "dallocx");
-        let e = mallocx(size, f, Tracked::assume_new());
-        sdallocx(e, size, f, Tracked::assume_new(), Tracked::assume_new());
+        let e = mallocx(size, f, Tracked::assume_new(), Tracked::assume_new());
+        sdallocx(
+            e,
+            size,
+            f,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_tcache_ok(s, t, "sdallocx");
         live.push((q, size));
     }
     // A slot of the Lua arena from the thread's own cache, freed through
     // `t` (homed on arena 0): onto `t`'s FOREIGN node.
-    let o = mallocx(64, mallocx_arena(lua) as c_int, Tracked::assume_new());
-    dallocx(o, f, Tracked::assume_new(), Tracked::assume_new());
+    let o = mallocx(
+        64,
+        mallocx_arena(lua) as c_int,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    dallocx(
+        o,
+        f,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_tcache_ok(s, t, "dallocx of another arena's slot");
-    let huge = mallocx(3 << 20, f, Tracked::assume_new());
+    let huge = mallocx(3 << 20, f, Tracked::assume_new(), Tracked::assume_new());
     assert!(!huge.is_null());
     assert_tcache_ok(s, t, "a huge mallocx");
-    dallocx(huge, f, Tracked::assume_new(), Tracked::assume_new());
+    dallocx(
+        huge,
+        f,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_tcache_ok(s, t, "a huge dallocx");
     for (q, size) in live {
-        sdallocx(q, size, fa, Tracked::assume_new(), Tracked::assume_new());
+        sdallocx(
+            q,
+            size,
+            fa,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_tcache_ok(s, t, "sdallocx with MALLOCX_ARENA");
     }
     let h = s.tcaches.get(t, Tracked::assume_new()).unwrap();
@@ -106,12 +150,13 @@ fn fork_child_uses_the_parents_explicit_cache_through_mallocx() {
     let t = tcache_create(s, 0);
     let f = tcache_flags(t);
     let kept: Vec<usize> = (0..8)
-        .map(|_| mallocx(200, f, Tracked::assume_new()) as usize)
+        .map(|_| mallocx(200, f, Tracked::assume_new(), Tracked::assume_new()) as usize)
         .collect();
     for &p in &kept[..4] {
         dallocx(
             p as *mut u8,
             f,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
         );
@@ -122,16 +167,24 @@ fn fork_child_uses_the_parents_explicit_cache_through_mallocx() {
     crate::testutil::in_fork_child("MALLOCX_TCACHE in a fork child", 20_000, move || {
         assert_tcache_ok(s, t, "fork");
         let ps: Vec<*mut u8> = (0..32)
-            .map(|_| mallocx(64, f, Tracked::assume_new()))
+            .map(|_| mallocx(64, f, Tracked::assume_new(), Tracked::assume_new()))
             .collect();
         assert_tcache_ok(s, t, "the child's mallocx");
         for p in ps {
-            sdallocx(p, 64, f, Tracked::assume_new(), Tracked::assume_new());
+            sdallocx(
+                p,
+                64,
+                f,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         for &p in &child_kept {
             dallocx(
                 p as *mut u8,
                 f,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             );
@@ -150,6 +203,7 @@ fn fork_child_uses_the_parents_explicit_cache_through_mallocx() {
         dallocx(
             p as *mut u8,
             f,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
         );

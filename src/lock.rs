@@ -353,7 +353,8 @@ pub open spec fn rank_spare() -> int {
 /// root in place. Every function that may take a lock takes its caller's
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
 /// (the exceptions are the entry points, whose token comes from
-/// [`axiom_entry`] or [`axiom_fork_entry`] (each lists its uses)).
+/// [`axiom_c_entry`] in an export body, or from [`axiom_entry`] or
+/// [`axiom_fork_entry`] (each lists its uses)).
 /// The fields are private to this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
@@ -413,20 +414,37 @@ impl<'a> LockOrder<'a> {
     }
 }
 
+/// Premise (C-program contract, the lock order at a C call): when C calls
+/// an allocator entry point, the calling thread holds no allocator lock,
+/// or, in the fork window only, holds every one as the fork's own hold
+/// (below). The token stands for that call, and the export passes it down
+/// (`Tracked<&mut LockOrder>`) to every function on its path that may
+/// take a lock, so that no lock is held where one is taken is checked,
+/// not assumed, below the export. A signal handler that interrupted
+/// allocator code and calls an entry point is outside the C contract (the
+/// fork handlers block signals). An allocation from a `pthread_atfork`
+/// handler registered before challoc's runs in the fork window with every
+/// lock held by its own thread; its locks are taken as acquired
+/// ([`fork_holder_is_me`]), so it waits on none of them. Allocator code
+/// calls nothing that may re-enter an entry point while it holds a lock
+/// (theorem 16 checks the reports' calls out; elsewhere by inspection).
+///
+/// Minted only in an export body (an `extern "C" fn` that is a C call
+/// into challoc, an arm of `verified_export_pair!`, or a helper one arm
+/// calls), at most once each: checked by
+/// `api::tests::c_call_tokens_only_in_export_bodies`.
+pub(crate) axiom fn axiom_c_entry<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() == 0,
+        !o.root(),
+;
+
 /// Premise (an entry point): the calling thread holds no allocator lock.
 /// Stands in for the token an entry point would hold for its whole call.
 /// Each use is reached from a C entry point (or a thread's start) through
-/// code that holds no allocator lock at that point. Its uses:
-/// - `Huge::usable_size`, whose callers (`api::libc`'s `usable_size`, its
-///   realloc and `free_usable` paths, and `Shared::zero_huge`) hold no
-///   allocator lock;
-/// - `Shared::check_size_hint`'s `Huge::lookup` on the sized-free slow
-///   path, whose callers (`api::libc`'s `free_sized_slow` and
-///   `api::jemalloc`'s `sdallocx_routed`) are reached from the C entry
-///   points through code that takes no lock;
-/// - `Heap::alloc_huge_in`'s `Shared::alloc_huge` and `Heap::free_huge`'s
-///   `Shared::free_huge`, reached from the entry points and the slow
-///   paths, which hold no allocator lock;
+/// code that holds no allocator lock at that point. The allocation and
+/// free paths take their token from the export instead
+/// ([`axiom_c_entry`]). Its uses:
 /// - `Shared::init`, which runs before the `Shared` is published, so no
 ///   allocator lock exists yet;
 /// - the background thread's `main` (`purge::background`), since a new
@@ -448,17 +466,12 @@ impl<'a> LockOrder<'a> {
 ///   in `arena_figure` for its `stats::Scratch`'s `new` and `free` (which
 ///   take the metadata lock): the entry point holds no allocator lock,
 ///   `ctl` and the readers take none themselves, and each call the token
-///   is passed to releases every lock it takes before it returns;
-/// - `api::libc`'s `alloc_huge` without a thread heap, reached only from the
-///   C entry points, and the entry point `malloc_trim`: their callers hold
-///   no allocator lock, and `malloc_trim`'s
-///   `Heap::flush_all` and `purge::purge_all` leave the token unchanged;
-/// - `heap::alloc`, `heap::alloc_declined` and `heap::alloc_zeroed` without
-///   a thread heap, `heap::free_direct`, and `heap::mallocx`'s
-///   `alloc_direct`, `alloc_huge` and `no_arena` (`heap::mallocx::alloc`'s
-///   check of an explicit `MALLOCX_ARENA`): reached from the C entry points
-///   (`malloc`, `free` and the `mallocx` family) through code that holds
-///   no allocator lock;
+///   is passed to releases every lock it takes before it returns; and one
+///   in `thread_heap` for `heap::heap_for_thread`, called by the
+///   `thread.*` readers and operations, which hold no allocator lock;
+/// - the entry point `malloc_trim`: its caller holds no allocator lock,
+///   and its `Heap::flush_all` and `purge::purge_all` leave the token
+///   unchanged;
 /// - `api::jemalloc`'s `get_defrag_hint`, one token for its
 ///   `heap::Heap::gc_for_defrag`, `ClassState::lowest_partial` and
 ///   `ClassState::bin_stats` calls: a C entry point, which holds no
@@ -469,33 +482,16 @@ impl<'a> LockOrder<'a> {
 ///   latter through `api::glibc::mallinfo`, and the tests) hold no
 ///   allocator lock, and `api::shared`, called first, releases its locks
 ///   before it returns;
-/// - the verification-only `api::theorem_read_only_never_aborts`, for its
-///   `stats::Scratch` and `stats::collect_all` calls, which restate
-///   `mallinfo2`'s;
+/// - the verification-only `api::theorem_read_only_never_aborts`, one
+///   token for its `libc::malloc_usable_size` call, which stands for that
+///   export's own token, and for its `stats::Scratch` and
+///   `stats::collect_all` calls, which restate `mallinfo2`'s;
 /// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
 ///   `fork_release` has handed back every lock token, the child is
 ///   single-threaded, and `empty_bytes` releases every lock it takes
 ///   before it returns;
-/// - the scheduled pops: `Heap::pop_compact`'s probe (one token for its
-///   `tick`, `Shared::arena`, `refill` and `probe_verdict` calls),
-///   `Heap::pop_compact_run`'s `Shared::arena` and `refill` calls, and
-///   `Heap::rebuild_run`, which `pop_compact_run` calls. They run from
-///   `Heap::pop`, which `alloc_in`, `alloc_other` and `alloc_slow_in`
-///   (after `refill`, whose `final(ord) == old(ord)` shows it released its
-///   locks) call, and from `alloc_slow`, which calls `Heap::pop_compact`
-///   directly for the scheduled pop `pop_fast` declined, none of them
-///   holding an allocator lock at the call;
-/// - `heap::thread::create_heap_for_thread`, reached from a thread's first
-///   allocation on its slow path, with no lock held;
 /// - `heap::thread::heap_destructor`, a TLS destructor that runs at thread
-///   exit, outside any allocator call;
-/// - the slow paths `Heap::alloc_slow_in` and `Heap::free_slow_in`, each
-///   with one token for all its calls that take one (`tick`, `Shared::arena`,
-///   `ensure_cache`, the refill or flush, the direct claim or release, and
-///   `Heap::rehome_on_free`'s move), entered from a fast path or an
-///   entry point, which hold no allocator lock, or (`free_slow_in`)
-///   from the push after `Heap::rehome_on_free`'s move, whose
-///   `Heap::try_rehome` releases every lock it takes before it returns.
+///   exit, outside any allocator call.
 ///
 /// No allocator entry point is re-entered while a lock is held: allocator
 /// code calls nothing that may allocate with a lock held, and a signal

@@ -489,7 +489,7 @@ mod tests {
         crate::testutil::assert_only_at(
             concat!("TlsSlot::", "entry()"),
             &[
-                ("heap/thread.rs:", "pub fn heap_for_thread(", 1),
+                ("heap/thread.rs:", "pub fn heap_for_thread<", 1),
                 ("heap/thread.rs:", "pub fn existing_heap(", 1),
                 (
                     "heap/thread.rs:",

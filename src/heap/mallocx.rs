@@ -12,8 +12,7 @@ use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked};
 
 use super::Shared;
-#[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
+use crate::lock::LockOrder;
 use crate::vspec::errno::ThreadErrno;
 use crate::vspec::zero::Zeroed;
 
@@ -350,6 +349,7 @@ pub fn alloc(
     tcache: Tcache,
     Tracked(blk): Tracked<&mut super::Live>,
     errno: Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_abort(),
@@ -357,7 +357,9 @@ pub fn alloc(
         class < crate::layout::NCLASSES,
         shared.wf(),
         arena matches Some(a) ==> a != super::FOREIGN,
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, crate::layout::class_table()[class as int].size as int),
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
@@ -370,30 +372,30 @@ pub fn alloc(
     match tcache {
         Tcache::Default => {
             let tracked tls = crate::sys::tls::TlsSlot::entry();
-            match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan)) {
+            match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(&mut *ord)) {
                 Some(h) => {
                     proof {
                         h.lemma_wf_regions();
                     }
                     match arena {
                         Some(a) => {
-                            if no_arena(shared, a) {
+                            if no_arena(shared, a, Tracked(&mut *ord)) {
                                 return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
                             }
-                            let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell));
+                            let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
                             let ghost take = p@.addr != 0 && zero;
                             let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                             (p, zero, z)
                         },
                         None => {
-                            let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell));
+                            let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
                             let ghost take = p@.addr != 0 && zero;
                             let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                             (p, zero, z)
                         },
                     }
                 },
-                None => alloc_direct(shared, class, arena.unwrap_or(0), arena.is_none(), Tracked(blk)),
+                None => alloc_direct(shared, class, arena.unwrap_or(0), arena.is_none(), Tracked(blk), Tracked(ord)),
             }
         },
         Tcache::Explicit(t) => {
@@ -411,16 +413,16 @@ pub fn alloc(
             // shared class to it (`Heap::alloc_in`).
             match arena {
                 Some(a) => {
-                    if no_arena(shared, a) {
+                    if no_arena(shared, a, Tracked(&mut *ord)) {
                         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
                     }
-                    let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell));
+                    let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
                     let ghost take = p@.addr != 0 && zero;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                     (p, zero, z)
                 },
                 None => {
-                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell));
+                    let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
                     let ghost take = p@.addr != 0 && zero;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
                     (p, zero, z)
@@ -433,7 +435,7 @@ pub fn alloc(
                     crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map(|h| h.arena())
                 })
                 .unwrap_or(0);
-            let (p, zero, z) = alloc_direct(shared, class, a, arena.is_none(), Tracked(blk));
+            let (p, zero, z) = alloc_direct(shared, class, a, arena.is_none(), Tracked(blk), Tracked(ord));
             if !p.is_null() {
                 if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
                     h.count_direct_alloc(class);
@@ -448,16 +450,16 @@ pub fn alloc(
 /// cannot be built: the request is NULL then on every route, even when
 /// `a` is the thread's own home, which an implicit request would serve
 /// from arena 0 (design 14.1).
-fn no_arena(shared: &Shared, a: u16) -> bool
+fn no_arena(shared: &Shared, a: u16, Tracked(ord): Tracked<&mut LockOrder>) -> bool
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
+        old(ord).top() == 0,
+    ensures
+        *final(ord) == *old(ord),
 {
-    // Premise (lock order): called from the `mallocx` entry points, which
-    // hold no lock.
-    let tracked mut ord = axiom_entry();
-    shared.arena(a, Tracked(&mut ord)).is_none()
+    shared.arena(a, Tracked(ord)).is_none()
 }
 
 /// One slot of `class` straight from `arena`'s slab bitmaps. When
@@ -471,29 +473,29 @@ fn alloc_direct(
     arena: u16,
     implicit: bool,
     Tracked(blk): Tracked<&mut super::Live>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         class < crate::layout::NCLASSES,
+        old(ord).top() == 0,
     ensures
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, crate::layout::class_table()[class as int].size as int),
         r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+        *final(ord) == *old(ord),
 {
-    // Premise (lock order): called from the `mallocx` entry points, which
-    // hold no lock.
-    let tracked mut ord = axiom_entry();
-    match shared.arena(arena, Tracked(&mut ord)) {
+    match shared.arena(arena, Tracked(&mut *ord)) {
         Some((a, w)) => {
-            shared.alloc_direct(a, w, class, Tracked(blk), Tracked(&mut ord))
+            shared.alloc_direct(a, w, class, Tracked(blk), Tracked(ord))
         }
         None if implicit => {
             proof {
                 shared.lemma_wf_slow();
             }
-            shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(&mut ord))
+            shared.alloc_direct(&shared.arena0, shared.arena0_published(), class, Tracked(blk), Tracked(ord))
         }
         None => (ptr::null_mut(), false, Tracked(Zeroed::empty(0))),
     }
@@ -502,6 +504,8 @@ fn alloc_direct(
 /// Routing of a `MALLOCX` huge allocation on the calling thread (caches
 /// play no part; the arena is recorded in the run's descriptor). `blk`
 /// gets the run's token.
+// The ghost tokens are part of the signature.
+#[allow(clippy::too_many_arguments)]
 pub fn alloc_huge(
     shared: &Shared,
     size: usize,
@@ -510,13 +514,16 @@ pub fn alloc_huge(
     tcache: Tcache,
     zero: bool,
     Tracked(blk): Tracked<&mut super::Live>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         crate::meta::is_pow2(align),
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
         r.0@.addr != 0 ==> size <= shared.huge_usable(size),
         r.0@.addr != 0 ==> shared.huge_ok(size),
@@ -538,31 +545,30 @@ pub fn alloc_huge(
             crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map_or(0, |h| h.arena())
         }
     };
-    // Premise (lock order): called from the `mallocx` entry points, which
-    // hold no lock.
-    let tracked mut ord = axiom_entry();
     // An explicit `MALLOCX_ARENA` that does not exist is NULL; the
     // thread's own home that cannot be built leaves the run to arena 0
     // (`Shared::alloc_huge`, design 14.1).
-    if arena.is_some() && shared.arena(a, Tracked(&mut ord)).is_none() {
+    if arena.is_some() && shared.arena(a, Tracked(&mut *ord)).is_none() {
         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
     }
-    match crate::heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge_in(shared, size, align, a, zero, Tracked(blk)),
-        None => shared.alloc_huge(size, align, a, zero, Tracked(blk), Tracked(&mut ord)),
+    match crate::heap::heap_for_thread(shared, Tracked(&mut *ord)) {
+        Some(h) => h.alloc_huge_in(shared, size, align, a, zero, Tracked(blk), Tracked(ord)),
+        None => shared.alloc_huge(size, align, a, zero, Tracked(blk), Tracked(ord)),
     }
 }
 
 /// Routing of a `MALLOCX` free (`dallocx`, `sdallocx`) on the calling
 /// thread. Aborts unless `p` is a live allocation. `blk` is the caller's
 /// token for `p` ([`Live::claims`](super::Live::claims)).
-pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<super::Live>, Tracked(errno): Tracked<&mut ThreadErrno>)
+pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<super::Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         blk.claims(p),
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         final(errno).val() == old(errno).val(),
         crate::heap::free_target(p),
         blk.block(p),
@@ -572,17 +578,17 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     // `tcache` names on no other thread (the `MALLOCX_TCACHE` contract).
     let tracked mut u = super::axiom_heap_use();
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p, Tracked(blk), Tracked(errno)),
+        Tcache::Default => crate::heap::free(shared, p, Tracked(blk), Tracked(errno), Tracked(ord)),
         Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u)) {
             Some(h) => {
                 // The calling thread's slot cell, for the explicit cache's
                 // tick (`purge::on_tick`).
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
-                h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell))
+                h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord))
             },
             None => invalid_tcache(t),
         },
-        Tcache::None => crate::heap::free_direct(shared, p, Tracked(blk)),
+        Tcache::None => crate::heap::free_direct(shared, p, Tracked(blk), Tracked(ord)),
     }
 }
 

@@ -15,6 +15,7 @@
 use core::ffi::c_void;
 use core::ptr;
 
+use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::axiom_entry;
 use crate::sys::pac;
@@ -298,16 +299,18 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 #[inline(always)]
 // The heap is per thread, reached through `Shared`; see the doc above.
 #[allow(clippy::mut_from_ref)]
-pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
+pub fn heap_for_thread<'a>(shared: &'a Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a mut Heap>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
+        old(ord).top() == 0,
     ensures
         r matches Some(h) ==> h.wf(),
+        *final(ord) == *old(ord),
 {
     let tracked tls = TlsSlot::entry();
-    heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan))
+    heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(ord))
 }
 
 /// [`heap_for_thread`] on the thread's slot cell `cell` and heap loan
@@ -321,13 +324,15 @@ pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
 /// On an empty slot one `Heap::create` call, and the slot stays empty
 /// unless a heap is returned.
 #[inline(always)]
-pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(cell): Tracked<&mut TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
+pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(cell): Tracked<&mut TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a mut Heap>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         slot_ok(*old(cell), *old(loan)),
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         r matches Some(h) ==> h.wf(),
         reentry_benign(old(cell).value()) ==> r is None && *final(cell) == *old(cell) && *final(loan) == *old(loan),
         old(cell).value() > TLS_EXITED ==> r is Some && *final(cell) == *old(cell) && final(loan).lent(*old(loan)),
@@ -344,7 +349,7 @@ pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(cell): Tracked<&mut Tl
         // SAFETY: `t` is this thread's slot value above the sentinels.
         return Some(unsafe { heap_from_slot(t, tp, shared.pac(), Tracked(&*cell), Tracked(loan)) });
     }
-    create_heap_for_thread(shared, t, Tracked(cell), Tracked(loan))
+    create_heap_for_thread(shared, t, Tracked(cell), Tracked(loan), Tracked(ord))
 }
 
 /// The slot value for heap `h` on the calling thread: `h` signed with the
@@ -379,26 +384,25 @@ fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(cell): Tracked<&TlsCell>
 /// slot and create a second heap).
 #[cold]
 #[inline(never)]
-fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tracked<&mut TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
+fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tracked<&mut TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<&'a mut Heap>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
         slot == old(cell).value(),
         slot_ok(*old(cell), *old(loan)),
+        old(ord).top() == 0,
     ensures
         r matches Some(h) ==> h.wf(),
         slot != 0 ==> r is None && *final(cell) == *old(cell) && *final(loan) == *old(loan),
         slot == 0 ==> final(cell).creates() == old(cell).creates() + 1,
         slot == 0 && r is None ==> final(cell).value() == 0,
+        *final(ord) == *old(ord),
 {
     if slot != 0 {
         return None;
     }
-    // Premise (lock order): reached from the first allocation of a thread,
-    // on its slow path, with no lock held.
-    let tracked mut ord = axiom_entry();
-    let (h, Tracked(perms), Tracked(fresh)) = Heap::create(shared, Tracked(&mut ord));
+    let (h, Tracked(perms), Tracked(fresh)) = Heap::create(shared, Tracked(&mut *ord));
     proof {
         cell.note_create();
     }
@@ -420,7 +424,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
         // so nothing else holds a reference to it.
         let tracked u = axiom_heap_use();
         // SAFETY: created above and never published.
-        unsafe { Heap::destroy(h, shared, Tracked(u), Tracked(&mut ord)) };
+        unsafe { Heap::destroy(h, shared, Tracked(u), Tracked(&mut *ord)) };
         crate::sys::tls::set(ptr::null_mut(), Tracked(&mut *cell));
         return None;
     }
@@ -522,7 +526,7 @@ pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tracked<&mut TlsSlot>)
+fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tracked<&mut TlsSlot>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -530,6 +534,7 @@ fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tra
         sp == Shared::storage() as *const Shared,
         slot_ok(old(tls).cell, old(tls).loan),
         old(tls).value() == TLS_EXITED,
+        old(ord).top() == 0,
     ensures
         *final(tls) == *old(tls),
         forall|v: usize| slot_step(old(tls).value(), v) ==> v == TLS_EXITED,
@@ -539,7 +544,7 @@ fn theorem_exit_no_rebuild(shared: &Shared, sp: *const Shared, Tracked(tls): Tra
     }
     let fast = existing_heap_in(sp, Tracked(&mut *tls));
     assert(fast is None);
-    let slow = heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan));
+    let slow = heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(ord));
     assert(slow is None);
 }
 

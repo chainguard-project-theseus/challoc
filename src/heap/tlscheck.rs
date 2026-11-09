@@ -450,8 +450,20 @@ mod tests {
     /// slot value.
     fn warm(s: &Shared) -> usize {
         let c = class_of(64).unwrap();
-        let p = super::super::alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
-        super::super::free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        let p = super::super::alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        super::super::free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let v = tls::get(Tracked::assume_new()) as usize;
         assert!(
             v > super::super::TLS_EXITED,

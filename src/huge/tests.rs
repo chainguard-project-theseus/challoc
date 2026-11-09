@@ -182,7 +182,10 @@ fn first_run_is_at_the_base_and_zero() {
             dirty_at: 0
         }
     );
-    assert_eq!(h.usable_size(0, Tracked::assume_new()), pages * page_size());
+    assert_eq!(
+        h.usable_size(0, Tracked::assume_new(), Tracked::assume_new()),
+        pages * page_size()
+    );
     assert_eq!(
         h.lookup(pages, Tracked::assume_new(), Tracked::assume_new()),
         None,
@@ -197,7 +200,7 @@ fn first_run_is_at_the_base_and_zero() {
     assert!(zero);
     assert_eq!(env.page_of(q), pages + GUARD_PAGES);
     assert_eq!(
-        h.usable_size(env.page_of(q), Tracked::assume_new()),
+        h.usable_size(env.page_of(q), Tracked::assume_new(), Tracked::assume_new()),
         page_size()
     );
     assert_eq!(env.free(&h, p), pages * page_size());
@@ -870,7 +873,10 @@ fn a_zero_byte_request_gets_one_page() {
         (info.pages, info.usable, info.state),
         (1 + GUARD_PAGES, page_size(), RunState::Active)
     );
-    assert_eq!(h.usable_size(page, Tracked::assume_new()), page_size());
+    assert_eq!(
+        h.usable_size(page, Tracked::assume_new(), Tracked::assume_new()),
+        page_size()
+    );
     assert_eq!(env.free(&h, p), page_size());
     assert_eq!(h.stats(Tracked::assume_new()).runs, 0);
 }
@@ -921,7 +927,10 @@ fn table_grows_and_lookups_survive_backward_shift() {
             assert_eq!(info.state, RunState::Empty);
         } else {
             assert_eq!(info.state, RunState::Active);
-            assert_eq!(h.usable_size(page, Tracked::assume_new()), page_size());
+            assert_eq!(
+                h.usable_size(page, Tracked::assume_new(), Tracked::assume_new()),
+                page_size()
+            );
         }
     }
     for (i, &page) in runs.iter().enumerate() {
@@ -1025,7 +1034,10 @@ fn randomised_model_check() {
                 assert_eq!(p as usize % align, 0);
                 let page = env.page_of(p);
                 let n = size.div_ceil(page_size());
-                assert_eq!(h.usable_size(page, Tracked::assume_new()), n * page_size());
+                assert_eq!(
+                    h.usable_size(page, Tracked::assume_new(), Tracked::assume_new()),
+                    n * page_size()
+                );
                 for &(q, m, _) in &live {
                     assert!(
                         page + n + GUARD_PAGES <= q || q + m + GUARD_PAGES <= page,
@@ -1451,7 +1463,11 @@ fn usable_size_of_a_bad_pointer_aborts() {
     let env = Env::new();
     let h = env.huge();
     let (p, _) = env.alloc(&h, 4 * page_size(), 1);
-    h.usable_size(env.page_of(p) + 2, Tracked::assume_new());
+    h.usable_size(
+        env.page_of(p) + 2,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }
 
 #[test]
