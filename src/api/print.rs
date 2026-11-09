@@ -34,8 +34,6 @@ use crate::heap::Shared;
 use crate::layout::class_table;
 use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::lock::LockOrder;
-#[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
@@ -1348,15 +1346,18 @@ fn nbins() -> (r: usize)
 
 /// [`malloc_stats_print`] into `target`, `opts` read through the call's
 /// token `cc`, whose reads end before the first call back into C (the
-/// sink's `write_cb`, which may change the string).
+/// sink's `write_cb`, which may change the string). `ord` is the C call's
+/// lock-order token, which the report's sink keeps.
 #[inline(always)]
-fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cbuf::CCall>)
+fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cbuf::CCall>, Tracked(ord): Tracked<LockOrder<'static>>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         // The C contract of `opts` (`malloc_stats_print`'s caller's).
         opts@.addr != 0 ==> old(cc).reads_str(opts as *const u8),
+        ord.top() == 0,
 {
+    let tracked mut ord = ord;
     let shared = super::shared();
     let o = Opts::parse(opts, Tracked(&*cc));
     proof {
@@ -1364,9 +1365,6 @@ fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cb
             cc.open_writes(cbuf::CArg::Str(opts as *const u8));
         }
     }
-    // Premise (lock order): the report's C caller holds no allocator
-    // lock, and `shared` releases every lock it takes before it returns.
-    let tracked mut ord = axiom_entry();
     // The general section's two deep calls, made here rather than below
     // the report's frames (design 13.8): the cgroup sample and the
     // feature line (built at its first request).
@@ -1440,15 +1438,16 @@ fn no_memory<W: Write>(out: &mut W) -> fmt::Result {
 /// take `write_cb` as a [`WriteCallback`] (its ABI is the function
 /// pointer's), and `cc` is the call's token, minted
 /// for exactly these arguments ([`cbuf::CEntry::StatsPrint`]) by
-/// `exports::stats_print_entry`.
-pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char, Tracked(cc): Tracked<cbuf::CCall>)
+/// `exports::stats_print_entry`, as is `ord`, the call's lock-order token.
+pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char, Tracked(cc): Tracked<cbuf::CCall>, Tracked(ord): Tracked<LockOrder<'static>>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         cc.fresh(cbuf::CEntry::StatsPrint { opts: opts as *const u8 }),
+        ord.top() == 0,
 {
     let tracked mut cc = cc;
-    stats_print(Target::Callback(write_cb, cbopaque), opts, Tracked(&mut cc))
+    stats_print(Target::Callback(write_cb, cbopaque), opts, Tracked(&mut cc), Tracked(ord))
 }
 
 // ---------------------------------------------------------------------------
@@ -1553,23 +1552,23 @@ fn xml_report<W: Write + Report>(out: &mut W, shared: &Shared, sum: &mut ArenaSt
 /// glibc's `malloc_info(options, stream)`: the `<malloc version="1">`
 /// document with one `<heap>` per arena and the totals. `options` must be
 /// 0 and `stream` non-null, else `-1` with `errno = EINVAL`, as in glibc.
-pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: c_int)
+/// `ord` is the C call's lock-order token, which the report's sink keeps.
+pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<LockOrder<'static>>) -> (r: c_int)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        ord.top() == 0,
     ensures
         r == 0 || r == -1,
         r == -1 <==> options != 0 || stream@.addr == 0,
         r == -1 ==> final(errno).val() == crate::sys::errno::EINVAL,
 {
+    let tracked mut ord = ord;
     if options != 0 || stream.is_null() {
         set_errno(crate::sys::errno::EINVAL, Tracked(errno));
         return -1;
     }
     let shared = super::shared();
-    // Premise (lock order): the report's C caller holds no allocator
-    // lock, and `shared` releases every lock it takes before it returns.
-    let tracked mut ord = axiom_entry();
     // The totals' and each arena's records, as in `stats_print`.
     let scratch = stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let mut sink = Sink::new(file_target(stream), Tracked(ord));
@@ -1580,15 +1579,15 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Trac
 
 /// glibc's `malloc_stats()`: a few lines on stderr in glibc's layout, with
 /// challoc's meaning of each figure (see `glibc.rs` for the mapping).
-pub fn malloc_stats()
+/// `ord` is the C call's lock-order token, which the report's sink keeps.
+pub fn malloc_stats(Tracked(ord): Tracked<LockOrder<'static>>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        ord.top() == 0,
 {
+    let tracked mut ord = ord;
     let shared = super::shared();
-    // Premise (lock order): the report's C caller holds no allocator
-    // lock, and `shared` releases every lock it takes before it returns.
-    let tracked mut ord = axiom_entry();
     // The totals' and each arena's records, as in `stats_print`.
     let scratch = stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let mut sink = Sink::new(stderr_target(), Tracked(ord));
@@ -1721,7 +1720,8 @@ mod exports {
             crate::sys::may_syscall(),
     {
         let tracked cc = axiom_c_call(CEntry::StatsPrint { opts: opts as *const u8 });
-        super::malloc_stats_print(write_cb, cbopaque, opts, Tracked(cc))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::malloc_stats_print(write_cb, cbopaque, opts, Tracked(cc), Tracked(ord))
     }
 
     verified_export_pair! {
@@ -1737,7 +1737,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
-        super::malloc_info(options, stream, Tracked(&mut errno))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::malloc_info(options, stream, Tracked(&mut errno), Tracked(ord))
     }
 
     #[unsafe(no_mangle)]
@@ -1746,7 +1747,8 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::malloc_stats()
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::malloc_stats(Tracked(ord))
     }
 
     } // verus!

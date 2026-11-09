@@ -118,7 +118,9 @@ use crate::heap::Shared;
 use crate::layout::{self, NCLASSES, Regions};
 use crate::lock::LockHeld;
 #[cfg(verus_keep_ghost)]
-use crate::lock::{RawLock, axiom_entry, rank_arena_stats, rank_class, rank_sets, rank_table};
+use crate::lock::{
+    LockOrder, RawLock, axiom_entry, rank_arena_stats, rank_class, rank_sets, rank_table,
+};
 use crate::purge;
 use crate::purge::background::StateHold;
 use crate::sys;
@@ -1226,34 +1228,33 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi::c_int, p: *const u8, verbose: bool)
+fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi::c_int, p: *const u8, verbose: bool, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::integrity_aborts(),
         shared.wf(),
+        // As at an entry point: no allocator lock held.
+        old(ord).top() == 0,
 {
     proof {
         shared.lemma_wf();
     }
-    // Premise (lock order), as at an entry point: it holds no allocator
-    // lock.
-    let tracked mut ord = axiom_entry();
     // `malloc_usable_size(NULL)`, whole.
-    let _ = libc::malloc_usable_size(core::ptr::null_mut(), Tracked(&mut ord));
+    let _ = libc::malloc_usable_size(core::ptr::null_mut(), Tracked(&mut *ord));
     // `nallocx` after its `shared()`.
     let f = crate::heap::mallocx::Flags::decode(flags as u32);
     let _ = jemalloc::usable_for(shared, size, &f).unwrap_or(0);
     // `mallinfo2` after its `shared()`: its calls that carry a contract.
-    let first = crate::stats::Scratch::new(&shared.meta, Tracked(&mut ord));
+    let first = crate::stats::Scratch::new(&shared.meta, Tracked(&mut *ord));
     let _ = glibc::zero_info();
     if let Some(mut sc) = first {
         let tracked mut sd = Ghost((Seq::<crate::stats::ArenaStats>::empty(), Seq::<int>::empty()));
         let pair = sc.record();
-        crate::stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut ord));
+        crate::stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut *ord));
         let all = &sc.get().a;
         let page = shared.regions.page_size();
         let _ = crate::stats::fig_mul(all.pdirty, page);
-        sc.free(&shared.meta, Tracked(&mut ord));
+        sc.free(&shared.meta, Tracked(&mut *ord));
     }
     // `challoc_features` after its `shared()`: the line's build on the
     // first request, or the wait for it.
@@ -1265,7 +1266,7 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
     let line = line_ready(Tracked(published));
     let _ = published_line(line).as_ptr();
     // `mallctl::utilization`, whole.
-    let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose);
+    let _ = mallctl::utilization(shared, p as *const core::ffi::c_void, verbose, Tracked(ord));
 }
 
 /// `get_defrag_hint` aborts, for every pointer and before init, at most
@@ -1277,13 +1278,14 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8)
+fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::valid_aborts(),
         crate::sys::integrity_aborts(),
+        old(ord).top() == 0,
 {
-    let _ = jemalloc::get_defrag_hint(p);
+    let _ = jemalloc::get_defrag_hint(p, Tracked(ord));
 }
 
 } // verus!

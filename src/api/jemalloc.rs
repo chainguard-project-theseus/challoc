@@ -62,8 +62,6 @@ use crate::heap::{Live, Shared};
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind};
 use crate::lock::LockOrder;
-#[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
 use crate::vspec::cbuf::CCall;
 use crate::vspec::errno::ThreadErrno;
 #[cfg(verus_keep_ghost)]
@@ -1093,12 +1091,14 @@ pub open spec fn hint_read(p: usize, rd: HintRead, r: c_int) -> bool {
 #[allow(non_shorthand_field_patterns)] // `verus!`'s expansion of the `let`-`else`
 #[cold]
 #[inline(never)]
-pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
+pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (r: c_int)
     requires
         crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         r == 0 || r == 1,
         // Some reading of the state satisfies `hint_read`. Only its
         // readiness and `p`'s classification are tied to the allocator
@@ -1133,11 +1133,8 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         shared.lemma_wf_ready();
         rd.ready = true;
     }
-    // Premise (lock order): called from the entry point, which holds no
-    // lock.
-    let tracked mut ord = axiom_entry();
     if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
-        h.gc_for_defrag(shared, Tracked(&mut ord));
+        h.gc_for_defrag(shared, Tracked(&mut *ord));
     }
     let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else {
         proof {
@@ -1194,7 +1191,7 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
     // once and closes what the moves left closable (lock-free, at most
     // once per 100 ms per class; docs/proposals/slab-pages.md, 7.1).
     cs.note_defrag_hint();
-    let slabcur = cs.lowest_partial(Tracked(&mut ord));
+    let slabcur = cs.lowest_partial(Tracked(&mut *ord));
     proof {
         rd.lowest = slabcur;
     }
@@ -1204,7 +1201,7 @@ pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
         }
         return 0;
     }
-    let (st, mut curregs) = cs.bin_stats(Tracked(&mut ord));
+    let (st, mut curregs) = cs.bin_stats(Tracked(&mut *ord));
     let mut curslabs = st.curslabs();
     proof {
         rd.st = st;
@@ -1329,7 +1326,8 @@ mod exports {
             r == 0 || r == 1,
             exists|rd: super::HintRead| #[trigger] super::hint_read((p as *const u8) as usize, rd, r),
         ] {
-            super::get_defrag_hint(p as *const u8)
+            let tracked mut ord = crate::lock::axiom_c_entry();
+            super::get_defrag_hint(p as *const u8, Tracked(&mut ord))
         }
     }
 

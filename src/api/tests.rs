@@ -1568,6 +1568,11 @@ fn c_call_tokens_only_in_export_bodies() {
             concat!("axiom_", "c_call("),
         ),
         (
+            "api/print.rs:",
+            "fn malloc_stats_print / je_malloc_stats_print(",
+            concat!("axiom_", "c_entry("),
+        ),
+        (
             "api/mallctl.rs:",
             "fn mallctlnametomib / je_mallctlnametomib(",
             concat!("axiom_", "c_call("),
