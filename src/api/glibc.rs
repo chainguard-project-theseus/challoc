@@ -39,8 +39,7 @@
 use core::ffi::c_int;
 
 use crate::layout::NCLASSES;
-#[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
+use crate::lock::LockOrder;
 use crate::stats::{self, fig_add, fig_mul};
 use vstd::prelude::*;
 
@@ -129,11 +128,13 @@ pub(crate) fn zero_info() -> (r: MallInfo2)
 /// `theorem_read_only_never_aborts` restates its calls that carry a
 /// contract; `api::restated::read_only_restatements_match_their_bodies`
 /// checks that the two make the same calls.
-pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
+pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: MallInfo2)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
+        *final(ord) == *old(ord),
         r.smblks == 0 && r.usmblks == 0 && r.fsmblks == 0,
         !final(rd)@.3 ==> r == zero_info_spec(),
         final(rd)@.3 ==> {
@@ -153,10 +154,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
     proof {
         shared.lemma_wf();
     }
-    // Premise (lock order): `mallinfo2`'s callers (the C exports and the
-    // tests) hold no allocator lock.
-    let tracked mut ord = axiom_entry();
-    let Some(mut sc) = stats::Scratch::new(&shared.meta, Tracked(&mut ord)) else {
+    let Some(mut sc) = stats::Scratch::new(&shared.meta, Tracked(&mut *ord)) else {
         proof {
             *rd = Ghost((rd@.0, rd@.1, rd@.2, false));
         }
@@ -164,7 +162,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
     };
     let tracked mut sd = Ghost((Seq::<stats::ArenaStats>::empty(), Seq::<int>::empty()));
     let pair = sc.record();
-    stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut ord));
+    stats::collect_all(shared, &mut pair.a, &mut pair.b, Tracked(&mut sd), Tracked(&mut *ord));
     let all = &sc.get().a;
     proof {
         *rd = Ghost((sd@.0, sd@.1, *all, true));
@@ -195,7 +193,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>) -> (r: MallInfo2)
         fordblks: arena.saturating_sub(uordblks),
         keepcost: fig_mul(all.pdirty, page),
     };
-    sc.free(&shared.meta, Tracked(&mut ord));
+    sc.free(&shared.meta, Tracked(&mut *ord));
     r
 }
 
@@ -216,13 +214,16 @@ pub open spec fn zero_info_spec() -> MallInfo2 {
 }
 
 /// `mallinfo()`: [`mallinfo2`] saturated into `int`s.
-pub fn mallinfo() -> MallInfo
+pub fn mallinfo(Tracked(ord): Tracked<&mut LockOrder>) -> MallInfo
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
+    ensures
+        *final(ord) == *old(ord),
 {
     let tracked mut rd: Reads = Ghost(arbitrary());
-    let m = mallinfo2(Tracked(&mut rd));
+    let m = mallinfo2(Tracked(&mut rd), Tracked(ord));
     let clamp = |v: usize| v.min(c_int::MAX as usize) as c_int;
     MallInfo {
         arena: clamp(m.arena),
@@ -262,7 +263,8 @@ mod exports {
             crate::sys::grant_syscalls();
             crate::sys::grant_aborts();
         }
-        super::mallinfo()
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::mallinfo(Tracked(&mut ord))
     }
 
     #[unsafe(no_mangle)]
@@ -272,7 +274,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let tracked mut rd: super::Reads = Ghost(arbitrary());
-        super::mallinfo2(Tracked(&mut rd))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::mallinfo2(Tracked(&mut rd), Tracked(&mut ord))
     }
 
     } // verus!
@@ -323,7 +326,7 @@ mod tests {
                 )
             })
             .collect();
-        let m = mallinfo2(Tracked::assume_new());
+        let m = mallinfo2(Tracked::assume_new(), Tracked::assume_new());
         let size = crate::layout::class_size_of(900).unwrap();
         assert!(m.uordblks >= 200 * size, "{m:?}");
         assert!(m.hblks >= 3, "{m:?}");
@@ -332,7 +335,7 @@ mod tests {
         assert_eq!(m.fordblks, m.arena - m.uordblks);
         assert_eq!(m.smblks + m.usmblks + m.fsmblks, 0);
         assert_eq!(m.keepcost % super::super::shared().regions.page_size(), 0);
-        let i = mallinfo();
+        let i = mallinfo(Tracked::assume_new());
         assert!(
             i.hblks >= 3 && i.arena >= i.uordblks && i.fordblks == i.arena - i.uordblks,
             "{i:?}"

@@ -6236,7 +6236,9 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
 - *A C call's caller holds no allocator lock* (`axiom_c_entry`,
   `lock.rs`; ledger category "C-program contract"). Each export body of
   the allocation and free paths, the `mallocx` family, the realloc and
-  usable-size paths and the C++ operators mints one token
+  usable-size paths, the C++ operators, the reports (`api/print.rs`),
+  `mallctl`, `malloc_trim`, `mallinfo2` and `get_defrag_hint` mints one
+  token
   (`api::tests::c_call_tokens_only_in_export_bodies`) and passes it
   down: every function between the export and a lock it takes gets its
   caller's token (`Tracked<&mut LockOrder>`, requiring top 0 or the
@@ -6247,8 +6249,12 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   (`heap/paths.rs`), `pop_compact`, `pop_compact_run` and `rebuild_run`
   (`heap/compact.rs`), the `mallocx` routes (`heap/mallocx.rs`),
   `libc::alloc_huge`, `Huge::usable_size` (`huge/free.rs`),
-  `Shared::check_size_hint` (`heap/shared.rs`) and
-  `create_heap_for_thread` (`heap/thread.rs`). The fast paths take no
+  `Shared::check_size_hint` (`heap/shared.rs`),
+  `create_heap_for_thread` (`heap/thread.rs`), and, under `mallctl`,
+  `ctl`, `thread_heap`, `utilization`, `owner_of`, `arena_stats`,
+  `arena_figure` and the named readers (`api/mallctl.rs`), and theorem
+  32's verification-only witness `theorem_read_only_never_aborts`
+  (`api/mod.rs`). The fast paths take no
   lock (theorem 9), and no allocator entry point is re-entered while a
   lock is held: allocator code calls nothing that may allocate with a
   lock held (theorem 16 for the reports' calls out, by inspection
@@ -6257,22 +6263,8 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
 - *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs`;
   ledger category "allocator invariant"), for the entry points that do
   not take their token from the export. The roots:
-  `malloc_trim` (`api/libc.rs`); `ctl`, `thread_heap` (for its
-  `heap::heap_for_thread` call, which the `thread.*` readers and
-  operations go through),
-  `utilization`, `owner_of`, `arena_stats`, `arena_figure` (for its
-  `stats::Scratch` record), and the named readers
-  `cgroup_empty_bytes`, `tracked` (the seven `stats.cgroup.*` readers'
-  cgroup discovery) and
-  `stats_allocated` to `stats_retained` (`api/mallctl.rs`; `mallctl`
-  calls them through its node table); `get_defrag_hint`; `mallinfo2`
-  (`api/glibc.rs`; its lock-order premise is listed in `axiom_entry`'s
-  doc); the report call sites (`api/print.rs`), and the same
-  call in theorem 32's verification-only witness
-  `theorem_read_only_never_aborts` (`api/mod.rs`);
   `Shared::init` (no lock exists yet); `heap_destructor`
-  (`heap/thread.rs`); the background thread's `main`;
-  `fork_prepare`; and `fork_child` once
+  (`heap/thread.rs`); the background thread's `main`; and `fork_child` once
   `fork_release` has handed back every token of the fork hold, under
   the same no-re-entry argument.
 - *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs`):

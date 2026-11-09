@@ -7,7 +7,13 @@ use std::vec::Vec;
 /// The entry point as the export wrapper calls it, with a placeholder
 /// token for the call.
 fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: *const c_char) {
-    super::malloc_stats_print(write_cb, cbopaque, opts, Tracked::assume_new())
+    super::malloc_stats_print(
+        write_cb,
+        cbopaque,
+        opts,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    )
 }
 
 static CAPTURE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -646,7 +652,10 @@ fn malloc_info_writes_glibc_xml_to_the_stream() {
     // SAFETY: `tmpfile` has no preconditions.
     let f = unsafe { libc::tmpfile() };
     assert!(!f.is_null());
-    assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
+    assert_eq!(
+        malloc_info(0, f, Tracked::assume_new(), Tracked::assume_new()),
+        0
+    );
     // SAFETY: `f` is the open stream from `tmpfile`.
     unsafe { libc::rewind(f) };
     let mut buf = std::vec![0u8; 1 << 16];
@@ -674,11 +683,19 @@ fn malloc_info_writes_glibc_xml_to_the_stream() {
     if let Err(e) = xml_check(&xml) {
         panic!("malloc_info is not well-formed XML: {e}\n{xml}");
     }
-    assert_eq!(malloc_info(1, f, Tracked::assume_new()), -1);
+    assert_eq!(
+        malloc_info(1, f, Tracked::assume_new(), Tracked::assume_new()),
+        -1
+    );
     // SAFETY: `__errno_location` returns this thread's `errno`.
     assert_eq!(unsafe { *libc::__errno_location() }, 22);
     assert_eq!(
-        malloc_info(0, core::ptr::null_mut(), Tracked::assume_new()),
+        malloc_info(
+            0,
+            core::ptr::null_mut(),
+            Tracked::assume_new(),
+            Tracked::assume_new()
+        ),
         -1
     );
     free(
@@ -696,7 +713,7 @@ fn malloc_info_writes_glibc_xml_to_the_stream() {
         );
     }
     // glibc's malloc_stats just has to run and stay on stderr.
-    malloc_stats();
+    malloc_stats(Tracked::assume_new());
 }
 
 /// How long a report that re-enters the allocator may take; one that
@@ -847,7 +864,10 @@ fn a_malloc_info_stream_may_reenter_the_allocator() {
         // SAFETY: `f` is open and has not been written to.
         let unbuffered = unsafe { libc::setvbuf(f, core::ptr::null_mut(), libc::_IONBF, 0) };
         assert_eq!(unbuffered, 0);
-        assert_eq!(malloc_info(0, f, Tracked::assume_new()), 0);
+        assert_eq!(
+            malloc_info(0, f, Tracked::assume_new(), Tracked::assume_new()),
+            0
+        );
         let during = calls.load(core::sync::atomic::Ordering::Relaxed);
         // SAFETY: `f` is the open stream from `fopencookie`.
         unsafe { libc::fclose(f) };

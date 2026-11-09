@@ -1143,7 +1143,7 @@ fn get_defrag_hint_runs_the_callers_cache_gc() {
         let mut calls = 0;
         while heap().last_gc() == 0 {
             assert!(calls < every, "no GC within {every} calls");
-            get_defrag_hint(kept[0]);
+            get_defrag_hint(kept[0], vstd::prelude::Tracked::assume_new());
             calls += 1;
         }
         // It restarted the low water; the next one, an interval later,
@@ -1151,7 +1151,7 @@ fn get_defrag_hint_runs_the_callers_cache_gc() {
         let after_first = lens();
         heap().set_last_gc(0);
         for _ in 0..every {
-            get_defrag_hint(kept[0]);
+            get_defrag_hint(kept[0], vstd::prelude::Tracked::assume_new());
         }
         let after_second = lens();
         let c = crate::layout::class_of(100).unwrap();
@@ -1163,7 +1163,7 @@ fn get_defrag_hint_runs_the_callers_cache_gc() {
         // Further calls run a GC only once another is due.
         let at = heap().last_gc();
         for _ in 0..4 * every {
-            get_defrag_hint(kept[0]);
+            get_defrag_hint(kept[0], vstd::prelude::Tracked::assume_new());
         }
         let at2 = heap().last_gc();
         assert!(
@@ -1239,8 +1239,13 @@ fn get_defrag_hint_follows_the_utilization_data() {
         .class(c);
     let mut moved = 0;
     for &p in &live {
-        let hint = get_defrag_hint(p);
-        let u = utilization(s, p as *const c_void, true);
+        let hint = get_defrag_hint(p, vstd::prelude::Tracked::assume_new());
+        let u = utilization(
+            s,
+            p as *const c_void,
+            true,
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(u.nregs, cls.nslots());
         // The reference: jemalloc's rule over the same figures.
         let (slab, _) = t.locate(p);
@@ -1272,25 +1277,45 @@ fn get_defrag_hint_follows_the_utilization_data() {
         "{moved} hints for {} half-full slots",
         n / 4
     );
-    assert!(
-        live[n / 4..]
-            .iter()
-            .all(|p| get_defrag_hint(*p) == 0
-                || utilization(s, *p as *const c_void, false).nfree > 0)
-    );
+    assert!(live[n / 4..].iter().all(|p| {
+        get_defrag_hint(*p, vstd::prelude::Tracked::assume_new()) == 0
+            || utilization(
+                s,
+                *p as *const c_void,
+                false,
+                vstd::prelude::Tracked::assume_new(),
+            )
+            .nfree
+                > 0
+    }));
     // Not a hint: a freed slot, a huge run, null, a stack address.
-    assert_eq!(get_defrag_hint(ptrs[0]), 0, "freed");
+    assert_eq!(
+        get_defrag_hint(ptrs[0], vstd::prelude::Tracked::assume_new()),
+        0,
+        "freed"
+    );
     let h = mallocx(
         3 << 20,
         flags,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
-    assert_eq!(get_defrag_hint(h), 0, "huge");
-    assert_eq!(get_defrag_hint(ptr::null()), 0, "null");
+    assert_eq!(
+        get_defrag_hint(h, vstd::prelude::Tracked::assume_new()),
+        0,
+        "huge"
+    );
+    assert_eq!(
+        get_defrag_hint(ptr::null(), vstd::prelude::Tracked::assume_new()),
+        0,
+        "null"
+    );
     let stack = 0u64;
     assert_eq!(
-        get_defrag_hint(&stack as *const u64 as *const u8),
+        get_defrag_hint(
+            &stack as *const u64 as *const u8,
+            vstd::prelude::Tracked::assume_new()
+        ),
         0,
         "stack"
     );
@@ -1320,7 +1345,12 @@ fn get_defrag_hint_follows_the_utilization_data() {
         })
         .collect();
     assert!(big.iter().all(|p| !p.is_null()));
-    let um = utilization(s, big[0] as *const c_void, true);
+    let um = utilization(
+        s,
+        big[0] as *const c_void,
+        true,
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert_eq!(
         (um.nregs, um.nfree),
         (1, 0),
@@ -1334,7 +1364,7 @@ fn get_defrag_hint_follows_the_utilization_data() {
         .class(cm);
     let (lone_slab, _) = tm.locate(*big.last().unwrap());
     assert_eq!(tm.desc(lone_slab).live(), 1);
-    let lone_hint = get_defrag_hint(*big.last().unwrap());
+    let lone_hint = get_defrag_hint(*big.last().unwrap(), vstd::prelude::Tracked::assume_new());
     assert_eq!(
         lone_hint,
         (csm.lowest_partial(vstd::prelude::Tracked::assume_new()) != Some(lone_slab)) as c_int,
@@ -1342,7 +1372,7 @@ fn get_defrag_hint_follows_the_utilization_data() {
     );
     for p in &big[..2 * clm.nslots()] {
         assert_eq!(
-            get_defrag_hint(*p),
+            get_defrag_hint(*p, vstd::prelude::Tracked::assume_new()),
             0,
             "a full slab is never worth moving out of"
         );

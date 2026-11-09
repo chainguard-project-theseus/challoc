@@ -42,8 +42,6 @@ use crate::heap::{self, Live, Shared};
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, class_of_small};
 #[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
-#[cfg(verus_keep_ghost)]
 use crate::meta::is_pow2;
 use crate::sys::errno::{EINVAL, ENOMEM};
 use crate::vspec::cbuf::{CCall, COut};
@@ -3044,27 +3042,27 @@ proof fn lemma_user_block_shrink(p: usize, big: int, small: int)
 /// `left` is [`purge_all`](crate::purge::purge_all)'s record after init
 /// (nothing purged before): every arena it visited is covered and clean,
 /// and the result is 1 iff it discarded a byte.
-pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<crate::purge::Left>>) -> (r: c_int)
+pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<crate::purge::Left>>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         r == 0 || r == 1,
         (r == 1) == (final(left)@.bytes > 0),
         final(left)@.covers(),
         final(left)@.clean(),
+        *final(ord) == *old(ord),
 {
     proof {
         *left = Ghost(crate::purge::Left::none());
         crate::purge::Left::lemma_none();
     }
     let Some(shared) = super::shared_if_ready() else { return 0 };
-    // Premise (lock order): `malloc_trim`'s caller holds no allocator lock.
-    let tracked mut ord = axiom_entry();
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
-        h.flush_all(shared, Tracked(&mut ord));
+        h.flush_all(shared, Tracked(&mut *ord));
     }
-    (crate::purge::purge_all(shared, Tracked(&mut *left), Tracked(&mut ord)) > 0) as c_int
+    (crate::purge::purge_all(shared, Tracked(&mut *left), Tracked(&mut *ord)) > 0) as c_int
 }
 
 } // verus!
@@ -3478,7 +3476,8 @@ mod exports {
             crate::sys::grant_aborts();
         }
         let tracked mut left = Ghost(crate::purge::Left::none());
-        super::malloc_trim(pad, Tracked(&mut left))
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::malloc_trim(pad, Tracked(&mut left), Tracked(&mut ord))
     }
 
     // challoc's size-returning entry points (design 13.7): challoc's own
