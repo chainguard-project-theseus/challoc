@@ -350,8 +350,8 @@ const PINS: &[(&str, &[&str])] = &[
             "match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {",
         ],
     ),
-    // The STATE wrappers, load_state, the LINE_STATE wrappers, load_line,
-    // claim_line, publish_line, shared, shared_if_ready (then
+    // The STATE.word wrappers, load_state, the STATE.line wrappers,
+    // load_line, claim_line, publish_line, shared, shared_if_ready (then
     // shared_published and shared_marked, shared's body with the mark),
     // line_ready,
     // claim_init, publish_ready, init_slow and feature_line_fork_child
@@ -359,13 +359,13 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/api/mod.rs",
         &[
-            "STATE.load(Ordering::Acquire)",
-            "STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)",
-            "STATE.store(READY, Ordering::Release);",
+            "STATE.word.load(Ordering::Acquire)",
+            "STATE.word.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)",
+            "STATE.word.store(READY, Ordering::Release);",
             "s = state_load(Tracked(&v.perm));",
-            "LINE_STATE.load(ordering)",
-            "LINE_STATE.compare_exchange(current, new, success, failure)",
-            "LINE_STATE.store(v, ordering)",
+            "STATE.line.load(ordering)",
+            "STATE.line.compare_exchange(current, new, success, failure)",
+            "STATE.line.store(v, ordering)",
             "s = line_load(Ordering::Acquire, Tracked(&v.perm));",
             "won = line_compare_exchange(LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
             "line_store(LINE_READY, Ordering::Release, Tracked(&mut v.perm));",
@@ -653,7 +653,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "STATE.load(Ordering::Acquire)",
+                "STATE.word.load(Ordering::Acquire)",
                 "self.state.load(Ordering::Acquire) == READY",
             ),
             (
@@ -661,7 +661,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "STATE.store(READY, Ordering::Release);",
+                "STATE.word.store(READY, Ordering::Release);",
                 "self.state.store(READY, PUBLISH);",
             ),
         ],
@@ -1134,7 +1134,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "STATE.load(Ordering::Acquire)",
+                "STATE.word.load(Ordering::Acquire)",
                 "let s = self.state.load(Ordering::Acquire);",
             ),
             (
@@ -1142,7 +1142,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)",
+                "STATE.word.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)",
                 "self.state\n.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);",
             ),
             (
@@ -1150,7 +1150,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "STATE.store(READY, Ordering::Release);",
+                "STATE.word.store(READY, Ordering::Release);",
                 "self.state.store(READY, PUBLISH);",
             ),
             ("pub fn shared() -> (r: &'static Shared)", ""),

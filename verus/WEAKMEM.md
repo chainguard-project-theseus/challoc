@@ -42,7 +42,7 @@ a compiler barrier.
 | `sys/cgroup.rs` | 40 | sampled cgroup limits and the deferred discovery's phase |
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `arena.rs` | 30 | registry `AtomicPtr`s, counts, statistics |
-| `api/mod.rs` | 28 | `STATE`, `INIT_TID`, `SEALED`, `LINE_STATE` |
+| `api/mod.rs` | 28 | `STATE` (`word`, `line`), `INIT_TID`, `SEALED` |
 | `stats.rs`, `policy.rs` | 26, 26 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 24 | `SlabDesc`: state, arena, `live`, dirty, `closed`, `shadow`, `stamp` |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
@@ -162,7 +162,7 @@ a compiler barrier.
 ### P4. Publishing `Shared`
 
 - `api::init_slow`: `compare_exchange(UNINIT, INITIALISING, Acquire,
-  Acquire)` (`state_claim`), `init()`, then `STATE.store(READY,
+  Acquire)` (`state_claim`), `init()`, then `STATE.word.store(READY,
   Release)` (`state_publish`). Readers load `Acquire` (`load_state`,
   `state_load`), and waiters spin on an `Acquire` load. The `READY`
   store publishes `SHARED`, `FEATURES` and `FEATURE_LINE` (`UnsafeCell`
@@ -681,7 +681,7 @@ shows the check can fail.
   (`exited ==> !present` in `purge::background::State`'s lock invariant,
   which `lemma_state_inv_unpublishes_exited` reads from it).
 - The once-cells, `oncecell.rs`. The feature line (copies of
-  `line_ready`, `feature_line_fork_child` and the `LINE_STATE` wrappers
+  `line_ready`, `feature_line_fork_child` and the `STATE.line` wrappers
   `line_load`, `line_compare_exchange` and `line_store`): the line is
   built once, and every reader that sees `LINE_READY` reads it
   race-free. The deferred cgroup record (`vspec/byte.rs`'s wrappers as

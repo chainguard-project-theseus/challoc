@@ -84,7 +84,7 @@ fn a_forked_child_does_not_wait_for_a_line_being_built() {
     let pid = unsafe { ::libc::fork() };
     assert!(pid >= 0, "fork failed");
     if pid == 0 {
-        LINE_STATE.store(LINE_BUILDING, Ordering::Release);
+        STATE.line.store(LINE_BUILDING, Ordering::Release);
         // SAFETY: as above.
         let gc = unsafe { ::libc::fork() };
         if gc == 0 {
