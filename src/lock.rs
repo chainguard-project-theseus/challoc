@@ -524,7 +524,9 @@ pub(crate) axiom fn axiom_thread_entry<'a>() -> (tracked o: LockOrder<'a>)
 /// whole handler, which takes every lock with [`RawLock::lock_held`] and
 /// releases none of them before it returns: a root, with no raw hold yet.
 /// Its one use is `api::fork_prepare` (the fork handlers block signals
-/// before their first lock, so nothing re-enters the allocator under it).
+/// before their first lock, so nothing re-enters the allocator under it),
+/// which `api::tests::fork_hold_is_resumed_once` pins, counting every
+/// call in every file under `src/`.
 ///
 /// A `fork` from a signal handler that interrupted this thread inside
 /// the allocator, with a lock held, breaks the premise: `fork_prepare`
@@ -625,7 +627,10 @@ pub(crate) fn in_child_fork_window() -> (r: bool)
 /// shows that thread in the child of its `fork`. `h` and `pid` are what
 /// the caller read from [`FORK_HOLDER`] and then [`FORK_PID`], `me` its
 /// `pthread_self` and `now` its `getpid` (as a `u32`), read after them;
-/// the one use is [`in_child_fork_window`].
+/// the one use is [`in_child_fork_window`]. The contract does not
+/// enforce that the arguments are those reads: it requires facts of
+/// values the caller picks. The one call site does, and
+/// `lock::tests::fork_record_uses_are_listed` pins it and its reads.
 ///
 /// The record's writers are [`fork_window_open`], which stores the
 /// opener's `getpid` and then its `pthread_self`, and

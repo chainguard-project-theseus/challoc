@@ -1289,36 +1289,95 @@ fn assert_locks(s: &Shared, arenas: &[u16], locked: bool) {
 
 /// `resume::axiom_fork_resumed` restates the fork hold, whose creation
 /// lock cell permission is exclusive: a second call would prove
-/// `false`. Its one call is in `resume::resumed`, and `resumed`'s one
-/// call is in `fork_release`, which each handler calls once.
+/// `false`. Its one call is in `resume::resumed`, `resumed`'s one call
+/// is in `fork_release`, and `fork_release` has one call in each of
+/// `fork_parent` and `fork_child`, counted in every file under `src/`
+/// (`resumed` is `pub(super)` and `fork_release` private to `api`, so
+/// `api`'s child modules could call them through `super::`). No shipped
+/// code calls the three handlers, which glibc runs through
+/// `pthread_atfork`.
+///
+/// The state hold's premise (`axiom_fork_resumed_state`) and the mask's
+/// (`axiom_fork_resumed_sig`) have no once token either, and two calls of
+/// the state hold's prove `false`. They are private to `api`, so `api`'s
+/// child modules (`libc.rs`, `print.rs`, ...) can call them through
+/// `super::`: their calls are counted in every file under `src/`, each
+/// call on a line counted (`testutil::assert_only_at`, which sees a call
+/// spelled in full, not one through a `use` alias). So are the calls of
+/// the prepare's premises (`lock::axiom_fork_entry`,
+/// `sys::axiom_thread_mask`), which are `pub(crate)`.
 #[test]
 fn fork_hold_is_resumed_once() {
     // Spelled in parts, so that this test's own lines match nothing.
+    use crate::testutil::assert_only_at;
     let src = include_str!("mod.rs");
-    let calls = |name: &str| {
-        src.lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .filter(|l| l.contains(name) && !l.contains("fn "))
-            .count()
-    };
-    let axiom = std::format!("{}{}(", "axiom_fork_", "resumed");
-    let resumed = std::format!("{}{}(", "resume::", "resumed");
-    let release = std::format!("{}{}(", "fork_", "release");
-    assert_eq!(calls(&axiom), 1, "calls of the resume axiom");
-    assert_eq!(calls(&resumed), 1, "calls of resume::resumed");
-    assert_eq!(calls(&release), 2, "calls of fork_release");
+    // The resume axiom and the path to it: `resume::resumed` is
+    // `pub(super)` and `fork_release` private to `api`, so `api`'s child
+    // modules can call either through `super::`.
+    assert_only_at(
+        concat!("axiom_fork_", "resumed("),
+        &[("api/mod.rs:", "pub(super) fn resumed(", 1)],
+    );
+    assert_only_at(
+        concat!("resume::", "resumed("),
+        &[("api/mod.rs:", "fn fork_release(", 1)],
+    );
+    assert_only_at(
+        concat!("fork_", "release("),
+        &[
+            ("api/mod.rs:", "extern \"C\" fn fork_parent(", 1),
+            ("api/mod.rs:", "extern \"C\" fn fork_child(", 1),
+        ],
+    );
+    // The handlers themselves, which take the premises, are private to
+    // `api` too: no shipped code calls them (glibc does, through
+    // `pthread_atfork`'s pointers; this file's tests call them, outside
+    // the verified program). A call is the name then `()`, not after a
+    // `.` (a method) or a name character (`pool_fork_prepare()`).
+    let shipped = crate::testutil::shipped_sources();
+    for name in [
+        concat!("fork_", "prepare"),
+        concat!("fork_", "parent"),
+        concat!("fork_", "child"),
+    ] {
+        let call = std::format!("{name}()");
+        let decl = std::format!("fn {call}");
+        for (rel, text) in &shipped {
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.starts_with("//") || t.contains(&decl) {
+                    continue;
+                }
+                let called = t.match_indices(&call).any(|(k, _)| {
+                    !t[..k]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c == '.' || c == '_' || c.is_alphanumeric())
+                });
+                assert!(
+                    !called,
+                    "{rel}:{}: a call of the fork handler `{name}`: {t}",
+                    i + 1
+                );
+            }
+        }
+    }
     // The other once-per-handler premises: the state lock's hold, in
     // the parent and the child handler, and the mask's, in the release;
     // the prepare's lock-order root and the thread's mask, in the
     // prepare.
     let state = std::format!("{}{}(", "axiom_fork_resumed_", "state");
-    let sig = std::format!("{}{}(", "axiom_fork_resumed_", "sig");
-    let entry = std::format!("{}{}(", "axiom_fork_", "entry");
-    let mask = std::format!("{}{}(", "axiom_thread_", "mask");
-    assert_eq!(calls(&state), 2, "calls of the state hold's premise");
+    assert_only_at(
+        concat!("axiom_fork_resumed_", "state("),
+        &[
+            ("api/mod.rs:", "extern \"C\" fn fork_parent(", 1),
+            ("api/mod.rs:", "extern \"C\" fn fork_child(", 1),
+        ],
+    );
     // Each of those passes the `l` its handler bound, on the line before,
     // to the state lock `purge::background::state` returns: the premise
-    // is that the hold is of that lock.
+    // is that the hold is of that lock. Every call is in this file (the
+    // count above), so the lines below see them all.
     let code: Vec<&str> = src
         .lines()
         .map(str::trim)
@@ -1334,24 +1393,19 @@ fn fork_hold_is_resumed_once() {
             );
         }
     }
-    assert_eq!(calls(&sig), 1, "calls of the mask token's premise");
-    let lock = include_str!("../lock.rs");
-    let sys = include_str!("../sys/mod.rs");
-    let calls_in = |text: &str, name: &str| {
-        text.lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .filter(|l| l.contains(name) && !l.contains("fn "))
-            .count()
-    };
-    assert_eq!(
-        calls(&entry) + calls_in(lock, &entry),
-        1,
-        "calls of the prepare's lock-order premise"
+    assert_only_at(
+        concat!("axiom_fork_resumed_", "sig("),
+        &[("api/mod.rs:", "fn fork_release(", 1)],
     );
-    assert_eq!(
-        calls(&mask) + calls_in(sys, &mask),
-        1,
-        "calls of the thread mask premise"
+    // The prepare's lock-order root and the thread's mask are
+    // `pub(crate)`, so any file of the crate could call them.
+    assert_only_at(
+        concat!("axiom_fork_", "entry("),
+        &[("api/mod.rs:", "extern \"C\" fn fork_prepare(", 1)],
+    );
+    assert_only_at(
+        concat!("axiom_thread_", "mask("),
+        &[("api/mod.rs:", "extern \"C\" fn fork_prepare(", 1)],
     );
 }
 
