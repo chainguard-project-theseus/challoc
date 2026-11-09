@@ -35,10 +35,13 @@ RawLock::lock_slow	termination	loom/GenMC
 # (api::tests::c_call_tokens_only_in_export_bodies); Verus checks every
 # use below the export.
 axiom_c_entry	C-program contract	none (assumption)
-# Lock-order premise of the uses that are no C call (`Shared::init`, the
-# background thread, `fork_child`, the thread destructor;
-# lock::tests::entry_lock_order_uses_are_listed).
-axiom_entry	allocator invariant	none (assumption)
+# `Shared::init` holds no allocator lock: none exists before the `Shared`
+# is published (lock::tests::root_lock_order_uses_are_listed pins the call).
+axiom_init_entry	allocator invariant	none (assumption)
+# A thread's start routine and its exit key's destructor run with no
+# allocator code on the stack below them (the background thread's `main`,
+# `heap_destructor`; pinned by the same test).
+axiom_thread_entry	platform/kernel fact	none (assumption)
 # The fork prepare handler holds no lock at entry and keeps its token
 # throughout. No allocator code forks and glibc runs the handler from
 # `fork`, so a lock held at entry needs a `fork` from a signal handler

@@ -92,7 +92,7 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: exit::loom_exit_after_w
 
 > The thread's body: decay and sample until the request is withdrawn.
 
-Hashes: contract 165770519, body 2141906423.
+Hashes: contract 165770519, body 2553821456.
 
 ```rust
 extern "C" fn main(arg: *mut c_void) -> *mut c_void
@@ -100,7 +100,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void
 
 ## `axiom_state_lock`
 
-src/purge/background.rs:1065. Kind: axiom. Category: allocator invariant.
+src/purge/background.rs:1066. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Assumption: [`state_static`] is [`STATE`].

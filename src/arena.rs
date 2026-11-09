@@ -3197,7 +3197,8 @@ impl Arenas {
     /// no `&mut` into the cell (`Arenas::create`, `Arenas::materialise`),
     /// exists then. The proof does not check that the holder takes no
     /// guard of the creation lock while it holds the token (that rests on
-    /// `lock::axiom_entry`'s premise), nor that unverified code makes no
+    /// the lock order's entry premises: `lock::axiom_c_entry` for a C call,
+    /// and the init, thread and fork roots), nor that unverified code makes no
     /// `cp` or `t` with `Tracked::assume_new`. So this stays crate-private.
     // `t` is only named by the specification.
     #[allow(unused_variables)]
@@ -3301,14 +3302,19 @@ impl Arenas {
     /// Release the creation lock [`Arenas::lock_held`] took, handing back
     /// its token and the permission of its cell (`Lock::unlock_held_perm`).
     #[inline(always)]
-    pub(crate) fn unlock_held(&self, Tracked(t): Tracked<LockHeld>, Tracked(cp): Tracked<CreatedPerm>)
+    pub(crate) fn unlock_held(&self, Tracked(t): Tracked<LockHeld>, Tracked(cp): Tracked<CreatedPerm>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
             t.held() == self.spec_raw_lock(),
             self.frozen(cp),
             crate::lock::window_closed(),
+            old(ord).root(),
+        ensures
+            final(ord).root(),
+            final(ord).top() == old(ord).top(),
+            final(ord).ranks() == old(ord).ranks().remove(t.held().rank()),
     {
-        self.lock.unlock_held_perm(Tracked(t), Tracked(cp));
+        self.lock.unlock_held_perm(Tracked(t), Tracked(cp), Tracked(ord));
     }
 
     /// `cp` is the permission of the creation lock's cell, whose value

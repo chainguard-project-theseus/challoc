@@ -188,23 +188,34 @@ impl RawLock {
             t@.held() == *self,
             final(ord).root(),
             final(ord).top() == self.rank(),
+            final(ord).ranks() == old(ord).ranks().insert(self.rank()),
     {
         self.lock();
         proof {
             ord.top = self.rank();
+            ord.ranks = ord.ranks.insert(self.rank());
         }
         Tracked(LockHeld { lock: *self })
     }
 
     /// [`RawLock::release`] by the holder, which hands its token back,
-    /// once the fork window has closed ([`window_closed`]).
+    /// once the fork window has closed ([`window_closed`]); its rank leaves
+    /// the root `ord`'s raw holds.
     #[inline(always)]
-    pub fn unlock_held(&self, Tracked(t): Tracked<LockHeld>)
+    pub fn unlock_held(&self, Tracked(t): Tracked<LockHeld>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
             t.held() == *self,
             window_closed(),
+            old(ord).root(),
+        ensures
+            final(ord).root(),
+            final(ord).top() == old(ord).top(),
+            final(ord).ranks() == old(ord).ranks().remove(self.rank()),
     {
+        proof {
+            ord.ranks = ord.ranks.remove(self.rank());
+        }
         self.release();
     }
 
@@ -353,8 +364,9 @@ pub open spec fn rank_spare() -> int {
 /// root in place. Every function that may take a lock takes its caller's
 /// (`Tracked<&mut LockOrder>`), so the bound follows the call chain
 /// (the exceptions are the entry points, whose token comes from
-/// [`axiom_c_entry`] in an export body, or from [`axiom_entry`] or
-/// [`axiom_fork_entry`] (each lists its uses)).
+/// [`axiom_c_entry`] in an export body, or from [`axiom_init_entry`],
+/// [`axiom_thread_entry`] or [`axiom_fork_entry`] (each lists its uses),
+/// and, for the fork release, from `api::resume::axiom_fork_resumed`).
 /// The fields are private to this module.
 ///
 /// The token [`Lock::lock`] hands out has the lifetime `'a` of the
@@ -362,11 +374,17 @@ pub open spec fn rank_spare() -> int {
 /// lower bound is unusable until the guard and every use of the token
 /// handed out are gone. A handed-out token used after its guard is
 /// dropped bounds a lock no longer held, which only forbids more.
+///
+/// A root also records the ranks of the raw holds its owner keeps
+/// ([`LockOrder::ranks`]): [`RawLock::lock_held`] adds one,
+/// [`RawLock::unlock_held`] takes it out, and a root whose set is empty
+/// becomes a token at top 0 ([`LockOrder::unroot`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct LockOrder<'a> {
     ghost top: int,
     ghost root: bool,
+    ghost ranks: Set<int>,
     ghost life: PhantomData<&'a ()>,
 }
 
@@ -383,6 +401,31 @@ impl<'a> LockOrder<'a> {
         self.root
     }
 
+    /// For a root, the ranks of the raw holds (`LockHeld`) its owner
+    /// keeps: no lock of another rank is held by the owner, since a root
+    /// starts with none ([`axiom_fork_entry`]) or with the ranks of the
+    /// hold it comes with (`api::resume::axiom_fork_resumed`, the fork
+    /// release's root), and its guards end before it is used again. A
+    /// lock's rank names it among the locks a thread can hold at once (a
+    /// raw acquisition ranks above every lock its thread holds).
+    pub closed spec fn ranks(self) -> Set<int> {
+        self.ranks
+    }
+
+    /// A root with no raw hold left: its owner holds no allocator lock,
+    /// so a token at top 0 (not a root) stands for it. The fork release
+    /// ends with one (`api::fork_release`).
+    pub proof fn unroot(tracked self) -> (tracked o: LockOrder<'a>)
+        requires
+            self.root(),
+            self.ranks() == Set::<int>::empty(),
+        ensures
+            o.top() == 0,
+            !o.root(),
+    {
+        LockOrder { top: 0, root: false, ranks: Set::empty(), life: PhantomData }
+    }
+
     /// The owner may block on a lock of rank `r`.
     pub open spec fn allows(self, r: int) -> bool {
         self.top() < r
@@ -395,7 +438,7 @@ impl<'a> LockOrder<'a> {
             o.top() == rank_spare(),
             !o.root(),
     {
-        LockOrder { top: rank_spare(), root: false, life: PhantomData }
+        LockOrder { top: rank_spare(), root: false, ranks: Set::empty(), life: PhantomData }
     }
 
     /// A token for the code that runs while this one is lent: the same
@@ -410,7 +453,7 @@ impl<'a> LockOrder<'a> {
             !o.root(),
             *final(self) == *old(self),
     {
-        LockOrder { top: self.top, root: false, life: PhantomData }
+        LockOrder { top: self.top, root: false, ranks: Set::empty(), life: PhantomData }
     }
 }
 
@@ -439,55 +482,61 @@ pub(crate) axiom fn axiom_c_entry<'a>() -> (tracked o: LockOrder<'a>)
         !o.root(),
 ;
 
-/// Premise (an entry point): the calling thread holds no allocator lock.
-/// Stands in for the token an entry point would hold for its whole call.
-/// Each use is reached from a C entry point (or a thread's start) through
-/// code that holds no allocator lock at that point. Every C call's entry
-/// point takes its token from the export instead ([`axiom_c_entry`]).
-/// Its uses:
-/// - `Shared::init`, which runs before the `Shared` is published, so no
-///   allocator lock exists yet;
-/// - the background thread's `main` (`purge::background`), since a new
-///   thread holds no allocator lock;
-/// - `api::fork_child`'s `policy::empty_bytes` call: it runs after
-///   `fork_release` has handed back every lock token, the child is
-///   single-threaded, and `empty_bytes` releases every lock it takes
-///   before it returns;
-/// - `heap::thread::heap_destructor`, a TLS destructor that runs at thread
-///   exit, outside any allocator call.
+/// Premise (allocator invariant, the lock order at init): `Shared::init`,
+/// its one use, holds no allocator lock. Every allocator lock is one of
+/// the `Shared` that `init` builds or a static that only code reached
+/// through that `Shared` takes (the background thread's state lock), and
+/// `api::init` runs `init` once, before it publishes the `Shared`; so no
+/// allocator lock can be held yet. The C call that reaches `init` (its
+/// first use of the allocator) holds a token of its own
+/// ([`axiom_c_entry`]), which `api::shared` does not take.
 ///
-/// No allocator entry point is re-entered while a lock is held: allocator
-/// code calls nothing that may allocate with a lock held, and a signal
-/// handler that allocates is outside the C contract (the fork handlers
-/// block signals).
+/// Checked by `lock::tests::root_lock_order_uses_are_listed`, which pins
+/// its one call site.
+pub(crate) axiom fn axiom_init_entry<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() == 0,
+        !o.root(),
+;
+
+/// Premise (platform fact, the lock order at a thread's start or exit):
+/// code that the C library runs on a thread outside any call into
+/// challoc holds no allocator lock. Its uses:
+/// - the background thread's `main` (`purge::background`), its thread's
+///   start routine, which `pthread_create` runs on a new thread;
+/// - `heap::thread::heap_destructor`, the thread-exit key's destructor,
+///   which glibc runs as the thread exits (after its start routine
+///   returns, or from `pthread_exit`). challoc calls neither
+///   `pthread_exit` nor a cancellation point while it holds an
+///   allocator lock, so no exit starts inside a critical section of
+///   challoc's.
 ///
-/// Checked by `lock::tests::entry_lock_order_uses_are_listed`, which pins
-/// the functions that call it to the uses listed above: a new use is
-/// listed here, with why no allocator lock is held at it, and added to
-/// that test's list in the same change.
-pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
+/// Checked by `lock::tests::root_lock_order_uses_are_listed`, which pins
+/// the functions that call it to the uses listed above.
+pub(crate) axiom fn axiom_thread_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.top() == 0,
         !o.root(),
 ;
 
 /// Premise (the fork prepare handler's entry): the calling thread holds no
-/// allocator lock, as for [`axiom_entry`], and keeps this token for the
+/// allocator lock, as for [`axiom_c_entry`], and keeps this token for the
 /// whole handler, which takes every lock with [`RawLock::lock_held`] and
-/// releases none of them before it returns: a root. Its one use is
-/// `api::fork_prepare` (the fork handlers block signals before their
-/// first lock, so nothing re-enters the allocator under it).
+/// releases none of them before it returns: a root, with no raw hold yet.
+/// Its one use is `api::fork_prepare` (the fork handlers block signals
+/// before their first lock, so nothing re-enters the allocator under it).
 ///
 /// A `fork` from a signal handler that interrupted this thread inside
 /// the allocator, with a lock held, breaks the premise: `fork_prepare`
 /// would then wait forever on that lock. `fork` runs the atfork handlers
 /// and is not async-signal-safe in glibc or in POSIX.1-2024, which list
 /// `_Fork` instead, so that call is outside the C contract, as the
-/// allocating handler of [`axiom_entry`] is.
+/// allocating signal handler of [`axiom_c_entry`] is.
 pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
         o.top() == 0,
         o.root(),
+        o.ranks() == Set::<int>::empty(),
 ;
 
 /// Whether the calling thread holds every allocator lock for a `fork`:
@@ -869,7 +918,7 @@ impl<T> Lock<T> {
         let tracked perm = axiom_acquired(*self);
         let g = LockGuard { lock: self, perm: Tracked(perm) };
         proof {
-            *under = LockOrder { top: self.rank(), root: false, life: PhantomData };
+            *under = LockOrder { top: self.rank(), root: false, ranks: Set::empty(), life: PhantomData };
         }
         g
     }
@@ -947,11 +996,13 @@ impl<T> Lock<T> {
             lock_frame(lock_init(*self), *r@.1.value()),
             final(ord).root(),
             final(ord).top() == self.rank(),
+            final(ord).ranks() == old(ord).ranks().insert(self.rank()),
             self.rank() == rank_state() ==> fork_prepared(*final(ord)),
     {
         self.raw.lock();
         proof {
             ord.top = self.rank();
+            ord.ranks = ord.ranks.insert(self.rank());
         }
         Tracked((LockHeld { lock: self.raw }, axiom_acquired(*self)))
     }
@@ -997,7 +1048,7 @@ impl<T> Lock<T> {
     /// [`lock_frame`], so the next acquisition's claim of them
     /// ([`axiom_acquired`]) is checked here.
     #[inline(always)]
-    pub(crate) fn unlock_held_perm(&self, Tracked(t): Tracked<LockHeld>, Tracked(perm): Tracked<PointsTo<T>>)
+    pub(crate) fn unlock_held_perm(&self, Tracked(t): Tracked<LockHeld>, Tracked(perm): Tracked<PointsTo<T>>, Tracked(ord): Tracked<&mut LockOrder>)
         where T: LockSpec
         requires
             crate::sys::may_syscall(),
@@ -1006,7 +1057,15 @@ impl<T> Lock<T> {
             lock_inv(*perm.value()),
             lock_frame(lock_init(*self), *perm.value()),
             window_closed(),
+            old(ord).root(),
+        ensures
+            final(ord).root(),
+            final(ord).top() == old(ord).top(),
+            final(ord).ranks() == old(ord).ranks().remove(t.held().rank()),
     {
+        proof {
+            ord.ranks = ord.ranks.remove(t.held().rank());
+        }
         self.raw.release();
     }
 }
