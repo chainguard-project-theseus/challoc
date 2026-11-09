@@ -15,8 +15,8 @@
 # one in Authorization headers to *.googleapis.com). gcloud introspects a
 # bare external account's token to name it, which the stand-in fails, so
 # this writes a copy that impersonates the floor service account
-# (FLOOR_SA; the principal may impersonate it and nothing else, see
-# docs/runbooks/checks-gce-identity.md) and points gcloud at it. The proxy
+# (FLOOR_SA; the principal may impersonate it and nothing else)
+# and points gcloud at it. The proxy
 # also re-signs TLS, and gcloud keeps its own CA setting.
 set -euo pipefail
 cells=${1:?usage: ci/floor.sh CELLS}
@@ -25,7 +25,7 @@ export CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE=${SSL_CERT_FILE:-/etc/ssl/certs/ca-cer
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 : "${FLOOR_SA:?the check names the floor service account}"
 # Where cb launch runs: the floor service account's project, its bench
-# bucket and its VMs' service account, named by convention (the runbook).
+# bucket and its VMs' service account, named by convention.
 project=${FLOOR_SA#*@}
 project=${project%%.*}
 export CB_PROJECT=${CB_PROJECT:-$project}

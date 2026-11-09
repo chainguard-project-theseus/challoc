@@ -1,21 +1,18 @@
-# codeowners-gate sidecar for wolfi-dev/challoc: the source of truth for
-# .github/CODEOWNERS, which renders it without the bot: owners. Change both
-# with a change request and mono's hack/codeowners-gate/run.sh apply (mono's
-# codeowners skill), run from the root of this repository. GitHub reads the
-# rendering with last match wins.
+# The source of truth for .github/CODEOWNERS, which renders it without the
+# bot: owners. GitHub reads the rendering with last match wins.
 #
-# The Checks review gate (mono's ai-cicd/sandbox/internal/codereview) reads
-# this file from the default branch. bot:challoc is the reviewer declared in
-# .chainguard/reviewers.yaml: on a gated entry its approve verdict satisfies
-# a path the way an owner's approval does. The entry below is gated, so
-# Checks submits an approving review as chainguard[bot] on a gated
-# entry when reviewers.yaml sets `approve: true`, which it does. A path
-# the reviewers read as their own definitions (this file, reviewers.yaml,
-# the prompt file, AGENTS.md, CLAUDE.md) always needs a person's approval,
-# from someone named here other than the author or a pusher of the head.
+# The Checks review gate reads this file from the default branch.
+# bot:challoc is the reviewer declared in .chainguard/reviewers.yaml: on a
+# gated entry its approve verdict satisfies a path the way an owner's
+# approval does. The entry below is gated, so Checks submits an approving
+# review as chainguard[bot] on a gated entry when reviewers.yaml sets
+# `approve: true`, which it does. A path the reviewers read as their own
+# definitions (this file, reviewers.yaml, the prompt file, AGENTS.md,
+# CLAUDE.md) always needs a person's approval, from someone named here
+# other than the author or a pusher of the head.
 version: 1
 entries:
   - pattern: '*'
     owners: [dlorenc, mattmoor, tcnghia, 'bot:challoc', wolfi-dev/foundations-squad]
     gate: 1
-    note: 'every path, gated: the maintainers, the wolfi-dev/foundations-squad team and the challoc Checks reviewer (bot:challoc, .chainguard/reviewers.yaml), whose approve verdict at a head satisfies the gate as an owner approval does (mono code-reviewer README, "4. Let its approvals count")'
+    note: 'every path, gated: the maintainers, the wolfi-dev/foundations-squad team and the challoc Checks reviewer (bot:challoc, .chainguard/reviewers.yaml), whose approve verdict at a head satisfies the gate as an owner approval does'

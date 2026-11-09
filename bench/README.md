@@ -454,8 +454,8 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
   the bench image, and a VM service account with object read/write on
   that bucket and read on that repository, nothing else. (The one
   project the repository names is the CI floor checks': `FLOOR_SA` in
-  `.chainguard/ci/floor.yaml`, set up as
-  `docs/runbooks/checks-gce-identity.md` describes.) `cb launch`
+  `.chainguard/ci/floor.yaml`; `ci/floor.sh` derives the bucket and the
+  VMs' service account from its project.) `cb launch`
   takes the first three from, in order, `--project`, `--bucket` and
   `--service-account`; `CB_PROJECT`, `CB_BUCKET` and `CB_SERVICE_ACCOUNT`;
   or the `[defaults]` of a local overlay (`cb gc` needs only the

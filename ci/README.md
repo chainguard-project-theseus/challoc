@@ -81,15 +81,10 @@ checks to run with `--check`. The floor checks run only on main, where
 their identity is released.
 
 `identities.yaml` holds the trust policy (which pull requests get which
-credentials) and the `challoc-gce` identity; its header says how to tighten
-it when the repository is public.
+credentials) and the `challoc-gce` identity.
 
-## Not here yet, and why
+## Not here yet
 
-- **The other GCE kernel cells** (6.1, COS, 6.8, 64k arm64, 6.12, 7.0 and
-  the Chainguard OS cells). `floor.yaml` can launch any of them; they run
-  by hand as `cb launch exp-floor` until there is a reason to gate on
-  them. The Chainguard OS cells stay out of this public tree.
 - **Benchmarks on a label** (`bench:quick` / `bench:full`). The same
   identity and `cb launch quick`, as a requested check.
 - **Release**, SBOM, cosign, Pages: nothing is published.

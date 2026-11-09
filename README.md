@@ -244,7 +244,6 @@ seccomp profile hides `mseal`.
 - `bench/README.md`: the benchmark harness (cb), its rows, suites and cells, and operating it on GCE
 - `docs/research.md`: the survey behind the design decisions
 - `docs/proposals/`: designs not built yet
-- `docs/runbooks/`: one-off operational setups (the GCP identity of the floor checks)
 - `ci/README.md`: the CI checks and the scripts they call
 - `contrib/wolfi/README.md`: the Wolfi package definitions and swapping a jemalloc consumer to challoc
 - `CONTRIBUTING.md`, `SECURITY.md`

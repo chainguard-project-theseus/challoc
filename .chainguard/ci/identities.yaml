@@ -1,6 +1,5 @@
-# Workload identities and the CI trust policy (mono's
-# ai-cicd/sandbox/docs/identities.md). The trust section is read from the
-# default branch only, so a pull request can never widen it.
+# Workload identities and the CI trust policy. The trust section is read
+# from the default branch only, so a pull request can never widen it.
 #
 # Rings, decided by who opened the pull request:
 #
@@ -42,8 +41,7 @@ identities:
       Launches and deletes the kernel floor VMs (cb launch exp-floor) in the
       bench project: Compute instance admin, the bench bucket, and actAs on
       the VMs' service account. The workload identity pool challoc-checks
-      in that project trusts only this identity's exact subject
-      (docs/runbooks/checks-gce-identity.md).
+      in that project trusts only this identity's exact subject.
     ring: 1.member
     checks:
       - floor.checks.floor
