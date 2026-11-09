@@ -116,11 +116,9 @@ use crate::arena::Arena;
 use crate::config;
 use crate::heap::Shared;
 use crate::layout::{self, NCLASSES, Regions};
-use crate::lock::LockHeld;
+use crate::lock::{LockHeld, LockOrder};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{
-    LockOrder, RawLock, axiom_entry, rank_arena_stats, rank_class, rank_sets, rank_table,
-};
+use crate::lock::{RawLock, rank_arena_stats, rank_class, rank_sets, rank_state, rank_table};
 use crate::purge;
 use crate::purge::background::StateHold;
 use crate::sys;
@@ -2032,6 +2030,31 @@ impl ForkHeld {
         self.toks.tracked_remove(k)
     }
 
+    /// The ranks of the locks the hold holds.
+    pub(crate) open spec fn held_ranks(self) -> Set<int> {
+        self.keys().map(|k: ForkLock| self.lock(k).rank())
+    }
+
+    /// A set of ranks within the hold's stays within it once the lock of
+    /// key `k` is taken out ([`ForkHeld::take`]) and its rank removed.
+    proof fn lemma_take_ranks(h0: ForkHeld, h1: ForkHeld, k: ForkLock, rs: Set<int>)
+        requires
+            rs.subset_of(h0.held_ranks()),
+            h0.keys().contains(k),
+            h1.keys() == h0.keys().remove(k),
+            forall|j: ForkLock| j != k ==> #[trigger] h1.lock(j) == h0.lock(j),
+        ensures
+            rs.remove(h0.lock(k).rank()).subset_of(h1.held_ranks()),
+    {
+        assert forall|x: int| rs.remove(h0.lock(k).rank()).contains(x) implies #[trigger] h1.held_ranks().contains(x) by {
+            assert(h0.held_ranks().contains(x));
+            let j = choose|j: ForkLock| h0.keys().contains(j) && h0.lock(j).rank() == x;
+            assert(j != k);
+            assert(h1.keys().contains(j));
+            assert(h1.lock(j) == h0.lock(j));
+        }
+    }
+
     /// `n` is a count `fork_prepare` read (a `u32`), each token is the hold
     /// of the lock its key names in `s`, and the arenas are indices below
     /// `n`; the creation lock's cell permission is `s`'s registry's, and
@@ -2521,17 +2544,26 @@ fn saved_sigmask(
 /// starts from [`fork_sig_holds`], reads the slot under every lock, keeps
 /// every blockable signal blocked through its last unlock, and ends with
 /// the thread's mask the slot's content (asserted at the end).
-fn fork_release(Tracked(state): Tracked<StateHold>)
+///
+/// The lock order: the release's root token (the hold's, handed over with
+/// it by [`resume::axiom_fork_resumed`]) gives back the rank of each lock
+/// it unlocks; with every lock of the hold unlocked it has none left, and
+/// becomes the token at top 0 this returns ([`LockOrder::unroot`]): the
+/// thread holds no allocator lock afterwards.
+fn fork_release(Tracked(state): Tracked<StateHold>) -> (o: Tracked<LockOrder<'static>>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         state.wf(),
+    ensures
+        o@.top() == 0,
+        !o@.root(),
 {
     // The window ends before the first release, which must then unlock
     // (`lock::window_closed`, which every token release requires).
     crate::lock::fork_window_close();
     let s = shared();
-    let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));
+    let (slot, Tracked(mut held), Tracked(mut root)) = resume::resumed(s, Tracked(&state));
     let tracked mut sig = axiom_fork_resumed_sig();
     let ghost saved = held.saved()->Some_0;
     proof {
@@ -2541,7 +2573,10 @@ fn fork_release(Tracked(state): Tracked<StateHold>)
     // Written by the `fork_prepare` that paired with this release, and
     // still ours because every lock is held until the unlocks below.
     let mask = saved_sigmask(slot, Ghost(*s), Tracked(&held), Tracked(&state));
-    purge::background::fork_unlock(Tracked(state));
+    purge::background::fork_unlock(Tracked(state), Tracked(&mut root));
+    proof {
+        assert(root.ranks().subset_of(held.held_ranks()));
+    }
     // Arenas cannot appear while the creation lock is held, so this is the
     // same set `fork_prepare` locked (what `arena_held` and `count_held`
     // prove from the hold's cell permission), in reverse. Each `for i in
@@ -2564,18 +2599,32 @@ fn fork_release(Tracked(state): Tracked<StateHold>)
                         || table_part(k) || k == ForkLock::Huge || k == ForkLock::Meta || (k matches ForkLock::ArenaStats(j) && j < i
                         && held.arenas().contains_key(j))
             ),
+            root.root(),
+            root.ranks().subset_of(held.held_ranks()),
         decreases i,
     {
         i -= 1;
         if let Some(a) = arena_held(s, i, Tracked(&held)) {
+            let ghost h0 = held;
             let tracked t = held.take(ForkLock::ArenaStats(i as int));
-            a.stats_raw_lock().unlock_held(Tracked(t));
+            proof {
+                ForkHeld::lemma_take_ranks(h0, held, ForkLock::ArenaStats(i as int), root.ranks());
+            }
+            a.stats_raw_lock().unlock_held(Tracked(t), Tracked(&mut root));
         }
     }
+    let ghost h0 = held;
     let tracked t = held.take(ForkLock::Meta);
-    s.meta_lock().unlock_held(Tracked(t));
+    proof {
+        ForkHeld::lemma_take_ranks(h0, held, ForkLock::Meta, root.ranks());
+    }
+    s.meta_lock().unlock_held(Tracked(t), Tracked(&mut root));
+    let ghost h0 = held;
     let tracked t = held.take(ForkLock::Huge);
-    s.huge_lock().unlock_held(Tracked(t));
+    proof {
+        ForkHeld::lemma_take_ranks(h0, held, ForkLock::Huge, root.ranks());
+    }
+    s.huge_lock().unlock_held(Tracked(t), Tracked(&mut root));
     let mut i = n;
     while i > 0
         invariant
@@ -2590,12 +2639,18 @@ fn fork_release(Tracked(state): Tracked<StateHold>)
                         || table_part(k) || (k matches ForkLock::Sets(j) && j < i
                         && held.arenas().contains_key(j))
             ),
+            root.root(),
+            root.ranks().subset_of(held.held_ranks()),
         decreases i,
     {
         i -= 1;
         if let Some(a) = arena_held(s, i, Tracked(&held)) {
+            let ghost h0 = held;
             let tracked t = held.take(ForkLock::Sets(i as int));
-            a.sets().raw_lock().unlock_held(Tracked(t));
+            proof {
+                ForkHeld::lemma_take_ranks(h0, held, ForkLock::Sets(i as int), root.ranks());
+            }
+            a.sets().raw_lock().unlock_held(Tracked(t), Tracked(&mut root));
         }
     }
     let mut c = NCLASSES;
@@ -2612,11 +2667,17 @@ fn fork_release(Tracked(state): Tracked<StateHold>)
                     k == ForkLock::Tcaches || k == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, held.arenas().dom())
                         || (k matches ForkLock::Table(d) && 0 <= d < c)
             ),
+            root.root(),
+            root.ranks().subset_of(held.held_ranks()),
         decreases c,
     {
         c -= 1;
+        let ghost h0 = held;
         let tracked t = held.take(ForkLock::Table(c as int));
-        s.tables()[c].raw_lock().unlock_held(Tracked(t));
+        proof {
+            ForkHeld::lemma_take_ranks(h0, held, ForkLock::Table(c as int), root.ranks());
+        }
+        s.tables()[c].raw_lock().unlock_held(Tracked(t), Tracked(&mut root));
     }
     let mut i = n;
     while i > 0
@@ -2633,6 +2694,8 @@ fn fork_release(Tracked(state): Tracked<StateHold>)
                         held.arenas().dom().filter(|j: int| j < i),
                     )
             ),
+            root.root(),
+            root.ranks().subset_of(held.held_ranks()),
         decreases i,
     {
         i -= 1;
@@ -2655,31 +2718,48 @@ fn fork_release(Tracked(state): Tracked<StateHold>)
                                 held.arenas().dom().filter(|j: int| j < i),
                             ) || (k matches ForkLock::Class(j, d) && j == i && 0 <= d < c)
                     ),
+                    root.root(),
+                    root.ranks().subset_of(held.held_ranks()),
                 decreases c,
             {
                 c -= 1;
+                let ghost h0 = held;
                 let tracked t = held.take(ForkLock::Class(i as int, c as int));
-                a.class(c).raw_lock().unlock_held(Tracked(t));
+                proof {
+                    ForkHeld::lemma_take_ranks(h0, held, ForkLock::Class(i as int, c as int), root.ranks());
+                }
+                a.class(c).raw_lock().unlock_held(Tracked(t), Tracked(&mut root));
             }
         }
     }
+    let ghost h0 = held;
     let tracked t = held.take(ForkLock::Stats);
-    s.stats_lock().unlock_held(Tracked(t));
+    proof {
+        ForkHeld::lemma_take_ranks(h0, held, ForkLock::Stats, root.ranks());
+    }
+    s.stats_lock().unlock_held(Tracked(t), Tracked(&mut root));
+    let ghost h0 = held;
     let tracked t = held.take(ForkLock::Arenas);
+    let ghost h1 = held;
     let tracked tt = held.take(ForkLock::Tcaches);
     proof {
+        ForkHeld::lemma_take_ranks(h0, h1, ForkLock::Arenas, root.ranks());
+        ForkHeld::lemma_take_ranks(h1, held, ForkLock::Tcaches, root.ranks().remove(h0.lock(ForkLock::Arenas).rank()));
         assert(held.keys() =~= Set::empty());
+        assert(held.held_ranks() =~= Set::<int>::empty());
         s.lemma_arenas_lock();
     }
     // The creation lock's cell permission goes back with its token: the
     // hold has no lock left.
     let tracked cp = held.created;
-    s.arenas.unlock_held(Tracked(t), Tracked(cp));
-    s.tcaches_lock().unlock_held(Tracked(tt));
+    s.arenas.unlock_held(Tracked(t), Tracked(cp), Tracked(&mut root));
+    s.tcaches_lock().unlock_held(Tracked(tt), Tracked(&mut root));
     sys::set_signal_mask(mask, Tracked(&mut sig));
     proof {
         assert(sig.mask() == saved);
+        assert(root.ranks() =~= Set::<int>::empty());
     }
+    Tracked(root.unroot())
 }
 
 /// The parent keeps its threads; the forking thread releases what its
@@ -2727,15 +2807,14 @@ extern "C" fn fork_child() {
         published = axiom_published();
     }
     feature_line_fork_child(Tracked(published));
-    fork_release(Tracked(state));
+    let Tracked(mut ord) = fork_release(Tracked(state));
     // The dirty bytes this child inherited, the lazy start's baseline: read
     // after the release (the sum takes the class and huge locks), while
     // the child is still single-threaded, so nothing has moved them. Only
     // under the lazy start: nothing else reads it.
     if purge::background::auto() {
-        // Premise (lock order): the release above handed back every lock
-        // this thread held.
-        let tracked mut ord = axiom_entry();
+        // The release above handed back every lock this thread held, and
+        // returned the token that says so.
         purge::background::set_fork_base(crate::policy::empty_bytes(shared(), Tracked(&mut ord)));
     }
 }
@@ -2830,6 +2909,9 @@ mod resume {
     use super::fork_holds;
     use super::{ForkHeld, fork_slot};
     use crate::heap::Shared;
+    use crate::lock::LockOrder;
+    #[cfg(verus_keep_ghost)]
+    use crate::lock::rank_state;
     use crate::purge::background::StateHold;
     #[cfg(verus_keep_ghost)]
     use crate::{sys::effective, vspec::word::word_addr};
@@ -2868,25 +2950,38 @@ mod resume {
     /// second call would prove `false`, not just restate a token: the one
     /// caller is [`resumed`], called once per handler (the test
     /// `fork_hold_is_resumed_once` checks there is one call site).
-    axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &StateHold) -> (tracked held: ForkHeld)
+    ///
+    /// With the hold comes the root lock-order token `fork_prepare` held
+    /// it with (`lock::axiom_fork_entry`'s, raised by each acquisition):
+    /// a root whose raw holds are among the hold's locks and the state
+    /// lock (`fork_prepare`'s thread held no allocator lock before it, and
+    /// the window's allocations release none). Unlike the hold, which
+    /// `fork_prepare` asserts (`fork_holds`) before the C call that drops
+    /// it, this rank clause is assumed: each acquisition adds its rank to
+    /// the root, but no invariant of the prepare's loops carries the
+    /// root's ranks to that C call.
+    axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &StateHold) -> (tracked r: (ForkHeld, LockOrder<'static>))
         requires
             *s == Shared::built_at(Shared::storage()),
             state.wf(),
         ensures
-            fork_holds(*s, held, *state),
-            held.has_slot(),
-            held.slot_addr() == word_addr(slot),
-            held.saved() matches Some(m) && effective(m) == m && m & !crate::sys::BLOCKABLE_SIGNALS == 0,
+            fork_holds(*s, r.0, *state),
+            r.0.has_slot(),
+            r.0.slot_addr() == word_addr(slot),
+            r.0.saved() matches Some(m) && effective(m) == m && m & !crate::sys::BLOCKABLE_SIGNALS == 0,
+            r.1.root(),
+            r.1.ranks().subset_of(r.0.held_ranks().insert(rank_state())),
     ;
 
     /// The slot, [`fork_slot`], and the release's hold of every lock, with
-    /// the permission to that slot: [`axiom_fork_resumed`] for the word
-    /// [`fork_slot`] returns. Each handler calls it once, which nothing
-    /// enforces (see `api::axiom_fork_resumed_state`).
+    /// the permission to that slot, and the hold's root token:
+    /// [`axiom_fork_resumed`] for the word [`fork_slot`] returns. Each
+    /// handler calls it once, which nothing enforces (see
+    /// `api::axiom_fork_resumed_state`).
     // `s` is only named by the specification and the ghost call.
     #[allow(unused_variables)]
     #[inline(always)]
-    pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&StateHold>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))
+    pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&StateHold>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>, Tracked<LockOrder<'static>>))
         requires
             *s == Shared::built_at(Shared::storage()),
             state.wf(),
@@ -2895,9 +2990,12 @@ mod resume {
             r.1@.has_slot(),
             r.1@.slot_addr() == word_addr(r.0),
             r.1@.saved() matches Some(m) && effective(m) == m && m & !crate::sys::BLOCKABLE_SIGNALS == 0,
+            r.2@.root(),
+            r.2@.ranks().subset_of(r.1@.held_ranks().insert(rank_state())),
     {
         let slot = fork_slot();
-        (slot, Tracked(axiom_fork_resumed(s, slot, state)))
+        let tracked (held, root) = axiom_fork_resumed(s, slot, state);
+        (slot, Tracked(held), Tracked(root))
     }
 
     } // verus!

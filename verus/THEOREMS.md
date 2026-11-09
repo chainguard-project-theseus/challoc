@@ -2590,8 +2590,8 @@ below excludes a second holder), and the child's one thread is that
 thread's copy, which releases them. Under the lazy start the child
 handler then sums the dirty bytes it inherited
 (`policy::empty_bytes`, the lazy start's baseline): after the release,
-from a lock-order token of its own (`axiom_entry`, theorem 33), so outside this
-statement.
+with the token at top 0 that `fork_release` returns once its root token
+has handed back every hold (theorem 33), so outside this statement.
 
 The tokens: `RawLock::lock_held` (`lock.rs`) is `lock` plus a
 `LockHeld` whose `held()` is the lock. The field is private to
@@ -2653,8 +2653,14 @@ build a token; the handoff axioms below are the other source.
   release.
 - *The lock-order root.* `fork_prepare` takes its lock-order token from
   its own axiom, `lock::axiom_fork_entry` (`lock.rs`), the one root
-  token; every other entry point's (`axiom_c_entry` and `axiom_entry`,
-  `lock.rs`) ensures `!o.root()`.
+  token, with no raw hold; every other entry point's token
+  (`axiom_c_entry`, `axiom_init_entry`, `axiom_thread_entry`) ensures
+  `!o.root()`. The release takes the root back with the hold
+  (`axiom_fork_resumed`: its raw holds are among the hold's locks and
+  the state lock), each `unlock_held` takes its lock's rank out of it,
+  and with none left `LockOrder::unroot` makes it the token at top 0
+  that `fork_release` returns, which `fork_child`'s `policy::empty_bytes`
+  takes.
 - *The arena table* is not a premise: `arena_held` and
   `count_held` (`api/mod.rs`) verify. `fork_prepare` takes the creation
   lock with `Arenas::lock_held`, which also hands it the permission of
@@ -2674,12 +2680,10 @@ build a token; the handoff axioms below are the other source.
   and only a release consumes (`axiom_fork_resumed` restates it for the
   release), so each read is checked to hold the creation lock's token.
   That the holder takes no guard of the creation lock meanwhile rests on
-  the lock order's entry premises (no allocator lock held at an entry
-  point: `lock::axiom_c_entry` at a C call, minted only in export
-  bodies, which `api::tests::c_call_tokens_only_in_export_bodies`
-  checks, and `lock::axiom_entry` elsewhere,
-  whose call sites `lock::tests::entry_lock_order_uses_are_listed`
-  pins). No such read runs in the fork window: the guards the window
+  the lock order's entry premises (no allocator lock held at a C call,
+  `lock::axiom_c_entry`, minted only in export bodies, which
+  `api::tests::c_call_tokens_only_in_export_bodies` checks; and the init,
+  thread and fork roots). No such read runs in the fork window: the guards the window
   serves stand for the hold (`lock::axiom_acquired`), and that they
   leave the count and the table as read is `axiom_fork_resumed`'s
   premise.
@@ -3162,7 +3166,7 @@ top 0, and a report holds such a token only while no guard it took is
 alive. The token is theorem 33's `LockOrder`, so top 0 means the
 calling thread holds no allocator lock, as far as the verified lock
 order reaches; what stays assumed is the entry premise
-(`axiom_entry`, below) and theorem 33's own premises. The reports are
+(`axiom_c_entry`, below) and theorem 33's own premises. The reports are
 `malloc_stats_print` and `je_malloc_stats_print` (`api/print.rs`,
 through `stats_print`), `malloc_info` and
 `malloc_stats`. Their calls out are the caller's `write_cb`,
@@ -3203,10 +3207,10 @@ pub(super) fn malloc_write(s: &[u8], Tracked(ord): Tracked<&LockOrder>)   // api
     requires ord.top() == 0, ...
 ```
 
-Each of the three entry points takes its token from `axiom_entry`
-(`lock.rs`: `o.top() == 0`, `!o.root()`) once, after
-`super::shared()` and right before it makes the report's `Sink`
-(`api/print.rs`). The `Sink` keeps the
+Each of the three entry points takes its token from its export body,
+which mints it with `lock::axiom_c_entry` (`lock.rs`: `o.top() == 0`,
+`!o.root()`; for the `malloc_stats_print` pair, in `stats_print_entry`),
+and gives it to the report's `Sink` (`api/print.rs`). The `Sink` keeps the
 token from creation to drop (its ghost field `ord`, at top 0 by
 its invariant). `Sink::flush` is verified and is the only
 caller of `emit`; it stores the NUL at `buf[len]` that `emit` requires
@@ -3235,10 +3239,13 @@ bodies of `print.rs`, among them `call_back`, `write_file`,
 inspection; no source test checks it).
 
 **Why the entry premise holds.** The entry point's C caller holds no
-allocator lock, and `shared()` releases every lock it takes before it
-returns. `axiom_entry` assumes this. It is a C-program contract in the
-seam ledger; see "Where the statement is weaker" for the callers that
-break it. The reports' callees that lock (`stats::collect`,
+allocator lock. `axiom_c_entry` assumes this, once per C call, in the
+export body (`api::tests::c_call_tokens_only_in_export_bodies` checks
+where it is called). It is a C-program contract in the seam ledger; see
+"Where the statement is weaker" for the callers that break it.
+`shared()` takes no token: the lock it may take, at init, is
+`Shared::init`'s own (`lock::axiom_init_entry`), released before it
+returns. The reports' callees that lock (`stats::collect`,
 `collect_arena` and `collect_all`, through `Huge::stats`, `Meta::stats`,
 `ClassState::bin_stats` per class and the `Shared.stats` lock; the slab
 histogram's `ClassState::is_partial`; `policy::empty_bytes`, through
@@ -3268,7 +3275,7 @@ for `call_back`'s and `write_file`'s premise.
   hook tests.
 
 **Premises beyond the common ones.**
-- `axiom_entry` (the entry premise), and theorem 33's premises for the
+- `axiom_c_entry` (the entry premise), and theorem 33's premises for the
   locks the callees take.
 - `call_back`, `write_file` and `call_hook` (`external_body`): a call
   through the caller's function pointer when it gave one, one `fwrite`,
@@ -6216,7 +6223,7 @@ below):
 | statistics `epoch`, `collect` (`collect_into`, with its exact-stats ghost outputs) and `arena_stats_all_into`, under the process statistics lock held across the scan | Stats < Class(i, c) < Table(c), and Stats < Huge, Meta, ArenaStats(i), each released before the next is taken; `arena_stats_all_into`: Stats < ArenaStats(i) |
 | statistics `collect_all`, `snapshot`, `arena_stats` (class → table, huge, meta, arena and process statistics), `mallctl` `ctl` and its named readers (`stats.*`, `stats.cgroup.empty_bytes`), `utilization`, `owner_of`, `get_defrag_hint`, `malloc_trim` | each lock with nothing above it held |
 | `fork_prepare` (`api/mod.rs`) | Tcaches < Arenas < Stats < Class(i, c) (arenas ascending, classes ascending) < Table(c) < Sets(i) (arenas ascending) < Huge < Meta < ArenaStats(i) < State, through one root token; before them the deferred cgroup discovery's `policy::evaluate` from the same root token, each class lock with nothing above it held, all released on return (`*final(ord) == *old(ord)`) |
-| `fork_child` after `fork_release` (under the lazy start: `policy::empty_bytes`, the inherited dirty bytes) | class and huge locks one at a time, from a token of its own |
+| `fork_child` after `fork_release` (under the lazy start: `policy::empty_bytes`, the inherited dirty bytes) | class and huge locks one at a time, from the token at top 0 that `fork_release` returns |
 
 `fork_prepare` proves it with loop invariants `ord.top() <
 rank_class(i, 0)`, `< rank_class(i, c)`, `< rank_table(c)`, `<
@@ -6260,16 +6267,23 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   lock held (theorem 16 for the reports' calls out, by inspection
   elsewhere), and a signal handler that allocates is outside the C
   contract (the fork handlers block signals).
-- *Entry points hold no allocator lock* (`axiom_entry`, `lock.rs`;
-  ledger category "allocator invariant"), for the entry points that do
-  not take their token from the export. The roots:
-  `Shared::init` (no lock exists yet); `heap_destructor`
-  (`heap/thread.rs`); the background thread's `main`; and `fork_child` once
-  `fork_release` has handed back every token of the fork hold, under
-  the same no-re-entry argument.
+- *The roots that are no C call*: `Shared::init` holds no allocator
+  lock (`axiom_init_entry`, "allocator invariant": no allocator lock
+  exists before the `Shared` is published), and a thread's start
+  routine and its exit key's destructor hold none (`axiom_thread_entry`,
+  "platform/kernel fact": the background thread's `main` and
+  `heap_destructor`). `lock::tests::root_lock_order_uses_are_listed`
+  pins their call sites.
 - *The fork prepare handler's root* (`axiom_fork_entry`, `lock.rs`):
-  the one root token; every other entry point's token (`axiom_c_entry`,
-  `axiom_entry`) is not a root.
+  the one root token, with no raw hold; every other entry point's token
+  is not a root. The release's root is the hold's, handed over with it
+  (`api::resume::axiom_fork_resumed`, which assumes that the root's raw
+  holds are among the hold's locks and the state lock; no invariant of
+  `fork_prepare`'s loops carries the root's ranks to its return);
+  `fork_child` takes the token
+  `fork_release` returns once that root has handed back every hold
+  (`LockOrder::unroot`), so its `policy::empty_bytes` call needs no
+  premise of its own.
 - *Functions that state the lowest rank they take*: `assign_home`,
   `Meta::commit`, `Heap::destroy`, `Set::ensure`, `Heap::set_arena`
   (the call `thread.arena` makes) and `policy::empty_bytes` (an index

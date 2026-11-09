@@ -1082,7 +1082,7 @@ const SLOT_LINES: &[(&str, &str)] = &[
     ),
     (
         "fork_release",
-        "let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));",
+        "let (slot, Tracked(mut held), Tracked(mut root)) = resume::resumed(s, Tracked(&state));",
     ),
     (
         "fork_release",
@@ -1091,13 +1091,14 @@ const SLOT_LINES: &[(&str, &str)] = &[
     ("", "use super::{ForkHeld, fork_slot};"),
     (
         "resumed",
-        "pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&StateHold>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>))",
+        "pub(super) fn resumed(s: &Shared, Tracked(state): Tracked<&StateHold>) -> (r: (&'static AtomicU64, Tracked<ForkHeld>, Tracked<LockOrder<'static>>))",
     ),
     ("resumed", "let slot = fork_slot();"),
     (
         "resumed",
-        "(slot, Tracked(axiom_fork_resumed(s, slot, state)))",
+        "let tracked (held, root) = axiom_fork_resumed(s, slot, state);",
     ),
+    ("resumed", "(slot, Tracked(held), Tracked(root))"),
 ];
 
 fn check_slot(t: &Tree) -> Vec<String> {
@@ -1163,7 +1164,7 @@ fn access_fork_slot_control() {
         (
             "src/api/mod.rs",
             "crate::lock::fork_window_close();",
-            "let (slot, Tracked(mut held)) = resume::resumed(s, Tracked(&state));",
+            "let (slot, Tracked(mut held), Tracked(mut root)) = resume::resumed(s, Tracked(&state));",
         ),
         (
             "src/api/mod.rs",

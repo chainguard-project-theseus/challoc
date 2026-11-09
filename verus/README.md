@@ -245,7 +245,7 @@ to equal the original's but for the rows `verus/kani/pins.txt` marks
 ## Guard tests
 
 Some trusted items are sound only where they are called. An axiom such
-as `TlsSlot::entry` or `lock::axiom_entry` states a premise about its
+as `TlsSlot::entry` or `lock::axiom_thread_entry` states a premise about its
 caller (one slot token per top-level call; no allocator lock held) that
 Verus cannot check, and a `lock_inv` axiom says that every holder of a
 lock leaves its invariant true, which Verus does not check when a guard
@@ -265,7 +265,7 @@ items' docs name the test that checks them. A separate guard,
 | `api::tests::c_call_tokens_only_in_export_bodies` | `axiom_c_call`, `axiom_c_out`, `errno::lend` and `lock::axiom_c_entry` at most once per export body (`extern "C" fn`, `verified_export_pair!` arm, or a helper one arm calls), each token for the call's own arguments (every `CEntry` field and out-pointer a parameter of the minting function, none twice); the 4 `axiom_c_out` mints (the three allocating `challoc_*_usable` exports and `memptr_out`) and the one `memptr_out` call each in the spelling its hand-back names |
 | `api::tests::exports_return_their_callees_result` | `vspec::errno::axiom_errno_at_return` only right after the call in the export bodies that lent the token; `axiom_out_at_return` only right after the call in the 4 export bodies that minted an out-pointer token |
 | `tests::trusted_mint_sites_are_pinned` | the stores to and takes from `Heap::head` (`heap_new`, `Heap::destroy`), `HeapPerm::assemble` (`heap_new`), `ZeroRaw::axiom_new`, the refill's zero and fresh-slab axioms and `purged_zero`, `axiom_shared_regions` and `axiom_shared_meta`, `TlsCell::note_create`: each at the callers its doc names |
-| `lock::tests::entry_lock_order_uses_are_listed` | `axiom_entry` in the functions its doc lists |
+| `lock::tests::root_lock_order_uses_are_listed` | `axiom_init_entry` once in `Shared::init`; `axiom_thread_entry` once in the background thread's `main` and once in `heap_destructor` |
 | `api::tests::lock_holders_match_inv_docs` | the functions that take each lock's guard, against the holders its `lock_inv` doc names, copied into the test by hand; raw `lock_held`/`unlock_held` only in the fork handlers; `value_held_mut` once |
 | `lock::tests::permission_axioms_are_called_only_at_acquisitions` | the lock-cell permission axioms at the acquisitions |
 | `sys::tests::{syscall,abort}_grants_only_at_roots`, `user_read_grants_only_in_listed_callers`, `user_read_capability_ensured_only_at_grants`, `sys::abort::tests::abort_relabels_only_in_the_sinks` | the syscall, abort and user-read grants; the abort relabel only in the three narrowed sinks; `may_read_user` in an `ensures` only at `grant_user_reads` and `purge::check_zero` |

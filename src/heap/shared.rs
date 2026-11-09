@@ -26,7 +26,7 @@ use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{
-    axiom_entry, rank_arenas, rank_class, rank_huge, rank_meta, rank_stats, rank_table,
+    axiom_init_entry, rank_arenas, rank_class, rank_huge, rank_meta, rank_stats, rank_table,
     rank_tcaches,
 };
 use crate::meta::Meta;
@@ -2198,10 +2198,11 @@ impl Shared {
             r ==> shared_at(this).built(),
             r ==> final(built).at(this),
     {
-        // Premise (lock order): no allocator lock exists before this
-        // `Shared` is built (`api::init` runs `init` once, before the
-        // `Shared` is published), so this thread holds none.
-        let tracked mut ord = axiom_entry();
+        // Premise (lock order, `lock::axiom_init_entry`): no allocator
+        // lock exists before this `Shared` is built (`api::init` runs
+        // `init` once, before the `Shared` is published), so this thread
+        // holds none.
+        let tracked mut ord = axiom_init_entry();
         let mut config = config;
         config.narenas = config.effective_narenas(ncpus());
         let guard_interval = if guard_install {
