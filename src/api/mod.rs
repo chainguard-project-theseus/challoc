@@ -1235,15 +1235,15 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
     proof {
         shared.lemma_wf();
     }
+    // Premise (lock order), as at an entry point: it holds no allocator
+    // lock.
+    let tracked mut ord = axiom_entry();
     // `malloc_usable_size(NULL)`, whole.
-    let _ = libc::malloc_usable_size(core::ptr::null_mut());
+    let _ = libc::malloc_usable_size(core::ptr::null_mut(), Tracked(&mut ord));
     // `nallocx` after its `shared()`.
     let f = crate::heap::mallocx::Flags::decode(flags as u32);
     let _ = jemalloc::usable_for(shared, size, &f).unwrap_or(0);
     // `mallinfo2` after its `shared()`: its calls that carry a contract.
-    // Premise (lock order), as at an entry point: it holds no allocator
-    // lock.
-    let tracked mut ord = axiom_entry();
     let first = crate::stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let _ = glibc::zero_info();
     if let Some(mut sc) = first {

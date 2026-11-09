@@ -3024,7 +3024,7 @@ impl Heap {
     /// `arena_of_slot` read.
     #[cold]
     #[inline(never)]
-    // The tracked tokens (`blk`, `errno`, the slot cell) are ghost:
+    // The tracked tokens (`blk`, `ord`, `errno`, the slot cell) are ghost:
     // erased from the build.
     #[allow(clippy::too_many_arguments)]
     fn rehome_on_free(
@@ -3040,7 +3040,7 @@ impl Heap {
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
-            old(ord).allows(rank_class(0, 0)),
+            old(ord).top() == 0,
             process_regions().is_slot(class as int, p@.addr),
             old(blk).slot_block(p, class as int),
             class < NCLASSES,
@@ -3057,7 +3057,7 @@ impl Heap {
         decreases 1int, 0int,
     {
         let to = shared.arena_of_slot(class, p);
-        if !self.try_rehome(shared, to, Tracked(ord)) {
+        if !self.try_rehome(shared, to, Tracked(&mut *ord)) {
             return false;
         }
         // The flush released every cached slot: test `p`'s bit again.
@@ -3082,7 +3082,7 @@ impl Heap {
         proof {
             vstd::modes::tracked_swap(blk, &mut own);
         }
-        self.push(shared, class, p, Tracked(own), Tracked(errno), Tracked(cell));
+        self.push(shared, class, p, Tracked(own), Tracked(errno), Tracked(cell), Tracked(ord));
         true
     }
 

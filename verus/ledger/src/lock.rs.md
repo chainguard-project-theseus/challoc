@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `RawLock::lock_slow` | no_decreases | termination | loom/GenMC | trusted |
+| `axiom_c_entry` | axiom | C-program contract | none (assumption) | trusted |
 | `axiom_entry` | axiom | allocator invariant | none (assumption) | trusted |
 | `axiom_fork_entry` | axiom | C-program contract | none (assumption) | trusted |
 | `axiom_c...window` | axiom | platform/kernel fact | none (assumption) | trusted |
@@ -30,9 +31,26 @@ fn lock_slow(&self)
         crate::sys::may_syscall(),
 ```
 
+## `axiom_c_entry`
+
+src/lock.rs:436. Kind: axiom. Category: C-program contract.
+Tool: none (assumption). Status: trusted.
+
+> Premise (C-program contract, the lock order at a C call): when C calls an allocator entry point, the calling thread holds no allocator lock, or, in the fork window only, holds every one as the fork's own hold (below).
+
+Hashes: contract 4182211072, body none.
+
+```rust
+pub(crate) axiom fn axiom_c_entry<'a>() -> (tracked o: LockOrder<'a>)
+    ensures
+        o.top() == 0,
+        !o.root(),
+;
+```
+
 ## `axiom_entry`
 
-src/lock.rs:509. Kind: axiom. Category: allocator invariant.
+src/lock.rs:505. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (an entry point): the calling thread holds no allocator lock.
@@ -49,7 +67,7 @@ pub(crate) axiom fn axiom_entry<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_fork_entry`
 
-src/lock.rs:528. Kind: axiom. Category: C-program contract.
+src/lock.rs:524. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork prepare handler's entry): the calling thread holds no allocator lock, as for [`axiom_entry`], and keeps this token for the whole handler, which takes every lock with [`RawLock::lock_held`] and releases none of them before it returns: a root.
@@ -66,7 +84,7 @@ pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
 
 ## `axiom_child_window`
 
-src/lock.rs:643. Kind: axiom. Category: platform/kernel fact.
+src/lock.rs:639. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (`fork(2)`, `getpid(2)`, glibc's `pthread_self`; design 9): the fork window's record, read back by the thread that opened it, shows that thread in the child of its `fork`.
@@ -86,7 +104,7 @@ axiom fn axiom_child_window(h: usize, me: usize, pid: u32, now: u32)
 
 ## `axiom_acquired`
 
-src/lock.rs:800. Kind: axiom. Category: allocator invariant.
+src/lock.rs:796. Kind: axiom. Category: allocator invariant.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: the permission hand-off itself, a fact of Verus's own model (that the one `PointsTo` the invariant holds while the lock is free, taken out at each acquisition, stands for the cell's contents under the edge the models check); the `lock_inv` and `lock_frame` clauses, which rest on the holders' releases (`LockGuard::unlock` and `Lock::unlock_held_perm` require them, a dropped guard's release does not), not on the atomics; the first acquisition, at which `lock_frame` of the initial value with itself is checked by nothing (`Lock::new` does not check it) and the initial value's visibility rests on the lock's publication, not on the edge the models check; the call discipline (only right after an acquire, never while an earlier permission is alive), which `lock::tests::permission_axioms_are_called_only_at_acquisitions` backs by matching source text only; the fork window's second permission, which rests on that window's premise; and the shipped `RawLock`, which the models replace with a copy, with two lockers and with three bounded at 5 preemptions, and the kernel's futex, which they replace with a stand-in).
 
 > The lock invariant's assumption where it enters, at an acquisition: a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] (every earlier holder restored it) and keeps [`lock_frame`] of the value the lock was created with.
@@ -104,7 +122,7 @@ axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
 
 ## `Lock::value_ptr`
 
-src/lock.rs:861. Kind: external_body. Category: raw pointer (internal).
+src/lock.rs:857. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names, which a source test pins, at `T = ArenaStats`, one of the harness's)).
 
 > The value's address inside the lock at `p`, for building a large value in place (`Arena::put_stats`).
@@ -117,7 +135,7 @@ pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T
 
 ## `LockGuard::drop`
 
-src/lock.rs:1194. Kind: external_body. Category: atomics primitive.
+src/lock.rs:1190. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return).
 
 Hashes: contract 3065263068, body 2348458592.

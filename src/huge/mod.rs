@@ -63,7 +63,7 @@ use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, LockOrder, RawLock};
 #[cfg(verus_keep_ghost)]
-use crate::lock::{axiom_entry, lock_frame, lock_init, rank_huge, rank_meta};
+use crate::lock::{lock_frame, lock_init, rank_huge, rank_meta};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, Due, Settle};
 use crate::sys::{

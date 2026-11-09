@@ -30,21 +30,29 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
     for &size in SIZES {
         for la in [0u32, 4, 5, 6, 8, 12, 16, 20] {
             let flags = mallocx_lg_align(la) as c_int;
-            let p = mallocx(size, flags, vstd::prelude::Tracked::assume_new());
+            let p = mallocx(
+                size,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(!p.is_null(), "mallocx({size}, lg_align {la})");
             assert_eq!(
                 p as usize % (1usize << la),
                 0,
                 "mallocx({size}, lg_align {la}) = {p:p}"
             );
-            let usable = sallocx(p, flags);
+            let usable = sallocx(p, flags, vstd::prelude::Tracked::assume_new());
             assert!(usable >= size);
             assert_eq!(
                 usable,
                 nallocx(size, flags),
                 "nallocx disagrees for size {size} lg_align {la}"
             );
-            assert_eq!(usable, crate::api::libc::malloc_usable_size(p));
+            assert_eq!(
+                usable,
+                crate::api::libc::malloc_usable_size(p, vstd::prelude::Tracked::assume_new())
+            );
             // Every class is a multiple of the quantum, so up to it the
             // alignment leaves the class alone.
             if (1usize << la) <= crate::QUANTUM {
@@ -61,14 +69,16 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
                 flags,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             );
             let z = mallocx(
                 size,
                 flags | MALLOCX_ZERO as c_int,
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             );
             assert!(!z.is_null());
-            let n = sallocx(z, 0);
+            let n = sallocx(z, 0, vstd::prelude::Tracked::assume_new());
             for i in 0..n {
                 assert_eq!(
                     // SAFETY: `i < sallocx(z)`, inside the live allocation `z`.
@@ -83,6 +93,7 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
                 flags,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             );
         }
     }
@@ -90,6 +101,7 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
     let p = mallocx(
         1,
         mallocx_lg_align(19) as c_int,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
     assert!(shared().regions.classify(p as usize) != Kind::Invalid);
@@ -103,10 +115,19 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(nallocx(usize::MAX, 0), 0);
     assert_eq!(nallocx(0, 0), class_size_of(0).unwrap());
-    assert!(mallocx(usize::MAX / 2, 0, vstd::prelude::Tracked::assume_new()).is_null());
+    assert!(
+        mallocx(
+            usize::MAX / 2,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        )
+        .is_null()
+    );
 }
 
 /// `nallocx` is 0 exactly when `mallocx` rejects the size or alignment:
@@ -122,7 +143,13 @@ fn nallocx_is_zero_when_mallocx_rejects() {
         (1, mallocx_lg_align(63) as c_int),
     ] {
         assert!(
-            mallocx(size, flags, vstd::prelude::Tracked::assume_new()).is_null(),
+            mallocx(
+                size,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
+            .is_null(),
             "mallocx({size:#x}, {flags:#x})"
         );
         assert_eq!(nallocx(size, flags), 0, "nallocx({size:#x}, {flags:#x})");
@@ -130,12 +157,18 @@ fn nallocx_is_zero_when_mallocx_rejects() {
     let flags = mallocx_lg_align(24) as c_int;
     let n = nallocx(1 << 20, flags);
     assert_eq!(n, 1 << 20);
-    let p = mallocx(1 << 20, flags, vstd::prelude::Tracked::assume_new());
+    let p = mallocx(
+        1 << 20,
+        flags,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert!(!p.is_null());
     assert_eq!(p as usize % (1 << 24), 0);
     dallocx(
         p,
         flags,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -150,6 +183,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert!(!p.is_null());
     for i in 0..10 {
@@ -162,6 +196,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
             16,
             0,
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         ),
         p
@@ -172,9 +207,10 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         MALLOCX_ZERO as c_int,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_ne!(q, p);
-    let n = sallocx(q, 0);
+    let n = sallocx(q, 0, vstd::prelude::Tracked::assume_new());
     for i in 0..n {
         let want = if i < 10 { i as u8 } else { 0 };
         // SAFETY: `i < sallocx(q)`, inside the live allocation `q`.
@@ -187,6 +223,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         mallocx_lg_align(12) as c_int,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(r as usize % 4096, 0);
     // SAFETY: `r` is live with at least 100 bytes.
@@ -196,6 +233,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         r,
         MEDIUM_MAX + 1,
         0,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -213,6 +251,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
             0,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         ),
         h,
         "same page count keeps the run"
@@ -223,11 +262,12 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         MALLOCX_ZERO as c_int,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_ne!(h2, h);
     // SAFETY: `h2` is a live huge allocation.
     assert_eq!(unsafe { *h2.add(9) }, 9);
-    let n = sallocx(h2, 0);
+    let n = sallocx(h2, 0, vstd::prelude::Tracked::assume_new());
     for i in (MEDIUM_MAX + page)..n {
         // SAFETY: `i < sallocx(h2)`, inside the live allocation `h2`.
         assert_eq!(unsafe { *h2.add(i) }, 0, "huge rallocx ZERO tail byte {i}");
@@ -238,19 +278,41 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
-    assert_eq!(sallocx(s, 0), class_size_of(24).unwrap());
+    assert_eq!(
+        sallocx(s, 0, vstd::prelude::Tracked::assume_new()),
+        class_size_of(24).unwrap()
+    );
     // SAFETY: `s` is live with 24 bytes.
     assert_eq!(unsafe { *s.add(9) }, 9);
     // xallocx never moves and reports the current usable size, with
     // or without `extra` (jemalloc may grow into `size + extra`;
     // challoc never grows in place, so `extra` changes nothing).
-    assert_eq!(xallocx(s, 1 << 20, 0, 0), class_size_of(24).unwrap());
-    assert_eq!(xallocx(s, 1, 0, 0), class_size_of(24).unwrap());
-    assert_eq!(xallocx(s, 1, 100, 0), class_size_of(24).unwrap());
-    assert_eq!(xallocx(s, 24, 1 << 20, 0), class_size_of(24).unwrap());
     assert_eq!(
-        xallocx(s, 1 << 20, 1 << 20, MALLOCX_ZERO as c_int),
+        xallocx(s, 1 << 20, 0, 0, vstd::prelude::Tracked::assume_new()),
+        class_size_of(24).unwrap()
+    );
+    assert_eq!(
+        xallocx(s, 1, 0, 0, vstd::prelude::Tracked::assume_new()),
+        class_size_of(24).unwrap()
+    );
+    assert_eq!(
+        xallocx(s, 1, 100, 0, vstd::prelude::Tracked::assume_new()),
+        class_size_of(24).unwrap()
+    );
+    assert_eq!(
+        xallocx(s, 24, 1 << 20, 0, vstd::prelude::Tracked::assume_new()),
+        class_size_of(24).unwrap()
+    );
+    assert_eq!(
+        xallocx(
+            s,
+            1 << 20,
+            1 << 20,
+            MALLOCX_ZERO as c_int,
+            vstd::prelude::Tracked::assume_new()
+        ),
         class_size_of(24).unwrap()
     );
     // SAFETY: as above.
@@ -261,6 +323,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
             s,
             usize::MAX / 2,
             0,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         )
@@ -273,10 +336,12 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     dallocx(
         ptr::null_mut(),
         0,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -318,16 +383,25 @@ fn tcache_none_leaves_every_cache_alone() {
     for &size in &sizes {
         for flags in [0, mallocx_arena(lua), mallocx_tcache(t)] {
             let ps: Vec<*mut u8> = (0..4)
-                .map(|_| mallocx(size, flags as c_int, vstd::prelude::Tracked::assume_new()))
+                .map(|_| {
+                    mallocx(
+                        size,
+                        flags as c_int,
+                        vstd::prelude::Tracked::assume_new(),
+                        vstd::prelude::Tracked::assume_new(),
+                    )
+                })
                 .collect();
             dallocx(
                 ps[0],
                 flags as c_int,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             );
             crate::api::libc::free(
                 ps[1],
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );
@@ -371,7 +445,12 @@ fn tcache_none_leaves_every_cache_alone() {
             none | mallocx_lg_align(6),
         ] {
             let flags = flags as c_int;
-            let p = mallocx(size, flags, vstd::prelude::Tracked::assume_new());
+            let p = mallocx(
+                size,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(!p.is_null());
             let q = rallocx(
                 p,
@@ -379,13 +458,20 @@ fn tcache_none_leaves_every_cache_alone() {
                 flags,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             );
             assert!(!q.is_null());
-            let r = mallocx(size, flags, vstd::prelude::Tracked::assume_new());
+            let r = mallocx(
+                size,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(!r.is_null());
             dallocx(
                 q,
                 flags,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );
@@ -393,6 +479,7 @@ fn tcache_none_leaves_every_cache_alone() {
                 r,
                 size,
                 flags,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );
@@ -407,6 +494,7 @@ fn tcache_none_leaves_every_cache_alone() {
         dallocx(
             p,
             flags as c_int,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -436,6 +524,7 @@ fn mallocx_routes_arenas_and_caches() {
         300,
         mallocx_arena(lua) as c_int,
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(
         s.classify_free(p, vstd::prelude::Tracked::assume_new()),
@@ -450,6 +539,7 @@ fn mallocx_routes_arenas_and_caches() {
             mallocx_arena(lua) as c_int,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         ),
         p
     );
@@ -457,6 +547,7 @@ fn mallocx_routes_arenas_and_caches() {
         p,
         3000,
         mallocx_arena(lua) as c_int,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -470,10 +561,16 @@ fn mallocx_routes_arenas_and_caches() {
         mallocx_arena(lua) as c_int,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     // No cache: the live count moves at once.
     let flags = (mallocx_arena(lua) | MALLOCX_TCACHE_NONE) as c_int;
-    let d = mallocx(300, flags, vstd::prelude::Tracked::assume_new());
+    let d = mallocx(
+        300,
+        flags,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let (slab, _) = s.table(c).locate(d);
     let desc = s.table(c).desc(slab);
     assert_eq!(desc.arena(), lua);
@@ -481,6 +578,7 @@ fn mallocx_routes_arenas_and_caches() {
     dallocx(
         d,
         flags,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -496,12 +594,18 @@ fn mallocx_routes_arenas_and_caches() {
         )
         .expect("tcache.create");
     let flags = mallocx_tcache(t) as c_int;
-    let e = mallocx(300, flags, vstd::prelude::Tracked::assume_new());
+    let e = mallocx(
+        300,
+        flags,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let th = s.tcaches.get(t, Tracked::assume_new()).unwrap();
     let before = th.cache_in(0, c).map_or(0, |cc| cc.len());
     dallocx(
         e,
         flags,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -516,6 +620,7 @@ fn mallocx_routes_arenas_and_caches() {
     let h = mallocx(
         2 << 20,
         mallocx_arena(lua) as c_int,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
     let Err(page) = s.classify_free(h, vstd::prelude::Tracked::assume_new()) else {
@@ -537,12 +642,14 @@ fn mallocx_routes_arenas_and_caches() {
         0,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     // Nonexistent arena or explicit cache: null, not an abort.
     assert!(
         mallocx(
             300,
             mallocx_arena(4000) as c_int,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         )
         .is_null()
@@ -551,6 +658,7 @@ fn mallocx_routes_arenas_and_caches() {
         mallocx(
             2 << 20,
             mallocx_arena(4000) as c_int,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         )
         .is_null()
@@ -594,6 +702,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         f.tcache,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert!(!p.is_null());
     // SAFETY: `p` is a live slot of `size` bytes.
@@ -618,6 +727,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         p,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(cached_in(h), before);
     assert_eq!(cached_foreign(h), before_foreign + 1);
@@ -627,6 +737,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         c,
         Some(lua),
         Tcache::Default,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -639,6 +750,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
             p,
             size,
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         ),
         p
@@ -646,6 +758,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
     let q = api_libc::realloc(
         p,
         size * 4,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -662,6 +775,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         q,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
 
     // Direct path: live count moves at once, no cache involved.
@@ -672,6 +786,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         c,
         f.arena,
         f.tcache,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -686,6 +801,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         Tcache::None,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(desc.live(), live - 1);
     assert_eq!(cached_in(h), cached);
@@ -696,6 +812,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
             c,
             Some(4000),
             Tcache::Default,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         )
@@ -708,6 +825,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
             c,
             Some(4000),
             Tcache::None,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         )
@@ -722,6 +840,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
             Some(4000),
             Tcache::Default,
             false,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         )
         .0
@@ -736,6 +855,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         Some(lua),
         Tcache::Default,
         false,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
     assert!(!hp.is_null());
@@ -755,6 +875,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
     );
     api_libc::free(
         hp,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -778,6 +899,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         f.tcache,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(
         s.classify_free(e, vstd::prelude::Tracked::assume_new()),
@@ -792,6 +914,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         s,
         e,
         Tcache::Explicit(t),
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -824,6 +947,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
                 c,
                 a,
                 Tcache::Default,
+                vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             );
@@ -868,6 +992,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         }
         api_libc::free(
             p,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -968,7 +1093,14 @@ fn get_defrag_hint_runs_the_callers_cache_gc() {
         let mut kept = Vec::new();
         for size in [100usize, 300] {
             let ptrs: Vec<*mut u8> = (0..64)
-                .map(|_| mallocx(size, 0, vstd::prelude::Tracked::assume_new()))
+                .map(|_| {
+                    mallocx(
+                        size,
+                        0,
+                        vstd::prelude::Tracked::assume_new(),
+                        vstd::prelude::Tracked::assume_new(),
+                    )
+                })
                 .collect();
             assert!(ptrs.iter().all(|p| !p.is_null()));
             kept.push(ptrs[0]);
@@ -976,6 +1108,7 @@ fn get_defrag_hint_runs_the_callers_cache_gc() {
                 dallocx(
                     *p,
                     0,
+                    vstd::prelude::Tracked::assume_new(),
                     vstd::prelude::Tracked::assume_new(),
                     vstd::prelude::Tracked::assume_new(),
                 );
@@ -993,10 +1126,12 @@ fn get_defrag_hint_runs_the_callers_cache_gc() {
             100,
             MALLOCX_TCACHE_NONE as c_int,
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
         dallocx(
             copy,
             MALLOCX_TCACHE_NONE as c_int,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -1041,6 +1176,7 @@ fn get_defrag_hint_runs_the_callers_cache_gc() {
                 0,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             );
         }
     })
@@ -1068,7 +1204,14 @@ fn get_defrag_hint_follows_the_utilization_data() {
     let cls = &CLASSES[c];
     let n = 20 * cls.nslots();
     let ptrs: Vec<*mut u8> = (0..n)
-        .map(|_| mallocx(100, flags, vstd::prelude::Tracked::assume_new()))
+        .map(|_| {
+            mallocx(
+                100,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
     assert!(ptrs.iter().all(|p| !p.is_null()));
     // Every other slot of the first half goes back: those slabs are
@@ -1077,6 +1220,7 @@ fn get_defrag_hint_follows_the_utilization_data() {
         dallocx(
             *p,
             flags,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -1136,7 +1280,12 @@ fn get_defrag_hint_follows_the_utilization_data() {
     );
     // Not a hint: a freed slot, a huge run, null, a stack address.
     assert_eq!(get_defrag_hint(ptrs[0]), 0, "freed");
-    let h = mallocx(3 << 20, flags, vstd::prelude::Tracked::assume_new());
+    let h = mallocx(
+        3 << 20,
+        flags,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert_eq!(get_defrag_hint(h), 0, "huge");
     assert_eq!(get_defrag_hint(ptr::null()), 0, "null");
     let stack = 0u64;
@@ -1150,6 +1299,7 @@ fn get_defrag_hint_follows_the_utilization_data() {
         flags,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     // A class above BIN_MAX answers like a bin (the utilization queries
     // report it as one region; the hint has no geometry contract): two
@@ -1160,7 +1310,14 @@ fn get_defrag_hint_follows_the_utilization_data() {
     assert!(cm >= crate::layout::NBINS);
     let clm = &CLASSES[cm];
     let big: Vec<*mut u8> = (0..2 * clm.nslots() + 1)
-        .map(|_| mallocx(16 << 10, flags, vstd::prelude::Tracked::assume_new()))
+        .map(|_| {
+            mallocx(
+                16 << 10,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            )
+        })
         .collect();
     assert!(big.iter().all(|p| !p.is_null()));
     let um = utilization(s, big[0] as *const c_void, true);
@@ -1196,12 +1353,14 @@ fn get_defrag_hint_follows_the_utilization_data() {
             flags,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
     }
     for p in live {
         dallocx(
             p,
             flags,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
@@ -1216,7 +1375,12 @@ fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
     let size = (1 << 20) + 1;
     let usable = nallocx(size, 0);
     for hint in [size, usable - 1, usable] {
-        let p = mallocx(size, 0, vstd::prelude::Tracked::assume_new());
+        let p = mallocx(
+            size,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         assert_eq!(nallocx(hint, 0), usable);
         sdallocx(
@@ -1225,12 +1389,18 @@ fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
             0,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
     }
     // A run an alignment made huge takes the small size it was asked
     // for, with or without the alignment flag.
     let flags = mallocx_lg_align(20) as c_int;
-    let p = mallocx(64, flags, vstd::prelude::Tracked::assume_new());
+    let p = mallocx(
+        64,
+        flags,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert!(!p.is_null());
     sdallocx(
         p,
@@ -1238,8 +1408,14 @@ fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
         flags,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
-    let p = crate::api::libc::aligned_alloc(1 << 20, 64, vstd::prelude::Tracked::assume_new());
+    let p = crate::api::libc::aligned_alloc(
+        1 << 20,
+        64,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     assert!(!p.is_null());
     crate::api::libc::free_aligned_sized(
         p,
@@ -1247,12 +1423,19 @@ fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
         64,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     // A run `realloc` kept takes the size the caller last asked for.
-    let p = mallocx(1 << 20, 0, vstd::prelude::Tracked::assume_new());
+    let p = mallocx(
+        1 << 20,
+        0,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     let q = crate::api::libc::realloc(
         p,
         (1 << 20) - 100,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -1260,6 +1443,7 @@ fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
     crate::api::libc::free_sized(
         q,
         (1 << 20) - 100,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );

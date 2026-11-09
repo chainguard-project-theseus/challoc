@@ -245,6 +245,7 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert_eq!(t.heap().cache(c).unwrap().len(), HALF);
     // `thread.arena` moves the binding with the heap.
@@ -461,11 +462,13 @@ fn rehoming_only_takes_an_idle_automatic_arena() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     let (e2, _) = w4.heap().alloc_in(
         s,
         x,
         c2,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -673,12 +676,14 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert!(!p1.is_null() && zero);
     let (p2, _) = h.alloc_in(
         s,
         a2,
         c,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -710,6 +715,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
             c,
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
             Tracked::assume_new()
         )
         .0
@@ -729,10 +735,12 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.free(
         s,
         p2,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -757,6 +765,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert_ne!(p3, p1);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
@@ -772,10 +781,12 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.free(
         s,
         p3,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -850,10 +861,12 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     b.heap().free(
         s,
         pb,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -872,6 +885,7 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     b3.heap().free(
         s,
         pb3,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -932,6 +946,7 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert_eq!(s.classify_free(d, Tracked::assume_new()), Ok((c, 0)));
     // The home arena named explicitly: stays home.
@@ -939,6 +954,7 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
         s,
         a1,
         c,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -960,6 +976,7 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert_eq!(s.classify_free(q, Tracked::assume_new()), Ok((c, 0)));
     assert_eq!(
@@ -977,6 +994,7 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.free(
         s,
@@ -984,10 +1002,12 @@ fn explicit_arena_keeps_a_shared_class_in_its_arena() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.free(
         s,
         q,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1024,6 +1044,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     let before = h.stats();
     assert_eq!((before.allocated, before.deallocated), (128, 64));
@@ -1042,6 +1063,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
     h.free(
         s,
         q,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1075,6 +1097,7 @@ fn set_arena_swaps_cache_arrays() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.set_arena(
         s,
@@ -1100,10 +1123,12 @@ fn set_arena_swaps_cache_arrays() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.free(
         s,
         q,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1157,12 +1182,14 @@ fn explicit_caches_create_flush_destroy() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert!(!p.is_null());
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     h.free(
         s,
         p,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1232,11 +1259,13 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     let (p2, _) = h.alloc_in(
         s,
         a2,
         c,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1265,10 +1294,12 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.free(
         s,
         p2,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1343,6 +1374,7 @@ fn a_free_routed_to_an_unbuilt_arena_aborts() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.flush_all(s, Tracked::assume_new());
 }
@@ -1364,7 +1396,14 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     // SAFETY: `hp` is a live heap from `create_detached`, used only here.
     let h = unsafe { &mut *hp };
     assert!(s.arenas.get_existing(2).is_none());
-    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
+    let (p, _, _) = h.alloc_huge(
+        s,
+        300 * 1024,
+        16,
+        false,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!p.is_null());
     let a2 = s
         .arenas
@@ -1381,6 +1420,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     h.free(
         s,
         p,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1410,7 +1450,14 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
     let h = unsafe { &mut *hp };
     let runs0 = s.arena0.large().0;
     crate::arena::FAIL_INIT.store(&s.meta as *const _ as usize, Relaxed);
-    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
+    let (p, _, _) = h.alloc_huge(
+        s,
+        300 * 1024,
+        16,
+        false,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!p.is_null(), "served by arena 0");
     assert_eq!(
         crate::arena::FAIL_INIT.load(Relaxed),
@@ -1425,14 +1472,23 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     // The pressure lifted: the next allocation builds arena 2.
-    let (q, _, _) = h.alloc_huge(s, 300 * 1024, 16, false, Tracked::assume_new());
+    let (q, _, _) = h.alloc_huge(
+        s,
+        300 * 1024,
+        16,
+        false,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert!(!q.is_null());
     assert!(s.arenas.get_existing(2).is_some(), "built on retry");
     h.free(
         s,
         q,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),

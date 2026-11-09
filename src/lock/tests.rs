@@ -435,12 +435,6 @@ fn entry_lock_order_uses_are_listed() {
     assert_only_at(
         concat!("axiom_", "entry("),
         &[
-            // `Huge::usable_size`, `Shared::check_size_hint`.
-            ("huge/free.rs:", "pub fn usable_size(", ANY),
-            ("heap/shared.rs:", "pub fn check_size_hint(", ANY),
-            // `Heap::alloc_huge_in`, `Heap::free_huge`.
-            ("heap/paths.rs:", "pub fn alloc_huge_in(", ANY),
-            ("heap/paths.rs:", "pub(super) fn free_huge(", ANY),
             // `Shared::init`, the background thread's `main`.
             ("heap/shared.rs:", "pub unsafe fn init(", ANY),
             ("purge/background.rs:", "extern \"C\" fn main(", ANY),
@@ -462,17 +456,9 @@ fn entry_lock_order_uses_are_listed() {
             ("api/mallctl.rs:", "fn arena_stats_into(", ANY),
             ("api/mallctl.rs:", "fn arena_figure(", ANY),
             ("api/mallctl.rs:", "fn ctl(", ANY),
-            // `api::libc`'s `alloc_huge` and `malloc_trim`.
-            ("api/libc.rs:", "fn alloc_huge(", ANY),
+            ("api/mallctl.rs:", "fn thread_heap(", 1),
+            // `api::libc::malloc_trim`.
             ("api/libc.rs:", "pub fn malloc_trim(", ANY),
-            // The heap entry points without a thread heap.
-            ("heap/paths.rs:", "pub fn alloc(", ANY),
-            ("heap/paths.rs:", "pub fn alloc_declined(", ANY),
-            ("heap/paths.rs:", "pub fn alloc_zeroed(", ANY),
-            ("heap/paths.rs:", "pub fn free_direct(", ANY),
-            ("heap/mallocx.rs:", "fn alloc_direct(", ANY),
-            ("heap/mallocx.rs:", "pub fn alloc_huge(", ANY),
-            ("heap/mallocx.rs:", "fn no_arena(", ANY),
             // `api::jemalloc::get_defrag_hint`.
             ("api/jemalloc.rs:", "pub fn get_defrag_hint(", ANY),
             // `api::glibc::mallinfo2`'s `stats::collect_all` call.
@@ -480,24 +466,12 @@ fn entry_lock_order_uses_are_listed() {
             // `api::theorem_read_only_never_aborts`, `api::fork_child`.
             ("api/mod.rs:", "fn theorem_read_only_never_aborts(", ANY),
             ("api/mod.rs:", "extern \"C\" fn fork_child(", ANY),
-            // The scheduled pops.
-            ("heap/compact.rs:", "pub(super) unsafe fn pop_compact(", ANY),
-            (
-                "heap/compact.rs:",
-                "pub(super) unsafe fn pop_compact_run(",
-                ANY,
-            ),
-            ("heap/compact.rs:", "pub(super) unsafe fn rebuild_run(", ANY),
-            // A thread's first heap and its destructor.
-            ("heap/thread.rs:", "fn create_heap_for_thread<", ANY),
+            // A thread's heap destructor.
             (
                 "heap/thread.rs:",
                 "pub unsafe extern \"C\" fn heap_destructor(",
                 ANY,
             ),
-            // The slow paths.
-            ("heap/paths.rs:", "pub(super) fn alloc_slow_in(", ANY),
-            ("heap/paths.rs:", "pub(super) fn free_slow_in(", ANY),
         ],
     );
 }

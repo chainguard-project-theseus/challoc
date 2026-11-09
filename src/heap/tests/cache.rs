@@ -716,7 +716,8 @@ fn huge_runs_go_through_the_heap_without_caches() {
     assert!(!p.is_null() && zero);
     assert_eq!(s.regions.classify(p as usize), Kind::Huge { page: 0 });
     assert_eq!(
-        s.huge.usable_size(0, Tracked::assume_new()),
+        s.huge
+            .usable_size(0, Tracked::assume_new(), Tracked::assume_new()),
         s.huge.usable_for(size).unwrap()
     );
     assert_eq!(t.stats().allocated, s.huge.usable_for(size).unwrap() as u64);

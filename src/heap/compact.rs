@@ -46,8 +46,6 @@ use crate::class::{ptr_addrs, slot_loc};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions, slots_in};
 #[cfg(verus_keep_ghost)]
-use crate::lock::axiom_entry;
-#[cfg(verus_keep_ghost)]
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_keep_ghost)]
 use vstd::map::Map;
@@ -201,6 +199,8 @@ impl Heap {
     /// cache before popping.
     #[cold]
     #[inline(never)]
+    // The ghost tokens are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub(super) unsafe fn pop_compact(
         &mut self,
         cache: *mut CacheHeader,
@@ -209,6 +209,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -220,12 +221,14 @@ impl Heap {
             old(self).poppable(class as int, cache),
             len == old(self).hdr(cache).len,
             len > 0,
+            old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
             r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+            *final(ord) == *old(ord),
     {
         broadcast use lemma_handed_ok;
         let tracked mut spare = Map::<int, GhostSingleton<int>>::tracked_empty();
@@ -240,21 +243,18 @@ impl Heap {
                     // balanced churn on a dense class takes no other slow
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
-                    // Premise (lock order): as in `Heap::rebuild_run`, the scheduled
-                    // pops' callers hold no allocator lock at the call.
-                    let tracked mut ord = axiom_entry();
-                    self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
+                    self.tick::<true>(shared, Tracked(&mut *ord), Tracked(errno), Tracked(Some(&mut *cell)));
                     proof {
                         Heap::lemma_keeps_poppable(*old(self), *self, class as int, cache);
                     }
                     let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
+                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut *ord)) else {
                             return (ptr::null_mut(), false);
                         };
                         let ghost s = *self;
-                        len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
+                        len = self.refill(shared, a, w, cache, class, Tracked(&mut *ord));
                         proof {
                             Heap::lemma_keeps_poppable(s, *self, class as int, cache);
                         }
@@ -263,7 +263,7 @@ impl Heap {
                         }
                     }
                     let (refilled, verdict) =
-                        Self::probe_verdict(shared, self.hdr_ref(cache).arena, class, self.hdr_ref(cache).probe_refilled, Tracked(&mut ord));
+                        Self::probe_verdict(shared, self.hdr_ref(cache).arena, class, self.hdr_ref(cache).probe_refilled, Tracked(&mut *ord));
                     let ghost h0 = *self;
                     let h = self.hdr_mut(cache);
                     h.probe_refilled = refilled;
@@ -288,7 +288,7 @@ impl Heap {
                         Heap::lemma_set(h1, *self, cache, *h);
                         Heap::lemma_poppable_same(h1, *self, class as int, cache);
                     }
-                    return self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell));
+                    return self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord));
                 }
                 _ => {
                     let r = Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
@@ -298,7 +298,7 @@ impl Heap {
                     return r;
                 },
             }
-            self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell))
+            self.pop_compact_run(cache, class, len, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
         }
     }
 
@@ -309,6 +309,8 @@ impl Heap {
     /// As for [`Heap::pop`].
     #[verifier::spinoff_prover]
     #[verifier::rlimit(30)]
+    // The ghost tokens are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     pub(super) unsafe fn pop_compact_run(
         &mut self,
         cache: *mut CacheHeader,
@@ -317,6 +319,7 @@ impl Heap {
         Tracked(blk): Tracked<&mut Live>,
         Tracked(errno): Tracked<&mut ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (*mut u8, bool))
         requires
             crate::sys::may_abort(),
@@ -328,12 +331,14 @@ impl Heap {
             old(self).poppable(class as int, cache),
             len == old(self).hdr(cache).len,
             len > 0,
+            old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
             r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
             r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
             r.0@.addr != 0 ==> final(blk).slot_block(r.0, class as int),
+            *final(ord) == *old(ord),
     {
         broadcast use lemma_handed_ok;
         broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
@@ -353,7 +358,7 @@ impl Heap {
             }
             let mut len = len;
             if self.hdr_ref(cache).run_end == 0 {
-                self.rebuild_run(cache, class, Tracked(errno), Tracked(cell));
+                self.rebuild_run(cache, class, Tracked(errno), Tracked(cell), Tracked(&mut *ord));
                 len = self.hdr_ref(cache).len;
                 if self.hdr_ref(cache).run_end == 0 {
                     if len == 0 {
@@ -364,12 +369,10 @@ impl Heap {
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = shared_of(self.shared);
-                        // Premise (lock order): as in `pop_compact`.
-                        let tracked mut ord = axiom_entry();
-                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut ord)) else {
+                        let Some((a, w)) = shared.arena(self.hdr_ref(cache).arena, Tracked(&mut *ord)) else {
                             return (ptr::null_mut(), false);
                         };
-                        len = self.refill(shared, a, w, cache, class, Tracked(&mut ord));
+                        len = self.refill(shared, a, w, cache, class, Tracked(&mut *ord));
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
@@ -524,6 +527,7 @@ impl Heap {
         class: usize,
         Tracked(errno): Tracked<&mut crate::vspec::errno::ThreadErrno>,
         Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
             crate::sys::may_abort(),
@@ -532,27 +536,23 @@ impl Heap {
             old(self).wf(),
             old(self).owns(cache),
             old(self).hdr_class(cache) == class,
+            old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),
             final(self).keeps(*old(self)),
+            *final(ord) == *old(ord),
     {
         // SAFETY: `self.shared` is the process's `Shared` and it is ready
         // (`Heap::wf`), as `shared_of` requires; the unbounded lifetime lets
         // `self` be borrowed mutably below.
         let shared: &Shared = unsafe { shared_of(self.shared) };
-        // Premise (lock order): the scheduled pops run from `Heap::pop`, whose
-        // callers (`alloc_in`, `alloc_other` and `alloc_slow_in` after
-        // `refill`) hold no allocator lock at the call, and from `alloc_slow`,
-        // which calls `Heap::pop_compact` directly with no allocator lock
-        // held, so this rebuild holds none either.
-        let tracked mut ord = axiom_entry();
-        self.tick::<true>(shared, Tracked(&mut ord), Tracked(errno), Tracked(Some(&mut *cell)));
+        self.tick::<true>(shared, Tracked(&mut *ord), Tracked(errno), Tracked(Some(&mut *cell)));
         let ghost h0 = *self;
         // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
         // `cap - len` slots of storage follow them.
         unsafe {
             let arena = self.hdr_ref(cache).arena;
-            if !Self::fragmented(shared, arena, class, Tracked(&mut ord)) {
+            if !Self::fragmented(shared, arena, class, Tracked(&mut *ord)) {
                 shared.owner(arena).0.class(class).note_compact_mode(false);
                 let h = self.hdr_mut(cache);
                 h.set_mode(MODE_PROBE);
@@ -567,7 +567,7 @@ impl Heap {
             let block = (cap / 4).max(1);
             let len = self.hdr_ref(cache).len as usize;
             if len + block > cap && len > half {
-                self.flush(shared, arena, cache, class, len - half, Tracked(&mut ord));
+                self.flush(shared, arena, cache, class, len - half, Tracked(&mut *ord));
             }
             let ghost h1 = *self;
             proof {
@@ -595,7 +595,7 @@ impl Heap {
             proof {
                 shared.lemma_published_tables(*ow@, *oa);
             }
-            let (claim, Tracked(mut ztok)) = self.claim(shared, oa.class(class), out, Tracked(&mut toks), ow, Tracked(&mut ord));
+            let (claim, Tracked(mut ztok)) = self.claim(shared, oa.class(class), out, Tracked(&mut toks), ow, Tracked(&mut *ord));
             let ghost claimed = out@;
             let n = claim.n;
             if n == 0 {

@@ -47,7 +47,13 @@ fn heap_is_created_on_first_use_through_tls() {
     std::thread::spawn(move || {
         assert!(tls::get(Tracked::assume_new()).is_null());
         let c = class_of(100).unwrap();
-        let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let p = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         let raw = tls::get(Tracked::assume_new()) as usize;
         assert!(raw > TLS_EXITED);
@@ -67,14 +73,32 @@ fn heap_is_created_on_first_use_through_tls() {
         assert!(core::ptr::eq(heap.shared(), s));
         assert_eq!(heap.stats().allocated, CLASSES[c].size() as u64);
         // Same heap on the next call.
-        let q = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let q = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_eq!(tls::get(Tracked::assume_new()) as usize, raw);
         assert_ne!(p, q);
         fill(p, CLASSES[c].size(), 0xa5);
         fill(q, CLASSES[c].size(), 0x5a);
         check(p, CLASSES[c].size(), 0xa5);
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
-        free(s, q, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        free(
+            s,
+            q,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_eq!(
             existing_heap(s).expect("heap").stats().deallocated,
             2 * CLASSES[c].size() as u64
@@ -90,11 +114,29 @@ fn calloc_flag_is_honest_about_memory() {
     std::thread::spawn(move || {
         let c = class_of(200).unwrap();
         let size = CLASSES[c].size();
-        let (p, zero, _) = alloc_zeroed(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let (p, zero, _) = alloc_zeroed(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(zero && is_zero(p, size));
         fill(p, size, 0xff);
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
-        let (q, zero, _) = alloc_zeroed(s, c, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        let (q, zero, _) = alloc_zeroed(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_eq!(p, q);
         assert!(!zero && !is_zero(q, size));
         // Everything the flag calls zero really is. The flag is
@@ -105,7 +147,13 @@ fn calloc_flag_is_honest_about_memory() {
         // next fresh slab is mixed).
         let mut zeros = 0;
         for _ in 0..3000 {
-            let (r, zero, _) = alloc_zeroed(s, c, Tracked::assume_new(), Tracked::assume_new());
+            let (r, zero, _) = alloc_zeroed(
+                s,
+                c,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             assert!(!r.is_null());
             if zero {
                 assert!(
@@ -139,7 +187,13 @@ fn thread_exit_flushes_and_frees_the_heap() {
         handles.push(std::thread::spawn(move || {
             let mut ps = Vec::new();
             for i in 0..500 {
-                let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+                let p = alloc(
+                    s,
+                    c,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
                 assert!(!p.is_null());
                 fill(p, 64, t);
                 ps.push(p);
@@ -147,6 +201,7 @@ fn thread_exit_flushes_and_frees_the_heap() {
                     free(
                         s,
                         ps.swap_remove(i / 3 % ps.len()),
+                        Tracked::assume_new(),
                         Tracked::assume_new(),
                         Tracked::assume_new(),
                     );
@@ -184,7 +239,13 @@ fn creating_and_exited_sentinels_are_served_directly() {
         let meta_before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;
         // Inside heap creation: no heap, served from the slab bitmap.
         tls::set(TLS_CREATING as *mut c_void, Tracked::assume_new());
-        let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let p = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_CREATING);
         assert_eq!(
@@ -192,11 +253,23 @@ fn creating_and_exited_sentinels_are_served_directly() {
             meta_before
         );
         assert_eq!(live(s, c), 1);
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_eq!(live(s, c), 0);
         // Real heap.
         tls::set(core::ptr::null_mut(), Tracked::assume_new());
-        let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let p = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let raw = tls::get(Tracked::assume_new());
         assert!(raw as usize > TLS_EXITED);
         // The key holds the plain pointer, the slot the signed one.
@@ -207,7 +280,13 @@ fn creating_and_exited_sentinels_are_served_directly() {
             assert_eq!(raw, h);
         }
         assert!(s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated > meta_before);
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         // Run the destructor by hand (glibc clears the key's value
         // before calling it, so do the same to avoid a second run at
         // thread exit): heap gone, slot says exited, and later calls go
@@ -235,7 +314,13 @@ fn creating_and_exited_sentinels_are_served_directly() {
         assert_eq!(live(s, c), 0);
         // The slab went `Empty` when everything was released, so its
         // memory is dirty and the flag must say so.
-        let (q, zero, _) = alloc_zeroed(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let (q, zero, _) = alloc_zeroed(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!q.is_null());
         assert!(!zero || is_zero(q, 32));
         assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
@@ -243,7 +328,13 @@ fn creating_and_exited_sentinels_are_served_directly() {
             s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated,
             meta_before
         );
-        free(s, q, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            q,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_eq!(live(s, c), 0);
         // The key holds no value now, so thread exit runs no destructor.
     })
@@ -263,7 +354,13 @@ fn heap_destructor_ignores_null() {
         unsafe { heap_destructor(core::ptr::null_mut()) };
         assert!(tls::get(Tracked::assume_new()).is_null());
         let c = class_of(32).unwrap();
-        let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let p = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!p.is_null());
         let raw = tls::get(Tracked::assume_new());
         assert!(raw as usize > TLS_EXITED);
@@ -271,10 +368,28 @@ fn heap_destructor_ignores_null() {
         unsafe { heap_destructor(core::ptr::null_mut()) };
         assert_eq!(tls::get(Tracked::assume_new()), raw);
         assert!(existing_heap(s).is_some());
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
-        let q = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        let q = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!q.is_null());
-        free(s, q, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            q,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     })
     .join()
     .unwrap();
@@ -310,6 +425,7 @@ fn key_registration_failure_is_served_directly() {
             p as *mut u8,
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         assert_eq!(FAIL_SETSPECIFIC.load(Ordering::Relaxed), 0, "set never ran");
         assert!(
@@ -323,14 +439,26 @@ fn key_registration_failure_is_served_directly() {
         );
         assert_eq!(s.arenas.bound(0), bound_before);
         // The next call registers a heap as usual.
-        let q = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+        let q = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!q.is_null());
         assert!(tls::get(Tracked::assume_new()) as usize > TLS_EXITED);
         let h = existing_heap(s).unwrap() as *mut Heap as *mut c_void;
         let key = s.thread_key().expect("key");
         // SAFETY: `key` is the allocator's live thread key.
         assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
-        free(s, q, Tracked::assume_new(), Tracked::assume_new());
+        free(
+            s,
+            q,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     })
     .join()
     .unwrap();
@@ -400,14 +528,38 @@ fn heap_off_pac_executes_no_pac_instruction() {
             // flush (the sorted and the unsorted branch), then a GC-free
             // drain through the heap's own flush of every class.
             for _ in 0..cap + 8 {
-                v.push(alloc(s, c, Tracked::assume_new(), Tracked::assume_new()));
+                v.push(alloc(
+                    s,
+                    c,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                ));
             }
             for &p in v.iter().rev() {
-                free(s, p, Tracked::assume_new(), Tracked::assume_new());
+                free(
+                    s,
+                    p,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
             for _ in 0..cap {
-                let q = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
-                free(s, q, Tracked::assume_new(), Tracked::assume_new());
+                let q = alloc(
+                    s,
+                    c,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
+                free(
+                    s,
+                    q,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
             let h = existing_heap(s).expect("a heap") as *mut Heap;
             // SAFETY: `h` is the calling thread's live heap.
@@ -458,10 +610,24 @@ fn cache_entries_and_the_tls_heap_pointer_are_signed() {
     std::thread::spawn(move || {
         let c = class_of(64).unwrap();
         let ps: Vec<*mut u8> = (0..8)
-            .map(|_| alloc(s, c, Tracked::assume_new(), Tracked::assume_new()))
+            .map(|_| {
+                alloc(
+                    s,
+                    c,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                )
+            })
             .collect();
         for &p in &ps {
-            free(s, p, Tracked::assume_new(), Tracked::assume_new());
+            free(
+                s,
+                p,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
         let hp = existing_heap(s).unwrap() as *mut Heap;
         // SAFETY: `hp` is this thread's live heap.
@@ -496,10 +662,25 @@ fn cache_entries_and_the_tls_heap_pointer_are_signed() {
         assert_eq!(pac::auth(raw as usize, tp), hp as usize);
         // Pops authenticate and hand the plain slots back, LIFO.
         for &p in ps.iter().rev() {
-            assert_eq!(alloc(s, c, Tracked::assume_new(), Tracked::assume_new()), p);
+            assert_eq!(
+                alloc(
+                    s,
+                    c,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new()
+                ),
+                p
+            );
         }
         for &p in &ps {
-            free(s, p, Tracked::assume_new(), Tracked::assume_new());
+            free(
+                s,
+                p,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
         }
     })
     .join()
@@ -527,8 +708,20 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
     }
     std::thread::spawn(move || {
         let c = class_of(48).unwrap();
-        let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        let p = alloc(
+            s,
+            c,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         let hp = existing_heap(s).unwrap() as *mut Heap;
         // SAFETY: `hp` is this thread's live heap, used only through `cache`.
         let cache = unsafe { &mut *hp }.cache_ptr(c);
@@ -569,7 +762,13 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
                     // then, since a panic in a fork child can hang.
                     #[cfg(challoc_tls_check)]
                     crate::sys::test_real_aborts();
-                    let q = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+                    let q = alloc(
+                        s,
+                        c,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
                     core::ptr::write_volatile(q, 1);
                     libc::_exit(3);
                 }
@@ -613,8 +812,23 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
             );
         }
         // The parent's cache is intact.
-        assert_eq!(alloc(s, c, Tracked::assume_new(), Tracked::assume_new()), p);
-        free(s, p, Tracked::assume_new(), Tracked::assume_new());
+        assert_eq!(
+            alloc(
+                s,
+                c,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new()
+            ),
+            p
+        );
+        free(
+            s,
+            p,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
     })
     .join()
     .unwrap();
@@ -628,7 +842,13 @@ fn producer_consumer_across_threads_with_patterns() {
     let (tx, rx) = std::sync::mpsc::sync_channel::<usize>(64);
     let producer = std::thread::spawn(move || {
         for i in 0..20_000usize {
-            let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+            let p = alloc(
+                s,
+                c,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+            );
             assert!(!p.is_null());
             fill(p, size, (i & 0xff) as u8);
             tx.send(p as usize).unwrap();
@@ -641,6 +861,7 @@ fn producer_consumer_across_threads_with_patterns() {
             free(
                 s,
                 p as *mut u8,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             );
@@ -670,7 +891,13 @@ fn eight_threads_hammer_disjoint_pointers() {
                 xorshift(&mut st);
                 if held.len() < 400 && (st & 3 != 0 || held.is_empty()) {
                     let c = classes[(st >> 8) as usize % classes.len()];
-                    let p = alloc(s, c, Tracked::assume_new(), Tracked::assume_new());
+                    let p = alloc(
+                        s,
+                        c,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
                     assert!(!p.is_null());
                     let size = CLASSES[c].size();
                     // Fresh from the kernel or zeroed by whoever freed it.
@@ -682,13 +909,25 @@ fn eight_threads_hammer_disjoint_pointers() {
                     let (p, size) = held.swap_remove(i);
                     check(p, size, t as u8 + 1);
                     fill(p, size, 0);
-                    free(s, p, Tracked::assume_new(), Tracked::assume_new());
+                    free(
+                        s,
+                        p,
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                        Tracked::assume_new(),
+                    );
                 }
             }
             for (p, size) in held {
                 check(p, size, t as u8 + 1);
                 fill(p, size, 0);
-                free(s, p, Tracked::assume_new(), Tracked::assume_new());
+                free(
+                    s,
+                    p,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
         }));
     }

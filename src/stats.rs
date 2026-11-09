@@ -2932,12 +2932,19 @@ mod tests {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         assert!(!p1.is_null());
         let size = 400 * 1024;
-        let (h1, _, _) = t
-            .heap()
-            .alloc_huge_in(s, size, 16, a1, false, Tracked::assume_new());
+        let (h1, _, _) = t.heap().alloc_huge_in(
+            s,
+            size,
+            16,
+            a1,
+            false,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert!(!h1.is_null());
         let usable = s.huge.usable_for(size).unwrap();
 
