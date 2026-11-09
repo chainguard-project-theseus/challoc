@@ -1496,7 +1496,7 @@ type StatsLock = Lock<Snapshot>;
 /// theirs out (the first and last hand them back).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
-tracked struct SharedParts {
+pub(crate) tracked struct SharedParts {
     tracked free_flags: PointsTo<RouteByte>,
     tracked push_flags: PointsTo<u8>,
     tracked region_hi: PointsTo<usize>,

@@ -734,7 +734,7 @@ proof fn table_perm(tracked raw: PointsToRaw, p: *mut SetTable) -> (tracked r: O
 /// ([`Arena::split`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
-tracked struct ArenaParts {
+pub(crate) tracked struct ArenaParts {
     tracked index: PointsTo<u16>,
     tracked decay_ns: PointsTo<AtomicU64>,
     tracked sets: PointsTo<*const SetTable>,
@@ -2193,7 +2193,7 @@ verus! {
 /// ([`Arenas::split`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
-tracked struct ArenasParts {
+pub(crate) tracked struct ArenasParts {
     tracked lock: PointsTo<Lock<Created>>,
     tracked count: PointsTo<AtomicU32>,
     tracked auto: PointsTo<u32>,

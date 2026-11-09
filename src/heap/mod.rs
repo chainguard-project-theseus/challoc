@@ -70,6 +70,7 @@ use compact::{
 pub use compact::{MODE_OFF, MODE_PROBE, MODE_STATE};
 pub use live::Live;
 pub use others::ArenaCaches;
+pub(crate) use others::NodeHead;
 #[cfg(test)]
 pub use paths::free_fast;
 pub(crate) use paths::shared_ptr;
@@ -78,17 +79,16 @@ pub use paths::{
 };
 #[cfg(verus_keep_ghost)]
 pub use perms::*;
-#[cfg(verus_keep_ghost)]
 pub use shared::Built;
 pub use shared::Shared;
+pub(crate) use shared::SharedParts;
 #[cfg(verus_keep_ghost)]
 pub use shared::shared_storage;
 #[cfg(test)]
 use shared::{FAIL_SETSPECIFIC, guard_interval_for};
 #[cfg(verus_keep_ghost)]
-pub(crate) use tcaches::TableWrite;
-#[cfg(verus_keep_ghost)]
 pub(crate) use tcaches::axiom_heap_use;
+pub(crate) use tcaches::{HeapUse, TableVal, TableWrite, TcachesParts};
 #[cfg(verus_keep_ghost)]
 pub use theorems::*;
 pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
@@ -118,7 +118,8 @@ use crate::lock::rank_class;
 use crate::vspec::cbuf::CCall;
 use crate::vspec::ctl::Change;
 use crate::vspec::zero::Zeroed;
-use fresh::{FreshHeap, init_fields, mark_bound, mark_rehome};
+pub(crate) use fresh::FreshHeap;
+use fresh::{init_fields, mark_bound, mark_rehome};
 use others::{node_block_layout, node_caches_detached, node_set_arena};
 use paths::invalid_free;
 pub(crate) use shared::DEFRAG_GC_INTERVAL_NS;

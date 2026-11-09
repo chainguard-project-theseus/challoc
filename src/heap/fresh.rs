@@ -41,7 +41,7 @@ verus! {
 /// from which `Heap::destroy` frees the block. `Tcaches::create` drops
 /// the token instead, as it drops the cache permissions creation returns.
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
-pub(super) tracked struct FreshHeap {
+pub(crate) tracked struct FreshHeap {
     ghost heap: *mut Heap,
     tracked head: vstd::raw_ptr::PointsToRaw,
     tracked claim: crate::meta::MetaClaim,
