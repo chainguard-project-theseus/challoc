@@ -66,8 +66,9 @@ const PTHREAD_CANCEL_DISABLE: i32 = 1;
 unsafe extern "C" {
     fn pthread_setcancelstate(state: i32, old: *mut i32) -> i32;
     /// glibc's `fwrite(3)`, with the `libc` crate's signature and the same
-    /// symbol: what [`write_file`] calls. Declared in this crate rather
-    /// than taken from the `libc` crate so that a Kani harness can stub
+    /// symbol: what [`write_file`] calls (premise C14 of
+    /// `verus/kani/premises.md`). Declared in this crate rather than
+    /// taken from the `libc` crate so that `kani_write_file` can stub
     /// it: Kani 0.68 stubs a foreign function only where this crate
     /// declares it, and silently ignores a stub on `libc::fwrite`.
     fn fwrite(ptr: *const c_void, size: usize, nobj: usize, stream: *mut libc::FILE) -> usize;
@@ -207,7 +208,9 @@ pub(super) fn cancel_restore(old: i32)
 /// `fwrite` is a cancellation point; it runs with cancellation disabled,
 /// so a deferred `pthread_cancel` never unwinds through challoc's
 /// (non-unwinding) frames and is acted on at the program's next
-/// cancellation point instead (design 8.1).
+/// cancellation point instead (design 8.1). `kani_write_file` checks it
+/// on premises C9, C13 and C14 of `verus/kani/premises.md`: the
+/// cancel-state calls, the program's stream, and glibc's `fwrite`.
 #[verifier::external_body]
 #[inline(always)]
 fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
@@ -1898,5 +1901,125 @@ mod kani_cancel {
         let (calls, state) = unsafe { (CALLS, STATE) };
         assert_eq!(calls, 1);
         assert_eq!(state, given);
+    }
+}
+
+/// Kani check of `write_file` (`verus/ledger/src/api/print.rs.md`;
+/// `cfg(kani)` only, see `verus/README.md`, "Kani").
+#[cfg(kani)]
+mod kani_write_file {
+    use super::write_file;
+    use core::ffi::{c_int, c_void};
+    use vstd::prelude::Tracked;
+
+    /// What the stand-in for `pthread_setcancelstate` returns at its
+    /// first and second call, and the old state it stores when that is
+    /// 0; what the stand-in for `fwrite` returns.
+    static mut RC: [c_int; 2] = [0; 2];
+    static mut OLD: c_int = 0;
+    static mut WRITTEN: usize = 0;
+    /// How many calls either stand-in has seen: each records the count
+    /// as its call's place in the order.
+    static mut STEP: usize = 0;
+    /// `pthread_setcancelstate`'s calls, and the place and `state` of
+    /// its first two.
+    static mut CANCEL_CALLS: usize = 0;
+    static mut STATES: [(usize, c_int); 2] = [(0, 0); 2];
+    /// `fwrite`'s calls, and the last one's place, the address of its
+    /// bytes, its `size` and `n` and the address of its stream.
+    static mut WRITES: usize = 0;
+    static mut WROTE: (usize, usize, usize, usize, usize) = (0, 0, 0, 0, 0);
+
+    /// A stand-in for glibc's `pthread_setcancelstate` (premise C9): it
+    /// records its call, its place and `state`, checks that `oldstate`
+    /// is writable, and returns its call's entry of `RC`, storing `OLD`
+    /// in `*oldstate` only when that is 0.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn setcancelstate_model(state: c_int, oldstate: *mut c_int) -> c_int {
+        assert!(kani::mem::can_write(oldstate));
+        // SAFETY: the harness's own statics, and `oldstate`, writable
+        // (checked above); no other code runs in a harness.
+        unsafe {
+            let i = CANCEL_CALLS;
+            CANCEL_CALLS += 1;
+            let rc = if i < 2 {
+                STATES[i] = (STEP, state);
+                RC[i]
+            } else {
+                0
+            };
+            STEP += 1;
+            if rc == 0 {
+                *oldstate = OLD;
+            }
+            rc
+        }
+    }
+
+    /// A stand-in for glibc's `fwrite` (premise C14): it records its
+    /// call, its place and its arguments, checks that the `size * n`
+    /// bytes at `ptr` are readable, without reading them or the stream,
+    /// and returns `WRITTEN`.
+    #[allow(dead_code)] // Used through `kani::stub`, which rustc does not see.
+    unsafe extern "C" fn fwrite_model(
+        ptr: *const c_void,
+        size: usize,
+        n: usize,
+        stream: *mut libc::FILE,
+    ) -> usize {
+        assert!(kani::mem::can_dereference(core::ptr::slice_from_raw_parts(
+            ptr as *const u8,
+            size.saturating_mul(n)
+        )));
+        // SAFETY: the harness's own statics; no other code runs in a
+        // harness.
+        unsafe {
+            WRITES += 1;
+            WROTE = (STEP, ptr as usize, size, n, stream as usize);
+            STEP += 1;
+            WRITTEN
+        }
+    }
+
+    /// `write_file`: its `requires` (`may_syscall`, the report's token at
+    /// top 0) are about ghost state and it has no `ensures`; it returns
+    /// for any stream address (C13: the program's stream, which the
+    /// stand-in does not read through) and any bytes, up to 1024 of them
+    /// (`emit` passes at most 1023), and (beyond the contract) disables
+    /// cancellation,
+    /// calls `fwrite` once with the bytes' address, a `size` of 1, their
+    /// count and the stream, then gives back the state the first call
+    /// stored (or 0 when it failed), for any return values and old state.
+    #[kani::proof]
+    #[kani::stub(super::pthread_setcancelstate, setcancelstate_model)]
+    #[kani::stub(super::fwrite, fwrite_model)]
+    fn write_file_writes_the_bytes() {
+        let buf: [u8; 1024] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= 1024);
+        let s = &buf[..len];
+        let f: *mut libc::FILE = core::ptr::without_provenance_mut(kani::any());
+        let rc: [c_int; 2] = kani::any();
+        let old: c_int = kani::any();
+        kani::cover!(len == 0);
+        kani::cover!(len == 1023);
+        kani::cover!(rc[0] == 0);
+        kani::cover!(rc[0] != 0);
+        // SAFETY: as in `setcancelstate_model`.
+        unsafe {
+            RC = rc;
+            OLD = old;
+            WRITTEN = kani::any();
+        }
+        write_file(f, s, Tracked::assume_new());
+        // SAFETY: as in `setcancelstate_model`.
+        let (cancel_calls, states, writes, wrote) =
+            unsafe { (CANCEL_CALLS, STATES, WRITES, WROTE) };
+        assert_eq!(cancel_calls, 2);
+        assert_eq!(writes, 1);
+        // glibc's `PTHREAD_CANCEL_DISABLE` (C9), not this file's constant.
+        assert_eq!(states[0], (0, 1));
+        assert_eq!(wrote, (1, s.as_ptr() as usize, 1, len, f as usize));
+        assert_eq!(states[1], (2, if rc[0] == 0 { old } else { 0 }));
     }
 }
