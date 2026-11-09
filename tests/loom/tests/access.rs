@@ -986,57 +986,95 @@ fn access_one_permission_per_atomic_control() {
     assert!(!check_perms(&t2).is_empty());
 }
 
-// The init-once words (`api::state_*`, `api::line_*`): `STATE.word` has
-// two writes in shipped code, `state_claim`'s and `state_publish`'s;
-// `STATE.line` has two, `line_compare_exchange`'s and `line_store`'s; no
+// The init-once words (`api::STATE`'s `word` and `line`): shipped code
+// names their fields only in `api::state` and `api::line_word`, which
+// hand out the atomics by reference, and in `STATE`'s initialiser; no
 // other file under src/api/ (which `use super::*`) names `STATE`, and no
-// file outside it names `api::STATE` or `STATE.line`.
+// file outside it names `api::STATE`; the writes through those references
+// are `vspec` wrapper calls, `claim_init`'s exchange and
+// `publish_ready`'s store on `word`, and `claim_line`'s and
+// `feature_line_fork_child`'s exchanges and `publish_line`'s store on
+// `line`; and the process-start token (`api::axiom_start`) is taken once,
+// in `STATE`'s initialiser.
+
+/// The writing wrappers of `vspec/count.rs` and `vspec/byte.rs`.
+const ONCE_WRITERS: &[&str] = &[
+    "store",
+    "swap",
+    "compare_exchange",
+    "fetch_add",
+    "fetch_sub",
+];
 
 fn check_once(t: &Tree) -> Vec<String> {
     let mut out = Vec::new();
     let mut state = Vec::new();
     let mut line = Vec::new();
+    let mut start = Vec::new();
     for (file, text) in t {
         for l in shipped(text) {
             let c = &l.code;
-            let w = |name: &str| {
-                occurs(c, name, &[]).into_iter().any(|i| {
-                    let rest = &c[i + name.len()..];
-                    rest.starts_with('.') && writes(rest)
-                })
-            };
-            if w("STATE.word") {
-                state.push((file.clone(), l.func.clone()));
+            // Each call, not each line: two calls on one line are two
+            // `Start`s. The `fn axiom_start(` of its definition is not a call.
+            let starts = occurs(c, "axiom_start(", &[])
+                .into_iter()
+                .filter(|&i| !c[..i].ends_with("fn "))
+                .count();
+            if file != "src/api/mod.rs" {
+                let api_sibling =
+                    file.starts_with("src/api/") && !occurs(c, "STATE", &[]).is_empty();
+                if api_sibling || c.contains("api::STATE") || starts > 0 {
+                    out.push(bad(file, &l));
+                }
+                continue;
             }
-            if w("STATE.line") {
-                line.push((file.clone(), l.func.clone()));
+            for _ in 0..starts {
+                start.push(l.func.clone());
             }
-            let api_sibling = file.starts_with("src/api/") && !occurs(c, "STATE", &[]).is_empty();
-            if file != "src/api/mod.rs"
-                && (api_sibling
-                    || c.contains("api::STATE")
-                    || !occurs(c, "STATE.line", &[]).is_empty())
-            {
+            if l.ghost {
+                continue;
+            }
+            if (calls(c, "state") || calls(c, "line_word")) && fn_item(c).is_none() && writes(c) {
                 out.push(bad(file, &l));
+            }
+            let fields = [".word", ".line"].iter().any(|f| {
+                occurs(c, f, &[])
+                    .into_iter()
+                    .any(|i| c[..i].ends_with("STATE") || c[..i].ends_with('s'))
+            });
+            if fields && !["state", "line_word"].contains(&l.func.as_str()) {
+                out.push(bad(file, &l));
+            }
+            for w in ONCE_WRITERS {
+                if calls(c, &format!("crate::vspec::count::{w}")) {
+                    state.push(l.func.clone());
+                }
+                if calls(c, &format!("crate::vspec::byte::{w}")) {
+                    line.push(l.func.clone());
+                }
             }
         }
     }
-    let api = |f: &str| ("src/api/mod.rs".to_string(), f.to_string());
-    if state != [api("state_claim"), api("state_publish")] {
+    if state != ["claim_init", "publish_ready"] {
         out.push(format!(
-            "STATE.word writes: got = {state:?}, want = state_claim's and state_publish's"
+            "STATE word writes: got = {state:?}, want = claim_init's and publish_ready's"
         ));
     }
-    if line != [api("line_compare_exchange"), api("line_store")] {
+    if line != ["claim_line", "publish_line", "feature_line_fork_child"] {
         out.push(format!(
-            "STATE.line writes: got = {line:?}, want = line_compare_exchange's and line_store's"
+            "line word writes: got = {line:?}, want = claim_line's, publish_line's and feature_line_fork_child's"
+        ));
+    }
+    if start != [""] {
+        out.push(format!(
+            "axiom_start calls: got = {start:?}, want = one, in STATE's initialiser"
         ));
     }
     out
 }
 
 #[test]
-fn access_init_once_words_written_twice() {
+fn access_init_once_words_written_by_their_protocol() {
     report("init-once writes", check_once(&tree()));
 }
 
@@ -1049,13 +1087,6 @@ fn access_init_once_words_control() {
         "src/heap/shared.rs",
         anchor,
         "fn f() { crate::api::STATE.word.store(0, Ordering::Relaxed); }",
-    );
-    assert!(!check_once(&t2).is_empty());
-    let t2 = with(
-        &t,
-        "src/heap/shared.rs",
-        anchor,
-        "fn f() -> u8 { STATE.line.load(Ordering::Relaxed) }",
     );
     assert!(!check_once(&t2).is_empty());
     let t2 = with(
@@ -1076,7 +1107,42 @@ fn access_init_once_words_control() {
         &t,
         "src/api/mod.rs",
         "fn feature_line_fork_child(Tracked(published): Tracked<&'static Published>)",
-        "fn f() { STATE.line.store(0, Ordering::Relaxed); }",
+        "fn f() { state().0.store(0, Ordering::Relaxed); }",
+    );
+    assert!(!check_once(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/api/mod.rs",
+        "let tracked (line_state, statics) = owned;",
+        "proof { let tracked again = axiom_start(state().0, line_word()); }",
+    );
+    assert!(!check_once(&t2).is_empty());
+    let one = "let tracked s = axiom_start(&word, &line);";
+    let mut t2 = t.clone();
+    let m = t2.get_mut("src/api/mod.rs").unwrap();
+    assert!(
+        m.contains(one),
+        "src/api/mod.rs: got = no {one:?}, want = the control's anchor"
+    );
+    *m = m.replacen(
+        one,
+        "let tracked s = axiom_start(&word, &line); let tracked s2 = axiom_start(&word, &line);",
+        1,
+    );
+    assert!(!check_once(&t2).is_empty());
+    let anchor = "fn feature_line_fork_child(Tracked(published): Tracked<&'static Published>)";
+    let t2 = with(
+        &t,
+        "src/api/mod.rs",
+        anchor,
+        "fn f() -> u8 { STATE.line.load(Ordering::Relaxed) }",
+    );
+    assert!(!check_once(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/api/mod.rs",
+        anchor,
+        "fn f() { crate::vspec::count::store(state().0, 0, Ordering::Relaxed, Tracked::assume_new()); }",
     );
     assert!(!check_once(&t2).is_empty());
 }
@@ -1217,8 +1283,9 @@ fn access_fork_slot_control() {
 }
 
 // The deferred cgroup record's phase (`vspec/byte.rs`'s seams): non-test
-// sys/cgroup.rs writes no `.phase` by a method, and no file but it and
-// heap/slotstate.rs (the slot-state bytes' `step`) calls `vspec::byte`.
+// sys/cgroup.rs writes no `.phase` by a method, and no file but it,
+// heap/slotstate.rs (the slot-state bytes' `step`) and api/mod.rs (the
+// feature line's word, `check_once`) calls `vspec::byte`.
 
 fn check_phase(t: &Tree) -> Vec<String> {
     let mut out = Vec::new();
@@ -1233,6 +1300,7 @@ fn check_phase(t: &Tree) -> Vec<String> {
             let other = file != "src/sys/cgroup.rs"
                 && file != "src/vspec/byte.rs"
                 && file != "src/heap/slotstate.rs"
+                && file != "src/api/mod.rs"
                 && (c.contains("vspec::byte::")
                     || [
                         "byte::new",

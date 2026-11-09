@@ -2192,7 +2192,7 @@ impl Shared {
             space@.addr() == regions.meta_base,
             space@.len() == regions.meta_len,
             config.wf(),
-            once::shared_steps(steps),
+            once::all_steps(steps),
             pac ==> crate::sys::pac::pac_available(),
         ensures
             r ==> shared_at(this).built(),
@@ -2291,9 +2291,8 @@ impl Shared {
                 ;
             }
             proof {
-                // Every step but `Shared`'s and `Statics`' still has its
-                // token.
-                assert forall|s: Step| s != Step::Shared && s != Step::Statics implies #[trigger] once::holds(steps, s) by {
+                // Every step but `Shared`'s still has its token.
+                assert forall|s: Step| s != Step::Shared implies #[trigger] once::holds(steps, s) by {
                     assert(once::holds(steps0, s));
                 }
             }

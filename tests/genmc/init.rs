@@ -1,16 +1,17 @@
 // GenMC port of tests/loom/src/init.rs (P4, publishing `Shared`): copies
-// of `api::state_load`, `state_claim`, `state_publish`, `shared`,
+// of `api::load_state`, `claim_init`, `publish_ready`, `shared`,
 // `shared_if_ready` and `init_slow` (src/api/mod.rs), as in the loom
-// model. These are `api/mod.rs`'s own functions over `STATE` and
-// `INIT_TID`, not `vspec` wrappers, so the harness is a copy through
-// and through, tied to the code by its pins.
+// model. These are `api/mod.rs`'s own steps over `STATE.word` and
+// `INIT_TID`; the harness runs `core`'s atomic in place of their
+// `vspec::count` calls on `STATE.word`, so it is a copy through and
+// through, tied to the code by its pins.
 //
 // - `init_slow`: `compare_exchange(UNINIT, INITIALISING, Acquire,
 //   Acquire)`; the winner stores its tid in `INIT_TID` `Relaxed`, runs
 //   `init` and stores `READY` `Release`; a loser that sees `READY`
 //   returns, one whose tid is `INIT_TID` aborts (re-entry), any other
-//   spins on an `Acquire` load of `STATE` until `READY`;
-// - `shared`: an `Acquire` load of `STATE`, `shared_ref` on `READY`,
+//   spins on an `Acquire` load of `STATE.word` until `READY`;
+// - `shared`: an `Acquire` load of `STATE.word`, `shared_ref` on `READY`,
 //   `init_slow` otherwise; `shared_if_ready`, the `free` path's: the
 //   load, and `shared_ref` on `READY`;
 // - `init`: a plain write of the published value (`SHARED` and the rest
@@ -21,22 +22,22 @@
 // is a reported non-atomic race); a re-entrant call from `init` aborts
 // and never waits for itself, and no other thread takes the abort; and,
 // in runs with `+live`, every caller returns (a waiter left spinning on
-// `STATE`'s last value is a reported liveness violation). The loom
-// model's checks for the `STATE` wrappers' contracts are kept (every
-// access to `STATE` reads one of its three values and never goes back
-// in its modification order from the thread's last value: `state_load`,
-// and `init_slow` for the exchange; with `READBACK`, the initialiser's
-// load right after its `READY` store, a load the model adds, reads
-// `READY`), though under GenMC's models, which have coherence as an
-// axiom, and with nothing writing `STATE` but these three values once
-// each, they cannot fail. Unlike loom, GenMC can run two waiters spinning
+// `STATE.word`'s last value is a reported liveness violation). The loom
+// model's checks for the `vspec::count` wrappers' contracts on
+// `STATE.word` are kept (every access reads one of its three values and
+// never goes back in its modification order from the thread's last
+// value: `state_load`, and `init_slow` for the exchange; with `READBACK`,
+// the initialiser's load right after its `READY` store, a load the model
+// adds, reads `READY`), though under GenMC's models, which have coherence
+// as an axiom, and with nothing writing `STATE.word` but these three
+// values once each, they cannot fail. Unlike loom, GenMC can run two waiters spinning
 // at once (three callers): the wait is `await_until!`, one pass of its
 // load, which blocks the waiter when it reads anything but `READY`.
 //
 // The seam ledger cites this template's pass cases (verus/SEAMS.md,
-// "Status") for `api::state_load`, `api::state_claim`,
-// `api::state_publish` and `api::init_slow` (`src/api/mod.rs`), whose
-// lines the harness copies (pinned by tests/loom/tests/pins.rs). It is
+// "Status") for `api::init_slow` (`src/api/mod.rs`), whose lines, with
+// those of the steps it calls, the harness copies (pinned by
+// tests/loom/tests/pins.rs). It is
 // evidence only: a copy runs, not the body, and no case checks a seam's
 // contract.
 //
@@ -94,8 +95,9 @@ impl Statics {
         unsafe { core::ptr::read_volatile(self.shared.get()) }
     }
 
-    /// `api::state_load`: an `Acquire` load of `STATE`. `seen` is the
-    /// thread's last value of `STATE`, read or written (model
+    /// `api::load_state`'s `vspec::count::load`: an `Acquire` load of
+    /// `STATE.word`. `seen` is the thread's last value of it, read or
+    /// written (model
     /// bookkeeping): the load reads one of the three values, never one
     /// before `seen` in the modification order, and becomes `seen`.
     fn state_load(&self, seen: &mut u32) -> u32 {
@@ -141,7 +143,7 @@ impl Statics {
                 self.state.store(READY, PUBLISH);
                 *seen = READY;
                 if READBACK {
-                    // `state_publish`'s `final(perm).value() == READY`: the
+                    // `vspec::count::store`'s `final(perm).value() == v`: the
                     // publisher's next load reads it (a load the model adds).
                     gassert!(self.state_load(seen) == READY, "the publisher read back");
                 }

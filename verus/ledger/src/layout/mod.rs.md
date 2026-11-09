@@ -27,7 +27,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ## `axiom_class_table`
 
-src/layout/mod.rs:1533. Kind: axiom. Category: allocator invariant.
+src/layout/mod.rs:1534. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Trusted: a [`table_ok`] value that a frozen permission to the storage of [`CLASSES`] holds is [`class_table`], since it is [`classes_after_init`], the contents of [`CLASSES`] after init.
@@ -47,7 +47,7 @@ pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Clas
 
 ## `ClassTable::new`
 
-src/layout/mod.rs:1544. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1545. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::class_table_new).
 
 Hashes: contract 3932435869, body 785407001.
@@ -58,7 +58,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ## `classes_ptr`
 
-src/layout/mod.rs:1643. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1644. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.

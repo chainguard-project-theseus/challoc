@@ -1526,8 +1526,9 @@ pub(crate) proof fn lemma_spec_ok_table_ok()
 /// Trusted: a [`table_ok`] value that a frozen permission to the storage
 /// of [`CLASSES`] holds is [`class_table`], since it is
 /// [`classes_after_init`], the contents of [`CLASSES`] after init. `api::init` freezes
-/// the one permission to it (`api::axiom_statics` hands it out once, for
-/// the process's one-shot token) after [`adopt_page_geometry`], and
+/// the one permission to it (`STATE`'s initialiser takes it once, from
+/// `api::axiom_start`, and `api::claim_init` hands it to `init`) after
+/// [`adopt_page_geometry`], and
 /// nothing writes the table through a `'static` shared permission, so
 /// every such permission holds that one value.
 pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
