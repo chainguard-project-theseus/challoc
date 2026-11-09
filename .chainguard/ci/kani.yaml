@@ -69,7 +69,8 @@ checks:
       - {name: q16, vars: {QUANTUM: "16"}}
       - {name: q8, vars: {QUANTUM: "8"}}
     resources: xlarge-amd64
-    # The 196 harnesses take about 40 min per quantum at -j 4 here.
+    # The harnesses (`git grep '#\[kani::proof\]' src | wc -l` counts them)
+    # take about 40 min per quantum at -j 4 here.
     timeout: 60m
     network: &kani-net
       egress: [index.crates.io, static.crates.io]
