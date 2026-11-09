@@ -252,12 +252,15 @@ section's, and fails on a Kani status that names any other.
 - **C9, glibc's `pthread_setcancelstate`.** The symbol
   `pthread_setcancelstate` resolves to glibc's `int
   pthread_setcancelstate(int state, int *oldstate)`, the signature of
-  challoc's declaration of it in `api/print.rs`. A program or preloaded
+  challoc's declarations of it in `api/print.rs` and
+  `purge/background.rs` (its `glibc` module). A program or preloaded
   library that defines that symbol itself, interposing on glibc's, is
   outside this premise unless its definition does the same. Called by
   `api::print::cancel_disable` with `PTHREAD_CANCEL_DISABLE` (1; 0 is
-  `PTHREAD_CANCEL_ENABLE`) and by `api::print::cancel_restore` with any
-  `state`, each time with the address of a live, writable `int` on
+  `PTHREAD_CANCEL_ENABLE`), by `api::print::cancel_restore` with any
+  `state`, and by `purge::background::pthread_join` with
+  `PTHREAD_CANCEL_DISABLE` before its join and with any `state` after
+  it, each time with the address of a live, writable `int` on
   challoc's stack as `oldstate`, it returns to its caller, writes no
   memory of challoc's but `*oldstate`, and makes no call into challoc
   while it runs. For a `state` of 0 or 1 it sets the calling thread's
@@ -399,6 +402,172 @@ section's, and fails on a Kani status that names any other.
   `sysdeps/aarch64/nptl/tls.h` (`THREAD_SELF`: the `header.self` word
   through `%fs`, and the thread pointer less one `struct pthread`), as
   read on glibc's master branch on 2026-11-06 (a mirror).
+- **C13, the stream a program passes to `malloc_info`.** The `stream` a
+  program passes to `malloc_info` is null or the address of an open
+  stream: a `FILE` that one of glibc's functions that open a stream
+  (such as `fopen`, `fdopen`, `freopen`, `tmpfile`, `popen`,
+  `fmemopen`, `open_memstream` and `fopencookie`) returned, or `stdin`,
+  `stdout` or
+  `stderr`, that the program has not closed and closes on no other
+  thread while the call runs. A stream whose locking the program took
+  over (`__fsetlocking` with `FSETLOCKING_BYCALLER`, under which glibc
+  takes no lock for it) is used by no other thread while the call runs;
+  otherwise the uses are a data race. The functions the program gave
+  `fopencookie` for the stream keep the C allocation contract while
+  glibc calls them during the call, as C3's callbacks do: each reads the
+  buffer it is given only within its length and only until it returns,
+  writes no byte through it, returns to its caller (it neither unwinds
+  nor `longjmp`s out of the call and does not call `pthread_exit` during
+  it), does not re-enable cancellation, and any call it makes into
+  challoc passes only pointers it owns and frees only live blocks.
+  `api::print::malloc_info` rejects a null stream with `EINVAL` before
+  any write, and passes any other only to glibc's `fwrite` (C14), on the
+  thread that called `malloc_info`, through its `Target::File` and
+  `api::print::write_file`. A stream that is not open, or one closed
+  while the call runs, is the program's use of memory it does not own.
+  The harness runs the item on any stream address, which the stand-in
+  for `fwrite` (C14) records and does not read through. Source: the
+  Linux man-pages project's `malloc_info(3)` ("The string is printed on
+  the file stream stream.") and `fopencookie(3)` (the program's `write`
+  function, "ssize_t write(void *cookie, const char *buf, size_t
+  size);"); glibc `malloc/malloc.c` (`__malloc_info`, which writes the
+  document to `fp` with `fputs` and `fprintf`),
+  `libio/__fsetlocking.c` (`FSETLOCKING_BYCALLER` sets `_IO_USER_LOCK`)
+  and `libio/libio.h` (`_IO_USER_LOCK`, under which `_IO_flockfile`
+  takes no lock), as read on glibc's master branch on 2026-11-07 (a
+  mirror); the C allocation contract
+  (`verus/RESULTS.md`, "Trust base") for the calls into challoc; ISO C11
+  section 5.1.2.4 (a data race is undefined behaviour). That the
+  program's stream functions do not `longjmp` out of the call is
+  assumed, with no source.
+- **C14, glibc's `fwrite`.** The symbol `fwrite` resolves to glibc's
+  `size_t fwrite(const void *ptr, size_t size, size_t n, FILE *stream)`,
+  the signature of challoc's declaration of it in `api/print.rs`. A
+  program or preloaded library that defines that symbol itself,
+  interposing on glibc's, is outside this premise unless its definition
+  does the same, and so is a thread challoc runs on that glibc did not
+  create (a raw `clone`), whose thread pointer names no descriptor of
+  its own. Called by
+  `api::print::write_file` with cancellation disabled (C9), with the
+  address of `n` readable bytes on challoc's stack as `ptr` (the
+  report's buffer), a `size` of 1 and a stream C13 describes, not null,
+  it writes at most those `n` bytes to the stream (none to a
+  wide-oriented stream) and returns a count no greater than `n`. It
+  reads the `n` bytes at `ptr`
+  and no other memory of challoc's, writes none (its statics, its TLS
+  slot, its stack), and may set the calling thread's `errno`. It holds
+  the stream's lock while it writes, unless the program took the
+  stream's locking over (C13). Unlike C7 to C12, which leave every call
+  into challoc outside them, it may call into challoc while it runs: glibc `malloc`s a stream's buffer on
+  its first write, a memory stream grows its buffer with `malloc` and
+  `free`, and a `fopencookie` stream's write is a call of the program's
+  function (C13). In a process whose allocator is challoc each such
+  `malloc` and `free` is a call into challoc, on the calling thread,
+  that passes only pointers glibc owns and frees only live blocks. It
+  is a cancellation point (its `write` system call); with cancellation
+  disabled, as C9's call before it leaves it and as neither glibc nor
+  the program's stream functions (C13) change it, it acts on no cancel.
+  It returns to its caller. What becomes of bytes it leaves in the
+  stream's buffer (a later flush) is not part of the call, and not of
+  this premise. The harness runs the item with `fwrite` replaced by a
+  stand-in that records its call, its arguments and its place among the
+  calls of `pthread_setcancelstate`, checks that the `size * n` bytes at
+  `ptr` are readable, and returns any value, and with
+  `pthread_setcancelstate` replaced by a stand-in that records each
+  call's place and `state`, checks that `oldstate` is writable, and
+  returns any value for each call, storing any `int` in `*oldstate` when
+  that value is 0. Source: POSIX `fwrite` ("The fwrite() function shall write, from the array
+  pointed to by ptr, up to nitems elements whose size is specified by
+  size, to the stream pointed to by stream."; "The fwrite() function
+  shall return the number of elements successfully written, which shall
+  be less than nitems only if a write error is encountered."; "if a
+  write error occurs, the error indicator for the stream shall be set,
+  and errno shall be set to indicate the error") and section 2.9.5.2,
+  "Cancellation Points", of its System Interfaces volume, which names it
+  among the functions at which "A cancellation point may also occur";
+  glibc `libio/iofwrite.c` (`_IO_fwrite`: the stream lock, the
+  orientation check, `_IO_sputn` and the count it returns),
+  `libio/libioP.h` (`_IO_acquire_lock`), `libio/fileops.c` (`_IO_new_file_write`:
+  `__write`, a cancellation point, unless the stream was opened not to
+  be one), `libio/filedoalloc.c` (`_IO_file_doallocate`, the `malloc`
+  of the buffer), `libio/strops.c` (a memory stream's `malloc` and
+  `free` as it grows) and `libio/iofopncook.c` (`_IO_cookie_write`, the
+  call of the program's write function), as read on glibc's master
+  branch on 2026-11-07 (a mirror).
+- **C15, glibc's `pthread_join`.** The symbol `pthread_join` resolves
+  to glibc's `int pthread_join(pthread_t thread, void **retval)`, the
+  signature of challoc's declaration of it in `purge/background.rs`
+  (its `glibc` module), with `pthread_t` an `unsigned long`. A program
+  or preloaded library that defines that symbol itself, interposing on
+  glibc's, is outside this premise unless its definition does the same,
+  and so is a thread challoc runs on that glibc did not create (a raw
+  `clone`), whose thread pointer names no descriptor of its own.
+  Called by `purge::background::pthread_join` with cancellation
+  disabled (C9), with a null `retval` and the ID of a thread that
+  `purge::background::spawn` created joinable, on a stack challoc
+  mapped (`pthread_attr_setstack`), and not yet joined (the wrapper's
+  `# Safety` clause, which its callers keep), it waits until that thread
+  has exited, frees what glibc
+  kept for it, and returns 0, or returns a nonzero error number. A call
+  on any other ID (one already joined or detached, or the calling
+  thread's own) is outside this premise. It stores nothing through `retval`, reads and writes none of challoc's
+  memory (its statics, its TLS slot, its stack) but the exited thread's
+  descriptor, which glibc placed in the stack challoc gave the thread,
+  and returns to its caller. Unlike C7 to C12, which leave every call
+  into challoc outside them, it calls into challoc while it runs: for a thread on a stack the program provided,
+  as challoc's is, glibc frees the thread's TLS at the join
+  (`_dl_deallocate_tls`): its dynamic thread vector, which glibc's
+  `pthread_create` allocated with `calloc` (and a later access may have
+  grown with `realloc`), and the TLS blocks of the dynamically loaded
+  modules the thread used, which glibc allocated with `malloc` at the
+  thread's first use of each; and, when the thread had any, its
+  priority-protection data. In a
+  process whose allocator is challoc each is a `free` into challoc, on
+  the calling thread, of a live block challoc handed glibc, or of null
+  (`_dl_deallocate_tls` frees every slot of the vector, the empty ones
+  and those of modules in static TLS included). glibc makes the TLS
+  frees with its stack cache lock held, which `pthread_create` and
+  `pthread_join` take again, so the call returns only if no such nested
+  entry starts or joins a thread; that challoc's `free` does not is a
+  fact about challoc's code, not part of this premise. It is a
+  cancellation point: its
+  `__pthread_testcancel` and its futex wait act on a deferred cancel
+  only while cancellation is enabled, which C9's call before it
+  disables, so it acts on none. What the thread did before it exited
+  (its key destructors, `heap::heap_destructor` among them, which run
+  on that thread, theorem 10 of `verus/THEOREMS.md`) is not part of
+  the call, and not of this premise. The harness runs the item with
+  `pthread_join` replaced by a stand-in that records its call, the ID,
+  the address of `retval` and its place among the calls of
+  `pthread_setcancelstate`, and returns any value, and with
+  `pthread_setcancelstate` replaced by a stand-in that records each
+  call's place and `state`, checks that `oldstate` is writable, and
+  returns any value for each call, storing any `int` in `*oldstate` when
+  that value is 0. Source: POSIX `pthread_join` ("The pthread_join() function shall suspend
+  execution of the calling thread until the target thread terminates,
+  unless the target thread has already terminated."; "If successful,
+  the pthread_join() function shall return zero; otherwise, an error
+  number shall be returned to indicate the error."; "The behavior is
+  undefined if the value specified by the thread argument to
+  pthread_join() does not refer to a joinable thread.") and section
+  2.9.5.2, "Cancellation Points", which names it among the functions at
+  which "Cancellation points shall occur"; glibc `nptl/pthread_join.c`
+  (`___pthread_join`, a `__pthread_clockjoin_ex` with cancellation),
+  `nptl/pthread_join_common.c` (`__pthread_clockjoin_ex`:
+  `__pthread_testcancel`, the `EDEADLK` and `EINVAL` returns, the wait
+  on `joinstate`, the store through a non-null `thread_return`, and
+  `__nptl_free_tcb`), `nptl/nptl_free_tcb.c` (the `free` of `tpp`, and
+  `__nptl_deallocate_stack`), `nptl/nptl-stack.c`
+  (`__nptl_deallocate_stack`: under the stack cache lock,
+  `_dl_deallocate_tls` for a stack the program provided),
+  `nptl/allocatestack.c` (`ALLOCATE_GUARD_USER`, the mode of a stack
+  from `pthread_attr_setstack`), `elf/dl-tls.c` (`_dl_deallocate_tls`'s
+  `free`s, `allocate_dtv`'s `calloc`, `_dl_resize_dtv`'s `realloc` and
+  `allocate_dtv_entry`'s `malloc`), `nptl/futex-internal.c` (the wait,
+  an `INTERNAL_SYSCALL_CANCEL`), `nptl/pthread_testcancel.c` and
+  `nptl/cancellation.c` (`__internal_syscall_cancel`; neither acts on a
+  cancel while cancellation is disabled), as read on glibc's master
+  branch on 2026-11-07 (a mirror).
 
 ## Loader and kernel premises
 
