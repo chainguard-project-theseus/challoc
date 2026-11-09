@@ -19,10 +19,14 @@ and not run.
 
 ## Inventory
 
-380 lines of shipped source carry an `Ordering::` (`grep` over `src/`,
-leaving out `tests.rs`, `linux_tests.rs`, `src/kani/`, `src/model/`,
-`src/heap/tlscheck.rs` (built only with `cfg(challoc_tls_check)`),
-inline `#[cfg(test)]` and `#[cfg(kani)]` modules, and comment lines).
+408 lines of source carry an `Ordering::` (`grep` over `src/`,
+leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
+`src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
+`cfg(challoc_tls_check)`), inline `#[cfg(test)]` and `#[cfg(kani)]`
+modules, and comment lines). The count keeps lines in `#[cfg(test)]`
+functions and statements outside those modules: `sys/abort.rs` and
+`sys/pac.rs` have only such lines (test hooks), and several other rows
+include a few.
 Files that pass an ordering through an imported name or a `vspec`
 wrapper argument are not in this count.
 Most of these lines are `Relaxed` statistics, configuration and
@@ -33,21 +37,24 @@ a compiler barrier.
 
 | File | Lines | Atomics |
 |---|---|---|
+| `purge/background.rs` | 56 | `PRESENT`, `REQUESTED`, `SEQ`; the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
 | `thp.rs` | 45 | init-time configuration and counters |
-| `purge/background.rs` | 43 | `PRESENT`, `REQUESTED`, `SEQ`; the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
 | `sys/cgroup.rs` | 40 | sampled cgroup limits and the deferred discovery's phase |
-| `purge.rs` | 36 | flags, counters, `Decayer` |
+| `purge.rs` | 37 | flags, counters, `Decayer` |
 | `arena.rs` | 30 | registry `AtomicPtr`s, counts, statistics |
 | `api/mod.rs` | 28 | `STATE`, `INIT_TID`, `SEALED`, `LINE_STATE` |
 | `stats.rs`, `policy.rs` | 26, 26 | statistics and the sampled policy, `Relaxed` |
-| `slab.rs` | 20 | `SlabDesc`: state, arena, `live`, dirty |
+| `slab.rs` | 24 | `SlabDesc`: state, arena, `live`, dirty, `closed`, `shadow`, `stamp` |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
-| `class/table.rs` | 15 | watermark; bitmap and owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
+| `class/table.rs` | 16 | watermark; bitmap and owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
 | `lock.rs` | 12 | the lock word; the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` |
 | `heap/slotstate.rs` | 11 | `double_free_scan`'s per-slot state byte |
-| `huge/mod.rs`, `bitmap.rs` | 9, 9 | `retain_max`, `purge_on_free`; `&[AtomicU64]` words |
+| `bitmap.rs` | 10 | `&[AtomicU64]` words |
+| `class/pages.rs` | 8 | `hint_due`, `hint_armed`, `pages_due`, `Relaxed` |
+| `huge/mod.rs`, `huge/free.rs` | 7, 2 | `retain_max`, `purge_on_free`, `mixed_guards`, `Relaxed` |
 | `heap/tcaches.rs` | 6 | `[AtomicPtr<u8>; 1024]` |
 | `heap/shared.rs` | 4 | `free_flags`; the class lines' watermark copies, read through `class::load_mirror` |
+| `sys/abort.rs`, `sys/pac.rs` | 2, 2 | test hooks only: `REAL_ABORT` and `TEST_OPS`, under `#[cfg(test)]` |
 
 ## Protocols that matter
 

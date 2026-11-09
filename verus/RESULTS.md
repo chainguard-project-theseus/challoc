@@ -222,7 +222,7 @@ The 74 trusted functions with no check account for 704 executable lines:
 
 | Category | Lines | Functions | What the seams assume |
 | --- | ---: | ---: | --- |
-| Allocator invariant | 162 | 18 | The lock entry premise, initialization and publication tokens, facts that fresh slab memory and discarded slots read zero, the slot-state byte (`axiom_slot_byte`), and the statistics pair pool (`stats::pool_*`). |
+| Allocator invariant | 162 | 18 | The lock entry premise, initialization and publication tokens, facts that fresh slab memory and discarded slots read zero, the slot-state byte (`axiom_slot_byte`), and the statistics pair pool's `stats::pool_take`. |
 | Internal raw pointer | 153 | 7 | Pointer and storage contracts, including the struct-assembly axioms for `Shared` and the arenas. |
 | Platform or kernel fact | 135 | 18 | `mmap` disjointness, fork resume, the fork window's record (`axiom_child_window`), user virtual-address limits, I/O and `getrandom` counts, facts that fresh anonymous and discarded memory read zero, and memory commits. |
 | FFI or syscall | 129 | 6 | Contracts for `pthread_join`, `sigprocmask`, `try_reserve`, `spawn` and `write_file`. |
