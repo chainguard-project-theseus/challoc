@@ -47,19 +47,23 @@
 //! Verified: every index here is in bounds and no arithmetic overflows;
 //! the addresses (an array base read from an atomic, plus an offset) and
 //! [`commit`]'s page rounding of them wrap, and [`init`] rounds with
-//! `meta::align_up` within proved bounds. Given a byte's value at each
-//! operation as a premise ([`axiom_slot_byte`], and `core`'s atomics on
-//! it through `vspec::byte`'s wrappers): [`free`], [`claim`], [`pop`] and
+//! `meta::align_up` within proved bounds. Every byte's permission lives
+//! in one invariant, [`SLOTS`], which [`step`] opens around each of its
+//! operations on the byte (`core`'s atomics through `vspec::byte`'s
+//! wrappers), so in `vspec::byte`'s sequentially consistent model each
+//! step finds the value the last step on that byte left (that `Relaxed`
+//! suffices is not proved); the permissions start `FREE`, the arrays' zero fill (premise,
+//! [`axiom_slot_bytes`], taken once). [`free`], [`claim`], [`pop`] and
 //! [`release`] return only when the byte held the state their transition
 //! starts from, and leave the one it ends in; and
 //! [`theorem_double_free_window`] proves, over the code's transitions on
 //! one byte, that a free left `CACHED` or `FREE` stays so until a
-//! hand-out. Not verified: the bytes' values, state no verified
-//! invariant constrains (the free's race is modelled in
-//! `tests/loom/src/slotstate.rs`); that a computed address is a
-//! committed byte (trusted, [`byte_at`]); and that [`commit`]'s range
-//! lies in [`init`]'s reservation (`mprotect` is checked only for its
-//! call).
+//! hand-out. Not verified: that a load-then-store step's store follows
+//! its load with no other change to the byte (the slot's holder makes
+//! it; the free's race is modelled in `tests/loom/src/slotstate.rs`);
+//! that a computed address is a committed byte (trusted, [`byte_at`]);
+//! and that [`commit`]'s range lies in [`init`]'s reservation (`mprotect`
+//! is checked only for its call).
 //! Every check here only adds an abort ([`crate::sys::abort_pending`]: it
 //! fires on an invalid free, and on a valid one only if this state is
 //! corrupt); none changes what the verified paths do with the bitmap or
@@ -69,8 +73,11 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use super::Shared;
 use crate::layout::{CLASSES, Class, NCLASSES, Regions};
+use crate::vspec::byte::BytePerm;
 #[cfg(verus_keep_ghost)]
-use crate::vspec::byte::{BytePerm, byte_id};
+use crate::vspec::byte::byte_id;
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
+use vstd::map::Map;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
@@ -199,10 +206,14 @@ pub open spec fn hands_out(s: u8, ops: Seq<(u8, u8)>) -> bool {
 /// hand-out (a pop, or `alloc_direct`'s claim): the slot is the
 /// program's again, and a free of it passes.
 ///
-/// The steps are those of one slot's byte in the order they take effect;
-/// that the byte holds what the last step on that slot left
-/// ([`axiom_slot_byte`]) and that each step is one atomic operation are
-/// premises, not verified here.
+/// The steps are those of one slot's byte in the order they take effect.
+/// That each finds what the last step on that slot left is [`SLOTS`]'
+/// invariant, which [`step`] opens around each operation on the byte;
+/// that the first finds `FREE` is [`axiom_slot_bytes`]'s premise; and
+/// that a load-then-store step (a claim, pop or release) takes effect as
+/// one operation, no other step changing the byte between its load and
+/// its store, is a premise, not verified here (the slot's holder makes
+/// it; a racing free's compare-and-exchange moves only a `LIVE` byte).
 pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
     requires
         to == CACHED || to == FREE,
@@ -233,21 +244,73 @@ pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
     }
 }
 
-/// Premise (the slot-state bytes are trusted values): a permission to `b`,
-/// a slot's state byte that [`byte`] computed, which holds a state. That
-/// is all its contract says. That the value is the one the last [`step`]
-/// on that slot left (`FREE` before the first, the array's zero fill) is
-/// an unencoded premise: each step takes one fresh permission, and no
-/// verified invariant constrains the bytes (raw mapped memory, written
-/// only by [`step`], through `vspec::byte`'s wrappers; the free's race is
-/// modelled in `tests/loom/src/slotstate.rs`). The bytes are not made by
-/// `vspec::byte::new`, so this is the one other place a [`BytePerm`] is
-/// minted. Called only in [`step`], once (pinned by
-/// `tests::slot_byte_axiom_is_called_only_in_step`).
-axiom fn axiom_slot_byte(b: &AtomicU8) -> (tracked perm: BytePerm)
+/// The identity of the slot-state byte at address `at`: what
+/// [`byte_at`] returns is the byte with it, and [`SLOTS`] holds the
+/// permission to it. Premise, not checked: distinct addresses have
+/// distinct identities, and none is the identity of an atomic
+/// `vspec::byte::new` made (`byte_at` is given only slot-state bytes).
+pub uninterp spec fn slot_byte_id(at: usize) -> int;
+
+/// What [`SLOTS`] holds: a permission to the slot-state byte at every
+/// address ([`slot_byte_id`]), whose value is a state.
+// Ghost: named only by proof code.
+#[allow(dead_code)]
+struct SlotPred;
+
+impl InvariantPredicate<(), Map<usize, BytePerm>> for SlotPred {
+    open spec fn inv(k: (), m: Map<usize, BytePerm>) -> bool {
+        forall|a: usize| #![trigger m.dom().contains(a)] #![trigger m[a]] m.dom().contains(a) && m[a].id() == slot_byte_id(a) && is_state(m[a].value())
+    }
+}
+
+/// The namespace of [`SLOTS`]' invariant.
+spec fn slots_ns() -> int {
+    0x736c_6f74
+}
+
+/// The invariant that holds every slot-state byte's permission
+/// ([`SlotPred`]): [`step`] opens it around each of its byte operations
+/// and puts the permission back, so the next step on that byte, on any
+/// thread, finds the value the last one left. A ghost static, built once,
+/// at compile time, from [`axiom_slot_bytes`].
+exec static SLOTS: Tracked<AtomicInvariant<(), Map<usize, BytePerm>, SlotPred>>
     ensures
-        perm.id() == byte_id(b),
-        is_state(perm.value()),
+        SLOTS@.namespace() == slots_ns(),
+{
+    let tracked m = axiom_slot_bytes();
+    let tracked inv = AtomicInvariant::new((), m, slots_ns());
+    Tracked(inv)
+}
+
+/// [`SLOTS`]' invariant, with the namespace its initialiser ensures.
+/// Called only by [`step`].
+// `s` is read only by the proof (ghost).
+#[allow(unused_variables)]
+#[inline(always)]
+fn slots() -> (r: Tracked<&'static AtomicInvariant<(), Map<usize, BytePerm>, SlotPred>>)
+    ensures
+        r@.namespace() == slots_ns(),
+    opens_invariants none
+{
+    let s = &SLOTS;
+    Tracked(s.borrow())
+}
+
+/// Premise (the slot-state bytes' first value): a permission to the
+/// slot-state byte at every address, each `FREE`. Taken once, by
+/// [`SLOTS`]' initialiser, which runs once, at compile time (pinned by
+/// `tests::slot_bytes_axiom_is_taken_only_by_slots`). Its premises: each
+/// byte [`step`] reaches ([`byte_at`]) reads `FREE` until the first step
+/// on it (the arrays are fresh anonymous mappings, zero-filled, never
+/// unmapped, and [`step`] is the only code that writes them, through
+/// `vspec::byte`'s wrappers); and no other permission to a slot-state
+/// byte exists (the bytes are not made by `vspec::byte::new`, so this is
+/// the one other place a [`BytePerm`] is minted). The permissions of
+/// addresses that are no slot-state byte are never used: [`SLOTS`] is
+/// private, and [`step`] opens it only for a byte [`byte`] computed.
+axiom fn axiom_slot_bytes() -> (tracked m: Map<usize, BytePerm>)
+    ensures
+        forall|a: usize| #![trigger m.dom().contains(a)] #![trigger m[a]] m.dom().contains(a) && m[a].id() == slot_byte_id(a) && m[a].value() == FREE,
 ;
 
 /// Reserve one `PROT_NONE` byte array per class, `nslabs * slab_bits`
@@ -392,34 +455,52 @@ fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: b
         r != PAST ==> is_state(final(obs)@.0) && r == seen(final(obs)@.0, from) && final(obs)@.1 == after(final(obs)@.0, from, to),
 {
     let Some(b) = byte(shared, class, p) else { return PAST };
-    let tracked mut perm = axiom_slot_byte(b);
-    let ghost held = perm.value();
+    let ghost a = choose|a: usize| byte_id(b) == slot_byte_id(a);
+    let Tracked(inv) = slots();
+    let ghost mut held: u8 = 0;
     if exchange {
-        match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {
-            Ok(_) => {
-                proof {
-                    *obs = Ghost((held, perm.value()));
-                }
-                MOVED
-            },
-            Err(v) => {
-                proof {
-                    *obs = Ghost((held, perm.value()));
-                }
-                v
-            },
-        }
-    } else {
-        let v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(&perm));
-        if v == from {
-            crate::vspec::byte::store(b, to, Ordering::Relaxed, Tracked(&mut perm));
+        let r;
+        vstd::open_atomic_invariant!(inv => m => {
+            let tracked mut perm = m.tracked_remove(a);
+            proof {
+                held = perm.value();
+            }
+            match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {
+                Ok(_) => {
+                    r = MOVED;
+                },
+                Err(v) => {
+                    r = v;
+                },
+            }
             proof {
                 *obs = Ghost((held, perm.value()));
+                m.tracked_insert(a, perm);
             }
+        });
+        r
+    } else {
+        let v;
+        vstd::open_atomic_invariant!(inv => m => {
+            let tracked perm = m.tracked_borrow(a);
+            proof {
+                held = perm.value();
+            }
+            v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(perm));
+        });
+        if v == from {
+            vstd::open_atomic_invariant!(inv => m => {
+                let tracked mut perm = m.tracked_remove(a);
+                crate::vspec::byte::store(b, to, Ordering::Relaxed, Tracked(&mut perm));
+                proof {
+                    *obs = Ghost((held, perm.value()));
+                    m.tracked_insert(a, perm);
+                }
+            });
             MOVED
         } else {
             proof {
-                *obs = Ghost((held, perm.value()));
+                *obs = Ghost((held, held));
             }
             v
         }
@@ -590,10 +671,12 @@ pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
 /// The state byte of slot start `p` of `class`, after the watermark
 /// compare: `None` for a slot of a slab no arena has been handed (whose
 /// byte may be uncommitted). Called by [`step`] only.
-fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8>
+fn byte(shared: &Shared, class: usize, p: *mut u8) -> (r: Option<&'static AtomicU8>)
     requires
         class < NCLASSES,
         crate::api::ready(),
+    ensures
+        r matches Some(b) ==> exists|a: usize| byte_id(b) == slot_byte_id(a),
 {
     let cls = &CLASSES.table()[class];
     proof {
@@ -627,10 +710,15 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> Option<&'static AtomicU8>
 ///
 /// Trusted (raw pointer): Verus has no integer-to-reference cast, and
 /// the contract above is the protocol of [`init`], [`commit`] and the
-/// watermark, not a verified fact. It claims nothing about the byte.
+/// watermark, not a verified fact. It claims only the byte's identity:
+/// the byte at `at`, whose permission [`SLOTS`] holds under
+/// [`slot_byte_id`]`(at)`; nothing about its value.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn byte_at(at: usize) -> &'static AtomicU8 {
+unsafe fn byte_at(at: usize) -> (r: &'static AtomicU8)
+    ensures
+        byte_id(r) == slot_byte_id(at),
+{
     // SAFETY: the caller's contract; an `AtomicU8` has no alignment
     // requirement.
     unsafe { &*(at as *const AtomicU8) }
@@ -666,7 +754,8 @@ mod kani_byte_at {
     use core::sync::atomic::AtomicU8;
     use core::sync::atomic::Ordering::Relaxed;
 
-    /// `byte_at`: no `ensures`; with `at` a byte of the harness's own
+    /// `byte_at`: its `ensures` names a ghost identity, which Kani does
+    /// not see; with `at` a byte of the harness's own
     /// 4-byte array, standing in for the `# Safety` contract's slot-state
     /// array, its address cast to an integer as `byte` computes it, the
     /// call is defined, the reference is that byte (`core::ptr::eq`;
@@ -691,29 +780,48 @@ mod kani_byte_at {
 
 #[cfg(test)]
 mod tests {
-    /// `axiom_slot_byte` mints a permission whose value is the byte's
-    /// only right where the byte is read: it is called only in `step`,
-    /// once, after `byte` computes the byte and before the one
-    /// `vspec::byte` operation on it. It is private to this file.
+    /// `axiom_slot_bytes` mints the slot-state bytes' permissions once:
+    /// in the `verus!` block, it is called once, in `SLOTS`' initialiser;
+    /// `SLOTS` is named only by its own declaration and by `slots`;
+    /// `slots` is called once, in `step`; and `byte_at`, whose `ensures`
+    /// names the byte `SLOTS` holds a permission to, is called once, in
+    /// `byte`. All of them are private to this file. Each count is of
+    /// occurrences, not lines.
     #[test]
-    fn slot_byte_axiom_is_called_only_in_step() {
+    fn slot_bytes_axiom_is_taken_only_by_slots() {
         // Spelled in parts, so that this test's own lines match nothing.
-        // A call is the name then `(`.
-        let name = std::format!("{}{}(", "axiom_", "slot_byte");
-        let mut found = std::vec::Vec::new();
-        let mut func = "";
+        let axiom = std::format!("{}{}(", "axiom_", "slot_bytes");
+        let slots = std::format!("{}{}", "SLO", "TS");
+        let call = std::format!("{}{}()", "slo", "ts");
+        let cast = std::format!("{}{}(", "byte", "_at");
+        let mut uses: [std::vec::Vec<&str>; 4] = Default::default();
+        let mut item = "";
         for line in include_str!("slotstate.rs").lines() {
             let t = line.trim();
+            if t == "} // verus!" {
+                break;
+            }
             if t.starts_with("//") {
                 continue;
             }
-            if let Some(i) = t.find("fn ") {
-                func = t[i + 3..].split(['(', '<']).next().unwrap();
-            }
-            if t.contains(name.as_str()) && !t.starts_with("axiom fn") {
-                found.push(func);
+            let def = if let Some(i) = t.find("fn ") {
+                item = t[i + 3..].split(['(', '<']).next().unwrap();
+                true
+            } else if let Some(r) = t.strip_prefix("exec static ") {
+                item = r.split(':').next().unwrap();
+                false
+            } else {
+                false
+            };
+            for (k, pat) in [&axiom, &slots, &call, &cast].into_iter().enumerate() {
+                if !def || k == 1 {
+                    uses[k].extend(core::iter::repeat_n(item, t.matches(pat.as_str()).count()));
+                }
             }
         }
-        assert_eq!(found, ["step"]);
+        assert_eq!(uses[0], ["SLOTS"]);
+        assert_eq!(uses[1], ["SLOTS", "SLOTS", "slots"]);
+        assert_eq!(uses[2], ["step"]);
+        assert_eq!(uses[3], ["byte"]);
     }
 }

@@ -2,7 +2,7 @@
 # loom and C11 (verus/WEAKMEM.md): a deferred record's phase
 # (`Deferred::phase`, sys/cgroup.rs) is written only through these
 # wrappers, which no other file calls but heap/slotstate.rs's `step` (the
-# slot-state bytes, whose permission `axiom_slot_byte` mints there) and
+# slot-state bytes, whose permissions `axiom_slot_bytes` mints once) and
 # api/mod.rs (`STATE.line`, the feature line's state, which it names only
 # in `api::line_word` and writes only through these wrappers, in
 # `claim_line`, `publish_line` and `feature_line_fork_child`), and

@@ -462,7 +462,7 @@ const WAIVED: &[(&str, &str, &str, &str)] = &[
     (
         "src/heap/slotstate.rs",
         "step",
-        "let v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(&perm));",
+        "v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(perm));",
         "step without exchange: the claims, pops and releases, made only by the thread that holds the slot; slotstate.rs models the free's compare-and-exchange, the one racing step",
     ),
     (
