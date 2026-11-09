@@ -162,14 +162,14 @@ add.
   `heap::thread::fast_flags` and `heap::paths::shared_of`.
   The feature line (written not by `init` but at its first request)
   has its own once-cell invariant (`api::LinePred`,
-  ONCECELL): `init` makes it with `LINE_STATE`'s permission
+  ONCECELL): `init` makes it with `STATE.line`'s permission
   (`api::LinePerm`, from `api::axiom_statics`, through the wrappers
   `line_load`, `line_compare_exchange` and `line_store`) and the
   permissions to `FEATURES` and `FEATURE_LINE`, and publishes it with
   `STATE` (`api::Published::line`); a request reaches it through
   `axiom_published`, from the `ready()` in its `shared()`'s
   `Shared::wf`. `api::line_ready` (verified) hands the permissions to
-  the winner of `LINE_STATE`'s exchange from `LINE_UNBUILT`, which
+  the winner of `STATE.line`'s exchange from `LINE_UNBUILT`, which
   builds the line through them (`api::build_line`, verified) and
   freezes them into the invariant at its release store of
   `LINE_READY`; a request that loads `LINE_READY` gets the frozen
@@ -242,8 +242,8 @@ add.
   (verified) is `init_slow`'s compare-exchange from `UNINIT`, and takes
   the tokens out of the invariant for its winner, which `init` passes
   on: `Step::Statics` to `api::axiom_statics` (the class table and
-  feature statics' storage and `LINE_STATE`'s permission; `init` writes `FEATURES` through its
-  permission and puts it, with the line's and `LINE_STATE`'s, into the line's
+  feature statics' storage and `STATE.line`'s permission; `init` writes `FEATURES` through its
+  permission and puts it, with the line's and `STATE.line`'s, into the line's
   invariant), the rest to `Shared::init`.
   `Shared::begin`, `table::axiom_fresh_words` (one token per class) and
   `axiom_statics` each use up their step's token, so Verus checks that
@@ -6064,9 +6064,9 @@ bounds, and `Sink::write_str` (verified) keeps it.
   bodies): the futex wait and wake (`sys/mod.rs`; their
   results are discarded, so `EAGAIN` or `EINTR` loops) under
   `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, the static
-  projections, `shared_base` and `shared_deref`, the `STATE`
+  projections, `shared_base` and `shared_deref`, the `STATE.word`
   wrappers (`state_load`, `state_claim`, `state_publish`: one bare
-  atomic operation each), the `LINE_STATE` wrappers (`line_load`,
+  atomic operation each), the `STATE.line` wrappers (`line_load`,
   `line_compare_exchange`, `line_store`) and the deferred record's
   phase wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
   atomic operation each), `class_entry`,

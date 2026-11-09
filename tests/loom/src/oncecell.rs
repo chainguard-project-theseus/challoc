@@ -1,6 +1,6 @@
 //! The two once-cells, copies: the feature line (`src/api/mod.rs`,
-//! `LINE_STATE`: `LINE_UNBUILT` to `LINE_BUILDING` to `LINE_READY`;
-//! `LINE_STATE`, `FEATURES` and `FEATURE_LINE` are statics built in
+//! `STATE.line`: `LINE_UNBUILT` to `LINE_BUILDING` to `LINE_READY`;
+//! `STATE`, `FEATURES` and `FEATURE_LINE` are statics built in
 //! `const` context, which loom cannot construct) and the deferred cgroup
 //! record (`src/sys/cgroup.rs`, `Deferred`, `PENDING` to `RUNNING` to
 //! `DONE`, through `vspec/byte.rs`'s wrappers, which run here as they
@@ -9,7 +9,7 @@
 //!
 //! - [`Line::line_load`], [`Line::line_compare_exchange`] and
 //!   [`Line::line_store`] are `api::line_load`, `api::line_compare_exchange`
-//!   and `api::line_store` (the bare `core` calls on `LINE_STATE`);
+//!   and `api::line_store` (the bare `core` calls on `STATE.line`);
 //! - [`Line::line_ready`] is `api::line_ready`: an `Acquire` load
 //!   (`load_line`), `LINE_READY` returns; else the exchange from
 //!   `LINE_UNBUILT` to `LINE_BUILDING`, `Acquire` both ways
@@ -78,7 +78,7 @@ const RECORD: u64 = 0xc6;
 
 /// The feature line's statics.
 struct Line {
-    /// `api::LINE_STATE`.
+    /// `api::STATE.line`.
     state: AtomicU8,
     /// `api::FEATURES` (the THP table the build completes).
     features: UnsafeCell<u64>,

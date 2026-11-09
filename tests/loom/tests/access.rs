@@ -986,10 +986,11 @@ fn access_one_permission_per_atomic_control() {
     assert!(!check_perms(&t2).is_empty());
 }
 
-// The init-once words (`api::state_*`, `api::line_*`): `STATE` has two
-// writes in shipped code, `state_claim`'s and `state_publish`'s;
-// `LINE_STATE` has two, `line_compare_exchange`'s and `line_store`'s, and no
-// other file names it.
+// The init-once words (`api::state_*`, `api::line_*`): `STATE.word` has
+// two writes in shipped code, `state_claim`'s and `state_publish`'s;
+// `STATE.line` has two, `line_compare_exchange`'s and `line_store`'s; no
+// other file under src/api/ (which `use super::*`) names `STATE`, and no
+// file outside it names `api::STATE` or `STATE.line`.
 
 fn check_once(t: &Tree) -> Vec<String> {
     let mut out = Vec::new();
@@ -1004,13 +1005,18 @@ fn check_once(t: &Tree) -> Vec<String> {
                     rest.starts_with('.') && writes(rest)
                 })
             };
-            if w("STATE") {
+            if w("STATE.word") {
                 state.push((file.clone(), l.func.clone()));
             }
-            if w("LINE_STATE") {
+            if w("STATE.line") {
                 line.push((file.clone(), l.func.clone()));
             }
-            if file != "src/api/mod.rs" && !occurs(c, "LINE_STATE", &[]).is_empty() {
+            let api_sibling = file.starts_with("src/api/") && !occurs(c, "STATE", &[]).is_empty();
+            if file != "src/api/mod.rs"
+                && (api_sibling
+                    || c.contains("api::STATE")
+                    || !occurs(c, "STATE.line", &[]).is_empty())
+            {
                 out.push(bad(file, &l));
             }
         }
@@ -1018,12 +1024,12 @@ fn check_once(t: &Tree) -> Vec<String> {
     let api = |f: &str| ("src/api/mod.rs".to_string(), f.to_string());
     if state != [api("state_claim"), api("state_publish")] {
         out.push(format!(
-            "STATE writes: got = {state:?}, want = state_claim's and state_publish's"
+            "STATE.word writes: got = {state:?}, want = state_claim's and state_publish's"
         ));
     }
     if line != [api("line_compare_exchange"), api("line_store")] {
         out.push(format!(
-            "LINE_STATE writes: got = {line:?}, want = line_compare_exchange's and line_store's"
+            "STATE.line writes: got = {line:?}, want = line_compare_exchange's and line_store's"
         ));
     }
     out
@@ -1042,14 +1048,35 @@ fn access_init_once_words_control() {
         &t,
         "src/heap/shared.rs",
         anchor,
-        "fn f() { crate::api::STATE.store(0, Ordering::Relaxed); }",
+        "fn f() { crate::api::STATE.word.store(0, Ordering::Relaxed); }",
     );
     assert!(!check_once(&t2).is_empty());
     let t2 = with(
         &t,
         "src/heap/shared.rs",
         anchor,
-        "fn f() -> u8 { LINE_STATE.load(Ordering::Relaxed) }",
+        "fn f() -> u8 { STATE.line.load(Ordering::Relaxed) }",
+    );
+    assert!(!check_once(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/heap/shared.rs",
+        anchor,
+        "fn f() -> u32 { crate::api::STATE.word.load(Ordering::Relaxed) }",
+    );
+    assert!(!check_once(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/api/print.rs",
+        "use crate::QUANTUM;",
+        "fn f() -> u32 { STATE.word.load(Ordering::Relaxed) }",
+    );
+    assert!(!check_once(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/api/mod.rs",
+        "fn feature_line_fork_child(Tracked(published): Tracked<&'static Published>)",
+        "fn f() { STATE.line.store(0, Ordering::Relaxed); }",
     );
     assert!(!check_once(&t2).is_empty());
 }
