@@ -13,14 +13,18 @@ NO_ARRAYS	core library	Kani	discharged (Kani: heap::slotstate::kani_arrays::no_a
 
 # The byte at an address `byte` computes: a slot index below the
 # watermark that `commit` precedes, in an array `init` reserved. That
-# protocol is not a verified fact; it claims nothing about the byte.
-# The harness runs the body on a byte of its own array.
-byte_at	raw pointer (internal)	Kani	trusted (partly checked, Kani: heap::slotstate::kani_byte_at::byte_at_is_the_byte; not checked: the `# Safety` contract, that `at` is a byte of a slot-state array that `commit` made writable and that the arrays live for the process, which is the protocol of `init`, `commit` and the watermark: the harness passes a byte of its own array)	contract 344538265, body 4214957818
+# protocol is not a verified fact; it claims only the byte's identity
+# (`slot_byte_id(at)`, under which SLOTS holds its permission), nothing
+# about its value. The harness runs the body on a byte of its own array.
+byte_at	raw pointer (internal)	Kani	trusted (partly checked, Kani: heap::slotstate::kani_byte_at::byte_at_is_the_byte; not checked: the `# Safety` contract, that `at` is a byte of a slot-state array that `commit` made writable and that the arrays live for the process, which is the protocol of `init`, `commit` and the watermark: the harness passes a byte of its own array; and the ghost identity its `ensures` names, `slot_byte_id(at)`)	contract 5560191, body 4214957818
 
-# The double-free window's premise (theorem_double_free_window): a
-# permission to the byte `step` operates on, whose value is a state, the
-# one the last step on that slot left. No verified invariant ties the
-# bytes to the caches or the bitmap (#397); the operations are
-# vspec::byte's wrappers; the free's race is tests/loom/src/slotstate.rs.
-# Called only in step (tests::slot_byte_axiom_is_called_only_in_step).
-axiom_slot_byte	allocator invariant	none (assumption)
+# The double-free window's first value (theorem_double_free_window): a
+# permission to the slot-state byte at every address, each FREE (the
+# arrays are fresh anonymous mappings, zero-filled, never unmapped, and
+# written only by `step`). Taken once, by SLOTS' initialiser, at compile
+# time; SLOTS' invariant then carries each byte's value from one step to
+# the next. No verified invariant ties the bytes to the caches or the
+# bitmap (#397); the operations are vspec::byte's wrappers; the free's
+# race is tests/loom/src/slotstate.rs. Pinned by
+# tests::slot_bytes_axiom_is_taken_only_by_slots.
+axiom_slot_bytes	allocator invariant	none (assumption)

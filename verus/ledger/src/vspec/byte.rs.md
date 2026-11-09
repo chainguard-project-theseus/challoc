@@ -13,7 +13,7 @@ file.
 
 ## `load`
 
-src/vspec/byte.rs:110. Kind: external_body. Category: atomics primitive.
+src/vspec/byte.rs:111. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::byte_load, and loom: oncecell::loom_oncecell_deferred_discover_races_get and oncecell::loom_oncecell_deferred_fork_child_restarts; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the `Deferred` steps, in the configurations tests/loom/src/oncecell.rs states; the load of `STATE.line` (`api::load_line`), which the oncecell line models run only as a copy of the step, with loom's atomic in place of this body; the C11 argument above that the permission's value is the phase's last write, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `b.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
@@ -34,7 +34,7 @@ pub fn load(b: &AtomicU8, ordering: Ordering, Tracked(perm): Tracked<&BytePerm>)
 
 ## `store`
 
-src/vspec/byte.rs:128. Kind: external_body. Category: atomics primitive.
+src/vspec/byte.rs:129. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::byte_store, and loom: oncecell::loom_oncecell_deferred_discover_races_get and oncecell::loom_oncecell_deferred_fork_child_restarts; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the `Deferred` steps, in the configurations tests/loom/src/oncecell.rs states; the store of `LINE_READY` to `STATE.line` (`api::publish_line`), which the oncecell line models run only as a copy of the step, with loom's atomic in place of this body; the C11 argument above, which tests/loom/tests/access.rs backs by matching source text only).
 
 > `b.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
@@ -56,7 +56,7 @@ pub fn store(b: &AtomicU8, v: u8, ordering: Ordering, Tracked(perm): Tracked<&mu
 
 ## `compare_exchange`
 
-src/vspec/byte.rs:150. Kind: external_body. Category: atomics primitive.
+src/vspec/byte.rs:151. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::byte_compare_exchange, and loom: oncecell::loom_oncecell_deferred_discover_races_get and oncecell::loom_oncecell_deferred_fork_child_restarts, and GenMC: slotstate [rc11 imm]; not checked: this body under concurrency beyond the part of C11 loom models (stale `Relaxed` and `Acquire` loads within a bounded store history, and no load buffering, as verus/WEAKMEM.md states), which the models run as it is over loom's atomic inside copies of the `Deferred` steps, in the configurations tests/loom/src/oncecell.rs states, and beyond the configuration tests/genmc/slotstate.rs states, which the GenMC case runs it in as it is over `core`'s atomic on a slot's state byte (`slotstate::step`'s call), not on the `Deferred` phase, under RC11 and IMM only (verus/WEAKMEM.md, "GenMC": the `-Copt-level=1` IR, not the release build); the calls on `STATE.line` (`api::claim_line`, `feature_line_fork_child`), which the oncecell line models run only as copies of the steps, with loom's atomic in place of this body; the value a failed exchange returns, a load's; that it never fails spuriously, which neither loom's nor GenMC's compare-and-swap can show and rests on `core`'s documentation of the strong form; the C11 argument above, which no GenMC case checks (the case erases the permission, `Tracked::assume_new()`, so it sees no ghost value) and tests/loom/tests/access.rs backs by matching source text only).
 
 > `b.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the byte held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).

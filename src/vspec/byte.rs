@@ -38,9 +38,10 @@
 //! - one permission per byte: [`BytePerm`]'s fields are private to this
 //!   module and [`new`] is the only code here that builds one, once, with
 //!   the atomic it makes (`new` itself is verified). The slot-state bytes
-//!   are raw mapped memory no `new` made: `heap::slotstate::axiom_slot_byte`
-//!   mints a permission to one for each step on it, called only there
-//!   (its own premise, that the value is the byte's);
+//!   are raw mapped memory no `new` made: `heap::slotstate::axiom_slot_bytes`
+//!   mints one permission per address, once, into the slot-state bytes'
+//!   invariant (`heap::slotstate::SLOTS`; its own premise, that each byte
+//!   is `FREE` until the first step on it);
 //! - a permission's value is its byte's: every write of a deferred
 //!   record's phase goes through these wrappers (`Deferred::discover`,
 //!   `Deferred::fork_child`), each inside the phase's invariant
