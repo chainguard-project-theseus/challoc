@@ -82,10 +82,10 @@ pub(crate) enum IfClone {}
 
 impl<T: Clone> NotClone<IfClone> for T {}
 
-// `LinePerm` is neither Copy nor Clone: `LINE_STATE`'s one permission.
+// `LinePerm` is neither Copy nor Clone: `STATE.line`'s one permission.
 const _: () = assert!(<LinePerm as NotCopy<_>>::HOLDS && <LinePerm as NotClone<_>>::HOLDS);
 
-// `StatePerm` is neither Copy nor Clone: `STATE`'s one permission.
+// `StatePerm` is neither Copy nor Clone: `STATE.word`'s one permission.
 const _: () = assert!(<StatePerm as NotCopy<_>>::HOLDS && <StatePerm as NotClone<_>>::HOLDS);
 
 // `HeapPerm` is neither Copy nor Clone: a thread heap's permission.

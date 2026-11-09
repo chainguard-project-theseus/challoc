@@ -160,7 +160,21 @@ pub const READY: u32 = 2;
 
 } // verus!
 
-static STATE: AtomicU32 = AtomicU32::new(UNINIT);
+/// The two init-once words, laid out in this order: `word`, the
+/// allocator's state (`UNINIT`, `INITIALISING`, `READY`), and `line`, the
+/// feature line's (`LINE_UNBUILT`, `LINE_BUILDING`, `LINE_READY`;
+/// [`FEATURE_LINE`], its invariant: [`LinePred`]). `repr(C)` fixes that
+/// order, so `word` stays at `STATE`'s address.
+#[repr(C)]
+struct InitWords {
+    word: AtomicU32,
+    line: AtomicU8,
+}
+
+static STATE: InitWords = InitWords {
+    word: AtomicU32::new(UNINIT),
+    line: AtomicU8::new(LINE_UNBUILT),
+};
 
 /// The library's constructor registers the fork handlers, without
 /// initialising the allocator: glibc runs prepare handlers in the reverse
@@ -301,7 +315,7 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 /// shared references to statics nothing writes again ([`Published`]),
 /// and no linear permission to those statics exists once `ready` can be
 /// stated ([`axiom_ready`]). Its line invariant ([`Published::line`])
-/// does hold linear permissions (`LINE_STATE`'s, and the two statics'
+/// does hold linear permissions (`STATE.line`'s, and the two statics'
 /// while the line is unbuilt), and a second `LineInv` in [`line_ns`]
 /// would duplicate them; none can exist, since a `LineInv` needs a
 /// [`LinePerm`], [`axiom_statics`] mints the only one, and `init` puts
@@ -358,7 +372,7 @@ pub open spec fn marks_ready(m: ReadyMark) -> bool {
 /// process.
 pub uninterp spec fn ready_mark() -> Loc;
 
-/// Ghost permission to `LINE_STATE`: its current
+/// Ghost permission to `STATE.line`: its current
 /// [`value`](LinePerm::value). It is not `Copy`.
 #[verifier::external_body]
 pub tracked struct LinePerm {
@@ -366,7 +380,7 @@ pub tracked struct LinePerm {
 }
 
 impl LinePerm {
-    /// `LINE_STATE`'s value.
+    /// `STATE.line`'s value.
     pub uninterp spec fn value(&self) -> u8;
 }
 
@@ -397,7 +411,7 @@ impl LineCell {
     }
 }
 
-/// What the line's invariant holds: `LINE_STATE`'s permission, the
+/// What the line's invariant holds: `STATE.line`'s permission, the
 /// statics' permissions while the line is unbuilt, and those
 /// permissions, frozen, from `LINE_READY` on.
 // Ghost: built and read only by proof code.
@@ -409,7 +423,7 @@ pub tracked struct LineVal {
 }
 
 /// The feature line's invariant, the once-cell protocol of
-/// `LINE_STATE`: the state is `LINE_UNBUILT`, `LINE_BUILDING` or
+/// `STATE.line`: the state is `LINE_UNBUILT`, `LINE_BUILDING` or
 /// `LINE_READY`; while it is `LINE_UNBUILT` the invariant holds the
 /// permissions to [`FEATURES`] and [`FEATURE_LINE`] ([`LineCell::unbuilt`]),
 /// and from `LINE_READY` on those permissions frozen, the line built
@@ -449,15 +463,15 @@ pub tracked struct LineSeen {
     pub tracked frozen: Option<&'static LineCell>,
 }
 
-/// Ghost permission to `STATE`: its current [`value`](StatePerm::value).
-/// It is not `Copy`.
+/// Ghost permission to `STATE.word`: its current
+/// [`value`](StatePerm::value). It is not `Copy`.
 #[verifier::external_body]
 pub tracked struct StatePerm {
     _no_copy: (),
 }
 
 impl StatePerm {
-    /// `STATE`'s value.
+    /// `STATE.word`'s value.
     pub uninterp spec fn value(&self) -> u32;
 }
 
@@ -510,11 +524,11 @@ spec fn state_ns() -> int {
     0x7374_6174
 }
 
-/// `STATE`'s invariant. Trusted: the process starts with `STATE` at
+/// `STATE`'s invariant. Trusted: the process starts with `STATE.word` at
 /// `UNINIT` (the static's initialiser), with the tokens of every step
 /// of building the allocator, none taken ([`once`]), and with both
 /// halves of the ghost variable at [`ready_mark`], at `false`; every
-/// write of `STATE` is [`state_claim`]'s or [`state_publish`]'s, inside
+/// write of `STATE.word` is [`state_claim`]'s or [`state_publish`]'s, inside
 /// this invariant, and verified code learns its value only from them and
 /// [`state_load`] (a test-only load elsewhere carries no ghost state).
 /// The axiom stands for one invariant, the same object at every call.
@@ -557,9 +571,6 @@ static FEATURES: Global<Features> = Global::new();
 /// The feature line for `challoc_features()` and `malloc_stats_print`,
 /// built at its first request ([`feature_line_ready`]), not at init.
 static FEATURE_LINE: Global<FeatureLine> = Global::new();
-/// [`FEATURE_LINE`]'s state: `LINE_UNBUILT`, `LINE_BUILDING`, `LINE_READY`
-/// (its invariant: [`LinePred`]).
-static LINE_STATE: AtomicU8 = AtomicU8::new(LINE_UNBUILT);
 
 verus! {
 
@@ -602,8 +613,8 @@ fn fork_slot() -> &'static AtomicU64 {
 
 verus! {
 
-/// `STATE.load(Acquire)`: the permission's value. Trusted: a `core`
-/// atomic load, one atomic operation on `STATE`.
+/// `STATE.word.load(Acquire)`: the permission's value. Trusted: a `core`
+/// atomic load, one atomic operation on `STATE.word`.
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
@@ -613,13 +624,13 @@ fn state_load(Tracked(perm): Tracked<&StatePerm>) -> (r: u32)
     opens_invariants none
     no_unwind
 {
-    STATE.load(Ordering::Acquire)
+    STATE.word.load(Ordering::Acquire)
 }
 
-/// `STATE`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)`
+/// `STATE.word`'s exchange from `UNINIT` to `INITIALISING`: `Ok(UNINIT)`
 /// when it was `UNINIT` (and is now `INITIALISING`), `Err` of the value
 /// it has otherwise, left unchanged. Trusted: a `core` compare-exchange,
-/// one atomic read-modify-write on `STATE`.
+/// one atomic read-modify-write on `STATE.word`.
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
@@ -630,11 +641,11 @@ fn state_claim(Tracked(perm): Tracked<&mut StatePerm>) -> (r: Result<u32, u32>)
     opens_invariants none
     no_unwind
 {
-    STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)
+    STATE.word.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire)
 }
 
-/// `STATE`'s `READY` store, `Release`. Trusted: a `core` atomic store, one
-/// atomic operation on `STATE`.
+/// `STATE.word`'s `READY` store, `Release`. Trusted: a `core` atomic
+/// store, one atomic operation on `STATE.word`.
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
@@ -644,7 +655,7 @@ fn state_publish(Tracked(perm): Tracked<&mut StatePerm>)
     opens_invariants none
     no_unwind
 {
-    STATE.store(READY, Ordering::Release);
+    STATE.word.store(READY, Ordering::Release);
 }
 
 /// An acquire load of `STATE`, with the published permissions and the
@@ -690,9 +701,9 @@ fn load_state_marked(Tracked(seen): Tracked<&mut Seen>, Tracked(mark): Tracked<&
     s
 }
 
-/// `LINE_STATE.load(ordering)`: the permission's value (it panics for a
+/// `STATE.line.load(ordering)`: the permission's value (it panics for a
 /// `Release` or `AcqRel` ordering). Trusted: a `core` atomic load, one
-/// atomic operation on `LINE_STATE`.
+/// atomic operation on `STATE.line`.
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
@@ -705,15 +716,15 @@ fn line_load(ordering: Ordering, Tracked(perm): Tracked<&LinePerm>) -> (r: u8)
     opens_invariants none
     no_unwind
 {
-    LINE_STATE.load(ordering)
+    STATE.line.load(ordering)
 }
 
-/// `LINE_STATE.compare_exchange(current, new, success, failure)`: `Ok`
+/// `STATE.line.compare_exchange(current, new, success, failure)`: `Ok`
 /// with the previous value, `current`, when it held it and now holds
 /// `new`; otherwise `Err` with the value it holds, unchanged (the strong
 /// form never fails spuriously). It panics for a `Release` or `AcqRel`
 /// failure ordering. Trusted: a `core` compare-exchange, one atomic
-/// read-modify-write on `LINE_STATE`.
+/// read-modify-write on `STATE.line`.
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
@@ -733,12 +744,12 @@ fn line_compare_exchange(
     opens_invariants none
     no_unwind
 {
-    LINE_STATE.compare_exchange(current, new, success, failure)
+    STATE.line.compare_exchange(current, new, success, failure)
 }
 
-/// `LINE_STATE.store(v, ordering)` (it panics for an `Acquire` or
+/// `STATE.line.store(v, ordering)` (it panics for an `Acquire` or
 /// `AcqRel` ordering). Trusted: a `core` atomic store, one atomic
-/// operation on `LINE_STATE`.
+/// operation on `STATE.line`.
 #[inline(always)]
 #[verifier::external_body]
 #[verifier::atomic]
@@ -751,10 +762,10 @@ fn line_store(v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut LinePerm>)
     opens_invariants none
     no_unwind
 {
-    LINE_STATE.store(v, ordering)
+    STATE.line.store(v, ordering)
 }
 
-/// An acquire load of `LINE_STATE`, with the line's frozen permissions
+/// An acquire load of `STATE.line`, with the line's frozen permissions
 /// when it reads `LINE_READY` ([`LinePred`]).
 #[inline(always)]
 fn load_line(Tracked(inv): Tracked<&'static LineInv>, Tracked(seen): Tracked<&mut LineSeen>) -> (s: u8)
@@ -776,7 +787,7 @@ fn load_line(Tracked(inv): Tracked<&'static LineInv>, Tracked(seen): Tracked<&mu
     s
 }
 
-/// `LINE_STATE`'s exchange from `LINE_UNBUILT` to `LINE_BUILDING`: the
+/// `STATE.line`'s exchange from `LINE_UNBUILT` to `LINE_BUILDING`: the
 /// winner gets the permissions to the two statics, which the invariant
 /// holds while the line is unbuilt ([`LinePred`]).
 #[inline(always)]
@@ -1034,7 +1045,7 @@ fn published_line(Tracked(line): Tracked<&'static LineCell>) -> &'static Feature
 /// Complete the probed features' THP size table if init skipped it and
 /// build the feature line into [`FEATURE_LINE`] (`feature_line_ready`'s
 /// build), through `line`, the permissions to the two statics that
-/// `LINE_STATE`'s exchange from `LINE_UNBUILT` handed its winner
+/// `STATE.line`'s exchange from `LINE_UNBUILT` handed its winner
 /// ([`claim_line`]): the only writer of the two statics, while readers
 /// wait for `LINE_READY`.
 #[inline(always)]
@@ -1292,7 +1303,7 @@ fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8, Tracked(ord): Tracked
 /// [`shared_if_ready`]).
 #[cfg(test)]
 pub fn is_ready() -> bool {
-    STATE.load(Ordering::Acquire) == READY
+    STATE.word.load(Ordering::Acquire) == READY
 }
 
 unsafe extern "C" {
@@ -1483,7 +1494,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 /// [`FEATURE_LINE`], uninitialised, the class table
 /// ([`layout::CLASSES`]), initialised, whose entries are well formed and
 /// sized ([`layout::table_ok`]: its initial value is
-/// [`layout::BASE_CLASSES`], `ClassTable::new`), and `LINE_STATE`'s
+/// [`layout::BASE_CLASSES`], `ClassTable::new`), and `STATE.line`'s
 /// permission, at `LINE_UNBUILT`. Trusted: the statics'
 /// storage and initial values, which nothing but `init`
 /// ([`publish_features`], [`layout::adopt_page_geometry`]) and, after
@@ -1492,7 +1503,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 /// invariant hands it) write, and that
 /// the class table's storage holds `BASE_CLASSES`' value, which meets
 /// `table_ok` (the `exec const`'s verified `ensures`);
-/// `LINE_STATE`'s initial value (the static's initialiser) and that
+/// `STATE.line`'s initial value (the static's initialiser) and that
 /// every write of it is [`line_compare_exchange`]'s or [`line_store`]'s,
 /// inside the line's invariant, which `init` makes with this
 /// permission ([`LinePred`]; the fork child's reset from `LINE_BUILDING`
@@ -1695,7 +1706,7 @@ fn register_fork_handlers()
 /// publishes `READY`, with the one-shot tokens its winning exchange got
 /// ([`claim_init`]): one for the statics it writes here, the class table
 /// and the features ([`axiom_statics`]; the feature line's permission and
-/// `LINE_STATE`'s go into the line's invariant with the features', the
+/// `STATE.line`'s go into the line's invariant with the features', the
 /// line waits for its first request, [`feature_line_ready`]),
 /// and the rest for `Shared::init`, which uses them up. It hands back the
 /// permissions to the `Shared` and the class table, frozen, and the
@@ -2850,7 +2861,7 @@ fn feature_line_fork_child(Tracked(published): Tracked<&'static Published>)
 
 /// Premise (the fork child's orphaned line): in the child of a `fork`,
 /// a line whose state the child's reset found `LINE_BUILDING` (`before`,
-/// `LINE_STATE`'s permission just before the reset, and `perm`, just
+/// `STATE.line`'s permission just before the reset, and `perm`, just
 /// after it, at `LINE_UNBUILT`) was being built by a thread of the
 /// parent, which holds the permissions to [`FEATURES`] and
 /// [`FEATURE_LINE`] between its winning exchange and its `LINE_READY`
