@@ -236,11 +236,11 @@ axiom fn axiom_arena_assemble(
 ## `Arena::put_stats`
 
 src/arena.rs:1125. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own).
+Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`).
 
 > The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
 
-Hashes: contract 2008592952, body 2769252653.
+Hashes: contract 2008592952, body 2682043248.
 
 ```rust
 unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)

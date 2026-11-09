@@ -535,8 +535,9 @@ and the state lock are also held by the fork handlers, whose release,
 `purge::background::fork_child` writes the value through
 `Lock::value_held_mut` and proves the invariant of the state it stores
 (`StateHold::wf`). The one exception is the initial value: nine of the
-ten take it from `Lock::new`, which requires the invariant, but the
-per-arena statistics locks take theirs from the trusted
+ten take it from `Lock::new`, which requires the invariant and the
+frame of the value with itself, but the per-arena statistics locks
+take theirs from the trusted
 `Arena::put_stats`, which the test `put_stats_writes_lock_new_of_empty`
 compares with `Lock::new(ArenaStats::empty(index), ..)`. The impl for
 `meta::Inner` (`meta.rs`), the metadata lock: `Inner::wf`, with the
