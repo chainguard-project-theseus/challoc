@@ -723,11 +723,11 @@ pub struct Lock<T> {
 /// `true` aside). Otherwise
 /// the impl keeps them uninterpreted ([`assumed_inv`], [`assumed_frame`])
 /// and the owner states them by an axiom that names the holders. A frame
-/// of `true` may be defined either way: no release can break it. A frame
-/// an impl defines must hold of every value with itself: [`Lock::new`]
-/// does not check it of the initial value, and [`axiom_acquired`] claims
-/// it at the first acquisition. The two method names are defined nowhere
-/// else in the crate (several locked types have an inherent `inv`), so
+/// of `true` may be defined either way: no release can break it.
+/// [`Lock::new`] requires the frame of the initial value with itself,
+/// which [`axiom_acquired`] claims at the first acquisition. The two method
+/// names are defined nowhere else in the crate (several locked types have
+/// an inherent `inv`), so
 /// `lock::tests::lock_axioms_state_assumed_specs` finds every use of
 /// them by name, in method, path or generic form.
 pub trait LockSpec: Sized {
@@ -785,8 +785,12 @@ pub uninterp spec fn assumed_frame<T>(init: T, v: T) -> bool;
 /// The lock invariant's assumption where it enters, at an acquisition: a
 /// thread that has just acquired the raw lock of `l` takes the permission
 /// of `l`'s cell out of the raw lock's invariant, and the value in the cell
-/// satisfies [`lock_inv`] (every earlier holder restored it) and keeps
-/// [`lock_frame`] of the value the lock was created with. Private, and
+/// satisfies [`lock_inv`] and keeps [`lock_frame`] of the value the lock
+/// was created with (every earlier holder that releases through
+/// [`LockGuard::unlock`] or [`Lock::unlock_held_perm`] restored both, and
+/// before the first holder [`Lock::new`] required both of that value,
+/// except for the per-arena statistics locks, which the trusted
+/// `Arena::put_stats` writes). Private, and
 /// used only right after an acquire: by [`Lock::lock`] and
 /// [`Lock::try_lock`], for the guard they build, which keeps the
 /// permission in a field private to this module until its drop releases
@@ -860,23 +864,30 @@ unsafe impl<T: Send> Sync for Lock<T> {}
 unsafe impl<T: Send> Send for Lock<T> {}
 
 impl<T> Lock<T> {
-    /// The value's address inside the lock at `p`, for building a large
-    /// value in place (`Arena::put_stats`). Trusted: the address of the
-    /// cell, whose value is its only data (`kani_lock` checks it for locks
-    /// at four `T`s).
+    /// The value's address inside the lock at `p`, which the permission
+    /// `perm` names, for building a large value in place
+    /// (`Arena::put_stats`). Trusted: the address of the cell, whose value
+    /// is its only data (`kani_lock` checks it for locks at four `T`s).
     #[verifier::external_body]
     #[inline(always)]
-    pub(crate) fn value_ptr(p: *mut Lock<T>) -> *mut T {
-        // SAFETY: a field projection; nothing is read or written.
+    pub(crate) fn value_ptr(p: *mut Lock<T>, Tracked(perm): Tracked<&vstd::raw_ptr::PointsTo<Lock<T>>>) -> *mut T
+        requires
+            perm.ptr() == p,
+    {
+        // SAFETY: a field projection inside the lock `perm` names; nothing
+        // is read or written.
         unsafe { core::ptr::addr_of_mut!((*p).value) as *mut T }
     }
 
     /// A lock of rank `rank` (ghost) guarding `value`, at most the state
-    /// lock's ([`RawLock::new`]).
+    /// lock's ([`RawLock::new`]). `value` satisfies [`lock_inv`] and keeps
+    /// [`lock_frame`] of itself, as [`axiom_acquired`] claims of it at the
+    /// first acquisition.
     pub const fn new(value: T, Ghost(rank): Ghost<int>) -> (l: Lock<T>)
         where T: LockSpec
         requires
             lock_inv(value),
+            lock_frame(value, value),
             rank <= rank_state(),
         ensures
             lock_init(l) == value,
@@ -1229,18 +1240,21 @@ mod kani_lock {
     use super::*;
     use core::mem::{MaybeUninit, align_of, offset_of, size_of};
 
-    /// `Lock::value_ptr`, no `requires`, no `ensures`: on a pointer to a
-    /// lock of `T` (here uninitialised: the call reads nothing), at `T` a
-    /// byte, a word, a padded pair and `ArenaStats` (`Arena::put_stats`'
-    /// instance), it returns, and (beyond the contract) the pointer is the
-    /// value field's: its `T` fills the cell, lies inside the lock and
-    /// apart from the lock word, is aligned for `T` and is writable.
+    /// `Lock::value_ptr`, `requires perm.ptr() == p`, no `ensures`: on
+    /// the pointer to a lock of `T` that a permission names, here the
+    /// storage of one (uninitialised: the call reads nothing, and the
+    /// permission is a made-up one, `Tracked::assume_new()`, which the body
+    /// does not use), at `T` a byte, a word, a padded pair and
+    /// `ArenaStats` (`Arena::put_stats`' instance), it returns, and
+    /// (beyond the contract) the pointer is the value field's: its `T`
+    /// fills the cell, lies inside the lock and apart from the lock word,
+    /// is aligned for `T` and is writable.
     #[kani::proof]
     fn value_ptr_is_the_value_field() {
         fn on<T>() {
             let mut l = MaybeUninit::<Lock<T>>::uninit();
             let p = l.as_mut_ptr();
-            let r = Lock::value_ptr(p);
+            let r = Lock::value_ptr(p, Tracked::assume_new());
             let off = r as usize - p as usize;
             assert_eq!(off, offset_of!(Lock<T>, value));
             assert_eq!(size_of::<PCell<T>>(), size_of::<T>());

@@ -1135,7 +1135,7 @@ impl Arena {
         // and zero is the free lock word and an empty record.
         unsafe {
             core::ptr::write_bytes(p, 0, 1);
-            (*Lock::value_ptr(p)).index = index;
+            (*Lock::value_ptr(p, Tracked(&*perm))).index = index;
         }
     }
 
@@ -4164,9 +4164,9 @@ impl crate::lock::LockSpec for Created {
     }
 }
 
-/// The frame holds of every value with itself, as `LockSpec` requires of
-/// a defined frame (`Lock::new` does not check it, and
-/// `lock::axiom_acquired` claims it at the first acquisition).
+/// The frame holds of every value with itself. Nothing calls this: Verus
+/// proves `Lock::new`'s `requires` of the initial value at each call
+/// directly (`lock::axiom_acquired` claims it at the first acquisition).
 proof fn lemma_arenas_frame_reflexive(v: Created)
     ensures
         crate::lock::lock_frame(v, v),
@@ -4257,7 +4257,9 @@ mod kani_put_stats {
         unsafe { Arena::put_stats(p, Tracked::assume_new(), index) };
         assert!(kani::mem::can_dereference(p));
         // SAFETY: a field projection inside the slot; nothing is read.
-        let at = unsafe { core::ptr::addr_of!((*Lock::value_ptr(p)).index) } as usize - p as usize;
+        let at = unsafe { core::ptr::addr_of!((*Lock::value_ptr(p, Tracked::assume_new())).index) }
+            as usize
+            - p as usize;
         let i: usize = kani::any();
         kani::assume(i < size_of::<StatsLock>());
         // SAFETY: `i` is inside the slot, whose bytes the call wrote.
@@ -4270,7 +4272,7 @@ mod kani_put_stats {
         assert_eq!(b, want);
         // SAFETY: `can_dereference`, checked above; the record is the
         // lock's value.
-        let r = unsafe { &*Lock::value_ptr(p) };
+        let r = unsafe { &*Lock::value_ptr(p, Tracked::assume_new()) };
         let c: usize = kani::any();
         kani::assume(c < NCLASSES);
         assert_eq!((r.index, r.small_allocated, r.mapped), (index, 0, 0));

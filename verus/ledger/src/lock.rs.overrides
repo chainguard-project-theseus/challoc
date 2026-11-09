@@ -13,7 +13,7 @@
 # edge). The lock models check both, on a copy of
 # `RawLock` with a futex stand-in: two holders at once, or a holder that
 # misses the previous one's write, is a race on the counter they bump.
-axiom_acquired	allocator invariant	loom/GenMC	trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: the permission hand-off itself, a fact of Verus's own model (that the one `PointsTo` the invariant holds while the lock is free, taken out at each acquisition, stands for the cell's contents under the edge the models check); the `lock_inv` and `lock_frame` clauses, which rest on the holders' releases (`LockGuard::unlock` and `Lock::unlock_held_perm` require them, a dropped guard's release does not), not on the atomics; the first acquisition, at which `lock_frame` of the initial value with itself is checked by nothing (`Lock::new` does not check it) and the initial value's visibility rests on the lock's publication, not on the edge the models check; the call discipline (only right after an acquire, never while an earlier permission is alive), which `lock::tests::permission_axioms_are_called_only_at_acquisitions` backs by matching source text only; the fork window's second permission, which rests on that window's premise; and the shipped `RawLock`, which the models replace with a copy, with two lockers and with three bounded at 5 preemptions, and the kernel's futex, which they replace with a stand-in)	contract 3374465368, body none
+axiom_acquired	allocator invariant	loom/GenMC	trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: the permission hand-off itself, a fact of Verus's own model (that the one `PointsTo` the invariant holds while the lock is free, taken out at each acquisition, stands for the cell's contents under the edge the models check); the `lock_inv` and `lock_frame` clauses, which rest on the holders' releases (`LockGuard::unlock` and `Lock::unlock_held_perm` require them, a dropped guard's release does not), not on the atomics; at the first acquisition, the initial value's visibility, which rests on the lock's publication, not on the edge the models check, and, for a per-arena statistics lock, its initial value, which the trusted `Arena::put_stats` writes instead of `Lock::new` (whose `requires` checks `lock_inv` and `lock_frame` of the value with itself; a test compares the bytes with those of `Lock::new(ArenaStats::empty(index), ..)`, `ArenaStats::empty` ensures the invariant, `ArenaStats::identities`, and the frame is `true`); the call discipline (only right after an acquire, never while an earlier permission is alive), which `lock::tests::permission_axioms_are_called_only_at_acquisitions` backs by matching source text only; the fork window's second permission, which rests on that window's premise; and the shipped `RawLock`, which the models replace with a copy, with two lockers and with three bounded at 5 preemptions, and the kernel's futex, which they replace with a stand-in)	contract 3374465368, body none
 # loom (verus/WEAKMEM.md, P2): `LockGuard::drop`'s body is
 # `RawLock::release` (`swap(UNLOCKED, Release)`, then a futex wake when it
 # returned `CONTENDED`); the lock models run a copy of `RawLock` with a
@@ -78,12 +78,11 @@ axiom_fork_entry	C-program contract	none (assumption)
 # pinned by lock::tests::fork_record_uses_are_listed (no loom model
 # covers the in-window reset).
 axiom_child_window	platform/kernel fact	none (assumption)
-# A field projection: no `requires`, no `ensures`. The harness runs it on
-# pointers to locks at four `T`s; the contract admits any pointer, and a
-# projection through one that points into no lock is not defined in Rust.
-# lock::tests::value_ptr_called_only_by_put_stats pins its one caller,
-# `Arena::put_stats`, which passes the pointer its permission names, at
-# `T = ArenaStats`, one of the harness's `T`s. That is an obligation on a
-# Rust caller that no `requires` states, so the seam stays partly checked
-# (verus/SEAMS.md, "Status").
-Lock::value_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: lock::kani_lock::value_ptr_is_the_value_field; not checked: a pointer that points into no live `Lock<T>`, which the contract admits and for which the projection is undefined (the one caller, `Arena::put_stats`, passes the pointer its permission names, which a source test pins, at `T = ArenaStats`, one of the harness's))	contract 3118686952, body 2553620183
+# A field projection, `requires perm.ptr() == p`, no `ensures`: the
+# permission names the storage of a `Lock<T>` (vstd's `PointsTo` stands
+# for live memory, aligned for its type), and the harness runs the body on
+# such storage, at four `T`s. Its one caller, `Arena::put_stats`, calls
+# it at `T = ArenaStats`, one of the harness's `T`s, from a trusted body
+# Verus does not check: lock::tests::value_ptr_called_only_by_put_stats
+# pins that it passes its own `p` and the permission its `requires` names.
+Lock::value_ptr	raw pointer (internal)	Kani	discharged (Kani: lock::kani_lock::value_ptr_is_the_value_field)	contract 2722103989, body 2553620183
