@@ -1,7 +1,8 @@
 //! `u32` counters as atomics with a ghost permission, for the arena
 //! registry's bound counts (`arena.rs`, `Arenas::bound`) and its arena
-//! count (`Arenas::count`), and for the cgroup policy's position in the
-//! scaled band (`policy.rs`, `Policy::position`).
+//! count (`Arenas::count`), for the cgroup policy's position in the
+//! scaled band (`policy.rs`, `Policy::position`), and for the allocator's
+//! init state (`api/mod.rs`, `STATE.word`).
 //!
 //! The same pattern as `word.rs` for the class bitmap words: a
 //! [`CountPerm`] names the counter's identity and value, each operation is
@@ -20,8 +21,8 @@
 //!   counter with its [`CountPerm::id`]. The identity is a ghost one, as
 //!   vstd's `PAtomicU32::id`: a function of the atomic's value, so fixed
 //!   when `AtomicU32::new` makes the atomic and kept when the atomic is
-//!   moved into place (`Arenas::init`'s writes, `Policy::new`'s struct
-//!   literal), not its address;
+//!   moved into place (`Arenas::init`'s writes, `Policy::new`'s and
+//!   `STATE`'s initialiser's struct literals), not its address;
 //! - atomics made by different calls have different identities: assumed,
 //!   as no code makes two atomics Verus can prove equal (it knows nothing
 //!   of `AtomicU32::new`'s result); a `const` item holding [`new`]'s result
@@ -37,6 +38,10 @@
 //!   each counter before the registry is published.
 //!   The policy's position goes through [`load`] and [`swap`] only, inside
 //!   its invariant (`policy::FracPred`), which `Policy::new` builds with
+//!   the permission [`new`] returns. `STATE.word` goes through [`load`],
+//!   [`compare_exchange`] and [`store`] only (`api::load_state`,
+//!   `load_state_marked`, `claim_init`, `publish_ready`), inside `STATE`'s
+//!   invariant (`api::StatePred`), which `STATE`'s initialiser builds with
 //!   the permission [`new`] returns.
 
 use crate::sync::atomic::{AtomicU32, Ordering};

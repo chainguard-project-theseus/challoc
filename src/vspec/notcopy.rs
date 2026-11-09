@@ -6,7 +6,7 @@
 //! a value of a `Copy` type; ruling out `Clone` too, which `Copy`
 //! requires, also rules out an explicit duplicate. Without either, code
 //! that holds one token cannot make a second, the premise of facts such
-//! as "`api::axiom_statics` makes the only [`LinePerm`]" and of each
+//! as "`vspec::byte::new` makes the only [`BytePerm`] of its byte" and of each
 //! axiom or lemma that uses up a token it takes by value.
 //!
 //! Each check is a top-level `const _: () = assert!(..)` under a `//`
@@ -40,8 +40,8 @@ use super::usable::Stored;
 use super::user::UserMem;
 use super::word::WordPerm;
 use super::zero::{ZeroRaw, Zeroed};
-use crate::api::{ForkHeld, LineCell, LinePerm, LineSeen, LineVal, Published, Seen};
-use crate::api::{StatePerm, StateVal};
+use crate::api::{ForkHeld, LineCell, LineSeen, LineVal, Published, Seen};
+use crate::api::{Start, StateVal, Statics};
 use crate::arena::{ArenaParts, ArenasParts, Held, Homed, RegVal, SparePerm};
 use crate::bitmap::FullSeen;
 use crate::class::SlotToks;
@@ -82,12 +82,6 @@ pub(crate) enum IfClone {}
 
 impl<T: Clone> NotClone<IfClone> for T {}
 
-// `LinePerm` is neither Copy nor Clone: `STATE.line`'s one permission.
-const _: () = assert!(<LinePerm as NotCopy<_>>::HOLDS && <LinePerm as NotClone<_>>::HOLDS);
-
-// `StatePerm` is neither Copy nor Clone: `STATE.word`'s one permission.
-const _: () = assert!(<StatePerm as NotCopy<_>>::HOLDS && <StatePerm as NotClone<_>>::HOLDS);
-
 // `HeapPerm` is neither Copy nor Clone: a thread heap's permission.
 const _: () = assert!(<HeapPerm as NotCopy<_>>::HOLDS && <HeapPerm as NotClone<_>>::HOLDS);
 
@@ -114,6 +108,12 @@ const _: () = assert!(<LineSeen as NotCopy<_>>::HOLDS && <LineSeen as NotClone<_
 
 // `StateVal` is neither Copy nor Clone: what `STATE`'s invariant holds.
 const _: () = assert!(<StateVal as NotCopy<_>>::HOLDS && <StateVal as NotClone<_>>::HOLDS);
+
+// `Start` is neither Copy nor Clone: the process-start token's contents.
+const _: () = assert!(<Start as NotCopy<_>>::HOLDS && <Start as NotClone<_>>::HOLDS);
+
+// `Statics` is neither Copy nor Clone: the permissions to init's statics.
+const _: () = assert!(<Statics as NotCopy<_>>::HOLDS && <Statics as NotClone<_>>::HOLDS);
 
 // `ForkHeld` is neither Copy nor Clone: the hold of the fork lock list.
 const _: () = assert!(<ForkHeld as NotCopy<_>>::HOLDS && <ForkHeld as NotClone<_>>::HOLDS);
