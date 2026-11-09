@@ -24,6 +24,7 @@
 
 use crate::QUANTUM;
 use core::cell::UnsafeCell;
+#[cfg(test)]
 use core::ops::Deref;
 use vstd::prelude::*;
 
@@ -1369,8 +1370,16 @@ verus! {
 /// The compile-time class table: the geometry of a kernel whose page is at
 /// most [`MIN_SLAB`] (4 KiB, the reference hosts), and the reference the
 /// tests and the compile-time constants ([`NBINS`], [`MAX_SLAB_WORDS`],
-/// `slab::DESC_STRIDE`) are built from.
-pub exec const BASE_CLASSES: [Class; NCLASSES] = build_classes();
+/// `slab::DESC_STRIDE`) are built from. Its entries are well formed and
+/// sized [`spec_class_size`] ([`table_ok`]), the sizes of [`CLASSES`]',
+/// which [`adopt_page_geometry`] keeps: what readers of a size alone
+/// read, before init as well as after.
+pub exec const BASE_CLASSES: [Class; NCLASSES]
+    ensures
+        table_ok(BASE_CLASSES),
+{
+    build_classes()
+}
 
 } // verus!
 
@@ -1544,8 +1553,7 @@ impl ClassTable {
     /// [`BASE_CLASSES`]' value and [`adopt_page_geometry`] keeps it),
     /// without which [`class_table`] is its spec fallback, and what this
     /// assumes is that a reader sees the value `init` left:
-    /// `Shared::init` reads the table before the allocator is published,
-    /// and `Deref` (`CLASSES[c]`) can state no precondition.
+    /// `Shared::init` reads the table before the allocator is published.
     #[verifier::external_body]
     #[inline(always)]
     pub fn table(&self) -> (r: &[Class; NCLASSES])
@@ -1568,17 +1576,20 @@ impl ClassTable {
 // read-only for the life of the process.
 unsafe impl Sync for ClassTable {}
 
-verus! {
-
+/// The table, as [`ClassTable::table`] gives it, for the tests
+/// (`CLASSES[c]`). Verified code reads it through
+/// [`ClassTable::table`], whose contract a `Deref` cannot state.
+#[cfg(test)]
 impl Deref for ClassTable {
     type Target = [Class; NCLASSES];
 
-    /// The table, as [`ClassTable::table`] gives it.
     #[inline(always)]
     fn deref(&self) -> &[Class; NCLASSES] {
         self.table()
     }
 }
+
+verus! {
 
 pub exec static CLASSES: ClassTable = ClassTable::new(BASE_CLASSES);
 

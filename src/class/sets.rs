@@ -1226,6 +1226,8 @@ impl SetTable {
             let (r1, s) = (65 * (w / 64) + 1 + w % 64 + 1, self.groups[g as int].stride as int);
             assert(8 * r1 * s <= 8 * (65 * 0x4000 + 65) * (3 * NCLASSES)) by (nonlinear_arith)
                 requires 0 <= r1 <= 65 * 0x4000 + 65, 0 <= s <= 3 * NCLASSES;
+            // The bound's value, which the call's `upto` limit needs.
+            assert(8 * (65 * 0x4000 + 65) * (3 * NCLASSES) <= 0x4000_0000_0000_0000) by (compute);
         }
         let row = TwoLevelBitmap::chunked_l0_row(slab / 64);
         let tracked mut under = LockOrder::spare();

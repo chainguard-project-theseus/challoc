@@ -1490,8 +1490,8 @@ fn line_ptr() -> (p: *mut FeatureLine)
 /// `READY`, the feature line's build ([`build_line`]: `FEATURES`' THP
 /// table and `FEATURE_LINE`, through the permissions the line's
 /// invariant hands it) write, and that
-/// `BASE_CLASSES` meets `table_ok`, which is `build_classes`'s verified
-/// postcondition but which a spec cannot read off the `exec const`;
+/// the class table's storage holds `BASE_CLASSES`' value, which meets
+/// `table_ok` (the `exec const`'s verified `ensures`);
 /// `LINE_STATE`'s initial value (the static's initialiser) and that
 /// every write of it is [`line_compare_exchange`]'s or [`line_store`]'s,
 /// inside the line's invariant, which `init` makes with this
