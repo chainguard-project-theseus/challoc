@@ -83,6 +83,11 @@
 # `callers: <test>` and no `#[test]` fn has that path, or the guard-test
 # table of verus/README.md has no row naming it with its `Mutants killed:`
 # and `Known escapes:` parts.
+# --check also fails when a `tracked` struct or enum under src/, test
+# files included, seam or not, has no assertion in src/vspec/notcopy.rs
+# labeled with its name, and no attribute above it, that names both
+# `<T as NotCopy<_>>::HOLDS` and `<T as NotClone<_>>::HOLDS` for it, or
+# when two tracked types share a name (trackedcheck).
 # The output depends only on the tree: files are read in byte order.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -923,7 +928,8 @@ assertion() {
 # assertion of FILE sits under the label, as for assertion, and its
 # text, from `const _` to the line ending `);`, `//` comments dropped,
 # names both `<TYPE as NotCopy<_>>::HOLDS` and `<TYPE as
-# NotClone<_>>::HOLDS`, TYPE alone or after a path: the checks of
+# NotClone<_>>::HOLDS`, TYPE alone or after a path, with or without
+# arguments that hold no `<` or `>` (`<TYPE<u8> as ..>`): the checks of
 # src/vspec/notcopy.rs, which fail to compile when TYPE is Copy or Clone.
 # FILE must also hold the second impls, `impl<T: Copy> NotCopy<..> for T
 # {}` and `impl<T: Clone> NotClone<..> for T {}`, without which the
@@ -941,9 +947,36 @@ notcopy() {
     { c = 0; h = 0 }
     END {
       if (n != 1 || !ic || !il) exit 1
-      exit !(s ~ ("[<:]" t " as NotCopy<_>>::HOLDS") && s ~ ("[<:]" t " as NotClone<_>>::HOLDS"))
+      g = "(<[^<>]*>)?"
+      exit !(s ~ ("[<:]" t g " as NotCopy<_>>::HOLDS") && s ~ ("[<:]" t g " as NotClone<_>>::HOLDS"))
     }
   ' "$file"
+}
+
+# trackedcheck SRC FILE: for each `tracked` struct or enum of a file
+# under SRC (a line that is, after indentation and a visibility,
+# `tracked struct <name>` or `tracked enum <name>`, seam or not), the
+# error when FILE holds no check, under the label `` `<name>` ``, that
+# the type is neither Copy nor Clone (notcopy), or holds one gated by an
+# attribute (assertion), and for a second type of a name already seen,
+# which the one check of that name cannot stand for. Every one needs a
+# check: verus/SEAMS.md, "Status".
+trackedcheck() {
+  # shellcheck disable=SC2016
+  find "$1" -name '*.rs' -type f | sort | xargs awk '
+    /^[ \t]*(pub(\([^)]*\))?[ \t]+)?tracked[ \t]+(struct|enum)[ \t]+[A-Za-z_]/ {
+      s = $0; sub(/^[ \t]*(pub(\([^)]*\))?[ \t]+)?tracked[ \t]+(struct|enum)[ \t]+/, "", s)
+      match(s, /^[A-Za-z_][A-Za-z0-9_]*/); n = substr(s, 1, RLENGTH)
+      d = (n in seen) ? "dup" : ""; seen[n] = 1
+      print FILENAME "\t" FNR "\t" n "\t" d
+    }' |
+  while IFS="$tab" read -r f l ty d; do
+    if [ "$d" = dup ]; then
+      echo "seams: $2: $ty ($f:$l): a second tracked type of this name, which the one check of the name cannot stand for: rename one"
+    elif ! { notcopy "$ty" "\`$ty\` in $2" && assertion "\`$ty\` in $2"; }; then
+      echo "seams: $2: $ty ($f:$l): a tracked type with no check in $2 that it is neither Copy nor Clone (\`<$ty as NotCopy<_>>::HOLDS && <$ty as NotClone<_>>::HOLDS\` under a \`// \\\`$ty\\\` ...\` comment, with no attribute above it)"
+    fi
+  done
 }
 
 # notcopycheck HASHDIR: for each `tracked` struct or enum (a ghost token)
@@ -1245,6 +1278,8 @@ case $mode in
     cites $ovfiles | while read -r o t c; do checkcite "$o" "$t" "$c"; done > "$tmp/cites"
     # A ghost token's const assert is its not-Copy check.
     notcopycheck "$tmp/hash" >> "$tmp/cites"
+    # Every tracked type has its not-Copy check.
+    trackedcheck src src/vspec/notcopy.rs >> "$tmp/cites"
     # A status that cites a check records the hashes of the item it
     # checked, so an edit to the item's contract or body fails here, even
     # after --write, until the status is revisited and the hashes updated.
@@ -1712,6 +1747,23 @@ case $mode in
     if notcopy F "\`F\` in $tmp/nc0.rs"; then
       echo "seams: self-test: not Copy: a file without the second impls accepted" >> "$tmp/cites"
     fi
+    # Self-test: every tracked struct or enum needs a check, whatever its
+    # visibility or indentation, a generic one checked at an argument, and
+    # a check gated by an attribute (Q) is none; a second type of a name
+    # (F in b.rs) fails, as one check cannot stand for both; neither a
+    # struct that is not tracked nor one named in a comment needs one.
+    mkdir "$tmp/tr"
+    printf '%s\n' 'pub tracked struct F { x: () }' '    tracked struct K<T> { x: T }' \
+      'pub(crate) tracked enum E { A }' '    pub(in crate::m) tracked struct P { x: () }' \
+      'tracked struct M { x: () }' 'tracked struct Q { x: () }' \
+      '// tracked struct C, in a comment' 'pub struct U;' > "$tmp/tr/a.rs"
+    printf '%s\n' 'tracked struct F { x: () }' > "$tmp/tr/b.rs"
+    # shellcheck disable=SC2016
+    printf '%s\n' '// `K` checked.' 'const _: () = assert!(<K<u8> as NotCopy<_>>::HOLDS && <K<u8> as NotClone<_>>::HOLDS);' \
+      '#[cfg(any())]' '// `Q` gated.' 'const _: () = assert!(<Q as NotCopy<_>>::HOLDS && <Q as NotClone<_>>::HOLDS);' |
+      cat "$tmp/nc.rs" - > "$tmp/tr.rs"
+    r=$(trackedcheck "$tmp/tr" "$tmp/tr.rs" | sed 's/^seams: [^:]*: \([A-Za-z]*\) (.*/\1/' | sort | tr '\n' ' ')
+    [ "$r" = "E F M P Q " ] || echo "seams: self-test: tracked: want E F M P Q to fail, got: $r" >> "$tmp/cites"
     bad=0
     if [ -s "$tmp/cites" ]; then cat "$tmp/cites" >&2; bad=1; fi
     if [ $stale = 0 ] && [ $bad = 0 ]; then

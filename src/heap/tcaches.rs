@@ -273,7 +273,7 @@ verus! {
 /// ([`Tcaches::split`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
-tracked struct TcachesParts {
+pub(crate) tracked struct TcachesParts {
     tracked lock: PointsTo<Lock<()>>,
     tracked inv: PointsTo<Tracked<TableInv>>,
 }

@@ -339,10 +339,14 @@ cover the item itself: for a specification of a crate-local type (the
 A ghost token, a `tracked` struct or enum, is linear because its type
 is not `Copy`: verified code can copy a value of a `Copy` type. The
 check below also rules out `Clone`, which `Copy` requires, so no
-explicit duplicate exists either.
-`src/vspec/notcopy.rs` checks that at compile time, one assertion per
-token, `const _: () = assert!(<T as NotCopy<_>>::HOLDS && <T as
-NotClone<_>>::HOLDS);` under a comment that starts with `` `T` ``.
+explicit duplicate exists either. Verus does not check this itself:
+Verus 0.2026.10.18 verifies the crate with `#[derive(Clone, Copy)]` on
+the tracked `Unbacked`.
+`src/vspec/notcopy.rs` checks it at compile time for every `tracked`
+struct or enum under `src/`, seam or not, one assertion per type,
+`const _: () = assert!(<T as NotCopy<_>>::HOLDS && <T as
+NotClone<_>>::HOLDS);` under a comment that starts with `` `T` ``. A
+generic type is checked at a `Copy` argument (`<Held<()> as ..>`).
 `<T as NotCopy<_>>::HOLDS` names one item when `T` is not `Copy` and
 two when it is, an ambiguity rustc rejects, so the build fails, under
 Verus too, once `T` gains either impl; `NotClone` is the same for
@@ -356,14 +360,25 @@ const assert: <label> in src/vspec/notcopy.rs; not checked: <what>)`,
 `seams.sh --check` fails when a `tracked` type's status cites `const
 assert:` and no assertion it cites names both `<T as NotCopy<_>>::HOLDS`
 and `<T as NotClone<_>>::HOLDS` outside `//` comments, `T` the type's
-name, alone or after a path, in a file that also holds the two impls
+name, alone or after a path, with or without arguments that hold no
+`<` or `>`, in a file that also holds the two impls
 for `Copy` and `Clone` types, without which the checks compile for any
 type. It reads text only: that those names resolve to the file's traits
 and that rustc rejects the ambiguity is what the control script shows,
 which CI runs on x86_64 on every pull request under both toolchains:
 lint.yaml's `notcopy-control` check under rust-1.98, and a step of
 verus.yaml's `verus` check under the verus package's rust stream.
-`--check` does not require a tracked type to cite one. `sh verus/seams-mutants.sh` checks that `--check`'s self-tests
-catch weakened forms of this rule, and that, in a copy of the tree, a
-check that drops `NotClone`, names another type or is removed, or a
-removed `Clone` impl, fails `--check`.
+`--check` also fails when a `tracked` struct or enum under `src/`, test
+files included, seam or not, has no such assertion in
+`src/vspec/notcopy.rs` under the label `` `T` `` with no attribute above
+it, and when two tracked types share a name, which one check cannot
+stand for. It finds a type by a line that is, after indentation and a
+visibility (`pub` or `pub(..)`), `tracked struct T` or `tracked enum
+T`; review covers one written otherwise, such as by a macro, and a
+plain struct of ghost permissions carried in `Tracked<..>`, such as
+`huge::table::Own`, which the scan does not see.
+`sh verus/seams-mutants.sh` checks that `--check`'s self-tests catch
+weakened forms of these rules, and that, in a copy of the tree, a check
+that drops `NotClone`, names another type, is removed, gated or loses
+its label, a removed `Clone` impl, a tracked struct added with no
+check, or a second one of a checked name, fails `--check`.
