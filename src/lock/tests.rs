@@ -333,10 +333,11 @@ fn fork_record_uses_are_listed() {
     }
 }
 
-/// `Lock::value_ptr` admits any pointer, and its projection is defined
-/// only through one into a live `Lock<T>`: its one caller is
-/// `Arena::put_stats`, which passes its own parameter `p`, the pointer
-/// its permission names (`requires old(perm).ptr() == p`), at `T =
+/// `Lock::value_ptr` requires the permission it takes to name its
+/// pointer (`perm.ptr() == p`), which Verus checks at verified callers
+/// only. Its one caller is the trusted body of `Arena::put_stats`, which
+/// passes its own parameter `p` and its own permission `perm`, the one
+/// that names `p` (`requires old(perm).ptr() == p`), at `T =
 /// ArenaStats`, one of the `T`s `kani_lock` runs it at. The only other
 /// calls are Kani harnesses' (`cfg(kani)`, never in a build): `kani_lock`'s
 /// and the two in `arena::kani_put_stats::put_stats_writes_empty`, which
@@ -344,7 +345,8 @@ fn fork_record_uses_are_listed() {
 /// counts (`Self::` and `Lock::<T>::` included), and the name is never
 /// used but as a call (no function pointer to it); an associated
 /// function cannot be imported under another name. In `put_stats`'s
-/// body `p` appears only in its two statements, so nothing rebinds it.
+/// body `p` and `perm` appear only in its two statements, so nothing
+/// rebinds them.
 #[test]
 fn value_ptr_called_only_by_put_stats() {
     use crate::testutil::{assert_only_at, grant_sites};
@@ -408,15 +410,18 @@ fn value_ptr_called_only_by_put_stats() {
     let uses: Vec<&str> = item[body..]
         .iter()
         .copied()
-        .filter(|l| l.split(|c: char| !ident(c)).any(|w| w == "p"))
+        .filter(|l| {
+            l.split(|c: char| !ident(c))
+                .any(|w| w == "p" || w == "perm")
+        })
         .collect();
     let want = [
         "core::ptr::write_bytes(p, 0, 1);",
-        concat!("(*Lock::value", "_ptr(p)).index = index;"),
+        concat!("(*Lock::value", "_ptr(p, Tracked(&*perm))).index = index;"),
     ];
     assert_eq!(
         uses, want,
-        "put_stats: got = {uses:?} naming `p`, want = {want:?}"
+        "put_stats: got = {uses:?} naming `p` or `perm`, want = {want:?}"
     );
     assert!(
         include_str!("../lock.rs").contains(concat!("on::<crate::stats::Arena", "Stats>();")),

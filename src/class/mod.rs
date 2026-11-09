@@ -6255,9 +6255,9 @@ impl crate::lock::LockSpec for Inner {
     }
 }
 
-/// The frame holds of every value with itself, as `LockSpec` requires of
-/// a defined frame (`Lock::new` does not check it, and
-/// `lock::axiom_acquired` claims it at the first acquisition).
+/// The frame holds of every value with itself. Nothing calls this: Verus
+/// proves `Lock::new`'s `requires` of the initial value at each call
+/// directly (`lock::axiom_acquired` claims it at the first acquisition).
 proof fn lemma_class_frame_reflexive(v: Inner)
     ensures
         crate::lock::lock_frame(v, v),
