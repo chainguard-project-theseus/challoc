@@ -14,7 +14,7 @@ file.
 ## `HeapPerm`
 
 src/heap/thread.rs:129. Kind: external_body type. Category: allocator invariant.
-Tool: none (assumption). Status: trusted.
+Tool: none (assumption). Status: trusted (partly checked, const assert: `HeapPerm` in src/vspec/notcopy.rs; not checked: what its `addr` and `value` stand for, which `HeapPerm::assemble`, `slot_heap_ref` and `TlsSlot::entry` (through `slot_ok`) state; and linearity across tokens, which it does not have: each token `TlsSlot::entry` makes holds a heap's permission anew, so verified code cannot duplicate one within a token, but two tokens may each hold one with the same `addr`).
 
 > Ghost: the permission to a thread heap, linear: the heap loan of the thread's TLS slot token holds it while the slot holds the heap ([`HeapLoan`](crate::sys::tls::HeapLoan), [`slot_ok`]), and [`slot_heap_ref`] lends the heap out of the loan, for as long as the loan is lent.
 

@@ -2067,6 +2067,7 @@ mod regions;
 
 #[cfg(all(verus_keep_ghost, not(test)))]
 pub use regions::LG_REGION_PREFERRED;
+pub(crate) use regions::Reserved;
 pub use regions::{Kind, LG_HUGE_PREFERRED, Regions};
 #[cfg(test)]
 pub use regions::{

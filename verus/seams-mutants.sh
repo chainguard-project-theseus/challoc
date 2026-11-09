@@ -2,16 +2,19 @@
 # verus/seams-mutants.sh: check that verus/seams.sh's self-tests have
 # teeth, and that its hashes catch an edited seam. Each script mutant
 # below is one sed edit of seams.sh that weakens the `loom:` citation
-# rule, the `GenMC:` citation rule, the hash rule or the claims nothing
-# rule; the mutated copy's `--check`
+# rule, the `GenMC:` citation rule, the hash rule, the claims nothing
+# rule, the one-line `const assert:` form or the not-Copy rule for
+# tracked types; the mutated copy's `--check`
 # must report a self-test failure of that rule. Each tree mutant is one
 # sed edit of a source file in a copy of the tree, followed by `--write`
 # and `--check` there: an edit to a discharged seam's attribute,
 # `requires`, `ensures` or body, to the attributes of a seam that
 # claims nothing, or one that gives such a seam an `unsafe impl Send` or
-# makes it a `tracked` struct, must fail `--check` with the message of the rule it
-# breaks, and one that only adds a
-# comment, reindents or moves the seam must pass. Exits 1 if a mutant survives, a passing edit
+# makes it a `tracked` struct, or one that weakens a tracked type's
+# not-Copy check in src/vspec/notcopy.rs, must fail `--check` with the
+# message of the rule it breaks, and one that only adds a
+# comment, reindents or moves the seam (or rewraps the check) must pass.
+# Exits 1 if a mutant survives, a passing edit
 # fails, or an edit no longer applies.
 #
 #   sh verus/seams-mutants.sh
@@ -46,10 +49,10 @@ script() {
 	done
 }
 
-# tree FILE SEAM: the tree mutants on stdin, `name|want|sed expression`
-# lines, each a sed edit of FILE in a copy of the tree; want is `pass`
-# when --check must pass after --write, else text its failure must print
-# on a line naming SEAM.
+# tree FILE SEAM [SRC]: the tree mutants on stdin, `name|want|sed
+# expression` lines, each a sed edit of FILE in a copy of the tree; want
+# is `pass` when --check must pass after --write, else text its failure
+# must print on a line naming SEAM of source file SRC (FILE by default).
 tree() {
 	while IFS='|' read -r name want expr; do
 		[ -n "$name" ] || continue
@@ -71,7 +74,7 @@ tree() {
 				echo "$out"
 				fail=1
 			fi
-		elif [ $rc = 1 ] && echo "$out" | grep -F "$want" | grep -qF ": $2 ($1:"; then
+		elif [ $rc = 1 ] && echo "$out" | grep -F "$want" | grep -qF ": $2 (${3:-$1}:"; then
 			echo "seams-mutants: $name: caught"
 		else
 			echo "seams-mutants: $name: SURVIVED"
@@ -138,6 +141,34 @@ a tracked type may claim nothing|s/print at "claims nothing, but the item is a t
 the specified type's unsafe impls are allowed|s/^    if (nm in unsafeimpl)$/    if (0)/
 the item's own struct's unsafe impls are allowed|s/^    if (own != "" \&\& own != nm \&\& (own in unsafeimpl))$/    if (0)/
 generic unsafe impls are not matched|s/unsafe impl(<\.\*>)? +/unsafe impl +/
+EOF
+
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+script 'self-test: const assert: one line' <<'EOF'
+an assertion on one line is not read|s/assert!\\(([$]|[.][*]\\);[$])\//assert!\\($\//
+EOF
+
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+script 'self-test: not Copy' <<'EOF'
+NotClone need not be named|s/ \&\& s ~ ("\[<:\]" t " as NotClone<_>>::HOLDS")//
+any type's check matches|s/("\[<:\]" t " as NotCopy<_>>::HOLDS") \&\& s ~ ("\[<:\]" t " as NotClone/(" as NotCopy<_>>::HOLDS") \&\& s ~ (" as NotClone/
+a longer name matches|s/"\[<:\]" t " as Not/t " as Not/g
+comments count|s/sub(\/\\\/\\\/\.\*\$\/, "", x); //
+tracked types are not held to it|s/ \&\& index(estat\[e\], "const assert: ")) notcopycites(e, ok)$/ \&\& 0) notcopycites(e, ok)/
+a failing cite is ignored|s/if (!(keys\[i\] in ok)) {/if (0) {/
+the second impls are not required|s/if (n != 1 || !ic || !il) exit 1/if (n != 1) exit 1/
+EOF
+
+# The seam is the external_body tracked type WordPerm of src/vspec/word.rs,
+# whose status cites its not-Copy check in src/vspec/notcopy.rs.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+tree src/vspec/notcopy.rs WordPerm src/vspec/word.rs <<'EOF'
+the Clone check dropped|neither Copy nor Clone|s/^const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS \&\& <WordPerm as NotClone<_>>::HOLDS);$/const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS);/
+another type checked|neither Copy nor Clone|s/^const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS \&\& <WordPerm as NotClone/const _: () = assert!(<HeapPerm as NotCopy<_>>::HOLDS \&\& <HeapPerm as NotClone/
+the check removed|neither Copy nor Clone|/^const _: () = assert!(<WordPerm as NotCopy/d
+the Clone impl removed|neither Copy nor Clone|/^impl<T: Clone> NotClone<IfClone> for T {}$/d
+a comment added|pass|/^\/\/ `WordPerm` is neither/s/$/ More words./
+rewrapped|pass|s/^const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS \&\& /const _: () = assert!(\n    <WordPerm as NotCopy<_>>::HOLDS \&\& /
 EOF
 
 # The seam is the external type specification of core::ffi::c_void in

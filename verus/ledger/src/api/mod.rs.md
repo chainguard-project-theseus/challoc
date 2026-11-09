@@ -74,7 +74,7 @@ pub axiom fn axiom_published() -> (tracked r: &'static Published)
 ## `LinePerm`
 
 src/api/mod.rs:364. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, const assert: `LinePerm` in src/vspec/notcopy.rs; not checked: that its value is `LINE_STATE`'s last write, the C11 argument its wrappers' statuses rest on (`line_load`, `line_compare_exchange` and `line_store`); and that `axiom_statics` is the only seam that makes one).
 
 > Ghost permission to `LINE_STATE`: its current [`value`](LinePerm::value).
 
@@ -87,7 +87,7 @@ pub tracked struct LinePerm
 ## `StatePerm`
 
 src/api/mod.rs:455. Kind: external_body type. Category: atomics primitive.
-Tool: loom/GenMC. Status: trusted.
+Tool: loom/GenMC. Status: trusted (partly checked, const assert: `StatePerm` in src/vspec/notcopy.rs; not checked: that its value is `STATE`'s last write, the C11 argument its wrappers' statuses rest on (`state_load`, `state_claim` and `state_publish`); and that the one `axiom_state`'s invariant holds is the only one any seam makes).
 
 > Ghost permission to `STATE`: its current [`value`](StatePerm::value).
 

@@ -41,7 +41,8 @@ require); each file is a workflow:
   and the pins of the lines the loom models and the GenMC harnesses copy
   (`tests/loom/tests/pins.rs`, both sides for GenMC's),
   shellcheck, the codegen-fncmp fixtures, the Kani bool-comparison lint
-  (`ci/kani-boolcmp-test.sh`), the bench harness's unit tests (`make
+  (`ci/kani-boolcmp-test.sh`), the not-Copy control
+  (`verus/notcopy-control.sh`), the bench harness's unit tests (`make
   bench-unit`), msrv-build (1.94).
 - `test.yaml`: `linux` {x86_64, aarch64} x quantum {16, 8}, `privileged`
   per arch (`hosted-<arch>-*` cells in `expected-skips/`).
@@ -57,7 +58,7 @@ require); each file is a workflow:
   off until its bench image is rebuilt, #463, see `floor.yaml`),
   on GCE VMs through `cb launch`; on pushes to main only (postsubmit), so
   a change that raises the floor shows up after it lands, not before.
-- `verus.yaml`: `verus` and `verus-arm64`, the seam ledger, the proofs at quantum 16 and 8, and the coverage floor; `verus-main` the same on main.
+- `verus.yaml`: `verus` and `verus-arm64`, the seam ledger, the proofs at quantum 16 and 8, and the coverage floor; `verus-main` the same on main. `verus` then runs the not-Copy control (`verus/notcopy-control.sh`) under the package's rust stream.
 - `isla.yaml`: `isla` (`arm64-q16`, `arm64-q8`), `make isla` (`verus/ISLA.md`) natively on arm64 at each quantum: the asm templates and the Isla seams against the ledger, then the aarch64 Isla jobs and negative controls; on pull requests that change `src/sys/**`, `src/api/cxx.rs`, `src/config.rs`, `src/rseq.rs`, the build, the Isla harness, the ledger overrides or `isla.yaml` itself. `isla-main` (`arm64-q16`, `arm64-q8`, `amd64-q16`, `amd64-q8`) runs `make isla` on both architectures after every landing on main and gates nothing; only its amd64 legs run the x86_64 half, which fetches sail-x86-from-acl2 from github.com to build the x86 model, so the presubmit `isla` needs no github.com. `emptyasm` (`arm64-q16`, `arm64-q8`, `amd64-q16`, `amd64-q8`) runs `make emptyasm` natively on each architecture at each quantum: the empty-template `asm!` blocks of `verus/emptyasm/blocks.txt` add no instruction, and a `nop` added to each fails the check; on pull requests that change `src/`, the build, `verus/emptyasm/` or `isla.yaml` itself. `emptyasm-main` runs the same legs after every landing on main and gates nothing.
 - `codegen.yaml`: the advisory `codegen` and `codegen-arm64`, the machine-code diff from the merge base (`ci/codegen.sh`), and `heap-noalias` (`ci/heap-noalias.sh`), which gates: the home cache headers are written through a raw pointer while a `&mut Heap` is live, which relies on `Heap` being `!Unpin` (its `_pin` field) so that rustc emits no `noalias` for it; the check reads that off the IR at both quanta on x86_64 (`noalias` on a `&mut Heap` receiver; a `&self` receiver is `noalias readonly` and only listed).
 - `perf-budget.yaml`: `perf-budget`, the hot exports' fast-path cost table on x86_64 at both quanta, and `perf-budget-main` the same on main (`scripts/perf-budget.sh`, theorem 45); a change to their machine code updates `verus/perf-budget.txt` and `verus/perf-budget-q8.txt`.

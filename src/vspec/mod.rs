@@ -19,6 +19,7 @@ pub(crate) mod ctl;
 pub(crate) mod entry;
 pub(crate) mod errno;
 pub(crate) mod flags;
+mod notcopy;
 // Specifications only: Verus alone compiles these.
 #[cfg(verus_keep_ghost)]
 pub(crate) mod arena;

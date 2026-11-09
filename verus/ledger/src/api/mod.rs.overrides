@@ -1,7 +1,9 @@
 axiom_published	allocator invariant	none (assumption)
 # Ghost permissions to the two init-once atomics; their wrappers are the only accesses.
-LinePerm	atomics primitive	loom/GenMC
-StatePerm	atomics primitive	loom/GenMC
+# The const asserts check that neither type is Copy or Clone, so verified
+# code cannot duplicate the one permission there is.
+LinePerm	atomics primitive	loom/GenMC	trusted (partly checked, const assert: `LinePerm` in src/vspec/notcopy.rs; not checked: that its value is `LINE_STATE`'s last write, the C11 argument its wrappers' statuses rest on (`line_load`, `line_compare_exchange` and `line_store`); and that `axiom_statics` is the only seam that makes one)	contract 1065980795, body 1324333092
+StatePerm	atomics primitive	loom/GenMC	trusted (partly checked, const assert: `StatePerm` in src/vspec/notcopy.rs; not checked: that its value is `STATE`'s last write, the C11 argument its wrappers' statuses rest on (`state_load`, `state_claim` and `state_publish`); and that the one `axiom_state`'s invariant holds is the only one any seam makes)	contract 3870767310, body 1324333092
 # The init-once protocol: what STATE's and the statics' invariants hold.
 axiom_ready	allocator invariant	none (assumption)
 axiom_state	allocator invariant	none (assumption)
