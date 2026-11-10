@@ -241,7 +241,8 @@ add.
   (`api::Published`: the built `Shared`, from `axiom_shared_built`'s
   join, the class table, whose value is `layout::class_table()`
   by `layout::lemma_class_table` (verified) on the
-  frozen permission, and the line's invariant; not the feature
+  frozen permission, the line's invariant, and the slot-state bytes'
+  invariant, `heap::slotstate::Slots`; not the feature
   statics, which the feature line's first request completes and
   writes through the line's invariant, `api::LinePred`). It also holds
   one half of the ghost variable at `api::ready_mark()`, set and frozen
@@ -252,8 +253,9 @@ add.
   which `init` uses: it writes the class table, `FEATURES` and the conf
   buffer (`config::conf_buffer`, for `config::load`) through the
   statics' permissions and puts `FEATURES`', `FEATURE_LINE`'s and
-  `STATE.line`'s into the line's invariant, and passes the tokens to
-  `Shared::init`.
+  `STATE.line`'s into the line's invariant, builds the slot-state
+  bytes' invariant from their permissions (`heap::slotstate::adopt`),
+  and passes the tokens to `Shared::init`.
   `Shared::begin` and `table::axiom_fresh_words` (one token per class)
   each use up their step's token, so Verus checks that
   each runs at most once per process (a second call does not verify:
@@ -261,8 +263,9 @@ add.
   succeeds once is proved given `axiom_start` and the initialiser (one
   invariant; it holds the tokens and the permissions only in `UNINIT`,
   which nothing writes); what stays assumed is `axiom_start` (the
-  words' identities, the tokens, the ghost variable's halves, and the
-  statics' storage and initial values), that a `static`'s initialiser
+  words' identities, the tokens, the ghost variable's halves, the
+  statics' storage and initial values, and the slot-state bytes'
+  identities and first value, `FREE`), that a `static`'s initialiser
   runs once (so the token is taken once: the source test
   `access_init_once_words_written_by_their_protocol` in
   `tests/loom/tests/access.rs` checks that `axiom_start` has that one
@@ -449,7 +452,7 @@ the call does not return (theorem 3, which is not voided for it).
   entry is `wf` and sized `spec_class_size`
   (`vspec::class::lemma_class_table_wf`, verified).
   `api::axiom_start` (trusted) gives the permission to the table's
-  storage holding `base_value()` (`api::Statics::fresh`), which
+  storage holding `base_value()` (`api::Statics::storage_fresh`), which
   `api::claim_init` hands `api::init`; `adopt_page_geometry` (verified)
   writes the table through it at the page `sys::features::page_size`
   returns, whose trailing zeros are `process_regions().lg_page`
@@ -8668,9 +8671,9 @@ invalid free, and on a valid one only if that state is corrupt:
   slot that is not `CACHED`; and `check_not_cached` in the lookups
   (`Shared::check_not_cached`, `heap/shared.rs`), which aborts on a
   `CACHED` slot. Each check's step is verified, over `vspec::byte` on
-  the byte's permission in `SLOTS`' invariant, which carries the state
-  from one step to the next; its first value, `FREE`, is
-  `axiom_slot_bytes`' premise ([double-free window](#double-free-window-under-double_free_scan-rests-on-the-slot-state-premise)),
+  the byte's permission in the slot-state invariant (`Slots`), which
+  carries the state from one step to the next; its first value, `FREE`,
+  is a premise of `axiom_start` ([double-free window](#double-free-window-under-double_free_scan-rests-on-the-slot-state-premise)),
   and no verified invariant ties the bytes to the caches. Every check
   only adds an abort.
 
@@ -9479,11 +9482,14 @@ which `free` aborts. Verus checks two parts: `free`, `claim`, `pop` and
 transition starts from and left the one it ends in (an assertion at
 each one's end), and the sequence lemma over the code's transitions,
 which no code calls. That each step finds the value the last step on
-that slot left is `SLOTS`' invariant: it holds every byte's permission,
-and `step` opens it around each operation on the byte and puts the
-permission back. The byte operations are `vspec::byte`'s wrappers
-(`load`, `store`, `compare_exchange`); one axiom, taken once by
-`SLOTS`' initialiser, mints the permissions, each `FREE`.
+that slot left is the slot-state invariant (`Slots`): it holds every
+byte's permission, and `step` opens it around each operation on the
+byte and puts the permission back. The byte operations are
+`vspec::byte`'s wrappers (`load`, `store`, `compare_exchange`). The
+permissions, each `FREE`, come with the process-start token
+(`api::axiom_start`'s `Statics::slots`), which `claim_init` hands out
+once; `api::init` uses them up building the invariant (`adopt`) and
+publishes it (`api::Published::slots`), where `step` reads it.
 
 ```rust
 // heap/slotstate.rs
@@ -9525,15 +9531,23 @@ impl InvariantPredicate<(), Map<usize, BytePerm>> for SlotPred {
         forall|a: usize| m.dom().contains(a) && m[a].id() == slot_byte_id(a) && is_state(m[a].value())
     }
 }
-exec static SLOTS: Tracked<AtomicInvariant<(), Map<usize, BytePerm>, SlotPred>>
-    ensures SLOTS@.namespace() == slots_ns(),
-{ let tracked m = axiom_slot_bytes(); Tracked(AtomicInvariant::new((), m, slots_ns())) }
+pub tracked struct Slots { tracked inv: AtomicInvariant<(), Map<usize, BytePerm>, SlotPred> }
+pub open spec fn fresh(m: Map<usize, BytePerm>) -> bool {
+    forall|a: usize| m.dom().contains(a) && m[a].id() == slot_byte_id(a) && m[a].value() == FREE
+}
+pub proof fn adopt(tracked m: Map<usize, BytePerm>) -> (tracked r: Slots)
+    requires fresh(m),
 
-// heap/slotstate.rs, taken once, by SLOTS' initialiser
-axiom fn axiom_slot_bytes() -> (tracked m: Map<usize, BytePerm>)
-    ensures forall|a: usize| m.dom().contains(a) && m[a].id() == slot_byte_id(a) && m[a].value() == FREE,
+// api/mod.rs: the permissions come with the process-start token, once
+axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
+    ensures ...
+        s.statics.storage_fresh(),
+        forall|a: usize| s.statics.slots.dom().contains(a) && s.statics.slots[a].id() == crate::heap::slotstate::slot_byte_id(a) && s.statics.slots[a].value() == crate::heap::slotstate::FREE,
+impl Statics {
+    pub open spec fn fresh(&self) -> bool { &&& self.storage_fresh() &&& crate::heap::slotstate::fresh(self.slots) }
+}
 
-// heap/slotstate.rs: the byte at `at` is the one SLOTS holds under slot_byte_id(at)
+// heap/slotstate.rs: the byte at `at` is the one Slots holds under slot_byte_id(at)
 unsafe fn byte_at(at: usize) -> (r: &'static AtomicU8)
     ensures byte_id(r) == slot_byte_id(at),
 
@@ -9559,7 +9573,7 @@ reaches a cache or its slab) and the direct free (`free_direct`,
 (`Heap::push_cache_flags`, `heap/cache.rs`).
 
 **Proof.** `step` follows from the `vspec::byte` wrappers' contracts on
-the permission it takes out of `SLOTS` (the one `SlotPred` keys by the
+the permission it takes out of `Slots` (the one `SlotPred` keys by the
 address `byte_at`'s identity names), and from putting it back with a
 state: a compare-and-exchange or store moves a byte that held `from` to
 `to`, a state, since a byte never holds `NONE`. Each entry point's
@@ -9573,21 +9587,34 @@ from `NONE`, which no byte holds).
 
 **Premises.**
 - The slot-state premise: each byte `step` reaches reads `FREE` until
-  the first step on it (`axiom_slot_bytes`, `heap/slotstate.rs`: the
-  arrays are fresh anonymous mappings, zero-filled, never unmapped).
-  From then on Verus carries the value: every step operates on the
-  permission `SLOTS` holds for the byte and puts it back, so the next
-  step on that slot, on any thread, finds what the last one left. No
-  verified invariant ties the bytes to the caches or the bitmap.
-- The source test
-  `heap::slotstate::tests::slot_bytes_axiom_is_taken_only_by_slots`
-  pins the mint to `SLOTS`' initialiser, once (it runs at compile time),
-  `SLOTS` to `slots`, and `slots` to `step`. The slot-state bytes are not
-  made by `vspec::byte::new`; this mint is the only other source of a
+  the first step on it (the `forall` over `s.statics.slots` in
+  `api::axiom_start`'s `ensures`, which `heap::slotstate::fresh` restates
+  for `adopt`: the arrays are fresh anonymous mappings,
+  zero-filled, never unmapped). From then on Verus carries the value:
+  every step operates on the permission `Slots` holds for the byte and
+  puts it back, so the next step on that slot, on any thread, finds
+  what the last one left. No verified invariant ties the bytes to the
+  caches or the bitmap.
+- Once: the permissions are part of the process-start token's
+  `Statics`, which `STATE`'s initialiser takes once
+  (`access_init_once_words_written_by_their_protocol`,
+  `tests/loom/tests/access.rs`, counts the `axiom_start` calls). Verus
+  checks the rest: `STATE`'s invariant holds them until `claim_init`'s
+  winning exchange hands them out, and `adopt` uses them up. `step`
+  reaches the invariant through `api::axiom_published`, so that every
+  step opens the one `init` built rests on that axiom's premise (every
+  reference it returns is to what `init` published; see its doc in
+  `api/mod.rs`). `Slots`' field is private to `heap/slotstate.rs`
+  (rustc), and `access_slot_bytes_cast_and_opened_once`
+  (`tests/loom/tests/access.rs`) checks that the text `.slots.inv`
+  occurs once, in `step`; a read spelled another way is caught only by
+  review. The slot-state bytes are not made by
+  `vspec::byte::new`; `axiom_start` is the only other source of a
   `BytePerm` (`vspec/byte.rs`'s trust list names it).
 - The byte's identity: `byte_at` returns the byte whose identity is
   `slot_byte_id(at)` (its trusted `ensures`, for any `at`; `byte` is its
-  one caller, pinned by the source test above). Assumed, not checked:
+  one caller, which `access_slot_bytes_cast_and_opened_once` counts).
+  Assumed, not checked:
   distinct addresses have distinct identities, none of them that of an
   atomic `vspec::byte::new` made.
 - The memory model: "finds what the last one left" holds in
@@ -9601,7 +9628,7 @@ from `NONE`, which no byte holds).
 - Atomicity: the free's compare-and-exchange makes two simultaneous
   frees of one slot find `LIVE` once (`tests/loom/src/slotstate.rs`
   models the race); the claims, pops and releases load and store, in
-  two openings of `SLOTS`, and only the thread that holds the slot makes
+  two openings of `Slots`, and only the thread that holds the slot makes
   them, so no other step changes the byte between the two (a racing
   free's compare-and-exchange moves only a `LIVE` byte). That a
   load-then-store step takes effect as one is this premise, not

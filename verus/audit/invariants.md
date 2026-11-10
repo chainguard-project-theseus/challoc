@@ -18,8 +18,8 @@ proves from the opaque definition of `class_table`
 (`layout/mod.rs`); and `axiom_slot_loc`, gone, its facts following
 from the opaque definitions of `slot_loc` and `mark_loc`
 (`class/table.rs`) and `guard_geom` (`layout/regions.rs`). Seams
-of this scope that the audit did not cover, such as `axiom_slot_bytes`
-(`heap/slotstate.rs`) and `axiom_ready` (`api/mod.rs`), are not
+of this scope that the audit did not cover, such as `axiom_ready`
+and `axiom_start` (`api/mod.rs`), are not
 listed. Each row names the seam by its item and its ledger file,
 `verus/ledger/src/<file>.md`, which gives the seam's contract, category,
 tool and status.*

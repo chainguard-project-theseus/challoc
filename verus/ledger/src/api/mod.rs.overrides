@@ -3,6 +3,14 @@ axiom_published	allocator invariant	none (assumption)
 # and the published fact. The two words' permissions are vspec/count.rs's and
 # vspec/byte.rs's, whose wrappers are the only accesses (tests/loom/tests/access.rs).
 axiom_ready	allocator invariant	none (assumption)
+# The token also carries the slot-state bytes' first value
+# (theorem_double_free_window): a permission to the slot-state byte at every
+# address, each FREE (the arrays are fresh anonymous mappings, zero-filled,
+# never unmapped, and written only by heap::slotstate::step). init builds
+# Slots' invariant from them, which then carries each byte's value from one
+# step to the next. No verified invariant ties the bytes to the caches or
+# the bitmap (#397); the operations are vspec::byte's wrappers; the free's
+# race is tests/loom/src/slotstate.rs.
 axiom_start	allocator invariant	none (assumption)
 # Passes function pointers, which Verus does not support. Kani runs the
 # body with glibc's pthread_atfork replaced by a recording stand-in; what
