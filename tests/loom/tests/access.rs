@@ -1344,6 +1344,74 @@ fn access_deferred_phase_control() {
     assert!(!check_phase(&t2).is_empty());
 }
 
+// The slot-state bytes (`heap/slotstate.rs`'s `byte_at` seam and the
+// slot-state invariant `Slots`): `byte_at`, whose trusted `ensures` names
+// the byte `Slots` holds a permission to, is called once, in `byte`; and
+// the invariant's private field is read as `.slots.inv` once, in `step`.
+// Both are private to the file, so rustc confines the names to it; each
+// count is of occurrences, not lines, and a read of the field spelled
+// another way is caught only by review.
+
+fn check_slot_bytes(t: &Tree) -> Vec<String> {
+    let mut casts = Vec::new();
+    let mut opens = Vec::new();
+    for l in shipped(&t["src/heap/slotstate.rs"]) {
+        let c = &l.code;
+        for i in occurs(c, "byte_at(", &[]) {
+            if !c[..i].ends_with("fn ") {
+                casts.push(l.func.clone());
+            }
+        }
+        for _ in occurs(c, ".slots.inv", &[]) {
+            opens.push(l.func.clone());
+        }
+    }
+    let mut out = Vec::new();
+    if casts != ["byte"] {
+        out.push(format!(
+            "byte_at calls: got = {casts:?}, want = one, in byte"
+        ));
+    }
+    if opens != ["step"] {
+        out.push(format!(
+            "Slots invariant reads: got = {opens:?}, want = one, in step"
+        ));
+    }
+    out
+}
+
+#[test]
+fn access_slot_bytes_cast_and_opened_once() {
+    report("slot-state byte accesses", check_slot_bytes(&tree()));
+}
+
+#[test]
+fn access_slot_bytes_control() {
+    let t = tree();
+    let anchor = "let Some(b) = byte(shared, class, p) else { return PAST };";
+    let t2 = with(
+        &t,
+        "src/heap/slotstate.rs",
+        anchor,
+        "let b2 = unsafe { byte_at(0) };",
+    );
+    assert!(!check_slot_bytes(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/heap/slotstate.rs",
+        anchor,
+        "let tracked i2 = &crate::api::axiom_published().slots.inv;",
+    );
+    assert!(!check_slot_bytes(&t2).is_empty());
+    let t2 = with(
+        &t,
+        "src/heap/slotstate.rs",
+        "use crate::vspec::byte::BytePerm;",
+        "fn f() -> &'static AtomicU8 { unsafe { byte_at(0) } }",
+    );
+    assert!(!check_slot_bytes(&t2).is_empty());
+}
+
 // The free path's route byte (`vspec/flags.rs`'s seams; its `AtomicU8` is
 // private to that file, so rustc confines every atomic operation on it to
 // the wrappers): outside vspec/flags.rs the wrappers are called once each,
