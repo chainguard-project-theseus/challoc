@@ -150,7 +150,7 @@ fn load_with_a_clean_environment_gives_the_defaults() {
     if first_line_of(b"/etc/challoc.conf\0", &mut buf).is_none() {
         // The constants whatever the CPU: the L2-derived ladder of
         // design 6.2 ("Cache geometry") was priced and dropped.
-        let got = load();
+        let got = load(&mut buf);
         assert_eq!(got, Config::DEFAULT);
     }
 }
