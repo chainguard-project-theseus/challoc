@@ -2647,7 +2647,10 @@ build a token; the handoff axioms below are the other source.
   not read statics in specifications: a static is one object, and
   `STATE` is the only `Lock<State>`, which
   `purge::tests::state_lock_is_the_one_lock_of_its_type` backs by
-  counting source text. The
+  counting source text. The hold it restates includes that the
+  allocator is published (`StateHold::wf` has `api::ready`, which
+  `fork_lock` requires of `fork_prepare`), so the handlers' `shared`
+  calls need no token at top 0. The
   premise includes that the bundle's `n` and `arenas` are what
   `fork_prepare` read, which the ensures does not name. glibc runs the
   parent and child handlers on the forking thread (in the child, its
@@ -3279,9 +3282,10 @@ allocator lock. `axiom_c_entry` assumes this, once per C call, in the
 export body (`api::tests::c_call_tokens_only_in_export_bodies` checks
 where it is called). It is a C-program contract in the seam ledger; see
 "Where the statement is weaker" for the callers that break it.
-`shared()` takes no token: the lock it may take, at init, is
-`Shared::init`'s own (`lock::axiom_init_entry`), released before it
-returns. The reports' callees that lock (`stats::collect`,
+`shared()` takes the report's token and hands it to init (at top 0,
+or with the allocator published, `api::ready`); the locks init may
+take are `Shared::init`'s own (`lock::axiom_init_entry`), released
+before it returns. The reports' callees that lock (`stats::collect`,
 `collect_arena` and `collect_all`, through `Huge::stats`, `Meta::stats`,
 `ClassState::bin_stats` per class and the `Shared.stats` lock; the slab
 histogram's `ClassState::is_partial`; `policy::empty_bytes`, through
@@ -6279,7 +6283,8 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   `lock.rs`; ledger category "C-program contract"). Each export body of
   the allocation and free paths, the `mallocx` family, the realloc and
   usable-size paths, the C++ operators, the reports (`api/print.rs`),
-  `mallctl`, `malloc_trim`, `mallinfo2` and `get_defrag_hint` mints one
+  `mallctl`, `malloc_trim`, `mallinfo2`, `get_defrag_hint`, `nallocx` and
+  `challoc_features` mints one
   token
   (`api::tests::c_call_tokens_only_in_export_bodies`) and passes it
   down: every function between the export and a lock it takes gets its

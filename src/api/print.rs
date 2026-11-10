@@ -613,10 +613,18 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
         writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
     writeln!(out, "Kernel and CPU features: {}", features)?;
+    // A token that allows no lock: `shared` is published (`api::ready`),
+    // so `sealed_ranges` does not initialise. The call is out of the
+    // `writeln!`, whose arguments Verus does not erase.
+    let tracked mut spare = LockOrder::spare();
+    proof {
+        shared.lemma_wf_ready();
+    }
+    let sealed = super::sealed_ranges(Tracked(&mut spare));
     writeln!(
         out,
         "Sealed ranges: {} of {}",
-        super::sealed_ranges(),
+        sealed,
         shared.regions.never_committed().1
     )?;
     writeln!(
@@ -1358,7 +1366,7 @@ fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cb
         ord.top() == 0,
 {
     let tracked mut ord = ord;
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut ord));
     let o = Opts::parse(opts, Tracked(&*cc));
     proof {
         if opts@.addr != 0 {
@@ -1372,7 +1380,7 @@ fn stats_print(target: Target, opts: *const c_char, Tracked(cc): Tracked<&mut cb
     if !o.no_general {
         sample_cgroup(shared, Tracked(&mut ord));
         if !o.json {
-            features = super::feature_line();
+            features = super::feature_line(Tracked(&mut ord));
         }
     }
     stats_report(target, shared, &o, features, Tracked(ord));
@@ -1568,7 +1576,7 @@ pub fn malloc_info(options: c_int, stream: *mut libc::FILE, Tracked(errno): Trac
         set_errno(crate::sys::errno::EINVAL, Tracked(errno));
         return -1;
     }
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut ord));
     // The totals' and each arena's records, as in `stats_print`.
     let scratch = stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let mut sink = Sink::new(file_target(stream), Tracked(ord));
@@ -1587,7 +1595,7 @@ pub fn malloc_stats(Tracked(ord): Tracked<LockOrder<'static>>)
         ord.top() == 0,
 {
     let tracked mut ord = ord;
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut ord));
     // The totals' and each arena's records, as in `stats_print`.
     let scratch = stats::Scratch::new(&shared.meta, Tracked(&mut ord));
     let mut sink = Sink::new(stderr_target(), Tracked(ord));

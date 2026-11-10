@@ -28,7 +28,7 @@ fn mallocx_tcache_paths_pass_the_heap_checker() {
     // test that checks an id it destroyed names no cache runs meanwhile
     // (`api::mallctl`'s `thread_and_tcache_keys`).
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     let lua = s
         .arenas
         .create(s, Tracked::assume_new(), Tracked::assume_new())
@@ -146,7 +146,7 @@ fn mallocx_tcache_paths_pass_the_heap_checker() {
 fn fork_child_uses_the_parents_explicit_cache_through_mallocx() {
     // As in `mallocx_tcache_paths_pass_the_heap_checker`.
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     let t = tcache_create(s, 0);
     let f = tcache_flags(t);
     let kept: Vec<usize> = (0..8)

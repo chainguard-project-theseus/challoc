@@ -207,7 +207,7 @@ fn an_epoch_write_runs_the_callers_cache_gc_when_due() {
     let _serial = crate::testutil::global_state();
     std::thread::spawn(|| {
         let heap = || {
-            crate::heap::existing_heap(crate::heap::shared_ptr(shared()))
+            crate::heap::existing_heap(crate::heap::shared_ptr(shared(Tracked::assume_new())))
                 .expect("this thread's heap")
         };
         // A batch through the thread's cache, all but one back in.
@@ -277,7 +277,7 @@ fn an_epoch_write_arms_the_slab_pages_walks() {
         crate::purge::NOTE_EPOCH_CALLS.load(core::sync::atomic::Ordering::Relaxed) > calls,
         "the write called note_epoch"
     );
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     let a = s.arenas.get_existing(0).unwrap();
     for c in 0..crate::layout::NCLASSES {
         assert!(
@@ -598,7 +598,7 @@ fn names_resolve_to_positional_mibs_and_back() {
     assert_eq!(lazy, 0);
     let _eager: usize = get("stats.cgroup.eager_purges");
     assert_eq!(set("stats.cgroup.purge_advice", 1usize), EPERM);
-    let tracked = shared()
+    let tracked = shared(Tracked::assume_new())
         .cgroup_now(vstd::prelude::Tracked::assume_new())
         .tracked();
     for key in [
@@ -628,13 +628,13 @@ fn names_resolve_to_positional_mibs_and_back() {
         std::eprintln!("stats.cgroup: limit {limit} high {high} current {current}");
         assert_eq!(
             limit,
-            shared()
+            shared(Tracked::assume_new())
                 .cgroup_now(vstd::prelude::Tracked::assume_new())
                 .limit() as usize
         );
         assert_eq!(
             high,
-            shared()
+            shared(Tracked::assume_new())
                 .cgroup_now(vstd::prelude::Tracked::assume_new())
                 .high() as usize
         );
@@ -650,7 +650,10 @@ fn names_resolve_to_positional_mibs_and_back() {
         );
         let effective = limit.min(high);
         if effective == usize::MAX {
-            assert_eq!(decay_ms, (shared().decay_ns() / 1_000_000) as usize);
+            assert_eq!(
+                decay_ms,
+                (shared(Tracked::assume_new()).decay_ns() / 1_000_000) as usize
+            );
             assert_eq!(cap, usize::MAX);
         } else {
             // The sampler may not have run in this process yet: the cap
@@ -747,7 +750,7 @@ fn read_write_rules_match_jemalloc() {
     assert_eq!(rc, EINVAL);
     assert_eq!(
         short as usize,
-        shared().regions.page_size(),
+        shared(Tracked::assume_new()).regions.page_size(),
         "the low half was still copied"
     );
     // Writing a read-only key is EPERM; a wrong newlen on a writable key
@@ -788,7 +791,10 @@ fn static_and_opt_keys_report_the_build_and_configuration() {
     );
     assert_eq!(get::<c_uint>("arenas.nlextents"), 0);
     assert_eq!(get::<usize>("arenas.quantum"), QUANTUM);
-    assert_eq!(get::<usize>("arenas.page"), shared().regions.page_size());
+    assert_eq!(
+        get::<usize>("arenas.page"),
+        shared(Tracked::assume_new()).regions.page_size()
+    );
     assert!(get::<c_uint>("arenas.narenas") >= 1);
     assert_eq!(get::<usize>("max_background_threads"), 1);
     assert_eq!(set("max_background_threads", 0usize), EINVAL);
@@ -811,7 +817,7 @@ fn static_and_opt_keys_report_the_build_and_configuration() {
     // Every opt key with its jemalloc type, against the live Config:
     // `ssize_t` for the signed keys, `size_t` for the byte counts
     // (`Value::Size`), `unsigned` for the other counts.
-    let cfg: &Config = &shared().config;
+    let cfg: &Config = &shared(Tracked::assume_new()).config;
     for key in KEYS {
         let name = std::format!("opt.{key}");
         match cfg.get(key.as_bytes()).unwrap() {
@@ -872,7 +878,7 @@ fn static_and_opt_keys_report_the_build_and_configuration() {
     // `opt.huge_retain_max` reports the value the huge allocator uses.
     assert_eq!(
         get::<usize>("opt.huge_retain_max"),
-        shared().huge.retain_max()
+        shared(Tracked::assume_new()).huge.retain_max()
     );
     assert_eq!(
         get::<usize>("opt.huge_retain_max"),
@@ -891,7 +897,7 @@ fn static_and_opt_keys_report_the_build_and_configuration() {
 fn stats_are_frozen_between_epochs_and_arenas_all_sums() {
     // Asserts that only its own `epoch` moves the epoch.
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     // Other tests of this binary allocate and free concurrently, and
     // since `tcache_max` a freed 40 KiB block leaves `allocated` at
     // once instead of lingering in a cache, so the growth check retries
@@ -1050,7 +1056,7 @@ fn destroyed_arenas_index_reads_zeros_and_is_no_arena() {
 fn arena_keys_create_lookup_purge_decay_and_destroy() {
     // Writes every arena's decay through `arena.4096`.
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     let a: c_uint = get("arenas.create");
     assert!(a >= 1);
     assert!(s.arenas.get_existing(a as u16).is_some());
@@ -1245,7 +1251,7 @@ fn thread_and_tcache_keys() {
     // Its `tcache.destroy` checks that the id names no cache after;
     // `api::heap_at_tests` creates explicit caches under this guard.
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     let h = heap::heap_for_thread(s, Tracked::assume_new()).unwrap();
     let before = h.stats();
     let a0: u64 = get("thread.allocated");
@@ -1394,7 +1400,7 @@ fn thread_and_tcache_keys() {
 
 #[test]
 fn utilization_queries_answer_valkeys_defragmenter() {
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     let c = crate::layout::class_of(100).unwrap();
     let cls = &CLASSES[c];
     // A private arena keeps the slabs, and so the nfree counts this

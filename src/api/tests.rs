@@ -6,17 +6,20 @@ use std::vec::Vec;
 #[test]
 fn init_is_idempotent_and_concurrent() {
     let handles: Vec<_> = (0..16)
-        .map(|_| thread::spawn(|| shared() as *const Shared as usize))
+        .map(|_| thread::spawn(|| shared(Tracked::assume_new()) as *const Shared as usize))
         .collect();
-    let first = shared() as *const Shared as usize;
+    let first = shared(Tracked::assume_new()) as *const Shared as usize;
     for h in handles {
         assert_eq!(h.join().unwrap(), first);
     }
     assert!(is_ready());
     assert!(shared_if_ready().is_some());
-    assert!(shared().has_thread_key());
+    assert!(shared(Tracked::assume_new()).has_thread_key());
     let f = features();
-    assert_eq!(f.page_size, shared().regions.page_size());
+    assert_eq!(
+        f.page_size,
+        shared(Tracked::assume_new()).regions.page_size()
+    );
 }
 
 /// `challoc_features()` is the `Display` of a full probe,
@@ -34,7 +37,7 @@ fn challoc_features_is_the_probe_line() {
     let full = crate::sys::features::Features::probe(true);
     assert_eq!(s, std::format!("{full}"), "the line is the full probe's");
     assert_eq!(s, std::format!("{}", features()));
-    assert_eq!(s, feature_line());
+    assert_eq!(s, feature_line(Tracked::assume_new()));
     assert!(s.starts_with("page_size="), "{s}");
     assert!(s.ends_with(" pac=yes") || s.ends_with(" pac=no"), "{s}");
     assert!(!s.contains('\n'));
@@ -52,14 +55,18 @@ fn challoc_features_is_the_probe_line() {
 #[test]
 fn a_forked_child_inherits_the_discovered_cgroup() {
     // Init registers the fork handlers.
-    let _ = shared();
+    let _ = shared(Tracked::assume_new());
     // SAFETY: the test binary is multithreaded; the child uses only challoc's
     // state, which its fork handlers keep consistent, and leaves through
     // `_exit`.
     let pid = unsafe { ::libc::fork() };
     assert!(pid >= 0, "fork failed");
     if pid == 0 {
-        let code = if shared().cgroup().is_some() { 0 } else { 1 };
+        let code = if shared(Tracked::assume_new()).cgroup().is_some() {
+            0
+        } else {
+            1
+        };
         // SAFETY: `_exit` has no preconditions; the child must not unwind.
         unsafe { ::libc::_exit(code) };
     }
@@ -68,7 +75,10 @@ fn a_forked_child_inherits_the_discovered_cgroup() {
     assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
     assert!(::libc::WIFEXITED(status), "child status {status:#x}");
     assert_eq!(::libc::WEXITSTATUS(status), 0, "the child has no record");
-    assert!(shared().cgroup().is_some(), "nor the parent");
+    assert!(
+        shared(Tracked::assume_new()).cgroup().is_some(),
+        "nor the parent"
+    );
 }
 
 /// A feature line another thread was building when the process forked
@@ -78,7 +88,7 @@ fn a_forked_child_inherits_the_discovered_cgroup() {
 /// within the alarm.
 #[test]
 fn a_forked_child_does_not_wait_for_a_line_being_built() {
-    let expect = feature_line().len();
+    let expect = feature_line(Tracked::assume_new()).len();
     // SAFETY: as in `a_forked_child_inherits_the_discovered_cgroup`: each
     // child uses only challoc's state and leaves through `_exit`.
     let pid = unsafe { ::libc::fork() };
@@ -2187,7 +2197,7 @@ fn lock_holders_match_inv_docs() {
 #[test]
 fn fork_handlers_take_and_release_every_lock() {
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     // A second arena so the handlers have more than arena 0 to cover.
     let extra = s
         .arenas
@@ -2236,7 +2246,7 @@ fn background_thread_starts_purges_and_is_absent_after_fork() {
         names
     }
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     assert!(!tasks().iter().any(|n| n == "challoc-bg"));
     purge::background::request(
         true,
@@ -2854,7 +2864,7 @@ fn background_stack_is_reused_across_restarts() {
         panic!("background thread did not stop");
     }
     let _serial = crate::testutil::global_state();
-    let s = shared();
+    let s = shared(Tracked::assume_new());
     assert!(!purge::background::present());
     purge::background::request(
         true,

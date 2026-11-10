@@ -75,7 +75,7 @@ fn slabs_are_never_smaller_than_the_page() {
     use crate::layout::{
         BASE_CLASSES, CLASSES, LG_SMALL_SLAB, MIN_SLAB, NCLASSES, page_sized_classes,
     };
-    let s = crate::api::shared();
+    let s = crate::api::shared(Tracked::assume_new());
     let page = s.regions.page_size();
     let floor = page.min(1 << LG_SMALL_SLAB);
     for c in 0..NCLASSES {
@@ -319,7 +319,9 @@ fn json_report_shape_is_pinned() {
     let opts: Vec<String> = KEYS
         .iter()
         .filter_map(|key| {
-            let v = crate::api::shared().config.get(key.as_bytes())?;
+            let v = crate::api::shared(Tracked::assume_new())
+                .config
+                .get(key.as_bytes())?;
             let shape = match v {
                 Value::Bool(_) => "B",
                 Value::Int(_) | Value::Uint(_) | Value::Size(_) => "N",
@@ -500,7 +502,7 @@ fn text_report_line_set_is_pinned() {
 #[test]
 fn stats_print_does_not_allocate() {
     unsafe extern "C" fn sink(_opaque: *mut c_void, _s: *const c_char) {}
-    let s = crate::api::shared();
+    let s = crate::api::shared(Tracked::assume_new());
     // Make sure this thread has a heap (the counters live in it), then
     // read them through the same materialisation `mallctl` uses.
     free(
@@ -750,7 +752,11 @@ fn reenter() {
         );
     }
     let mut tmp = stats::ArenaStats::empty(0);
-    let _ = stats::collect(crate::api::shared(), &mut tmp, Tracked::assume_new());
+    let _ = stats::collect(
+        crate::api::shared(Tracked::assume_new()),
+        &mut tmp,
+        Tracked::assume_new(),
+    );
     unsafe extern "C" fn discard(_: *mut c_void, _: *const c_char) {}
     malloc_stats_print(
         WriteCallback(Some(discard)),

@@ -1082,22 +1082,37 @@ impl StateHold {
 
     /// The hold is of a lock of the state lock's rank ([`rank_state`]),
     /// with the permission of its cell, whose value satisfies the lock
-    /// invariant.
+    /// invariant; and the allocator is published (`api::ready`), as it is
+    /// when `fork_prepare` takes the hold.
     pub closed spec fn wf(self) -> bool {
         &&& self.lock.rank() == rank_state()
         &&& self.tok.held() == self.lock.spec_raw()
         &&& self.lock.has_perm(self.perm)
         &&& lock_inv(*self.perm.value())
+        &&& crate::api::ready()
+    }
+
+    /// The allocator is published: what the fork handlers that resume the
+    /// hold (`api::axiom_fork_resumed_state`) know of it.
+    pub proof fn lemma_ready(&self)
+        requires
+            self.wf(),
+        ensures
+            crate::api::ready(),
+    {
     }
 }
 
 /// Take the state lock (fork prepare, last: after the arena statistics
 /// locks), with the permission of its cell; `ord` (a root) is raised to
 /// its rank. The last acquisition, after which the fork window may open
-/// (`lock::fork_prepared`). The hold names the lock taken, [`state`]'s.
+/// (`lock::fork_prepared`). The hold names the lock taken, [`state`]'s,
+/// and records that the allocator is published (`api::ready`), as
+/// `fork_prepare` knows when it calls this.
 pub fn fork_lock(Tracked(ord): Tracked<&mut LockOrder>) -> (h: Tracked<StateHold>)
     requires
         crate::sys::may_syscall(),
+        crate::api::ready(),
         old(ord).root(),
         old(ord).allows(rank_state()),
     ensures

@@ -52,7 +52,13 @@ fn malloc_free_round_trip_every_tier() {
         assert!(usable >= n, "usable {usable} < {n}");
         match class_size_of(n) {
             Some(s) => assert_eq!(usable, s),
-            None => assert_eq!(usable, super::super::shared().huge.usable_for(n).unwrap()),
+            None => assert_eq!(
+                usable,
+                super::super::shared(Tracked::assume_new())
+                    .huge
+                    .usable_for(n)
+                    .unwrap()
+            ),
         }
         fill(p, usable, 3);
         check(p, usable, 3);
@@ -215,7 +221,9 @@ fn realloc_moves_and_preserves_content() {
     );
 
     // Huge: same number of pages keeps the pointer.
-    let page = super::super::shared().regions.page_size();
+    let page = super::super::shared(Tracked::assume_new())
+        .regions
+        .page_size();
     let h = realloc(
         ptr::null_mut(),
         MEDIUM_MAX + 1,
@@ -324,7 +332,9 @@ fn realloc_to_usable_size_keeps() {
             vstd::prelude::Tracked::assume_new(),
         );
     }
-    let page = super::super::shared().regions.page_size();
+    let page = super::super::shared(Tracked::assume_new())
+        .regions
+        .page_size();
     for n in [MEDIUM_MAX + 1, MEDIUM_MAX + page + 1, 3 << 20] {
         let p = malloc(
             n,
@@ -568,7 +578,9 @@ fn bad_alignment_is_einval_and_exhaustion_is_enomem() {
 
 #[test]
 fn valloc_and_pvalloc_are_page_aligned() {
-    let page = super::super::shared().regions.page_size();
+    let page = super::super::shared(Tracked::assume_new())
+        .regions
+        .page_size();
     let p = valloc(
         10,
         vstd::prelude::Tracked::assume_new(),
@@ -647,7 +659,13 @@ fn usable_entry_points_agree_with_malloc_usable_size_on_every_tier() {
         assert!(u >= n);
         match class_size_of(n) {
             Some(s) => assert_eq!(u, s),
-            None => assert_eq!(u, super::super::shared().huge.usable_for(n).unwrap()),
+            None => assert_eq!(
+                u,
+                super::super::shared(Tracked::assume_new())
+                    .huge
+                    .usable_for(n)
+                    .unwrap()
+            ),
         }
         fill(p, u, 3);
         check(p, u, 3);
@@ -956,7 +974,10 @@ fn usable_entry_points_null_and_failure_cases() {
 }
 
 fn malloc_usable_size_of_huge(n: usize) -> usize {
-    super::super::shared().huge.usable_for(n).unwrap()
+    super::super::shared(Tracked::assume_new())
+        .huge
+        .usable_for(n)
+        .unwrap()
 }
 
 fn is_zero(p: *mut u8, n: usize) -> bool {

@@ -22,7 +22,7 @@ const SIZES: &[usize] = &[
 ];
 
 fn shared() -> &'static Shared {
-    super::super::shared()
+    super::super::shared(Tracked::assume_new())
 }
 
 #[test]
@@ -46,7 +46,7 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
             assert!(usable >= size);
             assert_eq!(
                 usable,
-                nallocx(size, flags),
+                nallocx(size, flags, Tracked::assume_new()),
                 "nallocx disagrees for size {size} lg_align {la}"
             );
             assert_eq!(
@@ -117,8 +117,11 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
-    assert_eq!(nallocx(usize::MAX, 0), 0);
-    assert_eq!(nallocx(0, 0), class_size_of(0).unwrap());
+    assert_eq!(nallocx(usize::MAX, 0, Tracked::assume_new()), 0);
+    assert_eq!(
+        nallocx(0, 0, Tracked::assume_new()),
+        class_size_of(0).unwrap()
+    );
     assert!(
         mallocx(
             usize::MAX / 2,
@@ -152,10 +155,14 @@ fn nallocx_is_zero_when_mallocx_rejects() {
             .is_null(),
             "mallocx({size:#x}, {flags:#x})"
         );
-        assert_eq!(nallocx(size, flags), 0, "nallocx({size:#x}, {flags:#x})");
+        assert_eq!(
+            nallocx(size, flags, Tracked::assume_new()),
+            0,
+            "nallocx({size:#x}, {flags:#x})"
+        );
     }
     let flags = mallocx_lg_align(24) as c_int;
-    let n = nallocx(1 << 20, flags);
+    let n = nallocx(1 << 20, flags, Tracked::assume_new());
     assert_eq!(n, 1 << 20);
     let p = mallocx(
         1 << 20,
@@ -1403,7 +1410,7 @@ fn get_defrag_hint_follows_the_utilization_data() {
 #[test]
 fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
     let size = (1 << 20) + 1;
-    let usable = nallocx(size, 0);
+    let usable = nallocx(size, 0, Tracked::assume_new());
     for hint in [size, usable - 1, usable] {
         let p = mallocx(
             size,
@@ -1412,7 +1419,7 @@ fn sdallocx_of_a_huge_run_takes_any_size_in_its_last_page() {
             vstd::prelude::Tracked::assume_new(),
         );
         assert!(!p.is_null());
-        assert_eq!(nallocx(hint, 0), usable);
+        assert_eq!(nallocx(hint, 0, Tracked::assume_new()), usable);
         sdallocx(
             p,
             hint,

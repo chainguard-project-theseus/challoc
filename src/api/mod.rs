@@ -928,21 +928,26 @@ unsafe fn shared_ref(Tracked(published): Tracked<&'static Published>) -> (r: &'s
 /// The process's allocator state, initialising it on first use: the one
 /// value `Shared::init` built at the static's storage
 /// ([`Shared::built_at`]`(`[`Shared::storage`]`)`), whichever path returns it.
+/// `ord` is the caller's lock-order token, which init takes: at top 0 (the
+/// caller holds no allocator lock), or the allocator is published
+/// ([`ready`]), so this thread's claim cannot win and init does not run.
 #[inline(always)]
-pub fn shared() -> (r: &'static Shared)
+pub fn shared(Tracked(ord): Tracked<&mut LockOrder>) -> (r: &'static Shared)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0 || ready(),
     ensures
         r.wf(),
         *r == Shared::built_at(Shared::storage()),
+        *final(ord) == *old(ord),
 {
     let tracked mut seen = Seen { published: None, mark: None };
     if load_state(Tracked(&mut seen)) == READY {
         // SAFETY: `READY` was published after init with a release store.
         return unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) };
     }
-    init_slow().0
+    init_slow(Tracked(ord)).0
 }
 
 /// The allocator state if it is ready, `None` before init has completed.
@@ -967,21 +972,23 @@ pub fn shared_if_ready() -> (r: Option<&'static Shared>)
 /// published, for `mallctl` and `mallctlbymib`, whose readers then take
 /// [`shared_marked`]'s path, which does not abort.
 #[inline(always)]
-pub fn shared_published() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
+pub fn shared_published(Tracked(ord): Tracked<&mut LockOrder>) -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0 || ready(),
     ensures
         r.0.wf(),
         *r.0 == Shared::built_at(Shared::storage()),
         marks_ready(*r.1@),
+        *final(ord) == *old(ord),
 {
     let tracked mut seen = Seen { published: None, mark: None };
     if load_state(Tracked(&mut seen)) == READY {
         // SAFETY: as in `shared`.
         return (unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) }, Tracked(seen.mark.tracked_unwrap()));
     }
-    init_slow()
+    init_slow(Tracked(ord))
 }
 
 /// [`shared`] for a holder of the [`ReadyMark`]: its load reads `READY`
@@ -999,7 +1006,10 @@ pub fn shared_marked(Tracked(mark): Tracked<&'static ReadyMark>) -> (r: &'static
         // SAFETY: as in `shared`.
         return unsafe { shared_ref(Tracked(seen.published.tracked_unwrap())) };
     }
-    init_slow().0
+    // Not reached: the load above reads `READY`. A token that allows no
+    // lock, for the call's argument.
+    let tracked mut spare = LockOrder::spare();
+    init_slow(Tracked(&mut spare)).0
 }
 
 /// The allocator state's address, with no readiness check and no
@@ -1136,7 +1146,7 @@ fn build_line(Tracked(line): Tracked<&mut LineCell>)
 /// the allocator if needed.
 #[cfg(test)]
 pub fn features() -> &'static Features {
-    feature_line_ready();
+    feature_line_ready(Tracked::assume_new());
     // SAFETY: `feature_line_ready` returned, so `READY` and `LINE_READY`
     // have been observed.
     unsafe { &*features_ptr() }
@@ -1154,16 +1164,19 @@ verus! {
 /// Hands back the line's permissions, frozen at `LINE_READY`
 /// ([`LinePred`]). `challoc_features`'s restatement in
 /// `theorem_read_only_never_aborts` includes its calls (checked with
-/// `challoc_features`'s).
-fn feature_line_ready() -> (r: Tracked<&'static LineCell>)
+/// `challoc_features`'s). `ord` is the caller's lock-order token, as
+/// [`shared`]'s.
+fn feature_line_ready(Tracked(ord): Tracked<&mut LockOrder>) -> (r: Tracked<&'static LineCell>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0 || ready(),
     ensures
         r@.built(),
+        *final(ord) == *old(ord),
 {
     // Read only by the proof: its `wf` gives `ready()`.
-    let _shared = shared();
+    let _shared = shared(Tracked(ord));
     let tracked published;
     proof {
         _shared.lemma_wf_ready();
@@ -1245,13 +1258,17 @@ fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Trac
 }
 
 /// The feature line (`Features`'s `Display`, built at its first request).
-/// Initialises the allocator if needed.
-pub fn feature_line() -> &'static str
+/// Initialises the allocator if needed. `ord` is the caller's lock-order
+/// token, as [`shared`]'s.
+pub fn feature_line(Tracked(ord): Tracked<&mut LockOrder>) -> &'static str
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0 || ready(),
+    ensures
+        *final(ord) == *old(ord),
 {
-    let line = feature_line_ready();
+    let line = feature_line_ready(Tracked(ord));
     published_line(line).as_str()
 }
 
@@ -1271,7 +1288,8 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
-    let line = feature_line_ready();
+    let tracked mut ord = crate::lock::axiom_c_entry();
+    let line = feature_line_ready(Tracked(&mut ord));
     published_line(line).as_ptr()
 }
 
@@ -1467,18 +1485,21 @@ fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half):
 /// The first caller runs `init` and publishes `READY`; a concurrent one
 /// waits for it (termination is not claimed: the wait ends when the other
 /// thread's `init` does); the initialising thread re-entering aborts. With
-/// the [`ReadyMark`] of the `READY` it published or loaded.
+/// the [`ReadyMark`] of the `READY` it published or loaded. `ord` is the
+/// caller's lock-order token, as [`shared`]'s, which `init` takes.
 #[cold]
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
-fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
+fn init_slow(Tracked(ord): Tracked<&mut LockOrder>) -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0 || ready(),
     ensures
         r.0.wf(),
         *r.0 == Shared::built_at(Shared::storage()),
         marks_ready(*r.1@),
+        *final(ord) == *old(ord),
 {
     let tracked mut seen = Seen { published: None, mark: None };
     init_gate_enter();
@@ -1487,7 +1508,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
     match won {
         Ok(_) => {
             INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
-            init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen));
+            init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen), Tracked(ord));
             let Tracked(m) = publish_ready(Tracked(seen.published.tracked_unwrap()), Tracked(half.tracked_unwrap()));
             init_gate_done();
             proof {
@@ -1515,13 +1536,17 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
 exec static SEALED: AtomicU32 = AtomicU32::new(0);
 
 /// How many ranges init sealed with `mseal` (for `malloc_stats_print` and
-/// tests). Initialises the allocator if needed.
-pub fn sealed_ranges() -> u32
+/// tests). Initialises the allocator if needed. `ord` is the caller's
+/// lock-order token, as [`shared`]'s.
+pub fn sealed_ranges(Tracked(ord): Tracked<&mut LockOrder>) -> u32
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0 || ready(),
+    ensures
+        *final(ord) == *old(ord),
 {
-    let _ = shared();
+    let _ = shared(Tracked(ord));
     SEALED.load(Ordering::Relaxed)
 }
 
@@ -1743,11 +1768,13 @@ fn register_fork_handlers()
 /// `Shared::init`, which uses them up. It hands back the
 /// permissions to the `Shared` and the class table, frozen, and the
 /// line's invariant and the slot-state bytes' invariant
-/// ([`Published`]).
+/// ([`Published`]). `ord` is the caller's lock-order token, which
+/// `Shared::init` takes.
 fn init(
     Tracked(steps): Tracked<Map<once::Step, once::Once>>,
     Tracked(owned): Tracked<(BytePerm, Statics)>,
     Tracked(seen): Tracked<&mut Seen>,
+    Tracked(ord): Tracked<&mut LockOrder>,
 )
     requires
         crate::sys::may_abort(),
@@ -1756,8 +1783,10 @@ fn init(
         owned.0.id() == line_word_id(),
         owned.0.value() == LINE_UNBUILT,
         owned.1.fresh(),
+        old(ord).top() == 0 || ready(),
     ensures
         final(seen).ok(),
+        *final(ord) == *old(ord),
 {
     let tracked (line_state, statics) = owned;
     let tracked Statics { features: mut feats, line, mut classes, mut conf, slots } = statics;
@@ -1812,6 +1841,7 @@ fn init(
             Tracked(steps),
             Tracked(&mut built),
             Tracked(classes),
+            Tracked(ord),
         );
         if !ok {
             sys::abort("cannot set up the allocator tables: metadata region too small, or the kernel refused their commit (RLIMIT_DATA, vm.max_map_count)");
@@ -2174,7 +2204,10 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) 
 /// window's holders of the state lock write nothing under it: `start`
 /// and `start_requested` refuse there, and `request` and `auto_tick`
 /// store only atomics; each of them ends in a `LockGuard::unlock`,
-/// which checks the invariant). Each handler calls them once, which the
+/// which checks the invariant). The hold's `wf` also says that the
+/// allocator is published ([`ready`]), which `fork_lock` requires of
+/// `fork_prepare`, restated too: `ready` is one timeless fact, not a
+/// state of `STATE`. Each handler calls them once, which the
 /// contract does not enforce: `api::tests::fork_hold_is_resumed_once`
 /// pins one call in each handler, counting every call spelled in full
 /// (`axiom_fork_resumed_state(`; not a `use` alias) in every file
@@ -2329,12 +2362,12 @@ extern "C" fn fork_prepare() {
     // for one this thread's own interrupted code is running, when `fork`
     // is called from a signal handler): the child then starts that one
     // over (`fork_child`), and the parent's finishes as usual.
-    shared().discover_cgroup_for_fork(Tracked(&mut ord));
+    shared(Tracked(&mut ord)).discover_cgroup_for_fork(Tracked(&mut ord));
     // Premise: `sig` is this thread's mask (`sys::axiom_thread_mask`).
     let tracked mut sig = sys::axiom_thread_mask();
     let ghost orig = sig.mask();
     let mask = sys::block_all_signals(Tracked(&mut sig));
-    let s = shared();
+    let s = shared(Tracked(&mut ord));
     let Tracked(t) = s.tcaches_lock().lock_held(Tracked(&mut ord));
     let tracked mut toks: Map<ForkLock, LockHeld> = Map::tracked_empty();
     proof {
@@ -2521,6 +2554,9 @@ extern "C" fn fork_prepare() {
             }
         }
     }
+    proof {
+        s.lemma_wf_ready();
+    }
     let Tracked(state) = purge::background::fork_lock(Tracked(&mut ord));
     // Every allocator lock is held, so no other forking thread can touch
     // the slot until `fork_release` has read it (see `FORK_SIGMASK`).
@@ -2631,7 +2667,13 @@ fn fork_release(l: &Lock<State>, Tracked(state): Tracked<StateHold>) -> (o: Trac
     // The window ends before the first release, which must then unlock
     // (`lock::window_closed`, which every token release requires).
     crate::lock::fork_window_close();
-    let s = shared();
+    // A token that allows no lock: the hold says the allocator is
+    // published (`StateHold::lemma_ready`), so `shared` does not initialise.
+    let tracked mut spare = LockOrder::spare();
+    proof {
+        state.lemma_ready();
+    }
+    let s = shared(Tracked(&mut spare));
     let (slot, Tracked(mut held), Tracked(mut root)) = resume::resumed(s, Tracked(&state));
     let tracked mut sig = axiom_fork_resumed_sig();
     let ghost saved = held.saved()->Some_0;
@@ -2864,7 +2906,12 @@ extern "C" fn fork_child() {
     let l = purge::background::state();
     let tracked mut state = axiom_fork_resumed_state(l);
     purge::background::fork_child(l, Tracked(&mut state));
-    let s = shared();
+    // As in `fork_release`: the allocator is published.
+    let tracked mut spare = LockOrder::spare();
+    proof {
+        state.lemma_ready();
+    }
+    let s = shared(Tracked(&mut spare));
     proof {
         // The child's fork handler is where `in_fork_child` holds: only the
         // forking thread runs in the child.
@@ -2886,7 +2933,7 @@ extern "C" fn fork_child() {
     if purge::background::auto() {
         // The release above handed back every lock this thread held, and
         // returned the token that says so.
-        purge::background::set_fork_base(crate::policy::empty_bytes(shared(), Tracked(&mut ord)));
+        purge::background::set_fork_base(crate::policy::empty_bytes(shared(Tracked(&mut ord)), Tracked(&mut ord)));
     }
 }
 

@@ -465,7 +465,7 @@ pub fn mallocx_zeroed(
         tcache_checked(size, flags),
 {
     let f = Flags::decode(flags as u32);
-    alloc_with(super::shared(), size, &f, Tracked(blk), errno, Tracked(ord))
+    alloc_with(super::shared(Tracked(&mut *ord)), size, &f, Tracked(blk), errno, Tracked(ord))
 }
 
 /// `rallocx(p, size, flags)`: in place when the new size maps to the same
@@ -552,7 +552,7 @@ pub fn rallocx_zeroed(
 {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
-        let (q, z) = alloc_with(super::shared(), size, &f, Tracked(out), Tracked(errno), Tracked(ord));
+        let (q, z) = alloc_with(super::shared(Tracked(&mut *ord)), size, &f, Tracked(out), Tracked(errno), Tracked(ord));
         return (q, Ghost(0), z);
     }
     let Some(shared) = super::shared_if_ready() else {
@@ -869,17 +869,20 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
 /// no allocation can satisfy the request (see [`usable_for`]).
 /// `theorem_read_only_never_aborts` restates its calls after `shared()`;
 /// `api::restated::read_only_restatements_match_their_bodies` checks
-/// that the two make the same calls.
-pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
+/// that the two make the same calls. `ord` is the caller's lock-order token,
+/// which `shared` takes.
+pub fn nallocx(size: usize, flags: c_int, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
+        old(ord).top() == 0,
     ensures
         r == 0 || size <= r,
         r == nalloc_usable(size, (flags as u32) & 0x3f),
+        *final(ord) == *old(ord),
 {
     let f = Flags::decode(flags as u32);
-    usable_for(super::shared(), size, &f).unwrap_or(0)
+    usable_for(super::shared(Tracked(&mut *ord)), size, &f).unwrap_or(0)
 }
 
 /// `nallocx`'s zero: `nallocx(size, flags)` is 0 exactly when no class
@@ -932,7 +935,7 @@ fn theorem_nallocx_zero_rejects(size: usize, flags: c_int, Tracked(errno): Track
         crate::sys::may_syscall(),
         old(ord).top() == 0,
 {
-    let n = nallocx(size, flags);
+    let n = nallocx(size, flags, Tracked(&mut *ord));
     let p = mallocx(size, flags, Tracked(errno), Tracked(ord));
     proof {
         if p@.addr != 0 {
@@ -1320,7 +1323,8 @@ mod exports {
             r == 0 || size <= r,
             r == super::nalloc_usable(size, (flags as u32) & 0x3f),
         ] {
-            super::nallocx(size, flags)
+            let tracked mut ord = crate::lock::axiom_c_entry();
+            super::nallocx(size, flags, Tracked(&mut ord))
         }
         fn get_defrag_hint / je_get_defrag_hint(p: *mut c_void) -> (r: c_int) ensures [
             r == 0 || r == 1,

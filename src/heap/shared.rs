@@ -2146,6 +2146,8 @@ impl Shared {
     /// leaving `this` unusable. On `true` the built value satisfies
     /// [`Shared::built`]. Every field is written through the permission to it,
     /// carved from the storage's ([`Shared::begin`], [`Shared::split`]).
+    /// `_entry` is the caller's lock-order token: at top 0, or the allocator
+    /// is published already (`api::ready`).
     ///
     /// # Safety
     /// `this` must point to writable storage for a `Shared` that nothing
@@ -2166,7 +2168,7 @@ impl Shared {
     /// VMA per guard, see `class/`); `pac` says whether the probe found
     /// pointer authentication (`sys::pac::available`), so it is never set
     /// where pointer authentication is missing.
-    // The last two arguments are ghost.
+    // The last four arguments are ghost.
     #[allow(clippy::too_many_arguments)]
     #[verifier::loop_isolation(false)]
     pub unsafe fn init(
@@ -2179,6 +2181,7 @@ impl Shared {
         Tracked(steps): Tracked<Map<Step, Once>>,
         Tracked(built): Tracked<&mut Built>,
         Tracked(classes): Tracked<&'static PointsTo<[crate::layout::Class; NCLASSES]>>,
+        Tracked(_entry): Tracked<&mut LockOrder>,
     ) -> (r: bool)
         requires
             crate::sys::may_abort(),
@@ -2194,9 +2197,11 @@ impl Shared {
             config.wf(),
             once::all_steps(steps),
             pac ==> crate::sys::pac::pac_available(),
+            old(_entry).top() == 0 || crate::api::ready(),
         ensures
             r ==> shared_at(this).built(),
             r ==> final(built).at(this),
+            *final(_entry) == *old(_entry),
     {
         // Premise (lock order, `lock::axiom_init_entry`): no allocator
         // lock exists before this `Shared` is built (`api::init` runs

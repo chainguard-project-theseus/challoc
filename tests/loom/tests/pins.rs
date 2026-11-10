@@ -365,12 +365,12 @@ const PINS: &[(&str, &[&str])] = &[
             "won = crate::vspec::byte::compare_exchange(w, LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
             "crate::vspec::byte::store(w, LINE_READY, Ordering::Release, Tracked(&mut v.perm));",
             "if load_state(Tracked(&mut seen)) == READY {",
-            "init_slow().0",
+            "init_slow(Tracked(ord)).0",
             "if load_state(Tracked(&mut seen)) == READY {",
             "if load_state(Tracked(&mut seen)) == READY {",
-            "init_slow()",
+            "init_slow(Tracked(ord))",
             "if load_state_marked(Tracked(&mut seen), Tracked(mark)) == READY {",
-            "init_slow().0",
+            "init_slow(Tracked(&mut spare)).0",
             "if load_line(Tracked(inv), Tracked(&mut seen)) == LINE_READY {",
             "let (won, Tracked(cell)) = claim_line(Tracked(inv));",
             "if won.is_ok() {",
@@ -387,7 +387,7 @@ const PINS: &[(&str, &[&str])] = &[
             "match won {",
             "Ok(_) => {",
             "INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);",
-            "init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen));",
+            "init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen), Tracked(ord));",
             "let Tracked(m) = publish_ready(Tracked(seen.published.tracked_unwrap()), Tracked(half.tracked_unwrap()));",
             "Err(READY) => {}",
             "if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {",
@@ -1132,12 +1132,15 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));",
                 "let s = self.state.load(Ordering::Acquire);",
             ),
-            ("pub fn shared() -> (r: &'static Shared)", ""),
+            (
+                "pub fn shared(Tracked(ord): Tracked<&mut LockOrder>) -> (r: &'static Shared)",
+                "",
+            ),
             (
                 "if load_state(Tracked(&mut seen)) == READY {",
                 "if self.state_load(seen) == READY {",
             ),
-            ("init_slow().0", "self.init_slow(tid, seen)"),
+            ("init_slow(Tracked(ord)).0", "self.init_slow(tid, seen)"),
             (
                 "pub fn shared_if_ready() -> (r: Option<&'static Shared>)",
                 "",
@@ -1163,7 +1166,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "self.state.store(READY, PUBLISH);",
             ),
             (
-                "fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))",
+                "fn init_slow(Tracked(ord): Tracked<&mut LockOrder>) -> (r: (&'static Shared, Tracked<&'static ReadyMark>))",
                 "",
             ),
             (
@@ -1177,7 +1180,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "self.init_tid.store(tid, Ordering::Relaxed);",
             ),
             (
-                "init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen));",
+                "init(Tracked(steps), Tracked(owned.tracked_unwrap()), Tracked(&mut seen), Tracked(ord));",
                 "self.init(tid, seen);",
             ),
             (

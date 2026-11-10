@@ -489,7 +489,8 @@ pub(crate) axiom fn axiom_c_entry<'a>() -> (tracked o: LockOrder<'a>)
 /// `api::init` runs `init` once, before it publishes the `Shared`; so no
 /// allocator lock can be held yet. The C call that reaches `init` (its
 /// first use of the allocator) holds a token of its own
-/// ([`axiom_c_entry`]), which `api::shared` does not take.
+/// ([`axiom_c_entry`]), which `api::shared` hands to `Shared::init`
+/// (at top 0, or with the allocator published, `api::ready`).
 ///
 /// Checked by `lock::tests::root_lock_order_uses_are_listed`, which pins
 /// its one call site.

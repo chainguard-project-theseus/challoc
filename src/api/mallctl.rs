@@ -3173,7 +3173,7 @@ pub fn mallctl(
         Ok(x) => x,
         Err(e) => return e,
     };
-    let (shared, mark) = super::shared_published();
+    let (shared, mark) = super::shared_published(Tracked(&mut *ord));
     result(ctl(
         shared,
         mark,
@@ -3367,7 +3367,7 @@ pub fn mallctlbymib(
         Ok(n) => n,
         Err(e) => return e,
     };
-    let (shared, mark) = super::shared_published();
+    let (shared, mark) = super::shared_published(Tracked(&mut *ord));
     result(ctl(
         shared,
         mark,
@@ -3406,7 +3406,7 @@ fn never_aborts(node: &Node, _mib: &[usize]) -> (r: bool)
 }
 
 /// Read-only APIs never abort, for `mallctl`: a copy of [`mallctl`]'s body
-/// but for its `super::shared_published()`, whose results are `shared`
+/// but for its `super::shared_published(Tracked(&mut *ord))`, whose results are `shared`
 /// and `mark`, the [`ReadyMark`] of a `READY` the caller saw, for a
 /// read-only key other than `thread.*`'s four (every read key under
 /// `opt`, `arenas` and `stats`, the
@@ -3517,7 +3517,7 @@ fn theorem_mallctl_reads_never_abort(
 }
 
 /// Read-only APIs never abort, for `mallctlbymib`: a copy of its body but
-/// for its `super::shared_published()`, whose results are `shared` and `mark`, for a MIB of a key or query
+/// for its `super::shared_published(Tracked(&mut *ord))`, whose results are `shared` and `mark`, for a MIB of a key or query
 /// [`theorem_mallctl_reads_never_abort`] covers, as there, with `cb` the
 /// call's token ([`CEntry::ByMib`]).
 ///

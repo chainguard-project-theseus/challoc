@@ -424,7 +424,7 @@ fn malloc_slow_class(class: usize, Tracked(blk): Tracked<&mut Live>, Tracked(err
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
         *final(ord) == *old(ord),
 {
-    let p = heap::alloc_declined(super::shared(), class, Tracked(blk), Tracked(&mut *errno), Tracked(ord));
+    let p = heap::alloc_declined(super::shared(Tracked(&mut *ord)), class, Tracked(blk), Tracked(&mut *errno), Tracked(ord));
     if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
@@ -479,7 +479,7 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
         *final(ord) == *old(ord),
 {
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut *ord));
     proof {
         crate::meta::lemma_is_pow2_one();
         shared.lemma_regions_ok();
@@ -549,7 +549,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let Some(size) = n.checked_mul(m) else { return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0))) };
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut *ord));
     proof {
         crate::meta::lemma_is_pow2_one();
         shared.lemma_regions_ok();
@@ -2004,7 +2004,7 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(uout): Tracked<
         r.0@.addr != 0 ==> r.1@.val() == class_table()[class as int].size,
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut *ord));
     proof {
         shared.lemma_regions_ok();
         shared.lemma_wf_ready();
@@ -2039,7 +2039,7 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(uout): Tracked<&m
         final(blk).gives(r.0, size as int),
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut *ord));
     proof {
         crate::meta::lemma_is_pow2_one();
         shared.lemma_regions_ok();
@@ -2147,7 +2147,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
         let s = store_usable(usable, 0, Tracked(uout));
         return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0)), s);
     };
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut *ord));
     proof {
         crate::meta::lemma_is_pow2_one();
         shared.lemma_regions_ok();
@@ -2721,7 +2721,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
         }
         return p;
     }
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut *ord));
     proof {
         shared.lemma_regions_ok();
     }
@@ -2966,7 +2966,7 @@ pub fn valloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno
         final(blk).gives(r, size as int),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let page = page_size(super::shared());
+    let page = page_size(super::shared(Tracked(&mut *ord)));
     alloc_aligned(page, size, Tracked(blk), Tracked(errno), Tracked(ord))
 }
 
@@ -2998,7 +2998,7 @@ pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errn
         final(blk).gives(r, size as int),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let page = page_size(super::shared());
+    let page = page_size(super::shared(Tracked(&mut *ord)));
     proof { crate::meta::lemma_pow2_bits(page); }
     let Some(rounded) = size.checked_add(page - 1) else { return enomem(Tracked(errno)) };
     let p = alloc_aligned(page, rounded & !(page - 1), Tracked(blk), Tracked(errno), Tracked(&mut *ord));

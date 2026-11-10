@@ -150,7 +150,7 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>, Tracked(ord): Tracked<&mut Lo
             &&& r.hblks == final(rd)@.2.large_runs
         },
 {
-    let shared = super::shared();
+    let shared = super::shared(Tracked(&mut *ord));
     proof {
         shared.lemma_wf();
     }
@@ -334,7 +334,13 @@ mod tests {
         assert!(m.arena >= m.uordblks, "{m:?}");
         assert_eq!(m.fordblks, m.arena - m.uordblks);
         assert_eq!(m.smblks + m.usmblks + m.fsmblks, 0);
-        assert_eq!(m.keepcost % super::super::shared().regions.page_size(), 0);
+        assert_eq!(
+            m.keepcost
+                % super::super::shared(Tracked::assume_new())
+                    .regions
+                    .page_size(),
+            0
+        );
         let i = mallinfo(Tracked::assume_new());
         assert!(
             i.hblks >= 3 && i.arena >= i.uordblks && i.fordblks == i.arena - i.uordblks,
