@@ -287,20 +287,25 @@ exec static INIT_TID: AtomicU32 = AtomicU32::new(0);
 /// feature line's first request completes, nor the line, built then:
 /// [`feature_line_ready`]); and the feature line's invariant
 /// ([`LinePred`]), which `init` makes with the permissions to those two
-/// statics. `STATE`'s
+/// statics; and the slot-state bytes' invariant ([`Published::slots`]).
+/// `STATE`'s
 /// invariant holds them from `READY` on ([`StatePred`]), so a thread
 /// that loads `READY` gets them ([`load_state`]); being `&'static`, they
 /// are shared by every reader, and nothing writes the statics through
 /// them again (the locks and atomics inside `Shared` change through
 /// `&Shared`, but nothing [`Shared::wf`] reads does), except through the
 /// line's invariant, which hands the permissions to [`FEATURES`] and
-/// [`FEATURE_LINE`] to the line's one builder ([`claim_line`]).
+/// [`FEATURE_LINE`] to the line's one builder ([`claim_line`]); and the
+/// slot-state bytes' invariant (`heap::slotstate::Slots`), which `init`
+/// makes with their permissions ([`Statics::slots`]) and which only
+/// `heap::slotstate` opens (its field is private there).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Published {
     pub tracked shared: &'static PointsTo<Shared>,
     pub tracked classes: &'static PointsTo<[layout::Class; NCLASSES]>,
     pub tracked line: &'static LineInv,
+    pub tracked slots: crate::heap::slotstate::Slots,
 }
 
 impl Published {
@@ -340,7 +345,8 @@ pub uninterp spec fn ready() -> bool;
 /// exists only once `init` has used up the linear permissions to the
 /// statics it covers (`STATE`'s invariant holds them from the process's
 /// start, [`axiom_start`], until the winning exchange), so no thread that can state `ready` holds
-/// one of those outside the line's invariant ([`Published::line`]).
+/// one of those outside the line's invariant ([`Published::line`]) or the
+/// slot-state bytes' invariant ([`Published::slots`]).
 pub axiom fn axiom_ready(tracked p: &'static Published)
     requires
         p.ok(),
@@ -361,16 +367,17 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 /// permission to the line's word ([`line_word_id`]), whose only one `STATE`'s initialiser mints (`vspec::byte::new`) and [`claim_init`] hands out once, and `init` puts
 /// it in the invariant it publishes, so every reference this returns is
 /// to that one invariant. That the initialiser's is the only one also
-/// rests on the other place a `BytePerm` is minted,
-/// `heap::slotstate::axiom_slot_bytes`: its permissions have the
+/// rests on the other place a `BytePerm` is minted, [`axiom_start`]'s
+/// slot-state bytes ([`Statics::slots`]): their permissions have the
 /// identities `heap::slotstate::slot_byte_id` names, and that none of
 /// them is the identity of an atomic `vspec::byte::new` made, as the line
 /// word is, is a premise its contract does not state (Verus can prove
-/// neither that one is [`line_word_id`] nor that none is). The axiom is
-/// taken once, by `SLOTS`' initialiser, which keeps the permissions in an
-/// invariant private to `heap::slotstate`
-/// (`heap::slotstate::tests::slot_bytes_axiom_is_taken_only_by_slots`
-/// pins that, counting occurrences). That the fact reaches a thread only after it,
+/// neither that one is [`line_word_id`] nor that none is). The
+/// slot-state invariant ([`Published::slots`]) holds those permissions,
+/// and a second one would duplicate them; none can exist, since its
+/// only constructor (`heap::slotstate::adopt`) uses up the permissions,
+/// which [`claim_init`] hands out once with the other statics', and
+/// `init` puts it in what it publishes. That the fact reaches a thread only after it,
 /// or a thread it happens after, saw `READY` is what [`ready`]'s producers
 /// ensure (see there), carried along in contracts. It hands back the
 /// statics' permissions only, not the [`ReadyMark`], so a proof that
@@ -434,7 +441,8 @@ pub uninterp spec fn line_word_id() -> int;
 /// permissions: the tokens of every step of building the allocator,
 /// none taken ([`once`]); both halves of the ghost variable at
 /// [`ready_mark`], at `false`; and the permissions to the storage of the
-/// statics `init` writes itself ([`Statics::fresh`]).
+/// statics `init` writes itself, and to the slot-state bytes
+/// ([`Statics::fresh`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Start {
@@ -447,7 +455,9 @@ pub tracked struct Start {
 /// The permissions to the storage of the statics `init` writes itself:
 /// [`FEATURES`], [`FEATURE_LINE`], the class table
 /// ([`layout::CLASSES`]) and the buffer `config::load` reads
-/// `/etc/challoc.conf` into ([`config::conf_buffer`]).
+/// `/etc/challoc.conf` into ([`config::conf_buffer`]); and those to
+/// `double_free_scan`'s slot-state bytes (`heap::slotstate`), which
+/// `init` keeps in the invariant it publishes ([`Published::slots`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Statics {
@@ -455,14 +465,25 @@ pub tracked struct Statics {
     pub tracked line: PointsTo<FeatureLine>,
     pub tracked classes: PointsTo<[layout::Class; NCLASSES]>,
     pub tracked conf: PointsTo<[u8; config::CONF_LEN]>,
+    pub tracked slots: Map<usize, BytePerm>,
 }
 
 impl Statics {
-    /// As the process starts: `FEATURES` and `FEATURE_LINE`
-    /// uninitialised, the class table initialised to `BASE_CLASSES`'
-    /// value ([`layout::base_value`]), its entries well formed and sized
-    /// ([`layout::table_ok`]), and the conf buffer initialised.
+    /// As the process starts: the statics' storage as
+    /// [`Statics::storage_fresh`] says, and every slot-state byte `FREE`
+    /// (`heap::slotstate::fresh`). [`axiom_start`]'s `ensures` states both
+    /// halves itself, the second spelled out.
     pub open spec fn fresh(&self) -> bool {
+        &&& self.storage_fresh()
+        &&& crate::heap::slotstate::fresh(self.slots)
+    }
+
+    /// The statics' storage as the process starts: `FEATURES` and
+    /// `FEATURE_LINE` uninitialised, the class table initialised to
+    /// `BASE_CLASSES`' value ([`layout::base_value`]), its entries well
+    /// formed and sized ([`layout::table_ok`]), and the conf buffer
+    /// initialised.
+    pub open spec fn storage_fresh(&self) -> bool {
         &&& self.features.ptr() == features_storage()
         &&& self.features.is_uninit()
         &&& self.line.ptr() == line_storage()
@@ -499,7 +520,17 @@ impl Statics {
 /// `conf_ptr` (outside the Kani harnesses) names it, and verified code
 /// reaches it only through this permission ([`config::conf_buffer`]), so
 /// the reference `init` makes for [`config::load`] is the only one live.
-/// A `static`'s initialiser runs once, at compile time; the test
+/// The slot-state bytes' permissions (the `forall`: one to the byte at
+/// every address, identity `heap::slotstate::slot_byte_id`, each `FREE`;
+/// so `STATE`'s initialiser has [`Statics::fresh`]): each byte
+/// `heap::slotstate::step` reaches reads `FREE` until the first step on
+/// it (the arrays are fresh anonymous mappings, zero-filled, never
+/// unmapped, and `step` is the only code that writes them, through
+/// `vspec::byte`'s wrappers), and no other permission to a slot-state
+/// byte exists (the bytes are not made by `vspec::byte::new`); the
+/// permissions of addresses that are no slot-state byte are never used
+/// (`step` opens the invariant that holds them only for a byte it
+/// computed). A `static`'s initialiser runs once, at compile time; the test
 /// `access_init_once_words_written_by_their_protocol`
 /// (tests/loom/tests/access.rs) checks that it is the one call.
 axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
@@ -510,7 +541,8 @@ axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
         s.auth.id() == ready_mark(),
         !s.auth@,
         s.half.id() == ready_mark(),
-        s.statics.fresh(),
+        s.statics.storage_fresh(),
+        forall|a: usize| #![trigger s.statics.slots.dom().contains(a)] #![trigger s.statics.slots[a]] s.statics.slots.dom().contains(a) && s.statics.slots[a].id() == crate::heap::slotstate::slot_byte_id(a) && s.statics.slots[a].value() == crate::heap::slotstate::FREE,
 ;
 
 /// The permissions to the two statics the feature line's build writes:
@@ -1706,10 +1738,11 @@ fn register_fork_handlers()
 /// and the conf buffer ([`config::conf_buffer`]) it writes here (the
 /// feature line's permission and its word's go into
 /// the line's invariant with the features', the line waits for its first
-/// request, [`feature_line_ready`]), and the one-shot tokens for
+/// request, [`feature_line_ready`]; the slot-state bytes' go into their
+/// invariant, `heap::slotstate::adopt`), and the one-shot tokens for
 /// `Shared::init`, which uses them up. It hands back the
 /// permissions to the `Shared` and the class table, frozen, and the
-/// line's invariant
+/// line's invariant and the slot-state bytes' invariant
 /// ([`Published`]).
 fn init(
     Tracked(steps): Tracked<Map<once::Step, once::Once>>,
@@ -1727,7 +1760,7 @@ fn init(
         final(seen).ok(),
 {
     let tracked (line_state, statics) = owned;
-    let tracked Statics { features: mut feats, line, mut classes, mut conf } = statics;
+    let tracked Statics { features: mut feats, line, mut classes, mut conf, slots } = statics;
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
@@ -1799,6 +1832,7 @@ fn init(
                 shared: shared_perm,
                 classes,
                 line: vstd::modes::tracked_static_ref(line_inv),
+                slots: crate::heap::slotstate::adopt(slots),
             };
             seen.published = Some(vstd::modes::tracked_static_ref(p));
         }

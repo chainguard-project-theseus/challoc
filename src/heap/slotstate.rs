@@ -48,14 +48,18 @@
 //! the addresses (an array base read from an atomic, plus an offset) and
 //! [`commit`]'s page rounding of them wrap, and [`init`] rounds with
 //! `meta::align_up` within proved bounds. Every byte's permission lives
-//! in one invariant, [`SLOTS`], which [`step`] opens around each of its
+//! in one invariant, [`Slots`] (the one `api::init` published, which
+//! [`step`] reaches through `api::axiom_published`; that it is the one is
+//! that axiom's premise), which [`step`] opens around each of its
 //! operations on the byte (`core`'s atomics through `vspec::byte`'s
 //! wrappers), so in `vspec::byte`'s sequentially consistent model each
 //! step finds the value the last step on that byte left (that `Relaxed`
-//! suffices is not proved); the permissions start `FREE`, the arrays' zero fill (premise,
-//! [`axiom_slot_bytes`], taken once). [`free`], [`claim`], [`pop`] and
-//! [`release`] return only when the byte held the state their transition
-//! starts from, and leave the one it ends in; and
+//! suffices is not proved); the permissions start `FREE`, the arrays'
+//! zero fill (premise, `api::axiom_start`'s [`fresh`], handed out once
+//! with the other statics' permissions and published by `api::init`).
+//! [`free`], [`claim`], [`pop`] and [`release`] return only when the
+//! byte held the state their transition starts from, and leave the one
+//! it ends in; and
 //! [`theorem_double_free_window`] proves, over the code's transitions on
 //! one byte, that a free left `CACHED` or `FREE` stays so until a
 //! hand-out. Not verified: that a load-then-store step's store follows
@@ -207,9 +211,10 @@ pub open spec fn hands_out(s: u8, ops: Seq<(u8, u8)>) -> bool {
 /// program's again, and a free of it passes.
 ///
 /// The steps are those of one slot's byte in the order they take effect.
-/// That each finds what the last step on that slot left is [`SLOTS`]'
+/// That each finds what the last step on that slot left is [`Slots`]'
 /// invariant, which [`step`] opens around each operation on the byte;
-/// that the first finds `FREE` is [`axiom_slot_bytes`]'s premise; and
+/// that the first finds `FREE` is `api::axiom_start`'s premise
+/// ([`fresh`]); and
 /// that a load-then-store step (a claim, pop or release) takes effect as
 /// one operation, no other step changing the byte between its load and
 /// its store, is a premise, not verified here (the slot's holder makes
@@ -245,14 +250,14 @@ pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
 }
 
 /// The identity of the slot-state byte at address `at`: what
-/// [`byte_at`] returns is the byte with it, and [`SLOTS`] holds the
+/// [`byte_at`] returns is the byte with it, and [`Slots`] holds the
 /// permission to it. Premise, not checked: distinct addresses have
 /// distinct identities, and none is the identity of an atomic
 /// `vspec::byte::new` made (`byte_at` is given only slot-state bytes).
 pub uninterp spec fn slot_byte_id(at: usize) -> int;
 
-/// What [`SLOTS`] holds: a permission to the slot-state byte at every
-/// address ([`slot_byte_id`]), whose value is a state.
+/// What [`Slots`]' invariant holds: a permission to the slot-state byte
+/// at every address ([`slot_byte_id`]), whose value is a state.
 // Ghost: named only by proof code.
 #[allow(dead_code)]
 struct SlotPred;
@@ -263,55 +268,42 @@ impl InvariantPredicate<(), Map<usize, BytePerm>> for SlotPred {
     }
 }
 
-/// The namespace of [`SLOTS`]' invariant.
+/// The namespace of [`Slots`]' invariant.
 spec fn slots_ns() -> int {
     0x736c_6f74
+}
+
+/// The slot-state bytes' permissions as the process starts: one to the
+/// byte at every address ([`slot_byte_id`]), each `FREE`. What
+/// `api::Statics::fresh` requires of the permissions `api::axiom_start`
+/// hands out, once, with the other statics' (`axiom_start`'s `ensures`
+/// spells this out).
+pub open spec fn fresh(m: Map<usize, BytePerm>) -> bool {
+    forall|a: usize| #![trigger m.dom().contains(a)] #![trigger m[a]] m.dom().contains(a) && m[a].id() == slot_byte_id(a) && m[a].value() == FREE
 }
 
 /// The invariant that holds every slot-state byte's permission
 /// ([`SlotPred`]): [`step`] opens it around each of its byte operations
 /// and puts the permission back, so the next step on that byte, on any
-/// thread, finds the value the last one left. A ghost static, built once,
-/// at compile time, from [`axiom_slot_bytes`].
-exec static SLOTS: Tracked<AtomicInvariant<(), Map<usize, BytePerm>, SlotPred>>
-    ensures
-        SLOTS@.namespace() == slots_ns(),
-{
-    let tracked m = axiom_slot_bytes();
-    let tracked inv = AtomicInvariant::new((), m, slots_ns());
-    Tracked(inv)
+/// thread, finds the value the last one left. `api::init` builds it
+/// ([`adopt`]) from the permissions `api::axiom_start` hands out and
+/// publishes it (`api::Published`); its field is private, so no code
+/// outside this file opens it.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct Slots {
+    tracked inv: AtomicInvariant<(), Map<usize, BytePerm>, SlotPred>,
 }
 
-/// [`SLOTS`]' invariant, with the namespace its initialiser ensures.
-/// Called only by [`step`].
-// `s` is read only by the proof (ghost).
-#[allow(unused_variables)]
-#[inline(always)]
-fn slots() -> (r: Tracked<&'static AtomicInvariant<(), Map<usize, BytePerm>, SlotPred>>)
-    ensures
-        r@.namespace() == slots_ns(),
-    opens_invariants none
+/// [`Slots`]' invariant over the process's slot-state bytes, each
+/// `FREE` ([`fresh`]): the permissions are used up, so it is built once
+/// per set of them, and `api::axiom_start` hands out one.
+pub proof fn adopt(tracked m: Map<usize, BytePerm>) -> (tracked r: Slots)
+    requires
+        fresh(m),
 {
-    let s = &SLOTS;
-    Tracked(s.borrow())
+    Slots { inv: AtomicInvariant::new((), m, slots_ns()) }
 }
-
-/// Premise (the slot-state bytes' first value): a permission to the
-/// slot-state byte at every address, each `FREE`. Taken once, by
-/// [`SLOTS`]' initialiser, which runs once, at compile time (pinned by
-/// `tests::slot_bytes_axiom_is_taken_only_by_slots`). Its premises: each
-/// byte [`step`] reaches ([`byte_at`]) reads `FREE` until the first step
-/// on it (the arrays are fresh anonymous mappings, zero-filled, never
-/// unmapped, and [`step`] is the only code that writes them, through
-/// `vspec::byte`'s wrappers); and no other permission to a slot-state
-/// byte exists (the bytes are not made by `vspec::byte::new`, so this is
-/// the one other place a [`BytePerm`] is minted). The permissions of
-/// addresses that are no slot-state byte are never used: [`SLOTS`] is
-/// private, and [`step`] opens it only for a byte [`byte`] computed.
-axiom fn axiom_slot_bytes() -> (tracked m: Map<usize, BytePerm>)
-    ensures
-        forall|a: usize| #![trigger m.dom().contains(a)] #![trigger m[a]] m.dom().contains(a) && m[a].id() == slot_byte_id(a) && m[a].value() == FREE,
-;
 
 /// Reserve one `PROT_NONE` byte array per class, `nslabs * slab_bits`
 /// bytes, and record the class bases. Called once, by `Shared::init`,
@@ -456,7 +448,8 @@ fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: b
 {
     let Some(b) = byte(shared, class, p) else { return PAST };
     let ghost a = choose|a: usize| byte_id(b) == slot_byte_id(a);
-    let Tracked(inv) = slots();
+    // The published invariant ([`Slots`]): a ghost read, no code.
+    let tracked inv = &crate::api::axiom_published().slots.inv;
     let ghost mut held: u8 = 0;
     if exchange {
         let r;
@@ -711,7 +704,7 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> (r: Option<&'static Atomic
 /// Trusted (raw pointer): Verus has no integer-to-reference cast, and
 /// the contract above is the protocol of [`init`], [`commit`] and the
 /// watermark, not a verified fact. It claims only the byte's identity:
-/// the byte at `at`, whose permission [`SLOTS`] holds under
+/// the byte at `at`, whose permission [`Slots`] holds under
 /// [`slot_byte_id`]`(at)`; nothing about its value.
 #[verifier::external_body]
 #[inline(always)]
@@ -775,53 +768,5 @@ mod kani_byte_at {
         let v: u8 = kani::any();
         b.store(v, Relaxed);
         assert_eq!(bytes[i].load(Relaxed), v);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// `axiom_slot_bytes` mints the slot-state bytes' permissions once:
-    /// in the `verus!` block, it is called once, in `SLOTS`' initialiser;
-    /// `SLOTS` is named only by its own declaration and by `slots`;
-    /// `slots` is called once, in `step`; and `byte_at`, whose `ensures`
-    /// names the byte `SLOTS` holds a permission to, is called once, in
-    /// `byte`. All of them are private to this file. Each count is of
-    /// occurrences, not lines.
-    #[test]
-    fn slot_bytes_axiom_is_taken_only_by_slots() {
-        // Spelled in parts, so that this test's own lines match nothing.
-        let axiom = std::format!("{}{}(", "axiom_", "slot_bytes");
-        let slots = std::format!("{}{}", "SLO", "TS");
-        let call = std::format!("{}{}()", "slo", "ts");
-        let cast = std::format!("{}{}(", "byte", "_at");
-        let mut uses: [std::vec::Vec<&str>; 4] = Default::default();
-        let mut item = "";
-        for line in include_str!("slotstate.rs").lines() {
-            let t = line.trim();
-            if t == "} // verus!" {
-                break;
-            }
-            if t.starts_with("//") {
-                continue;
-            }
-            let def = if let Some(i) = t.find("fn ") {
-                item = t[i + 3..].split(['(', '<']).next().unwrap();
-                true
-            } else if let Some(r) = t.strip_prefix("exec static ") {
-                item = r.split(':').next().unwrap();
-                false
-            } else {
-                false
-            };
-            for (k, pat) in [&axiom, &slots, &call, &cast].into_iter().enumerate() {
-                if !def || k == 1 {
-                    uses[k].extend(core::iter::repeat_n(item, t.matches(pat.as_str()).count()));
-                }
-            }
-        }
-        assert_eq!(uses[0], ["SLOTS"]);
-        assert_eq!(uses[1], ["SLOTS", "SLOTS", "slots"]);
-        assert_eq!(uses[2], ["step"]);
-        assert_eq!(uses[3], ["byte"]);
     }
 }
