@@ -1,0 +1,5 @@
+# Development sessions (`chainctl develop`): the environment in
+# .chainguard/ci/env/dev.yaml on a large guest (8 vCPU, 32 GiB).
+version: 1
+from: .chainguard/ci/env/dev.yaml
+resources: large

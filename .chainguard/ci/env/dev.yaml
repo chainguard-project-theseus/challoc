@@ -1,0 +1,17 @@
+# The development sessions' environment (.chainguard/develop.yaml). No
+# check uses it. It is the test check's environment (test.yaml) plus what
+# the Makefile's other targets need where they are invoked: docker-29 and
+# iptables, the docker service's packages (services/docker/docker.yaml),
+# for the container targets (a session starts no services: start dockerd
+# from the shell, as mono's ai-cicd/sandbox/docs/workflow-syntax.md,
+# "Docker in a session", shows, with
+# --data-root=/var/lib/chainguard-microvm/docker); verus for `make verus`
+# (verus.yaml's pin, the release Cargo.toml's vstd names); and kani and
+# cbmc (kani.yaml's pins). verus and kani bring rust-1.99, so the session
+# installs no rust-1.98: the two streams cannot be installed together, and
+# the container targets build with Dockerfile.dev's rust-1.98. For lint's
+# toolchain outside the container, open a session on that check
+# (`chainctl develop --check clippy`).
+version: 1
+environment:
+  packages: [bash, make, git, build-base, coreutils, busybox, docker-29, iptables, verus~0.2026.10.18, kani~0.68.0, cbmc~6.11.0]
