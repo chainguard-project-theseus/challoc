@@ -240,7 +240,7 @@ add.
   `STATE` is `UNINIT`, and from `READY` on the permissions `init` froze
   (`api::Published`: the built `Shared`, from `axiom_shared_built`'s
   join, the class table, whose value is `layout::class_table()`
-  by the definitional `layout::axiom_class_table` on the
+  by `layout::lemma_class_table` (verified) on the
   frozen permission, and the line's invariant; not the feature
   statics, which the feature line's first request completes and
   writes through the line's invariant, `api::LinePred`). It also holds
@@ -422,7 +422,7 @@ the call does not return (theorem 3, which is not voided for it).
   layout::frozen_table`): the table, through the class table's
   permission, which `api::init` freezes right after
   `adopt_page_geometry` writes the table; its value is `class_table()`
-  (`layout::axiom_class_table`, trusted, definitional). Readers before
+  (`layout::lemma_class_table`, verified). Readers before
   `READY` (`Regions::reserve_owning`, `Shared::init` and what it calls)
   get the permission from `init`, the class layer from the `SlabTable`
   that keeps it, and every other reader from `READY`
@@ -433,22 +433,30 @@ the call does not return (theorem 3, which is not voided for it).
   frozen at `READY` (`api::axiom_published`), its element
   (`vspec::ptr::axiom_array_elem`, trusted: the layout of arrays and
   that a frozen permission to one gives one to each element), whose
-  value is `class_table()` (`layout::axiom_class_table`, trusted,
-  definitional), at the pointer the x86_64 barrier returns unchanged
+  value is `class_table()` (`layout::lemma_class_table`, verified),
+  at the pointer the x86_64 barrier returns unchanged
   (`entry_barrier`, an empty `asm!`; trusted, partly checked:
   `make emptyasm` shows it assembles to no instruction, and the
   pointer's provenance is not checked,
   `verus/ledger/src/layout/regions.rs.md`).
-- Every entry of `class_table()` is `wf` and sized `spec_class_size`
-  (`vspec::class::lemma_class_table_wf`, verified): `class_table()` is
-  the table after init when that table is `table_ok`, and otherwise a
-  spec table that is `table_ok` (`layout::spec_ok_table`).
-  `adopt_page_geometry` (verified) writes the table through the
-  permission `api::axiom_start` gives (`api::Statics`, which
-  `api::claim_init` hands `api::init`) and keeps `table_ok`; `api::init`
-  freezes that permission right after, `layout::axiom_class_table`
-  requires `table_ok` of it, and `api::Published` carries it from
-  `READY` on.
+- `class_table()` is a spec function of the process: `BASE_CLASSES`'
+  value (`layout::base_value`, `build_classes`'s verified
+  postcondition) with the geometry of the process's page
+  (`process_regions().lg_page`) adopted (`layout::adopt_spec`, what
+  `apply_page_geometry` ensures it leaves, entry by entry from
+  `classes_for_page`'s spec) when that is `table_ok`, and otherwise a
+  spec table that is `table_ok` (`layout::spec_ok_table`), so every
+  entry is `wf` and sized `spec_class_size`
+  (`vspec::class::lemma_class_table_wf`, verified).
+  `api::axiom_start` (trusted) gives the permission to the table's
+  storage holding `base_value()` (`api::Statics::fresh`), which
+  `api::claim_init` hands `api::init`; `adopt_page_geometry` (verified)
+  writes the table through it at the page `sys::features::page_size`
+  returns, whose trailing zeros are `process_regions().lg_page`
+  (from `getauxval`'s specification), and keeps `table_ok`;
+  `api::init` freezes that permission right after, and
+  `layout::lemma_class_table` shows its value is `class_table()`.
+  `api::Published` carries it from `READY` on.
 
 **Class lines.** The `free` fast paths read each
 class's slot geometry, bitmap and owner bases, hand-out group and a
@@ -7406,7 +7414,8 @@ How it is proved:
   init), but nothing
   proves it of the process's table: `guard_geom` is the stored `Shared`'s
   table's geometry, and
-  `class_table()` is not tied to `classes_for_page` (`SlabTable::new`
+  no lemma derives one slab per page from `class_table()`'s definition
+  from `classes_for_page`'s spec (`layout::adopt_spec`; `SlabTable::new`
   computes `slabs_per_page = (page / slab).max(1)`, `class/table.rs`).
   The statement keeps it as the `paged` exception instead.
 
