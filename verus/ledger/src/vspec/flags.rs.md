@@ -18,7 +18,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::fl
 
 > `AtomicU8::new(v)`: a byte whose bits other than [`ROUTE`] are `v`'s from here on.
 
-Hashes: contract 2266153701, body 4057886722.
+Hashes: contract 2266153701, body 4057886722, spec 3014135447.
+Spec fns: 1, from `fixed`.
 
 ```rust
 pub fn new(v: u8) -> (r: RouteByte)
@@ -35,7 +36,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::fl
 
 > `b.load(ordering)` (it panics for a `Release` or `AcqRel` ordering): the made value, with or without [`ROUTE`].
 
-Hashes: contract 3884253665, body 694819825.
+Hashes: contract 3884253665, body 694819825, spec 3014135447.
+Spec fns: 1, from `fixed`.
 
 ```rust
 pub fn load(b: &RouteByte, ordering: Ordering) -> (r: u8)
@@ -55,7 +57,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::fl
 
 > `b.fetch_or(v, ordering)`, for bits `v` within [`ROUTE`]: the previous value, which is the made value with or without [`ROUTE`].
 
-Hashes: contract 3522642779, body 597122174.
+Hashes: contract 3522642779, body 597122174, spec 3014135447.
+Spec fns: 1, from `fixed`.
 
 ```rust
 pub fn fetch_or(b: &RouteByte, v: u8, ordering: Ordering) -> (prev: u8)

@@ -221,6 +221,7 @@ function begin(kind, name,    ind) {
     efile[n] = FILE; eline[n] = LN; ekind[n] = kind; ename[n] = name
     eattrs[n] = attrs; edoc[n] = doc; ebody[n] = ""; enote[n] = ""
     econtract[n] = ""; efmt[n] = ""; ehc[n] = hattrs; ehb[n] = ""
+    eself[n] = nimpl > 0 ? implname[nimpl] : intrait; egen[n] = nimpl > 0 ? implg[nimpl] : ""
     ind = $0; sub(/[^ \t].*$/, "", ind); eind[n] = length(ind)
     return n
 }
@@ -272,6 +273,7 @@ newfile {
     newfile = 0
     depth = 0; nimpl = 0; skip = 0; cap = 0; attrs = ""; hattrs = ""; doc = ""
     pendtest = 0; lastfn = ""; pendimpl = ""; inverus = 0
+    intrait = ""; sfname = ""
 }
 
 {
@@ -296,6 +298,8 @@ newfile {
         if (feed(raw, c)) cap = 0
         depth += opens - closes
         while (nimpl > 0 && depth <= impld[nimpl]) nimpl--
+        if (sfname != "" && depth <= sfd) sfname = ""
+        if (intrait != "" && depth <= traitd) intrait = ""
         next
     }
 
@@ -321,6 +325,14 @@ newfile {
         else if (pendtest == 1 && t ~ /(^|[ \t])fn [A-Za-z_]/ && t !~ /;$/) pendtest = 2
         else if (pendtest == 1 || t ~ /;$/ || closes > opens) pendtest = 0
         next
+    }
+
+    # A named field of the struct being read, with its type, for the
+    # receivers of the spec fns a contract calls (spec fns, below).
+    if (sfname != "" && depth == sfd + 1 && match(t, /^(pub(\([^)]*\))? )?((ghost|tracked) )?[a-z_][A-Za-z0-9_]*: /)) {
+        fl = substr(t, RSTART, RLENGTH); ft = substr(t, RLENGTH + 1)
+        sub(/: $/, "", fl); sub(/^.* /, "", fl); sub(/,$/, "", ft)
+        addfield(sfname, fl, ttok(ft))
     }
 
     kind = ""; name = ""; wholebody = 0
@@ -356,6 +368,10 @@ newfile {
         kind = "axiom"; name = qual(fname)
     } else if (isfn && attrs ~ /exec_allows_no_decreases_clause/) {
         kind = "no_decreases"; name = qual(fname)
+    } else if (isfn && t ~ /(^|[ \t])spec fn /) {
+        # Not a seam: a spec fn whose text the hashes of the seams that
+        # name it cover (spec fns, below); END sets it apart.
+        kind = "spec"; name = nimpl == 0 && intrait != "" ? intrait "::" fname : qual(fname)
     }
     if (isfn) lastfn = qual(fname)
 
@@ -371,17 +387,39 @@ newfile {
     }
     attrs = ""; hattrs = ""; doc = ""
 
+    # The crate's types, traits, aliases and struct fields (spec fns, below).
+    if (match(t, /^(pub(\([^)]*\))? )?((tracked|ghost|unsafe) )*(struct|enum|union|trait|type) [A-Za-z_][A-Za-z0-9_]*/)) {
+        tn = substr(t, RSTART, RLENGTH); sub(/^.* /, "", tn)
+        # A type's generic parameters, which its fields' types may name.
+        if (substr(t, RSTART + RLENGTH, 1) == "<") typegen("impl" substr(t, RSTART + RLENGTH))
+        if (t ~ /(^|[ \t])type [A-Za-z_]/) {
+            if (nimpl == 0 && intrait == "" && match(t, /= .*;$/)) talias[tn] = ttok(substr(t, RSTART + 2, RLENGTH - 3))
+        } else {
+            ctype[tn] = 1
+            if (t ~ /(^|[ \t])trait /) {
+                ttrait[tn] = 1
+                if (opens > closes) { intrait = tn; traitd = depth }
+            } else if (t ~ /(^|[ \t])struct /) {
+                if (opens > closes) { sfname = tn; sfd = depth }
+                else if (match(t, /\{.*\}/)) tuplefields(tn, substr(t, RSTART, RLENGTH))
+                else if (match(t, /\(.*\)/)) tuplefields(tn, substr(t, RSTART, RLENGTH))
+            }
+        }
+    }
+
     if (t ~ /^(pub(\([a-z]+\))? )?(unsafe )?impl[< ]/) {
         if (inverus && t ~ / for / && t !~ /SpecImpl/) verified_impl[FILE SUBSEP trait_key(t)] = 1
-        if (opens > closes) { nimpl++; implname[nimpl] = impl_name(t); impld[nimpl] = depth }
-        else if (opens == 0) pendimpl = impl_name(t)
+        if (opens > closes) { nimpl++; implname[nimpl] = impl_name(t); impld[nimpl] = depth; implg[nimpl] = impl_gen(t) }
+        else if (opens == 0) { pendimpl = impl_name(t); pendg = impl_gen(t) }
     } else if (pendimpl != "" && opens > closes) {
-        nimpl++; implname[nimpl] = pendimpl; impld[nimpl] = depth; pendimpl = ""
+        nimpl++; implname[nimpl] = pendimpl; impld[nimpl] = depth; implg[nimpl] = pendg; pendimpl = ""
     }
     if (t ~ /^verus! *\{/) { inverus = 1; verusd = depth }
     depth += opens - closes
     while (nimpl > 0 && depth <= impld[nimpl]) nimpl--
     if (inverus && depth <= verusd) inverus = 0
+    if (sfname != "" && depth <= sfd) sfname = ""
+    if (intrait != "" && depth <= traitd) intrait = ""
 }
 EOF
 )
@@ -491,14 +529,16 @@ END {
     # that verified `fmt` require `fmt_req`, and every `format_args!` site
     # prove it. One whose trait impl is in another file stays listed; the
     # scan does not match impls across files.
+    # The spec fns are no seams: they go to the sp_ arrays (spec fns, below).
     m = 0
     for (e = 1; e <= n; e++) {
+        if (ekind[e] == "spec") { spdef(e); continue }
         if (efmt[e] != "" && (efile[e] SUBSEP efmt[e]) in verified_impl) continue
         if (++m == e) continue
         efile[m] = efile[e]; eline[m] = eline[e]; ekind[m] = ekind[e]; ename[m] = ename[e]
         eattrs[m] = eattrs[e]; edoc[m] = edoc[e]; ebody[m] = ebody[e]; enote[m] = enote[e]
         econtract[m] = econtract[e]; eind[m] = eind[e]; efmt[m] = efmt[e]
-        ehc[m] = ehc[e]; ehb[m] = ehb[e]
+        ehc[m] = ehc[e]; ehb[m] = ehb[e]; eself[m] = eself[e]; egen[m] = egen[e]
     }
     n = m
     ncat = split("inline asm|FFI/syscall|function pointer|UnsafeCell/volatile/transmute|raw pointer (internal)|raw pointer from C caller|panic/abort|atomics primitive|platform/kernel fact|C-program contract|termination|core library|allocator invariant", cats, "|")
@@ -584,6 +624,7 @@ END {
             if (s != "") { print "" > out; print "> " s > out }
             if (enote[i] != "") { s = enote[i]; sub(/; $/, ".", s); print "" > out; print "Body " s > out }
             if (ehash[i] != "") { print "" > out; print "Hashes: " ehash[i] "." > out }
+            if (espec[i] > 0) print "Spec fns: " espec[i] ", from " enamed[i] "." > out
             print "" > out
             print "```rust" > out
             print econtract[i] > out
@@ -615,17 +656,19 @@ function nfiles_with_seams(    e, c, p) { c = 0; p = ""; for (e = 1; e <= n; e++
 # record, in a fifth column, the hashes of the item it checked, and they
 # must equal the item's now; so must a status that says the item claims
 # nothing (claimsnothing, below); any other status records none.
-function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, rc, nc, what) {
+function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, i, what) {
     for (e = 1; e <= n; e++) {
         f = hashdir "/" e ".c"; printf "%s", norm(ehc[e]) > f; close(f)
         if (norm(ehb[e]) != "") { f = hashdir "/" e ".b"; printf "%s", norm(ehb[e]) > f; close(f) }
     }
+    for (i = 1; i <= nsp; i++) { f = hashdir "/sp" i; printf "%s", sp_text[i] > f; close(f) }
     cmd = "cd '" hashdir "' && cksum *"
     while ((cmd | getline l) > 0) { split(l, h, " "); hv[h[3]] = h[1] }
     close(cmd)
+    specsums(hv)
     for (e = 1; e <= n; e++) {
         if (!((e ".c") in hv)) { print "seams: cksum gave no hash for " efile[e] ":" eline[e] > "/dev/stderr"; bad = 1 }
-        ehash[e] = "contract " hv[e ".c"] ", body " ((e ".b") in hv ? hv[e ".b"] : "none")
+        ehash[e] = "contract " hv[e ".c"] ", body " ((e ".b") in hv ? hv[e ".b"] : "none") ((e ".s") in hv ? ", spec " hv[e ".s"] : "")
         ok = eok[e]; rec = ok != "" ? ohash[ok] : ""
         cn = estat[e] ~ /^trusted \(claims nothing/
         if (cn) claimsnothing(e, ok)
@@ -634,8 +677,10 @@ function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, rc, nc, what) {
         if (chk && rec == "")
             print "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): the status " (cn ? "claims nothing" : "cites a check") " but records no hashes; once it holds for the item as it is, add them as a fifth column: " ehash[e] > drift
         else if (chk && rec != ehash[e]) {
-            rc = rec; sub(/,.*$/, "", rc); nc = ehash[e]; sub(/,.*$/, "", nc)
-            what = rc != nc ? (substr(rec, length(rc) + 1) != substr(ehash[e], length(nc) + 1) ? "contract and body" : "contract") : "body"
+            what = ""
+            for (i = split("contract body spec", h, " "); i >= 1; i--) if (hpart(rec, h[i]) != hpart(ehash[e], h[i]))
+                what = (h[i] == "spec" ? "spec fns" : h[i]) (what == "" ? "" : index(what, " and ") ? ", " what : " and " what)
+            if (what == "") what = "hashes"
             print "seams: " ofile[ok] ": " oname[ok] " (" efile[e] ":" eline[e] "): its " what " changed since its status was checked (recorded " rec "; now " ehash[e] "): revisit the status, then record the hashes" > drift
         } else if (!chk && rec != "")
             print "seams: " ofile[ok] ": " oname[ok] ": hashes on a status that cites no check" > drift
@@ -706,6 +751,564 @@ function claimsnothing(e, ok,    at, nm, own) {
 EOF
 )
 
+# The spec fns a seam's contract names (verus/SEAMS.md, "The ledger"):
+# the `spec <S>` part of its hashes is the cksum CRC of one line `<name>
+# <crc>` per spec fn the contract names, directly or through the text of
+# another such spec fn, in byte order, where <crc> is the CRC of the spec
+# fn's attributes, signature and body (`//` comments dropped, whitespace
+# runs made one space, as for a seam). A seam that names none has no
+# spec part. A name is a call, `f(`, `m::f(`, `T::f(`, `<T as Tr>::f(` or
+# `r.f(`, of a spec fn of the crate (`spec fn`, `open spec fn`, `closed
+# spec fn` or `uninterp spec fn`, outside `#[cfg(test)]` items and test
+# files), resolved by text:
+#   f(       the spec fns f of the same file that are no method, else
+#            every one named f (a `use` brings it in); `self::f(` too
+#   m::f(    those of a file whose module is m (src/.../m.rs or
+#            src/.../m/mod.rs), else every one named f; every one for
+#            `crate::` and `super::`, and nothing for a path from vstd,
+#            core, std, alloc or builtin
+#   T::f(    the method f of T's impls (`Self` the enclosing impl's type,
+#            an alias resolved; `<T as Tr>` is T unless Tr is a crate
+#            trait); every method named f when T is a trait, a type
+#            parameter of a crate type, a generic parameter (genopen),
+#            or a crate type with none
+#   r.f(     the method f of the receiver's type, which etype reads off
+#            the chain r: its root a parameter, a named return, a
+#            binder, a `let x: T`, `self`, `old(x)`, `final(x)` or `e
+#            matches Some(x)`, then fields, `[i]`, `@`, `->Some_0` and
+#            calls; every method named f when the scan cannot tell
+#   x@       `x.view()`, resolved as r.f(
+# A name bound twice to different types, or also with no type the scan
+# reads (an untyped `let`, a closure's parameter, a pattern's `V(x)`),
+# is of no type it can tell. A method of a crate trait on a type from
+# outside the crate is every method of its name. The walk visits each
+# spec fn once, so it ends however the spec fns call each other. It
+# cannot see a spec fn a macro writes or calls, one named other than by
+# a call or `@` (a spec fn passed as a value, an operator of a crate
+# type, a `when_used_as_spec` exec fn), or a method of a seam's own spec
+# impl or trait specification (that seam's contract holds its text).
+specfns=$(cat <<'EOF'
+# The part K (contract, body or spec) of hashes H, as `K <crc>`, or "".
+function hpart(h, k) { return match(h, "(^|, )" k " [0-9a-z]+") ? substr(h, RSTART, RLENGTH) : "" }
+
+# s as tokens, each followed by one space: identifiers and numbers, `::`
+# and every other character but whitespace.
+function ttok(s) {
+    gsub(/::/, " __P__ ", s); gsub(/[^A-Za-z0-9_ ]/, " & ", s); gsub(/__P__/, "::", s)
+    gsub(/[ \t]+/, " ", s); return trim(s)
+}
+
+# The text of s into tk[1..ntk], as tokens.
+function tokens(s) { ntk = split(ttok(s), tk, " "); tk[0] = "" }
+
+# The fields of a one-line struct NAME, `(T0, T1)` or `{ a: A, b: B }`
+# in s.
+function tuplefields(name, s,    a, nt, i, d, k, f) {
+    nt = split(ttok(s), a, " "); d = 0; k = 0; f = ""
+    for (i = 2; i <= nt; i++) {
+        if (f == "" && a[i] == "pub") { if (a[i + 1] == "(") for (i++; i < nt && a[i] != ")"; i++) ; continue }
+        if (f == "" && (a[i] == "ghost" || a[i] == "tracked")) continue
+        if (a[i] ~ /^[(<\[]$/) d++
+        else if (a[i] ~ /^[])}>]$/ && !(a[i] == ">" && a[i - 1] == "-")) { if (d == 0) break; d-- }
+        else if (a[i] == "," && d == 0) { onefield(name, k++, f, a[1]); f = ""; continue }
+        f = f " " a[i]
+    }
+    onefield(name, k, f, a[1])
+}
+
+# Field k (from 0) of a one-line struct NAME is the tokens f: its type,
+# after `(`, or `x : T` after `{`.
+function onefield(name, k, f, open) {
+    f = trim(f)
+    if (f == "") return
+    if (open == "(") addfield(name, k, f)
+    else if (match(f, /^[a-z_][A-Za-z0-9_]* : /)) addfield(name, substr(f, 1, index(f, " ") - 1), substr(f, RLENGTH + 1))
+}
+
+# Field F of the structs named S is of type tokens T; "" once two structs
+# of that name give it different types, which a receiver cannot follow
+# but in the file of one of them (sfieldf, by FILE).
+function addfield(s, f, t) {
+    sfieldf[FILE SUBSEP s SUBSEP f] = t
+    if ((s SUBSEP f) in sfield && sfield[s SUBSEP f] != t) t = ""
+    sfield[s SUBSEP f] = t
+}
+
+# The generics of an impl line, `< T : Tr , U >` as tokens, or "".
+function impl_gen(t,    i, s, d, ch) {
+    i = index(t, "impl<"); if (i == 0) return ""
+    s = substr(t, i + 4); d = 0
+    for (i = 1; i <= length(s); i++) {
+        ch = substr(s, i, 1)
+        if (ch == "<") d++
+        else if (ch == ">" && substr(s, i - 1, 1) != "-") { d--; if (d == 0) break }
+    }
+    return ttok(substr(s, 1, i))
+}
+
+# The generic parameters of `impl<...>` line t into sgen: a field of a
+# type that names one is of a type the scan cannot tell.
+function typegen(t,    a, nt, i, d) {
+    nt = split(impl_gen(t), a, " ")
+    for (i = 2; i <= nt; i++) {
+        if (a[i] == "<") d++
+        else if (a[i] == ">") d--
+        else if (d == 0 && (a[i - 1] == "<" || a[i - 1] == ",") && a[i] ~ /^[A-Za-z_]/) sgen[a[i]] = 1
+    }
+}
+
+# Entry e is a spec fn: record it as sp i.
+function spdef(e,    i) {
+    i = ++nsp
+    sp_name[i] = ename[e]; sp_file[i] = efile[e]; sp_self[i] = eself[e]; sp_gen[i] = egen[e]
+    sp_text[i] = norm(ehc[e]) " " norm(ehb[e]); sp_code[i] = code(ehc[e] " " ehb[e])
+}
+
+# The module a source file is: src/a/b.rs and src/a/b/mod.rs are b.
+function fmod(f) { sub(/\.rs$/, "", f); sub(/\/mod$/, "", f); sub(/^.*\//, "", f); return f }
+
+# Type tokens s without references, lifetimes, `mut` and the wrappers
+# Tracked, Ghost, Box, Rc and Arc.
+function tbase(s) {
+    for (;;) {
+        if (s ~ /^& /) s = substr(s, 3)
+        else if (s ~ /^(mut|tracked|ghost|dyn|impl|const) /) sub(/^[a-z]+ /, "", s)
+        else if (s ~ /^' [A-Za-z_][A-Za-z0-9_]* /) sub(/^' [A-Za-z_][A-Za-z0-9_]* /, "", s)
+        else if (s ~ /^(Tracked|Ghost|Box|Rc|Arc) < /) s = targ(s, 1)
+        else return s
+    }
+}
+
+# The kth generic argument of type tokens `H < a , b >`, or "".
+function targ(s, k,    a, nt, i, ad, pd, c, out) {
+    nt = split(s, a, " "); ad = 0; pd = 0; c = 1; out = ""
+    for (i = 1; i <= nt; i++) {
+        if (a[i] == ">" && i > 1 && a[i - 1] == "-") { if (ad >= 1 && c == k) out = out " >"; continue }
+        if (a[i] == "<") { if (++ad == 1) continue }
+        else if (a[i] == ">") { if (--ad == 0) break }
+        else if (a[i] == "(" || a[i] == "[") pd++
+        else if (a[i] == ")" || a[i] == "]") pd--
+        else if (a[i] == "," && ad == 1 && pd == 0) { c++; continue }
+        if (ad >= 1 && c == k) out = out " " a[i]
+    }
+    return trim(out)
+}
+
+# The name of type tokens s (its last path segment), aliases resolved,
+# `Self` the type self; "" for an array, slice, tuple or reference to one.
+function thead(s, self,    a, nt, i, h, g) {
+    h = ""
+    for (g = 0; g < 8; g++) {
+        nt = split(tbase(s), a, " ")
+        if (nt == 0 || a[1] == "[" || a[1] == "(") return ""
+        h = ""
+        for (i = 1; i <= nt && a[i] != "<"; i++) if (a[i] != "::") h = a[i]
+        if (h == "Self") h = self
+        if (!(h in talias) || (h in ctype)) return h
+        s = talias[h]
+    }
+    return h
+}
+
+# The element type of type tokens s indexed by `[i]`, or "".
+function telem(s, self,    a, nt, i, d, out, h) {
+    s = tbase(s); nt = split(s, a, " ")
+    if (a[1] == "[") {
+        d = 0; out = ""
+        for (i = 2; i <= nt; i++) {
+            if (a[i] ~ /^[(<\[]$/) d++
+            else if (a[i] ~ /^[])>]$/) { if (d == 0) break; d-- }
+            else if (a[i] == ";" && d == 0) break
+            out = out " " a[i]
+        }
+        return trim(out)
+    }
+    h = thead(s, self)
+    if (h == "Seq" || h == "Vec") return targ(s, 1)
+    if (h == "Map") return targ(s, 2)
+    return ""
+}
+
+# Element k (from 0) of tuple type tokens `( A , B )`, or "".
+function ttuple(s, k,    a, nt, i, d, c, out) {
+    nt = split(s, a, " "); d = 0; c = 0; out = ""
+    for (i = 2; i <= nt; i++) {
+        if (a[i] ~ /^[(<\[]$/) d++
+        else if (a[i] ~ /^[])>]$/ && !(a[i] == ">" && a[i - 1] == "-")) { if (d == 0) break; d-- }
+        else if (a[i] == "," && d == 0) { c++; continue }
+        if (c == k) out = out " " a[i]
+    }
+    return trim(out)
+}
+
+# The type tokens the spec fn in tk returns: after its parameters, `->
+# T` or `-> (r: T)`, `Self` its type self; "" if it states none.
+function retof(self,    i, j, d, out) {
+    for (i = 1; i <= ntk && tk[i] != "fn"; i++) ;
+    j = i + 2
+    if (tk[j] == "<") j = skipang(j)
+    if (tk[j] != "(") return ""
+    for (d = 0; j <= ntk; j++) {
+        if (tk[j] == "(") d++
+        else if (tk[j] == ")" && --d == 0) break
+    }
+    j++
+    if (tk[j] != "-" || tk[j + 1] != ">") return ""
+    j += 2
+    if (tk[j] == "(" && tk[j + 2] == ":") j += 3
+    out = ""
+    for (d = 0; j <= ntk; j++) {
+        if (d == 0 && (tk[j] ~ /^([{;]|recommends|decreases|when|via|requires|ensures|returns|opens_invariants)$/ || tk[j] == ")")) break
+        if (tk[j] ~ /^[(<\[]$/) d++
+        else if (tk[j] ~ /^[])>]$/ && !(tk[j] == ">" && tk[j - 1] == "-")) d--
+        out = out " " (tk[j] == "Self" && self != "" ? self : tk[j])
+    }
+    return trim(out)
+}
+
+# The index of the token that opens the bracket closing at tk[k], or 0.
+function matchback(k, op, cl,    d) {
+    for (d = 0; k >= 1; k--) {
+        if (tk[k] == cl) d++
+        else if (tk[k] == op && --d == 0) return k
+    }
+    return 0
+}
+
+# The index after the `>` that closes the `<` at tk[k].
+function skipang(k,    d) {
+    for (d = 0; k <= ntk; k++) {
+        if (tk[k] == "<") d++
+        else if (tk[k] == ">" && tk[k - 1] != "-" && --d == 0) return k + 1
+    }
+    return k
+}
+
+# The parameter, binder or let tokens tk[a..b], `x: T`, into tenv.
+function bindone(a, b,    i, s, x) {
+    while (a <= b && (tk[a] == "tracked" || tk[a] == "ghost" || tk[a] == "mut")) a++
+    # `Tracked(x): Tracked<T>` binds x, of type T once tbase strips Tracked.
+    if (tk[a] ~ /^(Tracked|Ghost)$/ && tk[a + 1] == "(" && tk[a + 3] == ")" && tk[a + 4] == ":") { x = tk[a + 2]; a += 3 }
+    else x = tk[a]
+    if (a + 1 > b || x !~ /^[a-z_][A-Za-z0-9_]*$/ || tk[a + 1] != ":") return
+    s = ""; for (i = a + 2; i <= b; i++) s = s " " tk[i]
+    bindtype(x, trim(s))
+}
+
+# Name x is of type tokens t. A name bound twice to different types is
+# of no type the scan can tell (tshadow): it reads one type per name.
+function bindtype(x, t) {
+    if ((x in tenv) && tenv[x] != t) tshadow[x] = 1
+    tenv[x] = t
+}
+
+# The list in brackets that opens at tk[k], `(a: T, b: U)` or `|a: T|`,
+# into tenv; the index after it.
+function bindlist(k,    d, a, cl) {
+    cl = tk[k] == "|" ? "|" : ")"; d = 0; a = k + 1
+    for (k++; k <= ntk; k++) {
+        if (tk[k] == cl && d == 0) { bindone(a, k - 1); return k + 1 }
+        if (tk[k] ~ /^[(<\[{]$/) d++
+        else if (tk[k] ~ /^[])}>]$/ && !(tk[k] == ">" && tk[k - 1] == "-")) d--
+        else if (tk[k] == "," && d == 0) { bindone(a, k - 1); a = k + 1 }
+    }
+    return k
+}
+
+# The generic parameters of the list that opens at tk[k], `<T: Tr, U>`,
+# into tgen, each with the names of the traits its bounds there name
+# (` Tr ...`, or "" for none); the index after it.
+function genlist(k,    d, g) {
+    for (d = 0; k <= ntk; k++) {
+        if (tk[k] == "<") d++
+        else if (tk[k] == ">" && tk[k - 1] != "-" && --d == 0) return k + 1
+        else if (d == 1 && (tk[k - 1] == "<" || tk[k - 1] == ",") && tk[k] ~ /^[A-Za-z_]/) { g = tk[k]; tgen[g] = "" }
+        else if (d == 1 && g != "" && tk[k] ~ /^[A-Za-z_]/ && tk[k - 1] ~ /^(:|\+|::)$/ && tk[k + 1] != "::") tgen[g] = tgen[g] " " tk[k]
+    }
+    return k
+}
+
+# Whether a call through generic parameter h may reach a spec fn of the
+# crate: its bounds name a crate trait, or the scan read none (a `where`
+# clause, or an impl's parameter it did not see). One bound only by
+# traits from outside the crate (vstd's InvariantPredicate) states its
+# fact for every type through those traits, so it names none.
+function genopen(h,    a, nt, i) {
+    if (!(h in tgen) || tgen[h] == "" || (h in sgen)) return 1
+    nt = split(tgen[h], a, " ")
+    for (i = 1; i <= nt; i++) if (a[i] in ttrait) return 1
+    return 0
+}
+
+# The names the text in tk binds, with their types, into tenv, and its
+# generic parameters into tgen, those of GEN (an impl's) too: `self` is
+# of type SELF; fn parameters and named returns, `forall`, `exists` and
+# `choose` binders and `let x: T` are of the type they state, and the x
+# of `e matches Some(x)` is of the type e's Option holds. FILE is where
+# the text is.
+function bindenv(file, self, gen,    i, j, k, sv) {
+    delete tenv; delete tgen; delete tshadow
+    if (self ~ /^[A-Za-z_][A-Za-z0-9_]*$/) tenv["self"] = self
+    if (gen != "") {
+        sv = ntk; for (i = 0; i <= ntk; i++) svtk[i] = tk[i]
+        tokens(gen); genlist(1)
+        delete tk; for (i = 0; i <= sv; i++) tk[i] = svtk[i]; ntk = sv
+    }
+    for (i = 1; i <= ntk; i++) {
+        if (tk[i] == "fn" && tk[i + 1] ~ /^[A-Za-z_]/) {
+            j = i + 2
+            if (tk[j] == "<") j = genlist(j)
+            if (tk[j] == "(") {
+                j = bindlist(j)
+                if (tk[j] == "-" && tk[j + 1] == ">" && tk[j + 2] == "(") bindlist(j + 2)
+            }
+        } else if (tk[i] == "assume_specification") {
+            j = i + 1
+            if (tk[j] == "<") j = genlist(j)
+            if (tk[j] == "[") {
+                for (sv = 0; j <= ntk; j++) if (tk[j] == "[") sv++; else if (tk[j] == "]" && --sv == 0) break
+                if (tk[j + 1] == "(") bindlist(j + 1)
+            }
+        } else if (tk[i] ~ /^(forall|exists|choose)$/ && tk[i + 1] == "|") bindlist(i + 1)
+        else if (tk[i] == "let") {
+            for (j = i + 1; j <= ntk && tk[j] != "=" && tk[j] != ";"; j++) ;
+            bindone(i + 1, j - 1)
+        }
+    }
+    # Names bound with no type the scan reads are of none: an untyped
+    # `let`, a closure's parameters, and the x of a pattern `V(x, ..)` (a
+    # `match` arm, an `if let`, a `matches` other than `matches Some(x)`).
+    for (i = 2; i <= ntk; i++) {
+        if (tk[i - 1] == "let" || (tk[i - 1] ~ /^(mut|tracked|ghost)$/ && tk[i - 2] == "let")) { if (tk[i + 1] != ":") tshadow[tk[i]] = 1 }
+        else if (tk[i] == "|" && tk[i - 1] != "|" && tk[i + 1] != "|") {
+            # A closure's `|a, b: T|` (a quantifier's list is typed above).
+            for (j = i + 1; j <= ntk && j < i + 16 && tk[j] != "|"; j++) ;
+            if (tk[j] == "|") {
+                if (tk[i - 1] !~ /^(forall|exists|choose)$/)
+                    for (k = i + 1; k < j; k++) if (tk[k] ~ /^[a-z_][A-Za-z0-9_]*$/ && tk[k + 1] ~ /^[,:|]$/) tshadow[tk[k]] = 1
+                i = j
+            }
+        } else if (tk[i] == "(" && tk[i - 1] ~ /^[A-Z][A-Za-z0-9_]*$/ && !(tk[i - 1] == "Some" && tk[i - 2] == "matches"))
+            for (j = i + 1; j <= ntk && tk[j] ~ /^([a-z_][A-Za-z0-9_]*|,)$/; j++) if (tk[j] ~ /^[a-z_]/ && tk[j] !~ /^(ref|mut)$/) tshadow[tk[j]] = 1
+    }
+    for (sv in tshadow) delete tenv[sv]
+    for (i = 2; i <= ntk; i++)
+        if (tk[i] == "matches" && tk[i + 1] == "Some" && tk[i + 2] == "(" && tk[i + 3] ~ /^[a-z_][A-Za-z0-9_]*$/ && tk[i + 4] == ")") {
+            sv = etype(i - 1, file, self)
+            if (thead(sv, self) == "Option") bindtype(tk[i + 3], targ(tbase(sv), 1))
+            else tshadow[tk[i + 3]] = 1
+        }
+    for (sv in tshadow) delete tenv[sv]
+}
+
+# The spec fns a call at tk[i] names, `r.f(`, `p::f(` or `f(`.
+function callref(i, file, self) {
+    if (tk[i - 1] == ".") return methodref(i, file, self)
+    if (tk[i - 1] == "::") return pathref(i, file, self)
+    return freeref(tk[i], file)
+}
+
+# The type tokens spec fns L (` i j ...`) return, when they all return
+# the same one, else "".
+function rettype(l,    a, nt, i, t) {
+    nt = split(l, a, " "); t = ""
+    for (i = 1; i <= nt; i++) {
+        if (sp_ret[a[i]] == "" || (t != "" && sp_ret[a[i]] != t)) return ""
+        t = sp_ret[a[i]]
+    }
+    return t
+}
+
+# The spec fns a method call r.f( at tk[i] names, as ` i j ...`: the
+# method of r's type, or every method named f if r's type is unknown.
+function methodref(i, file, self,    t) {
+    t = etype(i - 2, file, self)
+    return t == "" ? mbyname[tk[i]] : typeref(thead(t, self), tk[i])
+}
+
+# The type tokens of the expression that ends at tk[k], or "" when the
+# scan cannot tell: a name tenv binds, then fields (a struct's, or a
+# tuple's `.0`), `[i]`, `@` of a Tracked or Ghost (of a type from outside
+# the crate, its own type), `old(x)` and `final(x)`, and calls whose spec
+# fns all return one type (or a few vstd methods, vstdret).
+function etype(k, file, self,    t, h, j, c, refs) {
+    if (k < 1) return ""
+    if (tk[k] == "@") {
+        t = etype(k - 1, file, self)
+        while (t ~ /^(& |mut )/) sub(/^(& |mut )/, "", t)
+        if (t ~ /^(Tracked|Ghost) < /) return targ(t, 1)
+        h = thead(t, self)
+        if ((h SUBSEP "view") in mbyqual) return rettype(mbyqual[h SUBSEP "view"])
+        return (h in ctype) ? "" : t
+    }
+    if (tk[k] == "]") {
+        j = matchback(k, "[", "]")
+        return j < 2 ? "" : telem(etype(j - 1, file, self), self)
+    }
+    if (tk[k] == ")") {
+        j = matchback(k, "(", ")"); c = j - 1
+        if (j < 2 || tk[c] !~ /^[A-Za-z_][A-Za-z0-9_]*$/ || tk[c - 1] == "fn") return ""
+        if (tk[c] ~ /^(old|final)$/ && tk[c - 1] != "." && tk[c - 1] != "::") return etype(k - 1, file, self)
+        refs = (tk[c] in mbyname) || (tk[c] in fbyname) ? callref(c, file, self) : ""
+        if (refs ~ /[0-9]/) return rettype(refs)
+        return tk[c - 1] == "." ? vstdret(etype(c - 2, file, self), tk[c], self) : ""
+    }
+    if (tk[k] !~ /^[A-Za-z0-9_]+$/) return ""
+    if (tk[k] == "Some_0" && tk[k - 1] == ">" && tk[k - 2] == "-") {
+        t = etype(k - 3, file, self)
+        return thead(t, self) == "Option" ? targ(tbase(t), 1) : ""
+    }
+    if (tk[k - 1] != "." || tk[k - 2] == ".") return (tk[k] in tenv) ? tenv[tk[k]] : ""
+    t = etype(k - 2, file, self)
+    if (t == "") return ""
+    if (tk[k] ~ /^[0-9]+$/) {
+        # A tuple, or an alias of one.
+        for (j = 0; j < 8 && match(tbase(t), /^[A-Za-z_][A-Za-z0-9_]*$/) && (tbase(t) in talias) && !(tbase(t) in ctype); j++) t = talias[tbase(t)]
+        if (tbase(t) ~ /^\( /) return ttuple(tbase(t), tk[k])
+    }
+    h = thead(t, self)
+    if (h == "") return ""
+    if ((file SUBSEP h SUBSEP tk[k]) in sfieldf) return sfieldf[file SUBSEP h SUBSEP tk[k]]
+    return ((h SUBSEP tk[k]) in sfield) ? sfield[h SUBSEP tk[k]] : ""
+}
+
+# The type tokens a vstd method f returns on a receiver of type tokens
+# t: `value` of a PointsTo, `unwrap` of an Option, `last`, `first` and
+# `index` of a Seq or Vec, `index` of a Map; "" for any other.
+function vstdret(t, f, self,    h) {
+    h = thead(t, self); t = tbase(t)
+    if (h == "PointsTo" && f == "value") return targ(t, 1)
+    if (h == "Option" && f == "unwrap") return targ(t, 1)
+    if ((h == "Seq" || h == "Vec") && (f == "last" || f == "first" || f == "index")) return targ(t, 1)
+    if (h == "Map" && f == "index") return targ(t, 2)
+    return ""
+}
+
+# The spec fns a method f (nm) of the type named h names: its own, or
+# every method named f for a trait, a generic parameter (genopen), a
+# crate type with none, or a method of a crate trait (implemented, for
+# all this scan knows, by a type from outside the crate).
+function typeref(h, nm) {
+    if ((h in tgen) || ((h ~ /^[A-Z]$/ || (h in sgen)) && !(h in ctype))) return genopen(h) ? mbyname[nm] : ""
+    if (h in ttrait) return mbyname[nm]
+    if (h != "" && ((h SUBSEP nm) in mbyqual)) return mbyqual[h SUBSEP nm]
+    return (h in ctype) || (nm in traitmeth) ? mbyname[nm] : ""
+}
+
+# The spec fns a path call p::f( at tk[i] names.
+function pathref(i, file, self,    nm, k, j, q, root, h) {
+    nm = tk[i]; k = i - 2
+    if (tk[k] == ">") {
+        # `<T as Tr>::f`, `T<A>::f` or `T::<A>::f`.
+        j = matchback(k, "<", ">")
+        # `<T as Tr>::f` is every method f for a crate trait Tr, else T's.
+        for (h = j; h >= 1 && h < k; h++) if (tk[h] == "as") return (tk[k - 1] in ttrait) ? mbyname[nm] : typeref(thead(tk[j + 1], self), nm)
+        if (j < 2) return mbyname[nm]
+        k = j - 1; if (tk[k] == "::") k--
+    }
+    q = tk[k]; root = q
+    if (q !~ /^[A-Za-z_]/) return mbyname[nm]
+    for (j = k; j >= 3 && tk[j - 1] == "::" && tk[j - 2] ~ /^[A-Za-z_]/; j -= 2) root = tk[j - 2]
+    if (root ~ /^(vstd|core|std|alloc|builtin)$/) return ""
+    if (q ~ /^[A-Z]/) {
+        if (q == "Self" && ((self SUBSEP nm) in mbyqual)) return mbyqual[self SUBSEP nm]
+        return typeref(thead(q, self), nm)
+    }
+    if (q == "self") return freeref(nm, file)
+    if (q ~ /^(crate|super)$/) return (nm in fbyname) ? fbyname[nm] : ""
+    return modref(nm, q)
+}
+
+# The spec fns f that are no method: those of FILE, else every one.
+function freeref(nm, file,    a, nt, i, out) {
+    if (!(nm in fbyname)) return ""
+    nt = split(fbyname[nm], a, " "); out = ""
+    for (i = 1; i <= nt; i++) if (sp_file[a[i]] == file) out = out " " a[i]
+    return out != "" ? out : fbyname[nm]
+}
+
+# The spec fns f that are no method of a file of module q, else every one.
+function modref(nm, q,    a, nt, i, out) {
+    if (!(nm in fbyname)) return ""
+    nt = split(fbyname[nm], a, " "); out = ""
+    for (i = 1; i <= nt; i++) if (fmod(sp_file[a[i]]) == q) out = out " " a[i]
+    return out != "" ? out : fbyname[nm]
+}
+
+# The spec fns the text in tk names, as ` i j ...`, its names bound by
+# bindenv; FILE and SELF are where it is.
+function specrefs(file, self,    i, j, t, out) {
+    out = ""
+    for (i = 1; i <= ntk; i++) {
+        # `x@` is `x.view()`.
+        if (tk[i] == "@" && ("view" in mbyname)) {
+            t = etype(i - 1, file, self)
+            out = out " " (t == "" ? mbyname["view"] : typeref(thead(t, self), "view"))
+            continue
+        }
+        if (!((tk[i] in mbyname) || (tk[i] in fbyname)) || tk[i - 1] == "fn") continue
+        j = i + 1
+        if (tk[j] == "::" && tk[j + 1] == "<") j = skipang(j + 1)
+        if (tk[j] != "(") continue
+        out = out " " callref(i, file, self)
+    }
+    return out
+}
+
+# The spec fns of entry e's contract, and of theirs in turn, into
+# hashdir/<e>.s, one `<name> <crc>` line each, in byte order; then their
+# CRCs into hv as hv[<e>.s] for each seam that names one. hv holds each
+# spec fn's CRC as hv[sp<i>].
+function specsums(hv,    i, k, nt, a, cmd, l, f, e, nq, q, qu, vis, r, any, ord, w) {
+    for (i = 1; i <= nsp; i++) {
+        k = sp_name[i]; sub(/^.*::/, "", k)
+        if (index(sp_name[i], "::")) {
+            q = sp_name[i]; sub(/::[^:]*$/, "", q)
+            mbyqual[q SUBSEP k] = mbyqual[q SUBSEP k] " " i; mbyname[k] = mbyname[k] " " i
+            if (q in ttrait) traitmeth[k] = 1
+        } else fbyname[k] = fbyname[k] " " i
+        sp_key[i] = sp_name[i] " " hv["sp" i]
+    }
+    for (i = 1; i <= nsp; i++) { tokens(sp_code[i]); sp_ret[i] = retof(sp_self[i]) }
+    for (i = 1; i <= nsp; i++) {
+        tokens(sp_code[i]); bindenv(sp_file[i], sp_self[i], sp_gen[i])
+        sp_refs[i] = specrefs(sp_file[i], sp_self[i])
+    }
+    f = hashdir "/spkeys"
+    for (i = 1; i <= nsp; i++) print sp_key[i] "\t" i > f
+    close(f)
+    cmd = "sort '" f "'"; r = 0
+    while ((cmd | getline l) > 0) { sub(/^.*\t/, "", l); ord[++r] = l }
+    close(cmd)
+    any = 0
+    for (e = 1; e <= n; e++) {
+        tokens(code(ehc[e])); bindenv(efile[e], eself[e], egen[e])
+        delete vis; nq = 0
+        nt = split(specrefs(efile[e], eself[e]), a, " ")
+        for (i = 1; i <= nt; i++) if (!(a[i] in vis)) { vis[a[i]] = 2; qu[++nq] = a[i] }
+        for (w = 1; w <= nq; w++) {
+            nt = split(sp_refs[qu[w]], a, " ")
+            for (i = 1; i <= nt; i++) if (!(a[i] in vis)) { vis[a[i]] = 1; qu[++nq] = a[i] }
+        }
+        espec[e] = nq
+        if (nq == 0) continue
+        # The ones the contract names itself, by name in byte order.
+        f = hashdir "/" e ".s"; l = ""; enamed[e] = ""
+        for (r = 1; r <= nsp; r++) if (ord[r] in vis) {
+            print sp_key[ord[r]] > f
+            if (vis[ord[r]] == 2 && sp_name[ord[r]] != l) enamed[e] = enamed[e] (l == "" ? "" : ", ") "`" sp_name[ord[r]] "`"
+            if (vis[ord[r]] == 2) l = sp_name[ord[r]]
+        }
+        close(f); any = 1
+    }
+    if (!any) return
+    cmd = "cd '" hashdir "' && cksum *.s"
+    while ((cmd | getline l) > 0) { split(l, a, " "); hv[a[3]] = a[1] }
+    close(cmd)
+}
+EOF
+)
+
 # Busybox awk reads files given by name very slowly from some file
 # systems; the files go through one pipe instead, each behind a marker line.
 stream() {
@@ -729,7 +1332,8 @@ scan() {
 $typeimpls
 $overrides
 $prog
-$render"
+$render
+$specfns"
 }
 
 # gen MODE DIR [HASHDIR]: scan over the tree.
@@ -1322,6 +1926,47 @@ case $mode in
     case $r in *'records no hashes'*) ;; *) echo "seams: self-test: hash: a partly checked status with no hashes accepted: $r" >> "$tmp/cites" ;; esac
     r=$(hsrc 'x < 3' 'x + 1' | hs trusted "$hs_h")
     case $r in *'hashes on a status that cites no check'*) ;; *) echo "seams: self-test: hash: hashes on a trusted status accepted: $r" >> "$tmp/cites" ;; esac
+    # Self-test: the spec fns a contract names, here S::ok through T's
+    # field s, and the ones they name in turn (helper), are in its hashes'
+    # spec part: an edit to either fails a checked status, as an edit to
+    # its contract does, and so does a recorded hash with no spec part,
+    # while an edit to spec fns it does not name (U::ok, a method of
+    # another type of the same name, and other) passes. The ledger lists
+    # how many it names and the ones the contract names itself. Once t is
+    # bound again, by a binder of another type (X, whose s is an S too) or
+    # a closure's parameter, t.s.ok() names every ok, U::ok too.
+    # sps OK HELPER OTHER UOK [CLAUSE]: seam f, its spec fns' bodies those
+    # given, CLAUSE another requires clause.
+    sps() {
+      printf '%s\n' 'verus! {' 'pub struct S { pub a: u8 }' 'pub struct T {' '    pub s: S,' '}' 'pub struct U { pub a: u8 }' 'pub struct X { pub s: S }' \
+        'impl S {' "    pub open spec fn ok(&self) -> bool { $1 }" '}' 'impl U {' "    pub open spec fn ok(&self) -> bool { $4 }" '}' \
+        "pub open spec fn helper(x: u8) -> bool { $2 }" "pub open spec fn other(x: u8) -> bool { $3 }" \
+        '#[verifier::external_body]' 'fn f(t: &T) -> u8' "    requires t.s.ok(),${5:+ $5,}" '{' '    t.s.a' '}' '}'
+    }
+    for c in 'forall|t: X| t.s.a < 9' 'g(|t| t.a)' 'g(|t: X| t.s.a)'; do
+      r0=$(sps 'self.a < 3' 'x != 7' 'x != 9' 'self.a > 1' "$c" | hs "$hs_dis" '' | sed -n 's/.*records no hashes.*fifth column: //p')
+      r=$(sps 'self.a < 3' 'x != 7' 'x != 9' 'self.a > 2' "$c" | hs "$hs_dis" "$r0")
+      case $r in *'its spec fns changed'*) ;; *) echo "seams: self-test: spec fns: t bound again by $c, and an edit to U::ok accepted: $r" >> "$tmp/cites" ;; esac
+    done
+    sp_ok='self.a < 3 && helper(self.a)'
+    sp_h=$(sps "$sp_ok" 'x != 7' 'x != 9' 'self.a > 1' | hs "$hs_dis" '' | sed -n 's/.*records no hashes.*fifth column: //p')
+    case $sp_h in
+      'contract '[0-9]*', body '[0-9]*', spec '[0-9]*) ;;
+      *) echo "seams: self-test: spec fns: no spec part offered: $sp_h" >> "$tmp/cites" ;;
+    esac
+    r=$(sps "$sp_ok" 'x != 7' 'x != 9' 'self.a > 1' | hs "$hs_dis" "$sp_h")
+    [ -z "$r" ] || echo "seams: self-test: spec fns: the item's own hashes refused: $r" >> "$tmp/cites"
+    # shellcheck disable=SC2016 # a ledger line, backquotes included
+    grep -qxF 'Spec fns: 2, from `S::ok`.' "$tmp/hs-ledger/src/t.rs.md" ||
+      echo "seams: self-test: spec fns: the ledger does not list them: $(grep '^Spec fns' "$tmp/hs-ledger/src/t.rs.md")" >> "$tmp/cites"
+    r=$(sps 'self.a < 4 && helper(self.a)' 'x != 7' 'x != 9' 'self.a > 1' | hs "$hs_dis" "$sp_h")
+    case $r in *'its spec fns changed'*) ;; *) echo "seams: self-test: spec fns: an edit to a spec fn the contract names accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(sps "$sp_ok" 'x != 8' 'x != 9' 'self.a > 1' | hs "$hs_dis" "$sp_h")
+    case $r in *'its spec fns changed'*) ;; *) echo "seams: self-test: spec fns: an edit to a spec fn named through another accepted: $r" >> "$tmp/cites" ;; esac
+    r=$(sps "$sp_ok" 'x != 7' 'x != 8' 'self.a > 2' | hs "$hs_dis" "$sp_h")
+    [ -z "$r" ] || echo "seams: self-test: spec fns: an edit to spec fns the contract does not name refused: $r" >> "$tmp/cites"
+    r=$(sps "$sp_ok" 'x != 7' 'x != 9' 'self.a > 1' | hs "$hs_dis" "${sp_h%, spec *}")
+    case $r in *'its spec fns changed'*) ;; *) echo "seams: self-test: spec fns: recorded hashes with no spec part accepted: $r" >> "$tmp/cites" ;; esac
     # Self-test: a claims nothing status passes on an opaque type (an
     # external type specification or an external_body struct) or an
     # external_body constant with the item's hashes, and fails with none,

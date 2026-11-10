@@ -1,6 +1,6 @@
-axiom_ptr_add_addr	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 1089707123, body 4028365563
+axiom_ptr_add_addr	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 1089707123, body 4028365563, spec 1948389441
 # The array layout, checked at sampled element types and lengths.
-axiom_array_elem	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: the provenance clause of the element pointers, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table, which is this axiom's instance in `layout::regions`))	contract 3585017109, body none
+axiom_array_elem	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems; not checked: the provenance clause of the element pointers, and element types and lengths other than the harness's samples (a byte, a word, a padded pair, the class table, which is this axiom's instance in `layout::regions`))	contract 3585017109, body none, spec 1948389441
 # axiom_array_view: its one instance, `heap::others::node_view`'s
 # `[CacheHeader; NCLASSES]`, is checked by its own harness and pinned by
 # `vspec::ptr::array_view_tests::array_view_only_at_the_checked_instance`.
@@ -8,33 +8,33 @@ axiom_array_elem	core library	Kani	trusted (partly checked, Kani: kani_proofs::p
 # and the join itself (a shared permission to the array standing in for
 # its elements' while they stay borrowed) is a premise of Verus's own
 # model, not a fact about bytes (verus/SEAMS.md, "Status").
-axiom_array_view	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems, heap::others::kani_view::caches_array_view; not checked: the provenance clause `r.ptr() == a`, which Kani does not observe (the harnesses compare addresses), and that a shared permission to the array may stand in for its elements' permissions while they stay borrowed, a premise of Verus's own model that no tool checks, and `T` and `N` other than `[CacheHeader; NCLASSES]` and the harnesses' samples, which `vspec::ptr::array_view_tests::array_view_only_at_the_checked_instance` keeps out of the proofs)	contract 1726003634, body none
+axiom_array_view	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::array_layout_elems, heap::others::kani_view::caches_array_view; not checked: the provenance clause `r.ptr() == a`, which Kani does not observe (the harnesses compare addresses), and that a shared permission to the array may stand in for its elements' permissions while they stay borrowed, a premise of Verus's own model that no tool checks, and `T` and `N` other than `[CacheHeader; NCLASSES]` and the harnesses' samples, which `vspec::ptr::array_view_tests::array_view_only_at_the_checked_instance` keeps out of the proofs)	contract 1726003634, body none, spec 64757546
 axiom_raw_readable	raw pointer (internal)	none (assumption)
 # Integers and thin pointers: every byte pattern is a valid value
 # (kani::mem::can_read_unaligned checks validity: it fails at bool, plain_rejects_bool).
-axiom_plain_u64	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 3996351558, body none
-axiom_plain_u8	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 3956789372, body none
-axiom_plain_usize	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 1595379307, body none
-axiom_plain_isize	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 3516752434, body none
-axiom_plain_u32	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 296758125, body none
+axiom_plain_u64	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 3996351558, body none, spec 2487621801
+axiom_plain_u8	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 3956789372, body none, spec 2487621801
+axiom_plain_usize	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 1595379307, body none, spec 2487621801
+axiom_plain_isize	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 3516752434, body none, spec 2487621801
+axiom_plain_u32	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 296758125, body none, spec 2487621801
 # The value carries no usable provenance: a restriction on the proofs, not checked.
-axiom_plain_ptr	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 467056659, body none
+axiom_plain_ptr	core library	Kani	discharged (Kani: kani_proofs::ptr::plain_bytes_are_values)	contract 467056659, body none, spec 2487621801
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-core::ptr::write_bytes::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_bytes)	contract 3565122288, body none
-<*mut T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 3817630095, body none
-<*const T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 1492966780, body none
-ref_ptr	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::ptr_ref_ptr)	contract 2898739365, body 3326604510
+core::ptr::write_bytes::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_bytes)	contract 3565122288, body none, spec 2390341917
+<*mut T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 3817630095, body none, spec 1948389441
+<*const T>::add	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the one-past-the-end result, which the harness never dereferences)	contract 1492966780, body none, spec 1948389441
+ref_ptr	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::ptr_ref_ptr)	contract 2898739365, body 3326604510, spec 3822042138
 # `core::ptr` functions, specified against `core`'s documentation and checked on
 # buffers at every offset.
-core::ptr::read_volatile::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_volatile; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))	contract 380533337, body none
-<*mut T>::sub	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`))	contract 3919411524, body none
+core::ptr::read_volatile::<T>	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_volatile; not checked: that the bytes are initialised, which the `requires` does not state (the harness reads arbitrary initialised bytes))	contract 380533337, body none, spec 3791285691
+<*mut T>::sub	core library	Kani	trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; not checked: the provenance clause, which Kani does not observe, since it resolves a pointer's allocation from its address, and the results the harness never dereferences (one past the end, a zero-sized `T`, a dangling `p`))	contract 3919411524, body none, spec 2693754102
 # The unaligned reads of the C program's mallctl buffers: Kani runs them at
 # every offset; that the bytes are initialised and not changed by another
 # thread during the call is the program's contract (C2), and verified code
 # reads no other memory through them
 # (api::mallctl::tests::c_buffer_reads_are_listed).
-core::ptr::read_unaligned::<T>	core library	Kani	discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed)	contract 3934529747, body none
-<*const T>::read_unaligned	core library	Kani	discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed)	contract 604882496, body none
+core::ptr::read_unaligned::<T>	core library	Kani	discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed)	contract 3934529747, body none, spec 3791285691
+<*const T>::read_unaligned	core library	Kani	discharged on premises (Kani: kani_proofs::ptr::ptr_read_unaligned; premises: C2 (the `newp` and MIB bytes that `load`, `query_ptr` and `mib_in` read are initialised and unchanged by another thread during the call); callers: api::mallctl::tests::c_buffer_reads_are_listed)	contract 604882496, body none, spec 3791285691
 # The unaligned writes, checked on buffers at every offset.
-core::ptr::write_unaligned::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)	contract 3052813032, body none
-<*mut T>::write_unaligned	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)	contract 342041177, body none
+core::ptr::write_unaligned::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)	contract 3052813032, body none, spec 610860108
+<*mut T>::write_unaligned	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_write_unaligned)	contract 342041177, body none, spec 610860108

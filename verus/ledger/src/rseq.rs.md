@@ -19,7 +19,8 @@ Tool: Kani. Status: discharged on premises (Kani: rseq::kani_rseq::read_global_r
 
 > One read of a loader global [`symbols`] found; [`probe`] is the only caller (`tests::probe_reads_are_listed`).
 
-Hashes: contract 1325462615, body 4072880412.
+Hashes: contract 1325462615, body 4072880412, spec 3955195640.
+Spec fns: 10, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`.
 
 ```rust
 unsafe fn read_global<T: Copy>(p: *const T) -> T

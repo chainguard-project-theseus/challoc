@@ -57,7 +57,8 @@ Tool: Kani. Status: discharged (Kani: sys::cgroup::kani_in_place::untracked_in_p
 
 > `slot` holds [`Cgroup::untracked`]`(state)`, written in place (the record is about 2.4 KiB; through a value it went by the stack of the thread that discovers).
 
-Hashes: contract 2432176480, body 2334025224.
+Hashes: contract 2432176480, body 2334025224, spec 2966615436.
+Spec fns: 10, from `BytePerm::value`, `Cgroup::layout`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`.
 
 ```rust
 pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
@@ -73,7 +74,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
 
-Hashes: contract 1324447172, body none.
+Hashes: contract 1324447172, body none, spec 1969074130.
+Spec fns: 4, from `BytePerm::id`, `BytePerm::value`, `byte_id`, `in_fork_child`.
 
 ```rust
 axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &BytePerm) -> (tracked p: CellPerm)
@@ -95,7 +97,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.
 
-Hashes: contract 244421472, body 3886542385.
+Hashes: contract 244421472, body 3886542385, spec 3311910427.
+Spec fns: 3, from `Deferred::seen_done`, `may_syscall`.
 
 ```rust
 pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): Tracked<&mut CellSeen>) -> bool

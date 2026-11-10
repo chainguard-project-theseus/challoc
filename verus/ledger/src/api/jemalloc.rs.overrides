@@ -10,4 +10,4 @@ message_hook	UnsafeCell/volatile/transmute	Kani	discharged on premises (Kani: ap
 # body on a recording hook and any buffer holding a NUL; what the program
 # stores in the slots is its contract (C1), and what the hook does once
 # called is its contract too (C3).
-call_hook	function pointer	Kani	discharged on premises (Kani: api::jemalloc::kani_hook::call_hook_calls_once; premises: C1 (the program stores only null or a hook function in the two slots), C3 (the program's hook keeps the C allocation contract))	contract 4272715841, body 924183077
+call_hook	function pointer	Kani	discharged on premises (Kani: api::jemalloc::kani_hook::call_hook_calls_once; premises: C1 (the program stores only null or a hook function in the two slots), C3 (the program's hook keeps the C allocation contract))	contract 4272715841, body 924183077, spec 3151211091

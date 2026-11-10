@@ -16,7 +16,8 @@ Tool: Kani. Status: discharged (Kani: huge::table::kani_table::zero_entry_is_emp
 
 > The 16 bytes of `z`, which read as zero, as the `Entry` at `p`, empty: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
 
-Hashes: contract 384812024, body none.
+Hashes: contract 384812024, body none, spec 2229518231.
+Spec fns: 14, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `ZeroRaw::is_range`, `ZeroRaw::provenance`, `occupied`.
 
 ```rust
 axiom fn axiom_zero_entry(tracked z: ZeroRaw, p: *mut Entry) -> (tracked r: PointsTo<Entry>)

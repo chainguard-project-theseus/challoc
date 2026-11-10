@@ -57,7 +57,8 @@ Tool: Kani. Status: discharged (Kani: config::kani_config::set_listed_contract).
 
 > The [`TABLE`] entry's parser for `key`, `None` when no entry is named `key`.
 
-Hashes: contract 1746912615, body 2364960765.
+Hashes: contract 1746912615, body 2364960765, spec 4005375323.
+Spec fns: 2, from `Config::wf`.
 
 ```rust
 fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Result<(), Issue<'a>>>)
@@ -135,7 +136,8 @@ Tool: Kani. Status: discharged (Kani: config::linux::kani_conf_ptr::conf_ptr_is_
 
 > The storage of [`CONF_BUF`].
 
-Hashes: contract 819829348, body 1918486632.
+Hashes: contract 819829348, body 1918486632, spec 1785369141.
+Spec fns: 1, from `conf_storage`.
 
 ```rust
 fn conf_ptr() -> (p: *mut [u8; CONF_LEN])
@@ -231,7 +233,8 @@ Tool: none (assumption). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.
 
-Hashes: contract 3768520112, body 1492388976.
+Hashes: contract 3768520112, body 1492388976, spec 2364295953.
+Spec fns: 51, from `CCall::len`, `Live::len`, `LockGuard::view`, `Reserved::len`, `Table::view`, `TwoLevelBitmap::view`, `Unbacked::len`, `Zeroed::len`, `secure_exec`.
 
 ```rust
 pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)

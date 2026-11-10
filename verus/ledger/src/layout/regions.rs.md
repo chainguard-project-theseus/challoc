@@ -35,7 +35,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
 
-Hashes: contract 1021799055, body 1293528070.
+Hashes: contract 1021799055, body 1293528070, spec 4034459867.
+Spec fns: 16, from `Reserved::addr`, `Reserved::len`, `disjoint`, `shared_static_addr`, `shared_static_len`.
 
 ```rust
 pub proof fn is_apart_from_static(tracked &self)
@@ -52,7 +53,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
 
-Hashes: contract 1022768161, body 1293528070.
+Hashes: contract 1022768161, body 1293528070, spec 2191396650.
+Spec fns: 3, from `Reserved::addr`, `Reserved::len`, `disjoint`.
 
 ```rust
 pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
@@ -71,7 +73,8 @@ Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
 
-Hashes: contract 1477004248, body 1293528070.
+Hashes: contract 1477004248, body 1293528070, spec 3134985577.
+Spec fns: 4, from `Reserved::addr`, `Reserved::len`, `Unbacked::addr`, `Unbacked::len`.
 
 ```rust
 pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
@@ -89,7 +92,8 @@ Tool: none (assumption). Status: trusted.
 
 Body mints Tracked at line 2188.
 
-Hashes: contract 3469794050, body 1440593640.
+Hashes: contract 3469794050, body 1440593640, spec 1055194364.
+Spec fns: 59, from `CCall::len`, `CStr::addr`, `HeapPerm::addr`, `Live::addr`, `Live::len`, `LockGuard::view`, `Reserved::addr`, `Reserved::len`, `Slots::addr`, `Table::view`, `TwoLevelBitmap::view`, `Unbacked::addr`, `Unbacked::len`, `WordPerm::addr`, `Zeroed::addr`, `Zeroed::len`, `may_syscall`, `user_va_limit`.
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)

@@ -1,8 +1,8 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-Layout::size	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances)	contract 1718855412, body none
-Layout::align	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances)	contract 2111602691, body none
-Layout::from_size_align	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align)	contract 3475049326, body none
-Layout::new::<T>	core library	Kani	discharged (Kani: kani_proofs::misc::layout_new_instances)	contract 1798870285, body none
+Layout::size	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances)	contract 1718855412, body none, spec 2672902157
+Layout::align	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances)	contract 2111602691, body none, spec 2672902157
+Layout::from_size_align	core library	Kani	discharged (Kani: kani_proofs::misc::layout_from_size_align)	contract 3475049326, body none, spec 809606332
+Layout::new::<T>	core library	Kani	discharged (Kani: kani_proofs::misc::layout_new_instances)	contract 1798870285, body none, spec 809606332
 # Opaque types, which claim nothing (verus/SEAMS.md, "Status").
 Layout	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 1438845126, body none
 core::alloc::LayoutError	core library	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 2393945422, body none

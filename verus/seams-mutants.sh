@@ -2,20 +2,26 @@
 # verus/seams-mutants.sh: check that verus/seams.sh's self-tests have
 # teeth, and that its hashes catch an edited seam. Each script mutant
 # below is one sed edit of seams.sh that weakens the `loom:` citation
-# rule, the `GenMC:` citation rule, the hash rule, the claims nothing
+# rule, the `GenMC:` citation rule, the hash rule, the rule that the
+# hashes cover the spec fns a contract names, the claims nothing
 # rule, the one-line `const assert:` form, the not-Copy rule for
 # tracked seams or the rule that every tracked type has a not-Copy
 # check; the mutated copy's `--check`
 # must report a self-test failure of that rule. Each tree mutant is one
 # sed edit of a source file in a copy of the tree, followed by `--write`
 # and `--check` there: an edit to a discharged seam's attribute,
-# `requires`, `ensures` or body, to the attributes of a seam that
+# `requires`, `ensures` or body, or to a spec fn its contract names, to
+# the attributes of a seam that
 # claims nothing, or one that gives such a seam an `unsafe impl Send` or
 # makes it a `tracked` struct, or one that weakens or removes a tracked
 # type's not-Copy check in src/vspec/notcopy.rs or adds a tracked type
 # with none, must fail `--check` with the
 # message of the rule it breaks, and one that only adds a
 # comment, reindents or moves the seam (or rewraps the check) must pass.
+# Each stale mutant is one sed edit of a source file followed by
+# `--check` alone: an edit to a spec fn a trusted seam's contract names,
+# directly or through another, must leave the ledger stale and change
+# that seam's entry, and one to a spec fn no contract names must pass.
 # Exits 1 if a mutant survives, a passing edit
 # fails, or an edit no longer applies.
 #
@@ -85,6 +91,54 @@ tree() {
 	done
 }
 
+# entry LEDGER SEAM: the hashes line of SEAM's entry in the ledger file
+# LEDGER (so a line shift, which moves the entry's place, does not count).
+entry() {
+	awk -v h="## \`$2\`" '$0 == h { f = 1; next } f && /^## / { exit } f && /^Hashes: /' "$1"
+}
+
+# stale FILE SEAM [SRC]: the stale mutants on stdin, `name|want|sed
+# expression` lines, each a sed edit of FILE in a copy of the tree
+# followed by `--check` there, with no `--write`; want is `pass` when
+# --check must pass (no ledger entry changes), else `stale` when it must
+# fail as stale and, once `--write` runs, the hashes of SEAM's entry in
+# the ledger of source file SRC (FILE by default) must differ from the
+# tree's.
+stale() {
+	while IFS='|' read -r name want expr; do
+		[ -n "$name" ] || continue
+		rm -rf "$t/tree" && mkdir "$t/tree" && cp -R src verus tests "$t/tree/" || exit 2
+		rm -f "$t/tree/$m"
+		sed "$expr" "$1" > "$t/tree/$1"
+		if cmp -s "$1" "$t/tree/$1"; then
+			echo "seams-mutants: $name: the edit no longer applies"
+			fail=1
+			continue
+		fi
+		if out=$(sh "$t/tree/verus/seams.sh" --check 2>&1); then rc=0; else rc=1; fi
+		if [ "$want" = pass ]; then
+			if [ $rc = 0 ]; then
+				echo "seams-mutants: $name: passes"
+			else
+				echo "seams-mutants: $name: FAILED, want passing:"
+				echo "$out"
+				fail=1
+			fi
+			continue
+		fi
+		sh "$t/tree/verus/seams.sh" --write > /dev/null 2>&1
+		l=verus/ledger/${3:-$1}.md
+		was=$(entry "$l" "$2")
+		if [ $rc = 1 ] && echo "$out" | grep -qF 'verus/ledger is stale' && [ -n "$was" ] &&
+			[ "$was" != "$(entry "$t/tree/$l" "$2")" ]; then
+			echo "seams-mutants: $name: caught"
+		else
+			echo "seams-mutants: $name: SURVIVED"
+			fail=1
+		fi
+	done
+}
+
 # shellcheck disable=SC2016 # sed scripts, not shell expansions
 script 'self-test: loom' <<'EOF'
 any backquoted span names the fn|s/^        if (sp == name) return 1$/        return 1/
@@ -126,6 +180,20 @@ attributes are not hashed|s/ehc\[n\] = hattrs;/ehc[n] = "";/
 a partly checked status needs no hashes|s/ || estat\[e\] ~ \/^trusted .(partly checked\///
 changed hashes are accepted|s/else if (chk \&\& rec != ehash\[e\])/else if (0)/
 hashes on a trusted status are accepted|s/} else if (!chk \&\& rec != "")/} else if (0)/
+EOF
+
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+script 'self-test: spec fns' <<'EOF'
+spec fn bodies are not hashed|s/sp_text\[i\] = norm(ehc\[e\]) " " norm(ehb\[e\])/sp_text[i] = norm(ehc[e])/
+the walk stops at the contract|s/for (w = 1; w <= nq; w++) {/for (w = 1; w <= 0; w++) {/
+free spec fns are not followed|s/^    return freeref(tk\[i\], file)$/    return ""/
+a method is every method of its name|s/return t == "" ? mbyname\[tk\[i\]\] : typeref(thead(t, self), tk\[i\])/return mbyname[tk[i]]/
+fields are not read|s/^        addfield(sfname, fl, ttok(ft))$/        fl = fl/
+no spec part in the hashes|s/ ((e ".s") in hv ? ", spec " hv\[e ".s"\] : "")//
+a spec part that differs is accepted|s/else if (chk \&\& rec != ehash\[e\])/else if (chk \&\& rec != ehash[e] \&\& hpart(rec, "spec") == hpart(ehash[e], "spec"))/
+a changed binding keeps its first type|s/^    if ((x in tenv) \&\& tenv\[x\] != t) tshadow\[x\] = 1$/    if (0) tshadow[x] = 1/
+closure parameters keep their type|s#^                if (tk\[i - 1\] !~ /^(forall|exists|choose)\$/)$#                if (0)#
+the ledger lists no spec fns|/print "Spec fns: " espec\[i\]/d
 EOF
 
 # shellcheck disable=SC2016 # sed scripts, not shell expansions
@@ -240,5 +308,25 @@ an edited body|its body changed|/^pub fn desc_stride/,/^}/s/DESC_STRIDE\[class\]
 a comment added|pass|/^pub fn desc_stride/,/^}/s/class < NCLASSES,/class < NCLASSES, \/\/ a comment/
 reindented|pass|/^pub fn desc_stride/,/^}/s/^    /        /
 moved down a line|pass|1{h;s/.*//;G;}
+the spec fn its contract names edited|its spec fns changed|s/^pub uninterp spec fn stride_of(c: int) -> usize;$/pub uninterp spec fn stride_of(c: nat) -> usize;/
+a comment on that spec fn|pass|s/^pub uninterp spec fn stride_of(c: int) -> usize;$/& \/\/ a comment/
+EOF
+
+# The seam is axiom_start of src/api/mod.rs, trusted, whose `ensures`
+# names `Statics::storage_fresh`, which names `layout::table_ok` in turn.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+stale src/api/mod.rs axiom_start <<'EOF'
+conf.is_init() dropped from the spec fn it names|stale|s/^        &&& self.conf.is_init()$/        \&\&\& true/
+a comment on that spec fn|pass|s/^        &&& self.conf.is_init()$/& \/\/ a comment/
+EOF
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+stale src/layout/mod.rs axiom_start src/api/mod.rs <<'EOF'
+a conjunct dropped from a spec fn named through another|stale|/^    &&& forall|i: int| 0 <= i < NCLASSES ==> #\[trigger\] t\[i\].size == spec_class_size(i)$/d
+EOF
+
+# thp_word of src/sys/thp_host.rs is a spec fn no seam's contract names.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+stale src/sys/thp_host.rs thp_word <<'EOF'
+a spec fn no contract names edited|pass|s/b"never"@/b"nevr"@/
 EOF
 exit $fail

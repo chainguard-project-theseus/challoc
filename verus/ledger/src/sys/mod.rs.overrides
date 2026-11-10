@@ -8,7 +8,7 @@ write_all	termination	none (assumption)
 axiom_thread_mask	platform/kernel fact	none (assumption)
 # Inline assembly checked with Isla (verus/ISLA.md) up to the exception it
 # takes: run.sh checks it against the contract verus/isla/seams.md quotes.
-trap	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap))	contract 1016438138, body 2141251898
+trap	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap))	contract 1016438138, body 2141251898, spec 10415586
 # glibc's thread pointer: tells threads of one process apart, kept by the
 # forking thread in a fork child (the fork window's holder, the init/fork gate).
 # Kani runs the body with glibc's pthread_self replaced by a recording

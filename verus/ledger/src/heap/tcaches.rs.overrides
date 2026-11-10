@@ -2,13 +2,13 @@
 T_TABLE	core library	Kani	discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs)	contract 2097268554, body none
 T_LOCK	core library	Kani	discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs)	contract 2489631139, body none
 T_INV	core library	Kani	discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs)	contract 1448314863, body none
-axiom_tcaches_layout	core library	Kani	discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs)	contract 121335155, body none
+axiom_tcaches_layout	core library	Kani	discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs)	contract 121335155, body none, spec 3940336727
 # Joining typed field permissions into the struct's: no vstd counterpart.
 # The harness runs `Tcaches::init`, the one call, which
 # `crate::tests::assembled_writes_only_at_checked_sites` pins, and checks
 # that its writes leave every field byte of the `Tcaches` as the axiom's
 # `ensures` state.
-axiom_tcaches_assemble	raw pointer (internal)	Kani	trusted (partly checked, Kani: heap::tcaches::kani_assemble::init_writes_every_field; not checked: the join itself, that the field permissions and `pad` may be exchanged for one `PointsTo<Tcaches>` at `p`, with its provenance, a premise of Verus's own model that no tool checks; the ghost identities the `ensures` carries over, each table entry's atomic identity (`vspec::entry::entry_id`, which the `inv`'s key records) and the lock's cell identity, which Kani does not observe; and the ghost fields (`inv`, the lock's rank and initial value), which have no bytes)	contract 2409023419, body none
+axiom_tcaches_assemble	raw pointer (internal)	Kani	trusted (partly checked, Kani: heap::tcaches::kani_assemble::init_writes_every_field; not checked: the join itself, that the field permissions and `pad` may be exchanged for one `PointsTo<Tcaches>` at `p`, with its provenance, a premise of Verus's own model that no tool checks; the ghost identities the `ensures` carries over, each table entry's atomic identity (`vspec::entry::entry_id`, which the `inv`'s key records) and the lock's cell identity, which Kani does not observe; and the ghost fields (`inv`, the lock's rank and initial value), which have no bytes)	contract 2409023419, body none, spec 3892657697
 # The C caller uses an explicit cache on one thread at a time, and a
 # heap's key destructor runs once: each call that reaches an existing
 # heap through `heap_at` makes one token, before any reference it lends.

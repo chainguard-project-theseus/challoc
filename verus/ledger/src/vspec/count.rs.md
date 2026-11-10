@@ -21,7 +21,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.fetch_add(v, ordering)`, wrapping.
 
-Hashes: contract 571703860, body 3058007043.
+Hashes: contract 571703860, body 3058007043, spec 2982154212.
+Spec fns: 17, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `count_id`, `wrap32`.
 
 ```rust
 pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
@@ -42,7 +43,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.fetch_sub(v, ordering)`, wrapping.
 
-Hashes: contract 4017762350, body 3258061426.
+Hashes: contract 4017762350, body 3258061426, spec 2982154212.
+Spec fns: 17, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `count_id`, `wrap32`.
 
 ```rust
 pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
@@ -63,7 +65,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
-Hashes: contract 3494972197, body 3111288973.
+Hashes: contract 3494972197, body 3111288973, spec 3576786239.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `count_id`.
 
 ```rust
 pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>)
@@ -85,7 +88,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
-Hashes: contract 3212013289, body 2830643570.
+Hashes: contract 3212013289, body 2830643570, spec 3576786239.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `count_id`.
 
 ```rust
 pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm>) -> (r: u32)
@@ -106,7 +110,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.swap(v, ordering)`: the previous value.
 
-Hashes: contract 1801534627, body 188380829.
+Hashes: contract 1801534627, body 188380829, spec 3576786239.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `count_id`.
 
 ```rust
 pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
@@ -127,7 +132,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::co
 
 > `c.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the counter held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
 
-Hashes: contract 4219812481, body 1661924601.
+Hashes: contract 4219812481, body 1661924601, spec 3576786239.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `count_id`.
 
 ```rust
 pub fn compare_exchange(

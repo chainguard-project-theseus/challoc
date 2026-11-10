@@ -42,7 +42,8 @@ Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.
 
-Hashes: contract 3755770132, body 3659477090.
+Hashes: contract 3755770132, body 3659477090, spec 655083386.
+Spec fns: 1, from `classes_storage`.
 
 ```rust
 fn classes_ptr() -> (p: *mut [Class; NCLASSES])

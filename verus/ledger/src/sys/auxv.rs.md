@@ -17,7 +17,8 @@ Tool: none (assumption). Status: trusted.
 
 > glibc's `getauxval(3)`: some word, 0 when the key is absent.
 
-Hashes: contract 164231696, body none.
+Hashes: contract 164231696, body none, spec 3990814444.
+Spec fns: 7, from `at_secure`, `is_pow2`, `process_regions`.
 
 ```rust
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
@@ -35,7 +36,8 @@ Tool: none (assumption). Status: trusted.
 
 > As above, and on arm64: an `AT_HWCAP` word with `HWCAP_PACA` and `HWCAP_PACG` set means the process may execute the data-key A instructions ([`crate::sys::pac::pac_available`]).
 
-Hashes: contract 710834691, body none.
+Hashes: contract 710834691, body none, spec 3136114005.
+Spec fns: 8, from `at_secure`, `is_pow2`, `pac_available`, `process_regions`.
 
 ```rust
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)

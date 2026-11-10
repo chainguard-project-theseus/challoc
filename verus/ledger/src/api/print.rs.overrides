@@ -7,7 +7,7 @@ hist_line	core library	Kani	discharged (Kani: api::print::kani_print::hist_line_
 # The report's call of the caller's callback: Kani runs the body on a
 # recording callback or none, any `cbopaque` and any buffer holding a NUL;
 # what the program's callback is and does is its contract (C3).
-call_back	function pointer	Kani	discharged on premises (Kani: api::print::kani_print::call_back_calls_once; premises: C3 (the program's `write_cb` is null or a report callback that keeps the C allocation contract))	contract 2110597196, body 1036480111
+call_back	function pointer	Kani	discharged on premises (Kani: api::print::kani_print::call_back_calls_once; premises: C3 (the program's `write_cb` is null or a report callback that keeps the C allocation contract))	contract 2110597196, body 1036480111, spec 3151211091
 # The report's call out to the caller's stream. Kani runs the body with
 # glibc's pthread_setcancelstate and fwrite replaced by recording
 # stand-ins; what the program passes as the stream is C13, and what
@@ -16,9 +16,9 @@ call_back	function pointer	Kani	discharged on premises (Kani: api::print::kani_p
 # fopencookie stream's write function) are C calls under the C
 # allocation contract, as C3's callbacks' are; the item claims nothing
 # of them.
-write_file	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_write_file::write_file_writes_the_bytes; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point), C13 (the program's malloc_info stream is null or open, with stream functions that keep the C allocation contract), C14 (glibc's fwrite writes at most the bytes to the stream with cancellation disabled, and its calls into challoc keep the C allocation contract))	contract 931825622, body 3828165736
+write_file	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_write_file::write_file_writes_the_bytes; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point), C13 (the program's malloc_info stream is null or open, with stream functions that keep the C allocation contract), C14 (glibc's fwrite writes at most the bytes to the stream with cancellation disabled, and its calls into challoc keep the C allocation contract))	contract 931825622, body 3828165736, spec 3151211091
 # The cancel-state calls into libc around the call outs. Kani runs each
 # body with glibc's pthread_setcancelstate replaced by a recording
 # stand-in; what glibc's function does is C9.
-cancel_disable	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_cancel::disable_keeps_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point))	contract 1116002484, body 1821335431
-cancel_restore	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_cancel::restore_passes_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point))	contract 4251881114, body 3441625971
+cancel_disable	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_cancel::disable_keeps_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point))	contract 1116002484, body 1821335431, spec 2869989918
+cancel_restore	FFI/syscall	Kani	discharged on premises (Kani: api::print::kani_cancel::restore_passes_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point))	contract 4251881114, body 3441625971, spec 2869989918

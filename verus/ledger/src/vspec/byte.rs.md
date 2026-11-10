@@ -18,7 +18,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::by
 
 > `b.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
-Hashes: contract 4086422618, body 2728638763.
+Hashes: contract 4086422618, body 2728638763, spec 2638167228.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `byte_id`.
 
 ```rust
 pub fn load(b: &AtomicU8, ordering: Ordering, Tracked(perm): Tracked<&BytePerm>) -> (r: u8)
@@ -39,7 +40,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::by
 
 > `b.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
-Hashes: contract 3007128824, body 3208554845.
+Hashes: contract 3007128824, body 3208554845, spec 2638167228.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `byte_id`.
 
 ```rust
 pub fn store(b: &AtomicU8, v: u8, ordering: Ordering, Tracked(perm): Tracked<&mut BytePerm>)
@@ -61,7 +63,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::by
 
 > `b.compare_exchange(current, new, success, failure)`: `Ok` with the previous value, `current`, when the byte held it and now holds `new`; otherwise `Err` with the value it holds, unchanged (the strong form never fails spuriously).
 
-Hashes: contract 3457651930, body 129076834.
+Hashes: contract 3457651930, body 129076834, spec 2638167228.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `byte_id`.
 
 ```rust
 pub fn compare_exchange(

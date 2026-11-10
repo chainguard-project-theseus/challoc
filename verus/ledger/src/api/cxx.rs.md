@@ -24,7 +24,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 > Address of libstdc++'s `std::get_new_handler()`, or null when no libstdc++ is loaded in the process.
 
-Hashes: contract 581949349, body 823680132.
+Hashes: contract 581949349, body 823680132, spec 293450297.
+Spec fns: 1, from `is_get_new_handler`.
 
 ```rust
 fn get_new_handler_addr() -> (r: *const c_void)
@@ -39,7 +40,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 > Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
 
-Hashes: contract 366614710, body 4184666617.
+Hashes: contract 366614710, body 4184666617, spec 3574091132.
+Spec fns: 1, from `is_throw_bad_alloc`.
 
 ```rust
 fn throw_bad_alloc_addr() -> (r: *const c_void)
@@ -67,7 +69,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::cxx::kani_cxx::call_get_n
 
 > Call `std::get_new_handler` at `get`, its non-null address ([`is_get_new_handler`]): the installed `new_handler`, if one is set.
 
-Hashes: contract 2579292462, body 3023004719.
+Hashes: contract 2579292462, body 3023004719, spec 4158775454.
+Spec fns: 2, from `is_get_new_handler`, `may_syscall`.
 
 ```rust
 fn call_get_new_handler(get: *const c_void) -> Option<Handler>
@@ -84,7 +87,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::cxx::kani_cxx::call_thro
 
 > Call `std::__throw_bad_alloc` at `t`, its non-null address ([`is_throw_bad_alloc`]).
 
-Hashes: contract 3235960257, body 302946644.
+Hashes: contract 3235960257, body 302946644, spec 1509197871.
+Spec fns: 3, from `is_throw_bad_alloc`, `may_abort`, `may_syscall`.
 
 ```rust
 fn call_throw_bad_alloc(t: *const c_void) -> !
@@ -102,7 +106,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::cxx::kani_cxx::call_hand
 
 > Call the program's `new_handler`, which may write `errno`: `errno` is the calling thread's, taken `&mut` with no ensures, so nothing is known of its value afterwards.
 
-Hashes: contract 2700554716, body 2736379340.
+Hashes: contract 2700554716, body 2736379340, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 fn call_handler(handler: Handler, _errno: Tracked<&mut ThreadErrno>)
@@ -117,7 +122,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::cxx::kani_cxx::call_hand
 
 > Call the program's `new_handler` through `challoc_call_new_handler` (`cxx_handler.cpp`), which catches anything it throws: `false` when it threw.
 
-Hashes: contract 3688412348, body 789930165.
+Hashes: contract 3688412348, body 789930165, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> bool
@@ -132,7 +138,8 @@ Tool: none (assumption). Status: trusted.
 
 > The `operator new` failure protocol: call the `new_handler` and retry until an attempt succeeds or no handler is installed, then throw `std::bad_alloc` (or return null for the `nothrow_t` forms, also when the handler throws).
 
-Hashes: contract 885166493, body 1361153587.
+Hashes: contract 885166493, body 1361153587, spec 3688713621.
+Spec fns: 94, from `Live::gives`, `LockOrder::top`, `fits`, `is_pow2`, `may_abort`, `may_syscall`.
 
 ```rust
 fn oom(
@@ -163,7 +170,8 @@ Tool: none (assumption). Status: trusted.
 
 > The token of a C++ call that hands over the block at `p` to an `operator delete` ([`CCall`], [`CEntry::Frees`]).
 
-Hashes: contract 3969130002, body none.
+Hashes: contract 3969130002, body none, spec 4163122693.
+Spec fns: 46, from `CCall::fresh`.
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

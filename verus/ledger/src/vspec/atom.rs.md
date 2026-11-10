@@ -21,7 +21,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
-Hashes: contract 3684131722, body 3052065581.
+Hashes: contract 3684131722, body 3052065581, spec 2444492498.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `usize_id`.
 
 ```rust
 pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm): Tracked<&mut UsizePerm>)
@@ -43,7 +44,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
-Hashes: contract 1353355935, body 3163496896.
+Hashes: contract 1353355935, body 3163496896, spec 2444492498.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `usize_id`.
 
 ```rust
 pub fn load_usize(a: &AtomicUsize, ordering: Ordering, Tracked(perm): Tracked<&UsizePerm>) -> (r: usize)
@@ -64,7 +66,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::atom::kani_atom::usize
 
 > `a as *const AtomicUsize`: a pointer to the atomic, which names it ([`usize_id_at`]).
 
-Hashes: contract 1082442458, body 2711750530.
+Hashes: contract 1082442458, body 2711750530, spec 1356165676.
+Spec fns: 2, from `usize_id`, `usize_id_at`.
 
 ```rust
 pub(crate) fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
@@ -82,7 +85,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 > `(*p).store(v, ordering)` through a pointer to an atomic, with the permission of the atomic it names (it panics for an `Acquire` or `AcqRel` ordering).
 
-Hashes: contract 3281897512, body 2105851067.
+Hashes: contract 3281897512, body 2105851067, spec 2557094330.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `usize_id_at`.
 
 ```rust
 pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering, Tracked(perm): Tracked<&mut UsizePerm>)
@@ -106,7 +110,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: watermark::loom_waterma
 
 Body mints Tracked at line 234.
 
-Hashes: contract 3762602297, body 696989655.
+Hashes: contract 3762602297, body 696989655, spec 584658049.
+Spec fns: 3, from `UsizePerm::id`, `UsizePerm::value`, `usize_id`.
 
 ```rust
 pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
@@ -131,7 +136,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 > `(*p).load(ordering)` through `perm`, the permission to the atomic at `p`: the value the permission holds ([`u16_value`]).
 
-Hashes: contract 741036831, body 1754619584.
+Hashes: contract 741036831, body 1754619584, spec 3055705671.
+Spec fns: 11, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `Stored::ptr`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`, `u16_value`.
 
 ```rust
 pub(crate) unsafe fn load_u16_at(p: *const AtomicU16, ordering: Ordering, Tracked(perm): Tracked<&PointsTo<AtomicU16>>) -> (r: u16)

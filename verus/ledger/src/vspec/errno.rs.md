@@ -34,7 +34,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the C-program contract of `errno`): when an export returns and `failed` holds, the `errno` its C caller reads ([`c_errno`]) is the value of the token the export lent ([`lend`]), as the token stands after its last use.
 
-Hashes: contract 3303294313, body none.
+Hashes: contract 3303294313, body none, spec 3696519078.
+Spec fns: 2, from `ThreadErrno::val`, `c_errno`.
 
 ```rust
 pub axiom fn axiom_errno_at_return(tracked e: ThreadErrno, failed: bool)
@@ -50,7 +51,8 @@ Tool: Kani. Status: discharged on premises (Kani: vspec::errno::kani_errno::set_
 
 > Trusted: writes `e` to the calling thread's `errno` through libc's pointer.
 
-Hashes: contract 633168062, body 3907694617.
+Hashes: contract 633168062, body 3907694617, spec 329710360.
+Spec fns: 2, from `Stored::val`, `ThreadErrno::val`.
 
 ```rust
 pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
@@ -65,7 +67,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::errno::kani_errno::get
 
 > Trusted: reads the calling thread's `errno` through libc's pointer, and claims the value is the token's ([`ThreadErrno::val`]): challoc's last write through it, or the caller's `errno` before any.
 
-Hashes: contract 1335728985, body 3378553109.
+Hashes: contract 1335728985, body 3378553109, spec 329710360.
+Spec fns: 2, from `Stored::val`, `ThreadErrno::val`.
 
 ```rust
 pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> (r: c_int)

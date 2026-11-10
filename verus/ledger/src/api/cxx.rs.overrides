@@ -3,19 +3,19 @@ Handler	function pointer	none (assumption)	trusted (claims nothing: an opaque ty
 # The call of the C++ runtime's `std::get_new_handler`: Kani runs the body
 # on a recording stand-in that returns none or one of two handlers; that
 # the address is the runtime's function, and what it does, is C5.
-call_get_new_handler	function pointer	Kani	discharged on premises (Kani: api::cxx::kani_cxx::call_get_new_handler_gives_installed; premises: C5 (the address, an `asm!` output only called, is the C++ runtime's std::get_new_handler, which returns null or the installed handler without throwing))	contract 2579292462, body 3023004719
+call_get_new_handler	function pointer	Kani	discharged on premises (Kani: api::cxx::kani_cxx::call_get_new_handler_gives_installed; premises: C5 (the address, an `asm!` output only called, is the C++ runtime's std::get_new_handler, which returns null or the installed handler without throwing))	contract 2579292462, body 3023004719, spec 4158775454
 # The call of the C++ runtime's `std::__throw_bad_alloc`: Kani runs the body
 # on stand-ins that panic or end the path; that the
 # address is the runtime's function, and that it throws, is C6, but the
 # throw unwinds through Rust frames, which rests on codegen.
-call_throw_bad_alloc	function pointer	Kani	trusted (partly checked, Kani: api::cxx::kani_cxx::call_throw_bad_alloc_leaves_by_panic and api::cxx::kani_cxx::call_throw_bad_alloc_calls_once; not checked: what std::__throw_bad_alloc does (C6), and that its throw unwinds through `throw_bad_alloc` and its callers (`oom`, or the aligned operator's frame) to the caller of `operator new`, undefined in Rust and resting on the unwind tables rustc emits (module doc))	contract 3235960257, body 302946644
+call_throw_bad_alloc	function pointer	Kani	trusted (partly checked, Kani: api::cxx::kani_cxx::call_throw_bad_alloc_leaves_by_panic and api::cxx::kani_cxx::call_throw_bad_alloc_calls_once; not checked: what std::__throw_bad_alloc does (C6), and that its throw unwinds through `throw_bad_alloc` and its callers (`oom`, or the aligned operator's frame) to the caller of `operator new`, undefined in Rust and resting on the unwind tables rustc emits (module doc))	contract 3235960257, body 302946644, spec 1509197871
 # The throwing forms' call of the program's `new_handler`: Kani runs the
 # body on a recording handler; what the handler does is its contract (C4),
 # but a throw unwinds through Rust frames, which rests on codegen.
-call_handler	function pointer	Kani	trusted (partly checked, Kani: api::cxx::kani_cxx::call_handler_calls_once; not checked: what the program's handler does (C4), and that a throw from it unwinds through `oom` to the caller of `operator new`, undefined in Rust and resting on the unwind tables rustc emits (module doc))	contract 2700554716, body 2736379340
+call_handler	function pointer	Kani	trusted (partly checked, Kani: api::cxx::kani_cxx::call_handler_calls_once; not checked: what the program's handler does (C4), and that a throw from it unwinds through `oom` to the caller of `operator new`, undefined in Rust and resting on the unwind tables rustc emits (module doc))	contract 2700554716, body 2736379340, spec 2869989918
 # Calls the handler through the C++ shim that catches its exception. Kani
 # runs the body with the shim replaced by a model, so the shim is unchecked.
-call_handler_caught	function pointer	Kani	trusted (partly checked, Kani: api::cxx::kani_cxx::call_handler_caught_reports_shim; not checked: `challoc_call_new_handler` in `cxx_handler.cpp`, which the harness replaces by a model that calls the handler and returns 1 or reports a throw as 0; what the program's handler does (C4))	contract 3688412348, body 789930165
+call_handler_caught	function pointer	Kani	trusted (partly checked, Kani: api::cxx::kani_cxx::call_handler_caught_reports_shim; not checked: `challoc_call_new_handler` in `cxx_handler.cpp`, which the harness replaces by a model that calls the handler and returns 1 or reports a throw as 0; what the program's handler does (C4))	contract 3688412348, body 789930165, spec 2869989918
 # Termination rests on the program's `new_handler`: it frees memory, is
 # removed or throws (the C++ contract).
 oom	termination	none (assumption)
@@ -25,5 +25,5 @@ axiom_c_call	C-program contract	none (assumption)
 # against the contract verus/isla/seams.md quotes. `is_throw_bad_alloc`
 # and `is_get_new_handler` say the address is the symbol's definition's,
 # which rests on the loader.
-get_new_handler_addr	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::get_new_handler's address or 0))	contract 581949349, body 823680132
-throw_bad_alloc_addr	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0))	contract 366614710, body 4184666617
+get_new_handler_addr	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::get_new_handler's address or 0))	contract 581949349, body 823680132, spec 293450297
+throw_bad_alloc_addr	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: P8 (the loader fills the GOT entry with std::__throw_bad_alloc's address or 0))	contract 366614710, body 4184666617, spec 3574091132

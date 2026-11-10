@@ -160,7 +160,8 @@ Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.
 
 > `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size, and a class state is not empty (a zero-sized one would leave its array outside any allocation, as far as `in_alloc` knows).
 
-Hashes: contract 3337610579, body none.
+Hashes: contract 3337610579, body none, spec 3940336727.
+Spec fns: 1, from `field_fits`.
 
 ```rust
 axiom fn axiom_arena_layout()
@@ -191,7 +192,8 @@ Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arena` at `p` (`Arena::split`'s parts and class states, every one initialised), as the `Arena`: the value of each field is what its permission holds.
 
-Hashes: contract 1520016682, body none.
+Hashes: contract 1520016682, body none, spec 2856443079.
+Spec fns: 40, from `ArenaParts::at`, `BytePerm::value`, `ClassState::spec_arena`, `ClassState::spec_class`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `HugeDesc::spec_arena`, `Lock::rank`, `LockGuard::view`, `Scratch::value`, `SetTable::rank`, `SlabTable::spec_class`, `Table::view`, `TlsCell::value`, `TlsSlot::value`, `TwoLevelBitmap::view`, `UsizePerm::value`, `WordPerm::value`, `classes_at`, `elems_init`, `pad_covers`, `rank_arena_stats`, `rank_sets`.
 
 ```rust
 axiom fn axiom_arena_assemble(
@@ -240,7 +242,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_st
 
 > The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
 
-Hashes: contract 2008592952, body 2682043248.
+Hashes: contract 2008592952, body 2682043248, spec 942875419.
+Spec fns: 15, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Lock::rank`, `RawLock::rank`, `Scratch::value`, `SetTable::rank`, `Stored::ptr`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`, `rank_arena_stats`.
 
 ```rust
 unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)
@@ -259,7 +262,8 @@ Tool: Kani. Status: discharged (Kani: arena::kani_key_less::key_less_is_key_lt).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
 
-Hashes: contract 3102880229, body 2028399596.
+Hashes: contract 3102880229, body 2028399596, spec 2519779416.
+Spec fns: 1, from `key_lt`.
 
 ```rust
 fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
@@ -373,7 +377,8 @@ Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena
 
 > `Arenas`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`) by the size, and neither array's element empty (as for `Arena`'s class states).
 
-Hashes: contract 752559173, body none.
+Hashes: contract 752559173, body none, spec 3940336727.
+Spec fns: 1, from `field_fits`.
 
 ```rust
 axiom fn axiom_arenas_layout()
@@ -406,7 +411,8 @@ Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
 
-Hashes: contract 251988770, body none.
+Hashes: contract 251988770, body none, spec 2165769514.
+Spec fns: 37, from `ArenasParts::at`, `BytePerm::id`, `CountPerm::id`, `DescPerm::id`, `EntryPerm::id`, `Lock::rank`, `LockGuard::view`, `StateTicket::id`, `Table::view`, `TwoLevelBitmap::view`, `UsizePerm::id`, `arenas_pad_covers`, `bounds_at`, `count_id`, `elems_init`, `entry_id`, `lock_init`, `narenas_ns`, `rank_arenas`, `spare_ns`, `tables_at`.
 
 ```rust
 axiom fn axiom_arenas_assemble(

@@ -2,11 +2,11 @@
 # glibc's __errno_location replaced by a recording stand-in; what glibc's
 # function returns is C11, and the pointer's provenance is the argument of
 # verus/kani/premises.md ("Provenance of the addresses").
-set_errno	FFI/syscall	Kani	discharged on premises (Kani: vspec::errno::kani_errno::set_errno_writes_errno; premises: C11 (glibc's __errno_location returns the address of the calling thread's errno, outside the Rust abstract machine and so exposed))	contract 633168062, body 3907694617
+set_errno	FFI/syscall	Kani	discharged on premises (Kani: vspec::errno::kani_errno::set_errno_writes_errno; premises: C11 (glibc's __errno_location returns the address of the calling thread's errno, outside the Rust abstract machine and so exposed))	contract 633168062, body 3907694617, spec 329710360
 # Also claims the value read is the token's: that no libc call in trusted
 # code wrote errno since challoc's last write in this C call (or, before
 # any, since the call began). Kani runs the body as for set_errno.
-get_errno	FFI/syscall	Kani	trusted (partly checked, Kani: vspec::errno::kani_errno::get_errno_reads_errno; not checked: what glibc's `__errno_location` returns (premise C11 of verus/kani/premises.md), and that the value read is the token's: that no libc call in trusted code, and no other code on the thread (a signal handler that does not restore it), wrote `errno` since challoc's last write through it, or, before any, since the C call began)	contract 1335728985, body 3378553109
+get_errno	FFI/syscall	Kani	trusted (partly checked, Kani: vspec::errno::kani_errno::get_errno_reads_errno; not checked: what glibc's `__errno_location` returns (premise C11 of verus/kani/premises.md), and that the value read is the token's: that no libc call in trusted code, and no other code on the thread (a signal handler that does not restore it), wrote `errno` since challoc's last write through it, or, before any, since the C call began)	contract 1335728985, body 3378553109, spec 329710360
 # The export wrappers' token for the calling thread's errno, ghost only.
 lend	C-program contract	none (assumption)
 # The errno the C caller reads when an export returns is the lent token's

@@ -7,4 +7,4 @@ axiom_cast	platform/kernel fact	none (assumption)
 # The copy into bytes the `&mut` permission covers (as zero_raw), and its
 # effect, which vstd does not state: the destination bytes read as the
 # source's after.
-copy_raw	raw pointer (internal)	Kani	discharged (Kani: vspec::user::kani_copy::copy_raw_copies, vspec::user::kani_copy::copy_raw_copies_within)	contract 2261514908, body 3828920028
+copy_raw	raw pointer (internal)	Kani	discharged (Kani: vspec::user::kani_copy::copy_raw_copies, vspec::user::kani_copy::copy_raw_copies_within)	contract 2261514908, body 3828920028, spec 3087921524

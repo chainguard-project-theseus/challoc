@@ -17,15 +17,15 @@ A_CLASSES	core library	Kani	discharged (const assert: `axiom_arena_layout` in sr
 A_LARGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3093238991, body none
 A_STATS	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3834723382, body none
 A_LAST_EXIT_PURGE	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 2958641560, body none
-axiom_arena_layout	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3337610579, body none
+axiom_arena_layout	core library	Kani	discharged (const assert: `axiom_arena_layout` in src/arena.rs)	contract 3337610579, body none, spec 3940336727
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arena_assemble	raw pointer (internal)	none (assumption)
 # A raw in-place fill, like `stats::zero_records`: zero bytes are a free
 # lock over an empty record, then the `index` store. The harness runs
 # the body on a slot of arbitrary bytes; the rank is a ghost field.
-Arena::put_stats	raw pointer (internal)	Kani	trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`)	contract 2008592952, body 2682043248
+Arena::put_stats	raw pointer (internal)	Kani	trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`)	contract 2008592952, body 2682043248, spec 942875419
 # `core`'s tuple and `bool` order, as documented.
-key_less	core library	Kani	discharged (Kani: arena::kani_key_less::key_less_is_key_lt)	contract 3102880229, body 2028399596
+key_less	core library	Kani	discharged (Kani: arena::kani_key_less::key_less_is_key_lt)	contract 3102880229, body 2028399596, spec 2519779416
 # `Arenas`'s byte offsets and layout, which the build checks with `fits`.
 AR_TABLE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 2025192559, body none
 AR_BOUND	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 472640039, body none
@@ -36,7 +36,7 @@ AR_SPARE	core library	Kani	discharged (const assert: `axiom_arenas_layout` in sr
 AR_INVS	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 875656104, body none
 AR_COUNT_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 4281409, body none
 AR_SPARE_INV	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 1171311431, body none
-axiom_arenas_layout	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 752559173, body none
+axiom_arenas_layout	core library	Kani	discharged (const assert: `axiom_arenas_layout` in src/arena.rs)	contract 752559173, body none, spec 3940336727
 # Joining typed field permissions into the struct's: no vstd counterpart.
 axiom_arenas_assemble	raw pointer (internal)	none (assumption)
 # The smallest-sample loop retries a weak compare-and-exchange while other

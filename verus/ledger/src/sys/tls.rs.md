@@ -19,7 +19,8 @@ Tool: none (assumption). Status: trusted.
 
 > The calling thread's token at a top-level user of the slot, as the slot's last user left it: what [`heap::thread::slot_ok`] states of the value it holds (a heap value comes with the heap's permission, the heap well formed, and nothing else with one), and `tp` this thread's thread pointer.
 
-Hashes: contract 3989910888, body none.
+Hashes: contract 3989910888, body none, spec 704082058.
+Spec fns: 123, from `TlsCell::creates`, `slot_ok`.
 
 ```rust
 pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
@@ -36,7 +37,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; 
 
 > Read the calling thread's slot.
 
-Hashes: contract 584579997, body 90234313.
+Hashes: contract 584579997, body 90234313, spec 3066003437.
+Spec fns: 9, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`.
 
 ```rust
 pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
@@ -52,7 +54,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; 
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
 
-Hashes: contract 900674773, body 3050843110.
+Hashes: contract 900674773, body 3050843110, spec 2422367595.
+Spec fns: 11, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `TlsCell::tp`, `TlsCell::value`, `TlsSlot::tp`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`.
 
 ```rust
 pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
@@ -69,7 +72,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; 
 
 > Write the calling thread's slot.
 
-Hashes: contract 2478902706, body 3452213169.
+Hashes: contract 2478902706, body 3452213169, spec 2018223471.
+Spec fns: 14, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `TlsCell::set_to`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`, `slot_step`.
 
 ```rust
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)

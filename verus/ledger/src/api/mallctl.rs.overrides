@@ -1,6 +1,6 @@
 # The address of a static whose initialiser lies outside verus!; it
 # claims only that every call returns the same nodes (ROOT, immutable).
-root	allocator invariant	Kani	discharged (Kani: api::mallctl::kani_root::root_returns)	contract 3299808033, body 630918910
+root	allocator invariant	Kani	discharged (Kani: api::mallctl::kani_root::root_returns)	contract 3299808033, body 630918910, spec 2312667299
 # `VERSION_STR`, whose definition lies outside verus!; it claims only that
 # the value is a `&'static str` (it is `VERSION_STR`).
 VERSION	core library	Kani	discharged (Kani: api::mallctl::kani_root::version_is_version_str)	contract 945944658, body none

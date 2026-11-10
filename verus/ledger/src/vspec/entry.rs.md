@@ -18,7 +18,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::en
 
 > `a.store(v, ordering)` (it panics for an `Acquire` or `AcqRel` ordering).
 
-Hashes: contract 1746040714, body 3052065581.
+Hashes: contract 1746040714, body 3052065581, spec 2813638883.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `entry_id`.
 
 ```rust
 pub fn store<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): Tracked<&mut EntryPerm<T>>)
@@ -40,7 +41,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::en
 
 > `a.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
-Hashes: contract 3032578775, body 3163496896.
+Hashes: contract 3032578775, body 3163496896, spec 2813638883.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `entry_id`.
 
 ```rust
 pub fn load<T>(a: &AtomicPtr<T>, ordering: Ordering, Tracked(perm): Tracked<&EntryPerm<T>>) -> (r: *mut T)
@@ -61,7 +63,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::en
 
 > `a.swap(v, ordering)`: the permission's value before, which becomes `v`.
 
-Hashes: contract 1251989958, body 3908961486.
+Hashes: contract 1251989958, body 3908961486, spec 2813638883.
+Spec fns: 16, from `BytePerm::id`, `BytePerm::value`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `StateTicket::id`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `entry_id`.
 
 ```rust
 pub fn swap<T>(a: &AtomicPtr<T>, v: *mut T, ordering: Ordering, Tracked(perm): Tracked<&mut EntryPerm<T>>) -> (r: *mut T)

@@ -17,7 +17,8 @@ Tool: none (assumption). Status: trusted.
 
 > The permission to the `len` usable bytes of the block at `p`, a slot of a class (`len` its size) or a huge run, valid through `p`.
 
-Hashes: contract 2116791243, body none.
+Hashes: contract 2116791243, body none, spec 106820222.
+Spec fns: 66, from `Regions::is_huge_block`, `Regions::is_slot`, `UserMem::covers`, `UserMem::provenance`, `class_table`, `process_regions`, `regions_ok`.
 
 ```rust
 axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
@@ -38,7 +39,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a call that hands a block over, `vspec::cbuf`): the token of the block the C caller hands over through a free or a reallocation ([`CCall::block`]): C holds the token of every block it was given and has not freed, and such a call passes one of them, or null.
 
-Hashes: contract 2106991331, body none.
+Hashes: contract 2106991331, body none, spec 1265110838.
+Spec fns: 80, from `CCall::block`, `Live::claims`.
 
 ```rust
 pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)

@@ -45,6 +45,57 @@ space (a signature reflowed one parameter per line) changes them, and a
 `/* */` comment counts as code. A method's hashes do not cover its
 `impl` line (the impl's generics and `where` bounds).
 
+An entry whose contract names a spec fn of the crate has a third hash,
+`spec S`, and a line `Spec fns: N, from ...` that counts them and lists
+the ones the contract names itself. A contract means what the spec fns
+it names say, so `axiom_start`'s `ensures s.statics.storage_fresh()`
+assumes whatever `Statics::storage_fresh` states: an edit to that body
+widens the axiom while its own text stays the same. `S` is the `cksum`
+CRC of one line `<name> <crc>` per spec fn the contract names, directly
+or through the text of another such spec fn, in byte order, `<crc>`
+being the CRC of that spec fn's attributes, signature and body, with
+comments and whitespace treated as for the contract. So an edit to any
+of them changes the entry, and `--check` fails until `--write`; a
+comment, a reindent, or a move within a file does not (a move to
+another file can change which spec fns a name resolves to). A spec
+fn is a `spec fn`, `open spec fn`, `closed spec fn` or `uninterp spec
+fn` outside test files and `#[cfg(test)]` items. The scan resolves
+names by text, without rustc's types:
+
+- `f(` and `self::f(` are the free spec fn `f` of the same file, else
+  every free one of that name; `crate::f(` and `super::f(` are every
+  free one of that name; `m::f(` is one in a file of module `m`
+  (`src/.../m.rs`, `src/.../m/mod.rs`), else every one of that name; a
+  path from `vstd`, `core`, `std`, `alloc` or `builtin` names none.
+- `T::f(`, `<T as Tr>::f(` and `r.f(` are the method `f` of `T`, or of
+  `r`'s type. The scan follows `r` from a parameter, a named return, a
+  `forall`, `exists` or `choose` binder, a `let x: T`, `self`, `e
+  matches Some(x)`, `old(x)` and `final(x)`, through struct fields (by
+  the struct's name, preferring a struct of the same file), tuple
+  fields, `[i]`, `@` of a `Tracked` or `Ghost`, `->Some_0`, and calls
+  whose spec fns all return one type. `x@` is `x.view()`. It reads one
+  type per name in a text: a name bound twice to different types, or
+  also bound with no type it reads (an untyped `let`, a closure's
+  parameter, a pattern's `V(x)`), is of a type it cannot tell.
+- When it cannot tell `r`'s type, `T` is a trait (for `<T as Tr>`, `Tr`
+  a crate trait), a type parameter of a crate type, a generic parameter
+  whose bounds name a crate trait or that it read no bounds for, or a
+  crate type with no method `f`, it takes every method named `f`; so
+  does a method of a crate trait on a type from outside the crate. A
+  type from outside the crate, and a generic parameter bound only by
+  traits from outside it (`P: InvariantPredicate<K, V>`), name none:
+  the contract states its fact for every such type.
+
+The walk visits each spec fn once, so it ends however spec fns call
+each other. It cannot see a spec fn that a macro writes or calls, one
+named other than by a call or `@` (passed as a value, an operator of a
+crate type, a `when_used_as_spec` exec fn), the methods of a seam's own
+spec impl or trait specification (that seam's contract holds their
+text), or a struct's definition and type invariant. Nor does it see a
+binding it does not read as one (a struct pattern's `S { x }`, a
+binding in a macro), which may leave a name with the type of another
+binding of it.
+
 ## Categories and tools
 
 The categories are inline asm, FFI/syscall, function pointer,
@@ -77,19 +128,26 @@ A status that cites a check (discharged, discharged on premises, or
 trusted (partly checked, ...)), or says the item claims nothing, also
 records, in a fifth column, the hashes of the item the check covered
 (or of the item judged to claim nothing), as its ledger entry shows them:
-`contract C, body B`. `seams.sh --check` fails when they differ from
+`contract C, body B`, and `, spec S` for one whose contract names spec
+fns. `seams.sh --check` fails when they differ from
 the item's, so an edit to a checked seam's attributes, signature,
-`requires`, `ensures` or body fails the check, even after `--write`, until the
+`requires`, `ensures` or body, or to a spec fn its contract names,
+fails the check, even after `--write`, until the
 status is revisited and the hashes copied again from the ledger entry
 (the failure also prints them). It also fails on such a status with no
 hashes, and on hashes after any other status, including `trusted
 (requires, checked at every caller: ...)`, whose body no check runs.
-The hashes cover the seam's own item, not the code it calls or the
-harness or model it cites. `sh verus/seams-mutants.sh` checks that
+The hashes cover the seam's own item and the spec fns its contract
+names, not the exec code it calls or the harness or model it cites.
+`sh verus/seams-mutants.sh` checks that
 `--check`'s self-tests catch weakened forms of this rule, and that, in a
 copy of the tree, an edit to a discharged seam's attribute, `requires`,
-`ensures` or body fails
+`ensures` or body, or to a spec fn its contract names, fails
 `--check` after `--write` while a comment, a reindent or a line shift
+does not; that an edit to a spec fn a trusted seam names, directly
+(`Statics::storage_fresh` losing `conf.is_init()`) or through another
+(`layout::table_ok`), leaves the ledger stale and changes that seam's
+entry; and that an edit to a spec fn no contract names (`thp_word`)
 does not.
 
 A seam is "discharged" when a check outside Verus covers its whole

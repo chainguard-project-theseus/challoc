@@ -43,7 +43,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::jemalloc::kani_hook::call
 
 > `cb(NULL, buf)`: the hook called with a null `cbopaque`, as jemalloc calls it, on the C string in `buf`, which holds a NUL.
 
-Hashes: contract 4272715841, body 924183077.
+Hashes: contract 4272715841, body 924183077, spec 3151211091.
+Spec fns: 2, from `LockOrder::top`, `may_syscall`.
 
 ```rust
 fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
@@ -60,7 +61,8 @@ Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
 
-Hashes: contract 3969130002, body none.
+Hashes: contract 3969130002, body none, spec 4163122693.
+Spec fns: 46, from `CCall::fresh`.
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

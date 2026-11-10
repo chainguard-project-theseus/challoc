@@ -31,7 +31,8 @@ Tool: Kani. Status: discharged (Kani: api::mallctl::kani_root::root_returns).
 
 > [`ROOT`].
 
-Hashes: contract 3299808033, body 630918910.
+Hashes: contract 3299808033, body 630918910, spec 2312667299.
+Spec fns: 1, from `root_nodes`.
 
 ```rust
 fn root() -> (r: &'static [Node])
@@ -46,7 +47,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
 
-Hashes: contract 2849493902, body none.
+Hashes: contract 2849493902, body none, spec 4163122693.
+Spec fns: 46, from `CCall::fresh`.
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

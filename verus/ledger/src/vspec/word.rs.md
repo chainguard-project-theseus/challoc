@@ -33,7 +33,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::wo
 
 > `w.fetch_or(v, ordering)`.
 
-Hashes: contract 1035611347, body 3207900689.
+Hashes: contract 1035611347, body 3207900689, spec 674471426.
+Spec fns: 18, from `BytePerm::value`, `CStr::addr`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::addr`, `HeapPerm::value`, `Live::addr`, `Reserved::addr`, `Scratch::value`, `Slots::addr`, `TlsCell::value`, `TlsSlot::value`, `Unbacked::addr`, `UsizePerm::value`, `WordPerm::addr`, `WordPerm::value`, `Zeroed::addr`, `word_addr`.
 
 ```rust
 pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>) -> (prev: u64)
@@ -54,7 +55,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::wo
 
 > `w.store(v, ordering)`, which panics for an `Acquire` or `AcqRel` ordering.
 
-Hashes: contract 4071357672, body 3296770765.
+Hashes: contract 4071357672, body 3296770765, spec 674471426.
+Spec fns: 18, from `BytePerm::value`, `CStr::addr`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::addr`, `HeapPerm::value`, `Live::addr`, `Reserved::addr`, `Scratch::value`, `Slots::addr`, `TlsCell::value`, `TlsSlot::value`, `Unbacked::addr`, `UsizePerm::value`, `WordPerm::addr`, `WordPerm::value`, `Zeroed::addr`, `word_addr`.
 
 ```rust
 pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>)
@@ -76,7 +78,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::wo
 
 > `w.load(ordering)`: the permission's value (it panics for a `Release` or `AcqRel` ordering).
 
-Hashes: contract 2516375944, body 560895366.
+Hashes: contract 2516375944, body 560895366, spec 674471426.
+Spec fns: 18, from `BytePerm::value`, `CStr::addr`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::addr`, `HeapPerm::value`, `Live::addr`, `Reserved::addr`, `Scratch::value`, `Slots::addr`, `TlsCell::value`, `TlsSlot::value`, `Unbacked::addr`, `UsizePerm::value`, `WordPerm::addr`, `WordPerm::value`, `Zeroed::addr`, `word_addr`.
 
 ```rust
 pub fn load(w: &AtomicU64, ordering: Ordering, Tracked(perm): Tracked<&WordPerm>) -> (r: u64)
@@ -97,7 +100,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::wo
 
 > `w.fetch_and(v, ordering)`.
 
-Hashes: contract 1239913950, body 2893078100.
+Hashes: contract 1239913950, body 2893078100, spec 674471426.
+Spec fns: 18, from `BytePerm::value`, `CStr::addr`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::addr`, `HeapPerm::value`, `Live::addr`, `Reserved::addr`, `Scratch::value`, `Slots::addr`, `TlsCell::value`, `TlsSlot::value`, `Unbacked::addr`, `UsizePerm::value`, `WordPerm::addr`, `WordPerm::value`, `Zeroed::addr`, `word_addr`.
 
 ```rust
 pub fn fetch_and(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>) -> (prev: u64)

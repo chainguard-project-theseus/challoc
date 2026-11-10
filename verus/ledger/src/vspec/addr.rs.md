@@ -19,7 +19,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr
 
 > `addr as *mut u8`: a pointer to `addr` (Verus supports only the other direction of the cast), [`addr_ptr`], with [`cast_provenance`].
 
-Hashes: contract 3273012027, body 3586730087.
+Hashes: contract 3273012027, body 3586730087, spec 3623026126.
+Spec fns: 2, from `addr_ptr`, `cast_provenance`.
 
 ```rust
 pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
@@ -37,7 +38,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_copy_nonoverlapping)
 
 > `core::ptr::copy_nonoverlapping`, with the safety contract of the `core` documentation: both pointers are properly aligned and, unless the copy is empty, `src` is valid for reads and `dst` for writes of `count * size_of::<T>()` bytes, and the two ranges do not overlap.
 
-Hashes: contract 3491070697, body none.
+Hashes: contract 3491070697, body none, spec 2188973257.
+Spec fns: 24, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `c_apart`, `c_writes`, `valid_reads`, `valid_writes`.
 
 ```rust
 pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T, dst: *mut T, count: usize)
@@ -62,7 +64,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_is_null).
 
 > `<*mut T>::is_null`: the address is zero.
 
-Hashes: contract 2851786109, body none.
+Hashes: contract 2851786109, body none, spec 3955195640.
+Spec fns: 10, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`.
 
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ <*mut T>::is_null ](p: *mut T) -> (r: bool)
@@ -80,7 +83,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_is_null).
 
 > `<*const T>::is_null`: the address is zero.
 
-Hashes: contract 544862272, body none.
+Hashes: contract 544862272, body none, spec 3955195640.
+Spec fns: 10, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`.
 
 ```rust
 pub assume_specification<T: core::marker::PointeeSized>[ <*const T>::is_null ](p: *const T) -> (r: bool)

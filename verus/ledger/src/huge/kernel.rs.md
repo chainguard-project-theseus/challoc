@@ -16,7 +16,8 @@ Tool: RefinedRust. Status: trusted (requires, checked at every caller: the huge 
 
 > Write a zero to the byte at `addr`, the first byte of a run being placed (`split_guard`), to give its VMA an `anon_vma` by a write fault when `MADV_POPULATE_WRITE` is refused.
 
-Hashes: contract 192780428, body 2972789721.
+Hashes: contract 192780428, body 2972789721, spec 1714579418.
+Spec fns: 27, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`, `apart_from_runs`, `committed`, `held_by`, `spares_guards`.
 
 ```rust
 pub(super) fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>)

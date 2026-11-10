@@ -3,17 +3,17 @@
 # (x86_64 `syscall`), so the kernel's side of the call stays unchecked:
 # run.sh checks each against the contract verus/isla/seams.md quotes.
 # `#1` is the x86_64 `mod imp`, `#2` the aarch64 one.
-syscall0#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 2975113020, body 3825585985
-syscall1#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3787461194, body 3050307281
-syscall2#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3919645429, body 3925922127
-syscall3#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1576468672, body 3351063
-syscall4#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1269561349, body 2919971514
-syscall5#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3719849767, body 3707998342
-syscall6#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 878913849, body 276620174
-syscall0#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 2975113020, body 418776006
-syscall1#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3787461194, body 3699927365
-syscall2#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3919645429, body 87303903
-syscall3#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1576468672, body 2023455942
-syscall4#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1269561349, body 857626010
-syscall5#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3719849767, body 4277526220
-syscall6#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 878913849, body 933880841
+syscall0#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 2975113020, body 3825585985, spec 2869989918
+syscall1#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3787461194, body 3050307281, spec 2869989918
+syscall2#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3919645429, body 3925922127, spec 2869989918
+syscall3#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1576468672, body 3351063, spec 1702707844
+syscall4#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1269561349, body 2919971514, spec 2869989918
+syscall5#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3719849767, body 3707998342, spec 2869989918
+syscall6#1	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 878913849, body 276620174, spec 2869989918
+syscall0#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 2975113020, body 418776006, spec 2869989918
+syscall1#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3787461194, body 3699927365, spec 2869989918
+syscall2#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3919645429, body 87303903, spec 2869989918
+syscall3#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1576468672, body 2023455942, spec 1702707844
+syscall4#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 1269561349, body 857626010, spec 2869989918
+syscall5#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 3719849767, body 4277526220, spec 2869989918
+syscall6#2	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call))	contract 878913849, body 933880841, spec 2869989918

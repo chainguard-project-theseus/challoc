@@ -1,6 +1,6 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 core::ffi::CStr::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::cstr_as_ptr)	contract 569588339, body none
-char::to_digit	core library	Kani	discharged (Kani: kani_proofs::core_int::char_to_digit)	contract 2455008607, body none
+char::to_digit	core library	Kani	discharged (Kani: kani_proofs::core_int::char_to_digit)	contract 2455008607, body none, spec 2009017741
 <*const T>::cast::<U>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_cast)	contract 3681771168, body none
 <*const T>::wrapping_add	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_wrapping_add)	contract 2840327990, body none
 # Opaque types, which claim nothing (verus/SEAMS.md, "Status").

@@ -3,13 +3,13 @@ axiom_user_va_limit	platform/kernel fact	none (assumption)
 # user address with the same modifier gives it back. Isla checks the
 # aarch64 round trip in every configuration verus/isla/seams.md names;
 # those configurations (P12, P13 there) are the runs' bounds.
-axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 2618051585, body none
+axiom_auth_sign	platform/kernel fact	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 2618051585, body none, spec 837181740
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks each
 # against the contract verus/isla/seams.md quotes. `spec_sign` and
 # `spec_auth` are one function per process only while the kernel keeps
 # the thread's data key A and EnDA as they were, which the runs take as
 # given, and an `autda` that faults returns only if the kernel resumes
 # past it.
-sign	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K3 (a fixed data key A and EnDA))	contract 4234608999, body 3950422969
-auth	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA))	contract 361455037, body 4273507842
-strip	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 2592903648, body 3148561063
+sign	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K3 (a fixed data key A and EnDA))	contract 4234608999, body 3950422969, spec 4035383826
+auth	inline asm	Islaris/Isla	discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past an autda that faults) and K3 (a fixed data key A and EnDA))	contract 361455037, body 4273507842, spec 1331880532
+strip	inline asm	Islaris/Isla	discharged (Isla: verus/isla/seams.md)	contract 2592903648, body 3148561063, spec 456046819

@@ -86,7 +86,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::char_to_digit).
 
 > `char::to_digit` (`core` documentation): the digits are `0`..`9`, then `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count; panics for a radix outside `2..=36`.
 
-Hashes: contract 2455008607, body none.
+Hashes: contract 2455008607, body none, spec 2009017741.
+Spec fns: 1, from `to_digit_spec`.
 
 ```rust
 pub assume_specification[ char::to_digit ](c: char, radix: u32) -> (r: Option<u32>)

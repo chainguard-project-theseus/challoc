@@ -26,7 +26,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the calling thread's mask): the token stands for the signal mask of the thread that calls this.
 
-Hashes: contract 2374419075, body none.
+Hashes: contract 2374419075, body none, spec 3989905329.
+Spec fns: 4, from `SigMask::wf`.
 
 ```rust
 pub(crate) axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
@@ -42,7 +43,8 @@ Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a `getrandom` that does not fail returns the number of bytes it stored, at most `buflen`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
 
-Hashes: contract 446341345, body none.
+Hashes: contract 446341345, body none, spec 3209317781.
+Spec fns: 1, from `returned3`.
 
 ```rust
 pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: usize, r: usize)
@@ -60,7 +62,8 @@ Tool: none (assumption). Status: trusted.
 
 > Fill `buf` completely from `getrandom`, retrying short reads and `EINTR`.
 
-Hashes: contract 68011817, body 2359709396.
+Hashes: contract 68011817, body 2359709396, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
@@ -75,7 +78,8 @@ Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that does not fail returns the number of bytes it stored, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result or a driver returns more than it was asked for (the VFS does not clamp it), all assumed absent.
 
-Hashes: contract 3468075040, body none.
+Hashes: contract 3468075040, body none, spec 3209317781.
+Spec fns: 1, from `returned3`.
 
 ```rust
 pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: usize)
@@ -93,7 +97,8 @@ Tool: none (assumption). Status: trusted.
 
 > Read as much of `buf` as the file yields, retrying `EINTR`.
 
-Hashes: contract 1624340068, body 1526016834.
+Hashes: contract 1624340068, body 1526016834, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
@@ -111,7 +116,8 @@ Tool: none (assumption). Status: trusted.
 
 > Kernel fact (`write(2)`, Linux's `fs/read_write.c`): a `write` that does not fail returns the number of bytes it took, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
 
-Hashes: contract 1302063086, body none.
+Hashes: contract 1302063086, body none, spec 3209317781.
+Spec fns: 1, from `returned3`.
 
 ```rust
 pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r: usize)
@@ -129,7 +135,8 @@ Tool: none (assumption). Status: trusted.
 
 > Write all of `buf`, retrying short writes and `EINTR`.
 
-Hashes: contract 974240898, body 1595349930.
+Hashes: contract 974240898, body 1595349930, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 pub fn write_all(fd: i32, buf: &[u8])
@@ -157,7 +164,8 @@ Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
 
-Hashes: contract 43088889, body 291760688.
+Hashes: contract 43088889, body 291760688, spec 3040162454.
+Spec fns: 5, from `SigMask::mask`, `all_blocked`, `may_syscall`.
 
 ```rust
 unsafe fn sigprocmask_block(
@@ -180,7 +188,8 @@ Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
 
-Hashes: contract 1589051214, body 3169880791.
+Hashes: contract 1589051214, body 3169880791, spec 3459774858.
+Spec fns: 4, from `SigMask::mask`, `effective`, `may_syscall`.
 
 ```rust
 unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -> (r: usize)
@@ -197,7 +206,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
 
-Hashes: contract 1016438138, body 2141251898.
+Hashes: contract 1016438138, body 2141251898, spec 10415586.
+Spec fns: 1, from `may_abort`.
 
 ```rust
 pub fn trap() -> !

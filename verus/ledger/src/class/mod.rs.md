@@ -18,7 +18,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
 
-Hashes: contract 216695415, body 2659771007.
+Hashes: contract 216695415, body 2659771007, spec 2205686743.
+Spec fns: 191, from `ClassState::exhausted`, `ClassState::published_by`, `ClassState::spec_class`, `ClassState::spec_table`, `Heap::owns`, `Inner::frame`, `Inner::owns`, `LockGuard::view`, `LockOrder::allows`, `Meta::is_process`, `SlotToks::frame`, `SlotToks::owns`, `Table::view`, `TwoLevelBitmap::frame`, `TwoLevelBitmap::view`, `UserMem::frame`, `claim_zero_ok`, `may_abort`, `may_syscall`, `rank_class`, `slots_in`.
 
 ```rust
 fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
@@ -48,7 +49,8 @@ Tool: none (assumption). Status: trusted (requires, checked at its one caller, C
 
 > The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
 
-Hashes: contract 1202681164, body none.
+Hashes: contract 1202681164, body none, spec 1991766615.
+Spec fns: 61, from `SlabTable::spec_is_guard`, `SlabTable::spec_nslabs`, `SlabTable::spec_slots`, `Slots::addr`, `StateTicket::id`, `StateTicket::state`, `Zeroed::addr`, `Zeroed::len`, `desc_at`, `desc_id`, `discard_covers`, `prefix_addrs`, `state_byte`.
 
 ```rust
 axiom fn axiom_discarded_slots_zero(
@@ -81,7 +83,8 @@ Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
 
-Hashes: contract 260036461, body none.
+Hashes: contract 260036461, body none, spec 2119361069.
+Spec fns: 107, from `DescPerm::id`, `DescPerm::state`, `Inner::owns`, `Inner::st`, `LockGuard::view`, `Regions::slot_at`, `SlabTable::inv`, `SlabTable::spec_class`, `SlabTable::spec_is_guard`, `SlabTable::spec_nslabs`, `Table::view`, `TwoLevelBitmap::view`, `UserMem::covers`, `UserMem::provenance`, `cast_provenance`, `class_table`, `desc_at`, `desc_id`, `process_regions`, `state_byte`.
 
 ```rust
 axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)

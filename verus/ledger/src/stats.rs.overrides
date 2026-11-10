@@ -23,4 +23,4 @@ pool_take	allocator invariant	none (assumption)
 empty_pool	core library	Kani	discharged (Kani: stats::pool::kani_pool::empty_pool_is_empty)	contract 3397768555, body 1345826159
 # A raw in-place fill, like `Arena::put_stats`: zero bytes are a valid
 # `StatsPair` (integers and padding).
-zero_records	raw pointer (internal)	Kani	discharged (Kani: stats::kani_records::zero_records_zeroes)	contract 2902974600, body 1211080738
+zero_records	raw pointer (internal)	Kani	discharged (Kani: stats::kani_records::zero_records_zeroes)	contract 2902974600, body 1211080738, spec 2219458442

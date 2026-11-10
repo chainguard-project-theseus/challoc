@@ -16,7 +16,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::cache::kani_cache::home
 
 > The home header for `class`: `heap + 128 + 64 * class`, no load.
 
-Hashes: contract 3631836631, body 1935667034.
+Hashes: contract 3631836631, body 1935667034, spec 665493410.
+Spec fns: 114, from `Heap::home_ptr`, `Heap::wf`.
 
 ```rust
 fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)

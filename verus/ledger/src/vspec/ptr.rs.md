@@ -35,7 +35,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `u64`: every initialised eight bytes are a `u64`, which holds no ghost state.
 
-Hashes: contract 3996351558, body none.
+Hashes: contract 3996351558, body none, spec 2487621801.
+Spec fns: 1, from `plain`.
 
 ```rust
 pub axiom fn axiom_plain_u64()
@@ -51,7 +52,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `u8`: every initialised byte is a `u8`.
 
-Hashes: contract 3956789372, body none.
+Hashes: contract 3956789372, body none, spec 2487621801.
+Spec fns: 1, from `plain`.
 
 ```rust
 pub axiom fn axiom_plain_u8()
@@ -67,7 +69,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `usize`: every initialised `size_of::<usize>()` bytes are a `usize`.
 
-Hashes: contract 1595379307, body none.
+Hashes: contract 1595379307, body none, spec 2487621801.
+Spec fns: 1, from `plain`.
 
 ```rust
 pub axiom fn axiom_plain_usize()
@@ -83,7 +86,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `isize`: every initialised `size_of::<isize>()` bytes are an `isize`.
 
-Hashes: contract 3516752434, body none.
+Hashes: contract 3516752434, body none, spec 2487621801.
+Spec fns: 1, from `plain`.
 
 ```rust
 pub axiom fn axiom_plain_isize()
@@ -99,7 +103,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `u32` (C's `unsigned`): every initialised four bytes are a `u32`.
 
-Hashes: contract 296758125, body none.
+Hashes: contract 296758125, body none, spec 2487621801.
+Spec fns: 1, from `plain`.
 
 ```rust
 pub axiom fn axiom_plain_u32()
@@ -115,7 +120,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::plain_bytes_are_values).
 
 > [`plain`] for `*const T` (sized `T`): every initialised pointer-sized bytes are a `*const T`.
 
-Hashes: contract 467056659, body none.
+Hashes: contract 467056659, body none, spec 2487621801.
+Spec fns: 1, from `plain`.
 
 ```rust
 pub axiom fn axiom_plain_ptr<T>()
@@ -131,7 +137,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_read_vo
 
 > `core::ptr::read_volatile`, with the safety contract of the `core` documentation: `src` is valid for reads of `size_of::<T>()` bytes and aligned for `T`, and the bytes are a valid `T`, which [`plain`] asserts for `T` (only `u64`).
 
-Hashes: contract 380533337, body none.
+Hashes: contract 380533337, body none, spec 3791285691.
+Spec fns: 14, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `plain`, `valid_reads`.
 
 ```rust
 pub assume_specification<T>[ core::ptr::read_volatile::<T> ](src: *const T) -> T
@@ -150,7 +157,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_bytes).
 
 > `core::ptr::write_bytes`, with the safety contract of the `core` documentation: `dst` is non-null and properly aligned and, unless the fill is empty, valid for writes of `count * size_of::<T>()` bytes.
 
-Hashes: contract 3565122288, body none.
+Hashes: contract 3565122288, body none, spec 2390341917.
+Spec fns: 23, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `blocks_apart`, `c_apart`, `c_writes`, `valid_writes`.
 
 ```rust
 pub assume_specification<T>[ core::ptr::write_bytes::<T> ](dst: *mut T, val: u8, count: usize)
@@ -174,7 +182,8 @@ Tool: none (assumption). Status: trusted.
 
 > A permission to the `len` bytes from `p`, of `p`'s provenance, makes them valid for reads through `p` and, when there are some, puts them inside the allocation `p` is derived from ([`in_alloc`]).
 
-Hashes: contract 2845275616, body 4028365563.
+Hashes: contract 2845275616, body 4028365563, spec 4292026815.
+Spec fns: 15, from `in_alloc`, `valid_reads`.
 
 ```rust
 pub proof fn axiom_raw_readable(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
@@ -194,7 +203,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; no
 
 > The address [`ptr_add`] stands for: `count` elements past `p`, when that stays inside the allocation `p` points into (the only case in which `<*mut T>::add` is defined, and so the only one verified code reaches), and the address does not wrap (the caller shows it: no allocation does, but `alloc_len` is not tied to the address space).
 
-Hashes: contract 1089707123, body 4028365563.
+Hashes: contract 1089707123, body 4028365563, spec 1948389441.
+Spec fns: 13, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `in_alloc`, `ptr_add`.
 
 ```rust
 pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
@@ -214,7 +224,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_sub; no
 
 > `<*mut T>::sub`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize` and is at most `p`'s address, and, when it is not zero, the whole range from the result to `p` is inside the allocation `p` points into ([`in_alloc`] of the result).
 
-Hashes: contract 3919411524, body none.
+Hashes: contract 3919411524, body none, spec 2693754102.
+Spec fns: 13, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `in_alloc`, `ptr_sub`.
 
 ```rust
 pub assume_specification<T>[ <*mut T>::sub ](p: *mut T, count: usize) -> (r: *mut T)
@@ -235,7 +246,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; no
 
 > `<*mut T>::add`, with the safety contract of the `core` documentation: the byte offset `count * size_of::<T>()` fits in an `isize`, and, when it is not zero, the whole range from `p` to the result is inside the allocation `p` points into ([`in_alloc`]).
 
-Hashes: contract 3817630095, body none.
+Hashes: contract 3817630095, body none, spec 1948389441.
+Spec fns: 13, from `in_alloc`, `ptr_add`.
 
 ```rust
 pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mut T)
@@ -255,7 +267,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::ptr_add; no
 
 > `<*const T>::add`, with the safety contract of `<*mut T>::add`: the result is [`ptr_add`] of the pointer as a `*mut T`, back as a `*const T` (`axiom_ptr_add_addr` gives its address).
 
-Hashes: contract 1492966780, body none.
+Hashes: contract 1492966780, body none, spec 1948389441.
+Spec fns: 13, from `in_alloc`, `ptr_add`.
 
 ```rust
 pub assume_specification<T>[ <*const T>::add ](p: *const T, count: usize) -> (r: *const T)
@@ -275,7 +288,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layou
 
 > Element `i` of a frozen array: a `'static` shared permission to a `[T; N]` gives one to each of its elements, holding that element, at [`ptr_add`] of the array's address as a `*mut T`; and the array's first `i` elements lie inside the allocation it is in, in fewer than `isize::MAX` bytes, so `<*mut T>::add(i)` is defined on that pointer.
 
-Hashes: contract 3585017109, body none.
+Hashes: contract 3585017109, body none, spec 1948389441.
+Spec fns: 13, from `in_alloc`, `ptr_add`.
 
 ```rust
 pub axiom fn axiom_array_elem<T, const N: usize>(tracked a: &'static vstd::raw_ptr::PointsTo<[T; N]>, i: usize) -> (tracked r: &'static vstd::raw_ptr::PointsTo<T>)
@@ -298,7 +312,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::array_layou
 
 > A shared view of the `[T; N]` at `a` lent by its elements' permissions: `perms` holds an initialised permission to each element ([`array_elem_ptr`]), so it holds the array, whose value is theirs, for as long as they stay borrowed.
 
-Hashes: contract 1726003634, body none.
+Hashes: contract 1726003634, body none, spec 64757546.
+Spec fns: 1, from `array_elem_ptr`.
 
 ```rust
 pub axiom fn axiom_array_view<'a, T, const N: usize>(tracked perms: &'a Map<*mut T, vstd::raw_ptr::PointsTo<T>>, a: *mut [T; N]) -> (tracked r: &'a vstd::raw_ptr::PointsTo<[T; N]>)
@@ -323,7 +338,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_ref_ptr).
 
 > `ptr::from_ref(v)`: the address of the `T` behind a reference, valid for reads of its `size_of::<T>()` bytes, which do not wrap the address space.
 
-Hashes: contract 2898739365, body 3326604510.
+Hashes: contract 2898739365, body 3326604510, spec 3822042138.
+Spec fns: 13, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `valid_reads`.
 
 ```rust
 pub fn ref_ptr<T: Copy>(v: &T) -> (r: *const T)
@@ -339,7 +355,8 @@ Tool: Kani. Status: discharged on premises (Kani: kani_proofs::ptr::ptr_read_una
 
 > `core::ptr::read_unaligned`.
 
-Hashes: contract 3934529747, body none.
+Hashes: contract 3934529747, body none, spec 3791285691.
+Spec fns: 14, from `plain`, `valid_reads`.
 
 ```rust
 pub assume_specification<T>[ core::ptr::read_unaligned::<T> ](src: *const T) -> T
@@ -357,7 +374,8 @@ Tool: Kani. Status: discharged on premises (Kani: kani_proofs::ptr::ptr_read_una
 
 > `<*const T>::read_unaligned`.
 
-Hashes: contract 604882496, body none.
+Hashes: contract 604882496, body none, spec 3791285691.
+Spec fns: 14, from `plain`, `valid_reads`.
 
 ```rust
 pub assume_specification<T>[ <*const T>::read_unaligned ](src: *const T) -> T
@@ -375,7 +393,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `core::ptr::write_unaligned`.
 
-Hashes: contract 3052813032, body none.
+Hashes: contract 3052813032, body none, spec 610860108.
+Spec fns: 22, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `c_apart`, `c_writes`, `valid_writes`.
 
 ```rust
 pub assume_specification<T>[ core::ptr::write_unaligned::<T> ](dst: *mut T, src: T)
@@ -394,7 +413,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_write_unaligned).
 
 > `<*mut T>::write_unaligned`.
 
-Hashes: contract 342041177, body none.
+Hashes: contract 342041177, body none, spec 610860108.
+Spec fns: 22, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `c_apart`, `c_writes`, `valid_writes`.
 
 ```rust
 pub assume_specification<T>[ <*mut T>::write_unaligned ](dst: *mut T, val: T)

@@ -24,7 +24,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > Termination is not claimed: the wait ends when another thread releases the lock.
 
-Hashes: contract 2760686836, body 2399024101.
+Hashes: contract 2760686836, body 2399024101, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 fn lock_slow(&self)
@@ -39,7 +40,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (C-program contract, the lock order at a C call): when C calls an allocator entry point, the calling thread holds no allocator lock, or, in the fork window only, holds every one as the fork's own hold (below).
 
-Hashes: contract 4182211072, body none.
+Hashes: contract 4182211072, body none, spec 2368064189.
+Spec fns: 2, from `LockOrder::root`, `LockOrder::top`.
 
 ```rust
 pub(crate) axiom fn axiom_c_entry<'a>() -> (tracked o: LockOrder<'a>)
@@ -56,7 +58,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (allocator invariant, the lock order at init): `Shared::init`, its one use, holds no allocator lock.
 
-Hashes: contract 1275292168, body none.
+Hashes: contract 1275292168, body none, spec 2368064189.
+Spec fns: 2, from `LockOrder::root`, `LockOrder::top`.
 
 ```rust
 pub(crate) axiom fn axiom_init_entry<'a>() -> (tracked o: LockOrder<'a>)
@@ -73,7 +76,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (platform fact, the lock order at a thread's start or exit): code that the C library runs on a thread outside any call into challoc holds no allocator lock.
 
-Hashes: contract 413095086, body none.
+Hashes: contract 413095086, body none, spec 2368064189.
+Spec fns: 2, from `LockOrder::root`, `LockOrder::top`.
 
 ```rust
 pub(crate) axiom fn axiom_thread_entry<'a>() -> (tracked o: LockOrder<'a>)
@@ -90,7 +94,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the fork prepare handler's entry): the calling thread holds no allocator lock, as for [`axiom_c_entry`], and keeps this token for the whole handler, which takes every lock with [`RawLock::lock_held`] and releases none of them before it returns: a root, with no raw hold yet.
 
-Hashes: contract 4194531122, body none.
+Hashes: contract 4194531122, body none, spec 4163659519.
+Spec fns: 3, from `LockOrder::ranks`, `LockOrder::root`, `LockOrder::top`.
 
 ```rust
 pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
@@ -108,7 +113,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (`fork(2)`, `getpid(2)`, glibc's `pthread_self`; design 9): the fork window's record, read back by the thread that opened it, shows that thread in the child of its `fork`.
 
-Hashes: contract 4277114757, body none.
+Hashes: contract 4277114757, body none, spec 3126488257.
+Spec fns: 1, from `in_fork_child`.
 
 ```rust
 axiom fn axiom_child_window(h: usize, me: usize, pid: u32, now: u32)
@@ -128,7 +134,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: lock::loom_lock_two_thr
 
 > The lock invariant's assumption where it enters, at an acquisition: a thread that has just acquired the raw lock of `l` takes the permission of `l`'s cell out of the raw lock's invariant, and the value in the cell satisfies [`lock_inv`] and keeps [`lock_frame`] of the value the lock was created with (every earlier holder that releases through [`LockGuard::unlock`] or [`Lock::unlock_held_perm`] restored both, and before the first holder [`Lock::new`] required both of that value, except for the per-arena statistics locks, which the trusted `Arena::put_stats` writes).
 
-Hashes: contract 3374465368, body none.
+Hashes: contract 3374465368, body none, spec 2934307100.
+Spec fns: 267, from `lock_frame`, `lock_init`, `lock_inv`.
 
 ```rust
 axiom fn axiom_acquired<T: LockSpec>(l: Lock<T>) -> (tracked p: PointsTo<T>)
@@ -146,7 +153,8 @@ Tool: Kani. Status: discharged (Kani: lock::kani_lock::value_ptr_is_the_value_fi
 
 > The value's address inside the lock at `p`, which the permission `perm` names, for building a large value in place (`Arena::put_stats`).
 
-Hashes: contract 2722103989, body 2553620183.
+Hashes: contract 2722103989, body 2553620183, spec 2219458442.
+Spec fns: 1, from `Stored::ptr`.
 
 ```rust
 pub(crate) fn value_ptr(p: *mut Lock<T>, Tracked(perm): Tracked<&vstd::raw_ptr::PointsTo<Lock<T>>>) -> *mut T

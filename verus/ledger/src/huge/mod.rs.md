@@ -17,7 +17,8 @@ Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
 
-Hashes: contract 329218549, body none.
+Hashes: contract 329218549, body none, spec 1336889263.
+Spec fns: 2, from `Zeroed::addr`, `Zeroed::len`.
 
 ```rust
 pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
@@ -36,7 +37,8 @@ Tool: none (assumption). Status: trusted (requires, checked at its one caller, z
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
 
-Hashes: contract 320898273, body none.
+Hashes: contract 320898273, body none, spec 630133384.
+Spec fns: 4, from `Zeroed::addr`, `Zeroed::len`, `madvise_ok`.
 
 ```rust
 axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)

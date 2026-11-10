@@ -1,10 +1,10 @@
 # A gap in vstd's memory model (raw permissions carry no byte values); the
 # harness reads the eight zero bytes as a u64.
-axiom_zero_word	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::zero::zero_word_reads_zero)	contract 2062872303, body 1293528070
+axiom_zero_word	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::zero::zero_word_reads_zero)	contract 2062872303, body 1293528070, spec 1261141454
 # A `Zeroed` token is not tied to the writes to its bytes; each caller
 # pairs a permission with a token whose bytes nothing wrote since it was
 # made: cut together under one lock hold, or as `Meta::alloc_zeroed`
 # returns them (`Table::storage`).
 ZeroRaw::axiom_new	allocator invariant	none (assumption)
 # vstd states no effect of write_bytes: the bytes read as zero after.
-zero_raw	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::zero_raw_fills)	contract 1402853565, body 3876720570
+zero_raw	raw pointer (internal)	Kani	discharged (Kani: kani_proofs::ptr::zero_raw_fills)	contract 1402853565, body 3876720570, spec 571512449

@@ -1,3 +1,3 @@
 # A `debug_assert!` with no contract (the pop's schedule is a protocol
 # between the fast pop and the slow path that no specification states).
-debug_scheduled	panic/abort	Kani	discharged (Kani: heap::paths::kani_aborts::debug_scheduled_returns_only_if_clear, heap::paths::kani_aborts::debug_scheduled_returns_if_clear)	contract 2542313574, body 2337303067
+debug_scheduled	panic/abort	Kani	discharged (Kani: heap::paths::kani_aborts::debug_scheduled_returns_only_if_clear, heap::paths::kani_aborts::debug_scheduled_returns_if_clear)	contract 2542313574, body 2337303067, spec 10415586

@@ -40,7 +40,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Kani: heap::shared::kani_gu
 
 > `guard_mask | tz << 32 | lg_guard << 40` (the padding above is zero), from one 8-byte load.
 
-Hashes: contract 33478923, body 434743552.
+Hashes: contract 33478923, body 434743552, spec 2178421755.
+Spec fns: 1, from `guard_word_of`.
 
 ```rust
 fn guard_word(&self) -> (r: u64)
@@ -58,7 +59,8 @@ Tool: Kani. Status: discharged on premises (Kani: heap::shared::kani_key::create
 
 > A new key whose destructor is `heap_destructor`; `valid` says whether `pthread_key_create` gave one.
 
-Hashes: contract 663924478, body 2383684293.
+Hashes: contract 663924478, body 2383684293, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 pub fn create() -> ThreadKey
@@ -73,7 +75,8 @@ Tool: Kani. Status: discharged on premises (Kani: heap::shared::kani_setspecific
 
 > `pthread_setspecific(3)`: stores `value` for the calling thread under `key` without dereferencing it; 0 on success, an error number otherwise (nothing is claimed about it).
 
-Hashes: contract 2714888459, body 1699412956.
+Hashes: contract 2714888459, body 1699412956, spec 1019459523.
+Spec fns: 11, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`, `may_syscall`, `reentry_benign`.
 
 ```rust
 unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsCell>) -> (r: i32)
@@ -278,7 +281,8 @@ Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/
 
 > `Shared`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size.
 
-Hashes: contract 3987711063, body none.
+Hashes: contract 3987711063, body none, spec 3940336727.
+Spec fns: 1, from `field_fits`.
 
 ```rust
 axiom fn axiom_shared_layout()
@@ -319,7 +323,8 @@ Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Shared` at `p` (`Shared::split`'s parts and class lines, every one initialised, and the tables), joined into the permission to the whole value, the value [`shared_at`] names, frozen (`&'static`): readers share it, and nothing can write through it.
 
-Hashes: contract 2767038498, body none.
+Hashes: contract 2767038498, body none, spec 1251486042.
+Spec fns: 23, from `SharedParts::at`, `SharedParts::written`, `elems_init`, `field_ptr`, `lines_at`, `shared_at`, `tables_at`.
 
 ```rust
 axiom fn axiom_shared_built(
@@ -369,7 +374,8 @@ Tool: none (assumption). Status: trusted.
 
 > The regions of the `Shared` at `p` are what the permission to its `regions` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, right after [`Shared::put_head`] writes the field): no verified code can write the field again, so the value is the built one.
 
-Hashes: contract 506223538, body none.
+Hashes: contract 506223538, body none, spec 4264301945.
+Spec fns: 3, from `field_ptr`, `shared_at`.
 
 ```rust
 axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Shared)
@@ -388,7 +394,8 @@ Tool: none (assumption). Status: trusted.
 
 > The metadata allocator of the `Shared` at `p` is what the permission to its `meta` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right after it writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again, so the value is the built one.
 
-Hashes: contract 4083582031, body none.
+Hashes: contract 4083582031, body none, spec 4264301945.
+Spec fns: 3, from `field_ptr`, `shared_at`.
 
 ```rust
 axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
@@ -409,7 +416,8 @@ Tool: none (assumption). Status: trusted.
 
 Body mints Tracked at line 1704.
 
-Hashes: contract 475739801, body 3603367423.
+Hashes: contract 475739801, body 3603367423, spec 2526207833.
+Spec fns: 12, from `LockGuard::view`, `Once::step`, `Table::view`, `TwoLevelBitmap::view`, `shared_storage`.
 
 ```rust
 fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsTo<Shared>>)

@@ -1,9 +1,9 @@
 # `assert_eq!` reaches `core::panicking::assert_failed`.
-assert_refill_empty	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_refill_empty_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)	contract 2469768848, body 2656709376
+assert_refill_empty	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_refill_empty_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)	contract 2469768848, body 2656709376, spec 10415586
 # `assert_eq!` reaches `core::panicking::assert_failed`.
-assert_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)	contract 2922396941, body 3777272326
+assert_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)	contract 2922396941, body 3777272326, spec 10415586
 # `assert_eq!` reaches `core::panicking::assert_failed`.
-assert_rekey_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_rekey_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)	contract 2313744168, body 2184691111
+assert_rekey_flushed	panic/abort	Kani	discharged (Kani: heap::kani_aborts::assert_rekey_flushed_returns_only_on_zero, heap::kani_aborts::asserts_return_on_zero)	contract 2313744168, body 2184691111, spec 10415586
 # A volatile read of a plain field through `&self`; the contract states
 # nothing about the value.
 Heap::arena_volatile	UnsafeCell/volatile/transmute	Kani	discharged (Kani: heap::kani_volatile::arena_volatile_reads_arena)	contract 464277965, body 1060571397

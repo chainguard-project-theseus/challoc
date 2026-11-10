@@ -7,7 +7,7 @@
 # dropped null check, a moved offset, a shadowing `let`, ...) each fail it.
 # Its known escapes: a call spelled from parts by a macro (`paste!`,
 # `concat_idents!`), and code `include!`d from outside `src/`.
-read_global	raw pointer (internal)	Kani	discharged on premises (Kani: rseq::kani_rseq::read_global_reads_the_value; premises: L1 (a non-null address `symbols` returns is glibc's live, aligned `isize` or `u32`, which nothing writes after startup, in a dynamic link; `probe` passes those three at the two instances the harness runs; and the provenance of an `asm!` output, premises.md: Provenance of the addresses); callers: rseq::tests::probe_reads_are_listed)	contract 1325462615, body 4072880412
+read_global	raw pointer (internal)	Kani	discharged on premises (Kani: rseq::kani_rseq::read_global_reads_the_value; premises: L1 (a non-null address `symbols` returns is glibc's live, aligned `isize` or `u32`, which nothing writes after startup, in a dynamic link; `probe` passes those three at the two instances the harness runs; and the provenance of an `asm!` output, premises.md: Provenance of the addresses); callers: rseq::tests::probe_reads_are_listed)	contract 1325462615, body 4072880412, spec 3955195640
 # A volatile read of the kernel-written `cpu_id`: Kani checks the read on
 # an area the `requires` admits; that `area` is this thread's rseq area is
 # glibc's and the rseq ABI's (L1, L2). The same pin, mutants and escapes

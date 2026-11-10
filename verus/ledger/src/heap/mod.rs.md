@@ -19,7 +19,8 @@ Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_flushed_returns_
 
 > `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0` after it returns.
 
-Hashes: contract 2922396941, body 3777272326.
+Hashes: contract 2922396941, body 3777272326, spec 10415586.
+Spec fns: 1, from `may_abort`.
 
 ```rust
 fn assert_flushed(len: &u32)
@@ -36,7 +37,8 @@ Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_refill_empty_ret
 
 > `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap inconsistency: `*len == 0` after it returns.
 
-Hashes: contract 2469768848, body 2656709376.
+Hashes: contract 2469768848, body 2656709376, spec 10415586.
+Spec fns: 1, from `may_abort`.
 
 ```rust
 fn assert_refill_empty(len: &u32)
@@ -53,7 +55,8 @@ Tool: Kani. Status: discharged (Kani: heap::kani_aborts::assert_rekey_flushed_re
 
 > `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache that still holds slots: `*len == 0` after it returns.
 
-Hashes: contract 2313744168, body 2184691111.
+Hashes: contract 2313744168, body 2184691111, spec 10415586.
+Spec fns: 1, from `may_abort`.
 
 ```rust
 fn assert_rekey_flushed(len: &u32)

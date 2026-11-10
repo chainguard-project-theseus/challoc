@@ -20,7 +20,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: free::loom_free_after_s
 
 > `(*w).store(arena, Relaxed)` of the owner word of hand-out group `group` of `t`, through its permission `perm`: the permission holds `arena` ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from here on [`slab_owner`] of every slab of the group is `arena`.
 
-Hashes: contract 516326162, body 3738076363.
+Hashes: contract 516326162, body 3738076363, spec 941537119.
+Spec fns: 72, from `BytePerm::id`, `BytePerm::value`, `ClassState::spec_class`, `CountPerm::id`, `CountPerm::value`, `DescPerm::id`, `EntryPerm::id`, `EntryPerm::value`, `HeapPerm::value`, `LockGuard::view`, `Scratch::value`, `SlabTable::owner_addr`, `SlabTable::spec_class`, `SlabTable::spec_group_range`, `SlabTable::spec_ngroups`, `StateTicket::id`, `Stored::ptr`, `Table::view`, `TlsCell::value`, `TlsSlot::value`, `TwoLevelBitmap::view`, `UsizePerm::id`, `UsizePerm::value`, `WordPerm::value`, `mark_loc`, `owner_marks`, `owner_ptr_at`, `slab_owner`, `u16_value`.
 
 ```rust
 unsafe fn store_owner(
@@ -71,7 +72,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_desc_
 
 > Trusted: the `piece` bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised, and for a 32-byte piece (a stride with room) a `SlabPages` after it: plain atomics, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
 
-Hashes: contract 4150637954, body none.
+Hashes: contract 4150637954, body none, spec 1044772274.
+Spec fns: 14, from `ZeroRaw::is_range`, `ZeroRaw::provenance`, `cast_provenance`, `desc_fresh`, `desc_id`, `pages_id`, `perm_at`.
 
 ```rust
 axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int, piece: int) -> (tracked r: (PointsTo<SlabDesc>, DescPerm, Option<PointsTo<SlabPages>>))
@@ -98,7 +100,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_owner
 
 > Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of the owner array `Meta::reserve_table` returned), are an `AtomicU16`, initialised (valid for every bit pattern), as [`axiom_zero_desc`].
 
-Hashes: contract 1743940330, body none.
+Hashes: contract 1743940330, body none, spec 368570409.
+Spec fns: 5, from `ZeroRaw::is_range`, `ZeroRaw::provenance`, `cast_provenance`, `perm_at`.
 
 ```rust
 axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo<AtomicU16>)
@@ -120,7 +123,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::fresh_word
 
 > Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.
 
-Hashes: contract 3687926038, body none.
+Hashes: contract 3687926038, body none, spec 805857787.
+Spec fns: 9, from `Once::step`, `WordPerm::addr`, `WordPerm::value`, `ZeroRaw::dom`, `ZeroRaw::provenance`, `cast_provenance`, `words_perms_ok`.
 
 ```rust
 axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, tracked once: Once)

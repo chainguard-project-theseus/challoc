@@ -31,7 +31,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::fresh::kani_assemble::w
 
 > The permission to the heap [`Heap::create`] has just made at `s.heap()`, from the token holding the permission to its plain fields and what the field writers stored in them ([`FreshHeap`](super::FreshHeap): `init_fields`, `mark_bound` and `mark_rehome`, verified), and with its home headers written `EMPTY` through `perms` ([`CachePerms::fresh`](super::CachePerms::fresh)).
 
-Hashes: contract 1966992394, body none.
+Hashes: contract 1966992394, body none, spec 2248340761.
+Spec fns: 73, from `CachePerms::fresh`, `FreshHeap::arena`, `FreshHeap::bound`, `FreshHeap::head`, `FreshHeap::heap`, `FreshHeap::shared`, `HeapPerm::addr`, `HeapPerm::value`, `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`, `heap_head`.
 
 ```rust
 pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
@@ -54,7 +55,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_slot_heap
 
 > The heap whose permission the heap loan holds, at `h`, as a reference, for as long as the loan is lent.
 
-Hashes: contract 854713595, body 3810982117.
+Hashes: contract 854713595, body 3810982117, spec 3454405265.
+Spec fns: 29, from `BytePerm::value`, `CStr::addr`, `CountPerm::value`, `EntryPerm::value`, `FreshHeap::heap`, `HeapLoan::heap`, `HeapPerm::addr`, `HeapPerm::value`, `Live::addr`, `LockGuard::view`, `Reserved::addr`, `Scratch::value`, `Slots::addr`, `Table::view`, `TlsCell::value`, `TlsSlot::value`, `TwoLevelBitmap::view`, `Unbacked::addr`, `UsizePerm::value`, `WordPerm::addr`, `WordPerm::value`, `Zeroed::addr`.
 
 ```rust
 pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: &'a mut Heap)

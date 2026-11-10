@@ -34,7 +34,8 @@ Tool: Kani. Status: discharged on premises (Kani: kani_proofs::slice::slice_from
 
 > `core::slice::from_raw_parts`, with the safety contract of the `core` documentation that can be stated here: `data` is not null, aligned, and valid for reads of the slice's `len * size_of::<T>()` bytes, at most `isize::MAX`.
 
-Hashes: contract 1605428040, body none.
+Hashes: contract 1605428040, body none, spec 711472676.
+Spec fns: 50, from `CCall::len`, `Live::len`, `LockGuard::view`, `Reserved::len`, `Table::view`, `TwoLevelBitmap::view`, `Unbacked::len`, `Zeroed::len`, `r_len`.
 
 ```rust
 pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *const T, len: usize) -> (r: &'a [T])
@@ -74,7 +75,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::sli
 
 > `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose permissions `perms` holds from key `j0` on, element `i`'s at key `j0 + i`, at `p`, `p + size_of::<T>()`, ...
 
-Hashes: contract 475554734, body 4015970110.
+Hashes: contract 475554734, body 4015970110, spec 2803478963.
+Spec fns: 20, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `LockGuard::view`, `Scratch::value`, `Stored::ptr`, `Table::view`, `TlsCell::value`, `TlsSlot::value`, `TwoLevelBitmap::view`, `UsizePerm::value`, `WordPerm::value`.
 
 ```rust
 pub unsafe fn slice_from_perms<T>(
@@ -128,7 +130,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_from_ref).
 
 > A one-element slice of `*s`.
 
-Hashes: contract 2701217384, body none.
+Hashes: contract 2701217384, body none, spec 3955195640.
+Spec fns: 10, from `LockGuard::view`, `Table::view`, `TwoLevelBitmap::view`.
 
 ```rust
 pub assume_specification<T>[ core::slice::from_ref ](s: &T) -> (r: &[T])
@@ -157,7 +160,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 
 > The iterator starts with every element of the array, in order.
 
-Hashes: contract 4284393070, body none.
+Hashes: contract 4284393070, body none, spec 3384019170.
+Spec fns: 1, from `array_iter_rest`.
 
 ```rust
 pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator>::into_iter ](a: [T; N]) -> (r: <[
@@ -176,7 +180,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 
 > `next` hands out the front element, or `None` once every element has been handed out.
 
-Hashes: contract 3944802746, body none.
+Hashes: contract 3944802746, body none, spec 3384019170.
+Spec fns: 1, from `array_iter_rest`.
 
 ```rust
 pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as core::iter::Iterator>::next ](i: &mut core::array::IntoIter<T, N>) -> (r: Option<
@@ -213,7 +218,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_iter_mut).
 
 > `for e in s` over a mutable slice: `s.iter_mut()`, whose `vstd` specification this repeats (the loop hands out each element once, and each one's final value flows back into `s`).
 
-Hashes: contract 377655020, body none.
+Hashes: contract 377655020, body none, spec 2925142265.
+Spec fns: 39, from `CCall::len`, `Live::len`, `Reserved::len`, `Unbacked::len`, `Zeroed::len`.
 
 ```rust
 pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into_iter ](s: &'a mut [T]) -> (iter: core::slice::IterMut<'a, T>)
@@ -342,7 +348,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::sli
 
 > `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.
 
-Hashes: contract 1159167311, body 1608609135.
+Hashes: contract 1159167311, body 1608609135, spec 391829826.
+Spec fns: 14, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `Stored::ptr`, `TlsCell::value`, `TlsSlot::value`, `UserMem::dom`, `UsizePerm::value`, `WordPerm::value`, `ZeroRaw::dom`, `elem_key`, `ptr_add`.
 
 ```rust
 pub unsafe fn slice_mut_elems<'a, T>(

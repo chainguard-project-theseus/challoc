@@ -1,7 +1,7 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-core::ptr::copy_nonoverlapping::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_copy_nonoverlapping)	contract 3491070697, body none
-<*mut T>::is_null	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_is_null)	contract 2851786109, body none
-<*const T>::is_null	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_is_null)	contract 544862272, body none
+core::ptr::copy_nonoverlapping::<T>	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_copy_nonoverlapping)	contract 3491070697, body none, spec 2188973257
+<*mut T>::is_null	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_is_null)	contract 2851786109, body none, spec 3955195640
+<*const T>::is_null	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_is_null)	contract 544862272, body none, spec 3955195640
 # An integer-to-pointer cast, which Verus cannot state: Kani checks the
 # address; the provenance clause stays an assumption, as for `usize_ptr`.
-addr_to_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr_is_the_cast; not checked: the harness checks the address and the cast, not the `p@.provenance == cast_provenance()` clause, which Kani cannot observe)	contract 3273012027, body 3586730087
+addr_to_ptr	raw pointer (internal)	Kani	trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr_is_the_cast; not checked: the harness checks the address and the cast, not the `p@.provenance == cast_provenance()` clause, which Kani cannot observe)	contract 3273012027, body 3586730087, spec 3623026126

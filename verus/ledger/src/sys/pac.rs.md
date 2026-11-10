@@ -20,7 +20,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (Linux's default map window): the limit is at most `2^48`.
 
-Hashes: contract 3922516770, body none.
+Hashes: contract 3922516770, body none, spec 1183580185.
+Spec fns: 1, from `user_va_limit`.
 
 ```rust
 pub axiom fn axiom_user_va_limit()
@@ -36,7 +37,8 @@ Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating what signing a plain user address returned, with the same modifier, gives the address back.
 
-Hashes: contract 2618051585, body none.
+Hashes: contract 2618051585, body none, spec 837181740.
+Spec fns: 3, from `spec_auth`, `spec_sign`, `user_va_limit`.
 
 ```rust
 pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
@@ -54,7 +56,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 > Sign `p` with data key A and `modifier` (`pacda`).
 
-Hashes: contract 4234608999, body 3950422969.
+Hashes: contract 4234608999, body 3950422969, spec 4035383826.
+Spec fns: 2, from `pac_available`, `spec_sign`.
 
 ```rust
 pub fn sign(p: usize, modifier: usize) -> (r: usize)
@@ -72,7 +75,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 > Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or, when the two disagree, a fault or a non-canonical pointer (module doc).
 
-Hashes: contract 361455037, body 4273507842.
+Hashes: contract 361455037, body 4273507842, spec 1331880532.
+Spec fns: 8, from `may_abort_corrupt`, `pac_available`, `signed`, `spec_auth`, `spec_sign`, `user_va_limit`.
 
 ```rust
 pub fn auth(p: usize, modifier: usize) -> (r: usize)
@@ -92,7 +96,8 @@ Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Strip the PAC from `p` without authenticating it (`xpacd`): the address a signed or corrupted entry names, for abort messages and tests.
 
-Hashes: contract 2592903648, body 3148561063.
+Hashes: contract 2592903648, body 3148561063, spec 456046819.
+Spec fns: 1, from `pac_available`.
 
 ```rust
 pub fn strip(p: usize) -> usize

@@ -28,7 +28,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_count_ones).
 
 > `u64::count_ones`: the number of set bits.
 
-Hashes: contract 2850801986, body none.
+Hashes: contract 2850801986, body none, spec 3171023429.
+Spec fns: 1, from `popcount`.
 
 ```rust
 pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
@@ -179,7 +180,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_rotate_right).
 
 > `u32::rotate_right`: the bits shifted out at the bottom come back in at the top.
 
-Hashes: contract 1134367200, body none.
+Hashes: contract 1134367200, body none, spec 2845809944.
+Spec fns: 1, from `rotr32`.
 
 ```rust
 pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
@@ -196,7 +198,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_rotate_right).
 
 > `u64::rotate_right`: the bits shifted out at the bottom come back in at the top (the count is taken modulo 64, as `core` documents).
 
-Hashes: contract 2671721552, body none.
+Hashes: contract 2671721552, body none, spec 52888633.
+Spec fns: 1, from `rotr64`.
 
 ```rust
 pub assume_specification[ u64::rotate_right ](x: u64, n: u32) -> (r: u64)

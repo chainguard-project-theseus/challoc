@@ -2,5 +2,5 @@
 # changes nothing; the trust left is that the ghost record of home headers
 # names this heap's, which unverified `create_detached` sets up and nothing
 # moves afterwards, and the result's provenance.
-Heap::home_ptr_at	allocator invariant	Kani	trusted (partly checked, Kani: heap::cache::kani_cache::home_ptr_at_is_the_home_header; not checked: that the heap's record names the headers at its own address (`Heap::home_at`), ghost, and that the result carries the heap's provenance, which Kani cannot observe (the harness compares addresses))	contract 3631836631, body 1935667034
+Heap::home_ptr_at	allocator invariant	Kani	trusted (partly checked, Kani: heap::cache::kani_cache::home_ptr_at_is_the_home_header; not checked: that the heap's record names the headers at its own address (`Heap::home_at`), ghost, and that the result carries the heap's provenance, which Kani cannot observe (the harness compares addresses))	contract 3631836631, body 1935667034, spec 665493410
 

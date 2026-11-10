@@ -24,7 +24,8 @@ Tool: Kani. Status: discharged (Kani: slab::kani_desc_stride::desc_stride_reads_
 
 > Descriptor stride for `class` in bytes.
 
-Hashes: contract 921200764, body 3955666860.
+Hashes: contract 921200764, body 3955666860, spec 3291653935.
+Spec fns: 1, from `stride_of`.
 
 ```rust
 pub fn desc_stride(class: usize) -> (r: usize)
@@ -42,7 +43,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > Initialise the descriptor of a slab handed to `arena`: `Fresh`, no live slots, through `p`, the descriptor's permission (ghost).
 
-Hashes: contract 3526147841, body 42649987.
+Hashes: contract 3526147841, body 42649987, spec 3932851287.
+Spec fns: 17, from `BytePerm::id`, `CountPerm::id`, `DescPerm::arena`, `DescPerm::closed`, `DescPerm::dirty`, `DescPerm::id`, `DescPerm::stamp`, `DescPerm::state`, `EntryPerm::id`, `FreshHeap::arena`, `Proto::closed`, `StateTicket::id`, `StateTicket::state`, `UsizePerm::id`, `desc_id`, `state_byte`.
 
 ```rust
 pub fn init(&self, arena: u16, Tracked(p): Tracked<&mut DescPerm>)
@@ -64,7 +66,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > The `state` byte, as [`state_held`](SlabDesc::state_held): the state the permission under `k` records when that is this descriptor's.
 
-Hashes: contract 3651557864, body 3849804937.
+Hashes: contract 3651557864, body 3849804937, spec 2745960400.
+Spec fns: 5, from `DescPerm::state`, `StateTicket::state`, `perm_for`.
 
 ```rust
 fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)
@@ -79,7 +82,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > [`dirty_at`](SlabDesc::dirty_at) read by a holder of `m`, as [`state_held`](SlabDesc::state_held): the stamp the permission under `k` records when that is this descriptor's.
 
-Hashes: contract 2362101036, body 3847503768.
+Hashes: contract 2362101036, body 3847503768, spec 4235765652.
+Spec fns: 4, from `DescPerm::dirty`, `perm_for`.
 
 ```rust
 pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)
@@ -94,7 +98,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > Only ever called with the class lock held, which holds `p`, the descriptor's permission (ghost), which records the new state.
 
-Hashes: contract 407093870, body 587933448.
+Hashes: contract 407093870, body 587933448, spec 2935293396.
+Spec fns: 15, from `BytePerm::id`, `CountPerm::id`, `DescPerm::dirty`, `DescPerm::id`, `DescPerm::keeps_pages`, `DescPerm::state`, `EntryPerm::id`, `StateTicket::id`, `StateTicket::state`, `UsizePerm::id`, `desc_id`, `state_byte`.
 
 ```rust
 pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)
@@ -113,7 +118,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > [`arena`](SlabDesc::arena) read by a holder of `m`, the permissions a class lock value holds: the arena the permission under `k` records when that is this descriptor's.
 
-Hashes: contract 1354875024, body 68663393.
+Hashes: contract 1354875024, body 68663393, spec 2625485422.
+Spec fns: 5, from `DescPerm::arena`, `FreshHeap::arena`, `perm_for`.
 
 ```rust
 pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)
@@ -128,7 +134,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > Only ever called with the class lock held, which holds `p`, as [`set_state`](SlabDesc::set_state).
 
-Hashes: contract 781547453, body 4271175392.
+Hashes: contract 781547453, body 4271175392, spec 514496844.
+Spec fns: 14, from `BytePerm::id`, `CountPerm::id`, `DescPerm::dirty`, `DescPerm::id`, `DescPerm::keeps_pages`, `DescPerm::state`, `EntryPerm::id`, `StateTicket::id`, `StateTicket::state`, `UsizePerm::id`, `desc_id`.
 
 ```rust
 pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)
@@ -147,7 +154,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > The closed pages and the stamp, read by a holder of `m`, the permissions a class lock value holds: the values the permission under `k` records when it is this slab's.
 
-Hashes: contract 1380529778, body 119982137.
+Hashes: contract 1380529778, body 119982137, spec 1634089221.
+Spec fns: 7, from `DescPerm::closed`, `DescPerm::stamp`, `Proto::closed`, `pages_for`.
 
 ```rust
 pub fn pages_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: (u16, u64))
@@ -162,7 +170,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: slab::loom_slab_desc_re
 
 > Write the closed pages and the stamp.
 
-Hashes: contract 1118854325, body 1018966242.
+Hashes: contract 1118854325, body 1018966242, spec 3263740359.
+Spec fns: 16, from `BytePerm::id`, `CountPerm::id`, `DescPerm::arena`, `DescPerm::closed`, `DescPerm::dirty`, `DescPerm::id`, `DescPerm::stamp`, `DescPerm::state`, `EntryPerm::id`, `FreshHeap::arena`, `Proto::closed`, `StateTicket::id`, `StateTicket::state`, `UsizePerm::id`, `pages_id`.
 
 ```rust
 pub fn set_pages(&self, closed: u16, stamp: u64, Tracked(p): Tracked<&mut DescPerm>)

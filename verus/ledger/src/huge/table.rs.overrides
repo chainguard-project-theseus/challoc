@@ -1,3 +1,3 @@
 # A gap in vstd's memory model (raw permissions carry no byte values); the
 # harness reads 16 zero bytes as an Entry, as zero.rs's axiom_zero_word.
-axiom_zero_entry	raw pointer (internal)	Kani	discharged (Kani: huge::table::kani_table::zero_entry_is_empty)	contract 384812024, body none
+axiom_zero_entry	raw pointer (internal)	Kani	discharged (Kani: huge::table::kani_table::zero_entry_is_empty)	contract 384812024, body none, spec 2229518231

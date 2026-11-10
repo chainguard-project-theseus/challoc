@@ -33,7 +33,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted: a thread that holds the frozen permissions ([`Published`], which `init` builds when it freezes them and `STATE`'s invariant holds from `READY` on, [`load_state`]) may state [`ready`].
 
-Hashes: contract 3440922866, body none.
+Hashes: contract 3440922866, body none, spec 2875280341.
+Spec fns: 132, from `Published::ok`, `ready`.
 
 ```rust
 pub axiom fn axiom_ready(tracked p: &'static Published)
@@ -51,7 +52,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted: the frozen permissions, for a thread that knows the allocator is published ([`ready`]): a `&'static` reference to the `Published` `init` froze, the only one there is.
 
-Hashes: contract 3862638696, body none.
+Hashes: contract 3862638696, body none, spec 2875280341.
+Spec fns: 132, from `Published::ok`, `ready`.
 
 ```rust
 pub axiom fn axiom_published() -> (tracked r: &'static Published)
@@ -69,7 +71,8 @@ Tool: none (assumption). Status: trusted.
 
 > The process-start token, taken once, by [`STATE`]'s initialiser.
 
-Hashes: contract 2800844862, body none.
+Hashes: contract 2800844862, body none, spec 3586118075.
+Spec fns: 35, from `BytePerm::id`, `BytePerm::value`, `Statics::storage_fresh`, `all_steps`, `byte_id`, `count_id`, `line_word_id`, `ready_mark`, `slot_byte_id`, `state_word_id`.
 
 ```rust
 axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
@@ -92,7 +95,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::kani_statics::shared_ptr
 
 > The allocator state's address, with no readiness check and no reference formed: what the fast paths hand `heap::existing_heap`, which reads one byte through it only after the thread's TLS slot has proved init complete.
 
-Hashes: contract 1380591404, body 29835824.
+Hashes: contract 1380591404, body 29835824, spec 1407079298.
+Spec fns: 2, from `Shared::storage`.
 
 ```rust
 pub fn shared_ptr() -> (r: *const Shared)
@@ -108,7 +112,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: shared_base in sr
 
 > [`shared_base`] on aarch64: [`shared_ptr`] through the empty `asm!`.
 
-Hashes: contract 534596380, body 2091081502.
+Hashes: contract 534596380, body 2091081502, spec 1407079298.
+Spec fns: 2, from `Shared::storage`.
 
 ```rust
 pub fn shared_base() -> (r: *const Shared)
@@ -124,7 +129,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > [`feature_line_ready`] after its `shared()`, whose published permissions (`published`) have the line's invariant: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
 
-Hashes: contract 3066523785, body 2868952860.
+Hashes: contract 3066523785, body 2868952860, spec 684472192.
+Spec fns: 142, from `Created::ok`, `LineCell::built`, `LockGuard::view`, `Published::ok`, `Seen::ok`, `Table::view`, `TwoLevelBitmap::ok`, `TwoLevelBitmap::view`, `may_syscall`.
 
 ```rust
 fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'static LineCell>)
@@ -142,7 +148,8 @@ Tool: loom/GenMC. Status: trusted.
 
 > Wait for the thread building the line: its permissions, frozen at `LINE_READY`; or `None` when the caller is a fork child's handler in the fork window (`lock::in_child_fork_window`), where that thread is not in the child and the wait would never end: the line is then reset as the child handler would ([`feature_line_fork_child`]), for the caller to build.
 
-Hashes: contract 3027503195, body 4017504348.
+Hashes: contract 3027503195, body 4017504348, spec 684472192.
+Spec fns: 142, from `Created::ok`, `LineCell::built`, `LockGuard::view`, `Published::ok`, `Seen::ok`, `Table::view`, `TwoLevelBitmap::ok`, `TwoLevelBitmap::view`, `may_syscall`.
 
 ```rust
 fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Tracked<&'static LineCell>>)
@@ -160,7 +167,8 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_ra
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
 
-Hashes: contract 1867649379, body 574998675.
+Hashes: contract 1867649379, body 574998675, spec 3904535209.
+Spec fns: 134, from `Shared::built_at`, `Shared::storage`, `Shared::wf`, `marks_ready`, `may_abort`, `may_syscall`.
 
 ```rust
 fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
@@ -180,7 +188,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
 
-Hashes: contract 2098755632, body 507721659.
+Hashes: contract 2098755632, body 507721659, spec 1407079298.
+Spec fns: 2, from `Shared::storage`.
 
 ```rust
 fn shared_storage_ptr() -> (p: *mut Shared)
@@ -196,7 +205,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURES`].
 
-Hashes: contract 2881023278, body 531095909.
+Hashes: contract 2881023278, body 531095909, spec 23902642.
+Spec fns: 1, from `features_storage`.
 
 ```rust
 fn features_ptr() -> (p: *mut Features)
@@ -212,7 +222,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURE_LINE`].
 
-Hashes: contract 2262815526, body 756715309.
+Hashes: contract 2262815526, body 756715309, spec 3256979395.
+Spec fns: 1, from `line_storage`.
 
 ```rust
 fn line_ptr() -> (p: *mut FeatureLine)
@@ -228,7 +239,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::kani_atfork::atfork_regis
 
 > The `pthread_atfork` call itself, which may wait on glibc's atfork lock (a futex).
 
-Hashes: contract 3467618631, body 2331659382.
+Hashes: contract 3467618631, body 2331659382, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 fn pthread_atfork_handlers() -> i32
@@ -269,7 +281,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between (the handlers call this only when `FORK_LOCKED` says this fork's prepare took the locks: glibc serialises one fork's handlers under its atfork lock and runs them on the forking thread, so a `true` read there is this fork's; a stale `true` would mint a hold that does not exist): signals are blocked from the prepare handler's first step, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) release none: an allocation of theirs takes the held locks as acquired and its releases do nothing (`lock::fork_holder_is_me`, whose premise is that the forking thread has no allocator critical section open in the window).
 
-Hashes: contract 1667645340, body none.
+Hashes: contract 1667645340, body none, spec 287530822.
+Spec fns: 251, from `Lock::rank`, `StateHold::lock`, `StateHold::wf`, `rank_state`.
 
 ```rust
 axiom fn axiom_fork_resumed_state(l: &Lock<State>) -> (tracked state: StateHold)
@@ -288,7 +301,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
 
-Hashes: contract 2606020099, body none.
+Hashes: contract 2606020099, body none, spec 3717346420.
+Spec fns: 4, from `SigMask::mask`, `all_blocked`.
 
 ```rust
 axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
@@ -304,7 +318,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, the line word's permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
 
-Hashes: contract 2225863648, body none.
+Hashes: contract 2225863648, body none, spec 1662665488.
+Spec fns: 5, from `BytePerm::value`, `LineCell::unbuilt`, `in_fork_child`.
 
 ```rust
 axiom fn axiom_line_orphaned(before: BytePerm, tracked perm: &BytePerm, tracked cell: &Option<LineCell>) -> (tracked c: LineCell)
@@ -325,7 +340,8 @@ Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address; passed any other word, it would mint a second permission to it, which is why it is private to this module.
 
-Hashes: contract 172453718, body none.
+Hashes: contract 172453718, body none, spec 1834296740.
+Spec fns: 379, from `ForkHeld::has_slot`, `ForkHeld::held_ranks`, `ForkHeld::saved`, `ForkHeld::slot_addr`, `LockOrder::ranks`, `LockOrder::root`, `Shared::built_at`, `Shared::storage`, `StateHold::wf`, `effective`, `fork_holds`, `rank_state`, `word_addr`.
 
 ```rust
 axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &StateHold) -> (tracked r: (ForkHeld, LockOrder<'static>))

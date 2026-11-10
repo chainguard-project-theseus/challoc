@@ -35,7 +35,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::slotstate::kani_byte_at
 
 > The `AtomicU8` at address `at`.
 
-Hashes: contract 5560191, body 4214957818.
+Hashes: contract 5560191, body 4214957818, spec 3709325560.
+Spec fns: 2, from `byte_id`, `slot_byte_id`.
 
 ```rust
 unsafe fn byte_at(at: usize) -> (r: &'static AtomicU8)

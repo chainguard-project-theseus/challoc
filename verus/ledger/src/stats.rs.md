@@ -66,7 +66,8 @@ Tool: Kani. Status: discharged (Kani: stats::kani_records::zero_records_zeroes).
 
 > Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
 
-Hashes: contract 2902974600, body 1211080738.
+Hashes: contract 2902974600, body 1211080738, spec 2219458442.
+Spec fns: 1, from `Stored::ptr`.
 
 ```rust
 fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPair>>)
@@ -86,7 +87,8 @@ Tool: none (assumption). Status: trusted.
 
 Body mints Tracked at line 2137.
 
-Hashes: contract 1387577703, body 171475313.
+Hashes: contract 1387577703, body 171475313, spec 3768756100.
+Spec fns: 12, from `LockGuard::view`, `Stored::ptr`, `Table::view`, `TwoLevelBitmap::view`, `may_syscall`.
 
 ```rust
 fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)

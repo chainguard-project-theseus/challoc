@@ -35,7 +35,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_print::call_b
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
 
-Hashes: contract 2110597196, body 1036480111.
+Hashes: contract 2110597196, body 1036480111, spec 3151211091.
+Spec fns: 2, from `LockOrder::top`, `may_syscall`.
 
 ```rust
 fn call_back(
@@ -57,7 +58,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::disab
 
 > Disable the calling thread's cancellation (`pthread_setcancelstate`); the state it had, for [`cancel_restore`].
 
-Hashes: contract 1116002484, body 1821335431.
+Hashes: contract 1116002484, body 1821335431, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 pub(super) fn cancel_disable() -> i32
@@ -72,7 +74,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::resto
 
 > Give the calling thread back the cancel state `old` that [`cancel_disable`] returned (`pthread_setcancelstate`).
 
-Hashes: contract 4251881114, body 3441625971.
+Hashes: contract 4251881114, body 3441625971, spec 2869989918.
+Spec fns: 1, from `may_syscall`.
 
 ```rust
 pub(super) fn cancel_restore(old: i32)
@@ -87,7 +90,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_write_file::w
 
 > `fwrite` of `s` to the caller's stream `f`.
 
-Hashes: contract 931825622, body 3828165736.
+Hashes: contract 931825622, body 3828165736, spec 3151211091.
+Spec fns: 2, from `LockOrder::top`, `may_syscall`.
 
 ```rust
 fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
@@ -124,7 +128,8 @@ Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
 
-Hashes: contract 1752237532, body none.
+Hashes: contract 1752237532, body none, spec 4163122693.
+Spec fns: 46, from `CCall::fresh`.
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

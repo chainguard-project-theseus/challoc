@@ -15,7 +15,7 @@ axiom_start	allocator invariant	none (assumption)
 # Passes function pointers, which Verus does not support. Kani runs the
 # body with glibc's pthread_atfork replaced by a recording stand-in; what
 # glibc's function does is C8.
-pthread_atfork_handlers	function pointer	Kani	discharged on premises (Kani: api::kani_atfork::atfork_registers_the_handlers; premises: C8 (glibc's pthread_atfork records the three handlers and returns 0 without calling into challoc))	contract 3467618631, body 2331659382
+pthread_atfork_handlers	function pointer	Kani	discharged on premises (Kani: api::kani_atfork::atfork_registers_the_handlers; premises: C8 (glibc's pthread_atfork records the three handlers and returns 0 without calling into challoc))	contract 3467618631, body 2331659382, spec 2869989918
 # The fork handler handoff: glibc runs the parent and child handlers on the
 # thread whose prepare handler returned holding the locks and the mask.
 # The handlers call axiom_fork_resumed_state only when FORK_LOCKED (verified
@@ -31,13 +31,13 @@ axiom_fork_resumed	platform/kernel fact	none (assumption)
 axiom_line_orphaned	allocator invariant	none (assumption)
 # Raw-pointer projections of the init-once statics: each returns one pointer,
 # its static's storage, and `shared_ptr` and `shared_storage_ptr` agree.
-shared_ptr	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: api::kani_statics::shared_ptrs_agree; not checked: that it carries the provenance of `shared_storage_ptr`'s pointer, which it derives another way (the harness compares addresses))	contract 1380591404, body 29835824
-shared_storage_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::shared_ptrs_agree)	contract 2098755632, body 507721659
-features_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)	contract 2881023278, body 531095909
-line_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)	contract 2262815526, body 756715309
+shared_ptr	UnsafeCell/volatile/transmute	Kani	trusted (partly checked, Kani: api::kani_statics::shared_ptrs_agree; not checked: that it carries the provenance of `shared_storage_ptr`'s pointer, which it derives another way (the harness compares addresses))	contract 1380591404, body 29835824, spec 1407079298
+shared_storage_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::shared_ptrs_agree)	contract 2098755632, body 507721659, spec 1407079298
+features_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)	contract 2881023278, body 531095909, spec 23902642
+line_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: api::kani_statics::feature_ptrs_fixed)	contract 2262815526, body 756715309, spec 3256979395
 # Empty-template register hint: verus/emptyasm/run.sh checks the block adds
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row).
-shared_base	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: shared_base in src/api/mod.rs; not checked: that `shared_ptr` returns that pointer (itself trusted, its address checked by a Kani harness), and the pointer's provenance; the check shows only that the asm! block emits no instruction)	contract 534596380, body 2091081502
+shared_base	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: shared_base in src/api/mod.rs; not checked: that `shared_ptr` returns that pointer (itself trusted, its address checked by a Kani harness), and the pointer's provenance; the check shows only that the asm! block emits no instruction)	contract 534596380, body 2091081502, spec 1407079298
 # Termination of `init_slow`'s wait, given that `init` returns, a fair
 # scheduler and that a store becomes visible in finite time (C++20
 # [intro.progress] says it should): a waiter read `INITIALISING`, which
@@ -46,4 +46,4 @@ shared_base	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: shared_ba
 # read its own tid (read-after-write coherence) and it would abort. The
 # init models check that no waiter is left spinning and that only the
 # initialising thread takes the re-entry abort, on a copy.
-init_slow	termination	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which no case runs; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract)	contract 1867649379, body 574998675
+init_slow	termination	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which no case runs; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract)	contract 1867649379, body 574998675, spec 3904535209

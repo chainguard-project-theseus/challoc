@@ -1,7 +1,7 @@
 # A function pointer (the key's destructor), which Verus does not support.
 # Kani runs the body with glibc's pthread_key_create replaced by a recording
 # stand-in; what glibc's function does is C7.
-ThreadKey::create	function pointer	Kani	discharged on premises (Kani: heap::shared::kani_key::create_keeps_the_key; premises: C7 (glibc's pthread_key_create stores the key and returns 0, or returns an error number))	contract 663924478, body 2383684293
+ThreadKey::create	function pointer	Kani	discharged on premises (Kani: heap::shared::kani_key::create_keeps_the_key; premises: C7 (glibc's pthread_key_create stores the key and returns 0, or returns an error number))	contract 663924478, body 2383684293, spec 2869989918
 # Byte offsets (`offset_of!`, which Verus cannot evaluate), and the
 # layout the build checks with `fits`.
 S_LINES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2770929303, body none
@@ -21,7 +21,7 @@ S_ARENAS	core library	Kani	discharged (const assert: `axiom_shared_layout` in sr
 S_TCACHES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 1262348297, body none
 S_STATS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3982933550, body none
 S_CGROUP	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2964860936, body none
-axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3987711063, body none
+axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3987711063, body none, spec 3940336727
 # A field fixed once its permission is frozen: no vstd counterpart.
 axiom_shared_regions	raw pointer (internal)	none (assumption)
 axiom_shared_meta	raw pointer (internal)	none (assumption)
@@ -37,9 +37,9 @@ Shared::begin	raw pointer from C caller	none (assumption)
 # nested entry runs and the body leaves the token untouched. Under C10
 # glibc returns EINVAL for any key that is not live, so the harness runs
 # any key and the `# Safety` clause is not what makes the call defined.
-pthread_setspecific	FFI/syscall	Kani	discharged on premises (Kani: heap::shared::kani_setspecific::setspecific_passes_key_and_value; premises: C10 (glibc's pthread_setspecific records the value under the key without reading it, or returns an error number, without calling into challoc, outside a process whose challoc key is 32 or above with no block for it on the thread))	contract 2714888459, body 1699412956
+pthread_setspecific	FFI/syscall	Kani	discharged on premises (Kani: heap::shared::kani_setspecific::setspecific_passes_key_and_value; premises: C10 (glibc's pthread_setspecific records the value under the key without reading it, or returns an error number, without calling into challoc, outside a process whose challoc key is 32 or above with no block for it on the thread))	contract 2714888459, body 1699412956, spec 1019459523
 # Empty-template register hint: verus/emptyasm/run.sh checks the block adds
 # no instruction to the shipped code (a verus/emptyasm/blocks.txt row);
 # Kani checks the load, on a copy whose lines seams.sh --check requires
 # to equal the body's but for the rows verus/kani/pins.txt marks `-only`.
-ClassLine::guard_word	inline asm	Islaris/Isla	trusted (partly checked, Kani: heap::shared::kani_guard_word::guard_word_is_the_three_fields, const assert: `ClassLine::guard_word`'s word in src/heap/shared.rs, and emptyasm: guard_word in src/heap/shared.rs; not checked: the body itself, since the harness runs a copy of its load without the asm! block (Kani has no model of inline assembly), whose lines `sh verus/seams.sh --check` requires to equal the body's but for the rows verus/kani/pins.txt marks `-only`, today the opening brace and the asm! block, with comment and blank lines not compared)	contract 33478923, body 434743552
+ClassLine::guard_word	inline asm	Islaris/Isla	trusted (partly checked, Kani: heap::shared::kani_guard_word::guard_word_is_the_three_fields, const assert: `ClassLine::guard_word`'s word in src/heap/shared.rs, and emptyasm: guard_word in src/heap/shared.rs; not checked: the body itself, since the harness runs a copy of its load without the asm! block (Kani has no model of inline assembly), whose lines `sh verus/seams.sh --check` requires to equal the body's but for the rows verus/kani/pins.txt marks `-only`, today the opening brace and the asm! block, with comment and blank lines not compared)	contract 33478923, body 434743552, spec 2178421755

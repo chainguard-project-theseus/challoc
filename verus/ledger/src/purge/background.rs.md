@@ -33,7 +33,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: purge::background::kani_join:
 
 > `pthread_join(t, NULL)`: 0 or an error number.
 
-Hashes: contract 2838171325, body 3874947256.
+Hashes: contract 2838171325, body 3874947256, spec 3717866026.
+Spec fns: 12, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `TlsCell::kept`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`, `may_syscall`, `reentry_benign`.
 
 ```rust
 unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell>) -> i32
@@ -53,7 +54,8 @@ Tool: none (assumption). Status: trusted.
 
 Body mints Tracked at line 875; mints Tracked at line 883.
 
-Hashes: contract 2847973412, body 1049282638.
+Hashes: contract 2847973412, body 1049282638, spec 2992331749.
+Spec fns: 145, from `BytePerm::value`, `CountPerm::value`, `EntryPerm::value`, `HeapPerm::value`, `Scratch::value`, `Shared::wf`, `TlsCell::kept`, `TlsCell::value`, `TlsSlot::value`, `UsizePerm::value`, `WordPerm::value`, `may_abort_kernel`, `may_syscall`, `reentry_benign`.
 
 ```rust
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
@@ -76,7 +78,8 @@ Tool: none (assumption). Status: trusted.
 
 > The `Shared` that [`spawn`] passes as the thread's argument.
 
-Hashes: contract 721657616, body 3356801781.
+Hashes: contract 721657616, body 3356801781, spec 681168370.
+Spec fns: 130, from `Shared::wf`.
 
 ```rust
 fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)
