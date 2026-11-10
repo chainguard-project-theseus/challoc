@@ -311,8 +311,23 @@ pub fn page_size() -> (r: usize)
         crate::meta::is_pow2(r),
         r <= 0x1_0000,
         r == (1usize << crate::layout::process_regions().lg_page),
+        vstd::std_specs::bits::u64_trailing_zeros(r as u64) == crate::layout::process_regions().lg_page,
 {
     let v = getauxval(AT_PAGESZ);
+    proof {
+        let l = crate::layout::process_regions().lg_page;
+        let w = v as u64;
+        vstd::std_specs::bits::axiom_u64_trailing_zeros(w);
+        let t = vstd::std_specs::bits::u64_trailing_zeros(w) as u64;
+        assert(t == l as u64) by (bit_vector)
+            requires
+                v == 1usize << l,
+                v != 0,
+                w == v as u64,
+                t <= 64,
+                t < 64 ==> (w >> t) & 1u64 == 1u64,
+                w << sub(64, t) == 0;
+    }
     if v != 0 && v.is_power_of_two() {
         return v;
     }

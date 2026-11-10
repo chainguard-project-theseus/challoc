@@ -969,6 +969,99 @@ const fn class_size_at(i: usize) -> (r: usize)
     }
 }
 
+/// `k` is the exponent of the smallest power of two at least `x`:
+/// `pow2(k) >= x`, and `pow2(k - 1) < x` when `k > 0`.
+spec fn ceil_lg_is(x: int, k: nat) -> bool {
+    &&& x <= vstd::arithmetic::power2::pow2(k)
+    &&& k > 0 ==> vstd::arithmetic::power2::pow2((k - 1) as nat) < x
+}
+
+/// The exponent of the smallest power of two at least `x`
+/// ([`ceil_lg_is`]; [`lemma_ceil_lg`] gives its value).
+spec fn spec_ceil_lg(x: int) -> nat {
+    choose|k: nat| ceil_lg_is(x, k)
+}
+
+/// One exponent meets [`ceil_lg_is`], so any that does is
+/// [`spec_ceil_lg`]'s.
+proof fn lemma_ceil_lg(x: int, k: nat)
+    requires
+        ceil_lg_is(x, k),
+    ensures
+        spec_ceil_lg(x) == k,
+{
+    let j = spec_ceil_lg(x);
+    assert(ceil_lg_is(x, j));
+    if j < k && j < (k - 1) as nat {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(j, (k - 1) as nat);
+    }
+    if k < j && k < (j - 1) as nat {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(k, (j - 1) as nat);
+    }
+}
+
+/// The power of two [`usize::next_power_of_two`] returns for `x`: 1 up
+/// to 1, then `pow2(spec_ceil_lg(x))`.
+spec fn spec_npot(x: int) -> int {
+    if x <= 1 {
+        1
+    } else {
+        vstd::arithmetic::power2::pow2(spec_ceil_lg(x)) as int
+    }
+}
+
+/// A power of two `r = pow2(k)` with `x <= r`, 1 for `x <= 1` and below
+/// `2 * x` above (what `vspec::core_int`'s specification of
+/// `usize::next_power_of_two` ensures) is
+/// [`spec_npot`]`(x)`.
+proof fn lemma_npot(x: int, r: int, k: nat)
+    requires
+        r == vstd::arithmetic::power2::pow2(k),
+        x <= r,
+        x <= 1 ==> r == 1,
+        x > 1 ==> r < 2 * x,
+    ensures
+        r == spec_npot(x),
+        x > 1 ==> spec_ceil_lg(x) == k,
+{
+    if x > 1 {
+        if k > 0 {
+            vstd::arithmetic::power2::lemma_pow2_unfold(k);
+        } else {
+            vstd::arithmetic::power2::lemma2_to64();
+        }
+        lemma_ceil_lg(x, k);
+    }
+}
+
+/// The search [`lg_slab_for`]'s loop makes for a size from
+/// [`SMALL_SLAB_BELOW`] to [`SMALL_MAX`], from `lg` up: the first
+/// exponent below [`LG_SMALL_SLAB`] whose slab wastes at most
+/// `slab / SLAB_WASTE_DIV`, else [`LG_SMALL_SLAB`].
+spec fn spec_small_lg(size: usize, lg: u32) -> u32
+    decreases LG_SMALL_SLAB - lg,
+{
+    if lg >= LG_SMALL_SLAB {
+        lg
+    } else if (1usize << lg) % size <= (1usize << lg) / SLAB_WASTE_DIV {
+        lg
+    } else {
+        spec_small_lg(size, (lg + 1) as u32)
+    }
+}
+
+/// [`lg_slab_for`]`(size)`.
+pub closed spec fn spec_lg_slab_for(size: usize) -> u32 {
+    if size < SMALL_SLAB_BELOW {
+        LG_SMALL_SLAB
+    } else if size <= SMALL_MAX {
+        spec_small_lg(size, LG_MIN_SLAB)
+    } else {
+        let k = spec_ceil_lg(16 * size) as u32;
+        if k < LG_MEDIUM_MIN_SLAB { LG_MEDIUM_MIN_SLAB } else { k }
+    }
+}
+
 /// Slab size of a class (see [`LG_MIN_SLAB`]): `1 << LG_SMALL_SLAB` below
 /// [`SMALL_SLAB_BELOW`]; from there to [`SMALL_MAX`] the smallest power of
 /// two from [`MIN_SLAB`] up whose internal waste is at most
@@ -983,6 +1076,7 @@ pub const fn lg_slab_for(size: usize) -> (r: u32)
         size > SMALL_MAX ==> r == LG_MEDIUM_MIN_SLAB || (1usize << r) < 32 * size,
         size > SMALL_MAX ==> r >= LG_MEDIUM_MIN_SLAB,
         size < SMALL_SLAB_BELOW ==> r == LG_SMALL_SLAB,
+        r == spec_lg_slab_for(size),
 {
     if size < SMALL_SLAB_BELOW {
         return LG_SMALL_SLAB;
@@ -990,7 +1084,13 @@ pub const fn lg_slab_for(size: usize) -> (r: u32)
     if size <= SMALL_MAX {
         let mut lg = LG_MIN_SLAB;
         while lg < LG_SMALL_SLAB
-            invariant LG_MIN_SLAB <= lg <= LG_SMALL_SLAB, 1 <= size,
+            invariant
+                LG_MIN_SLAB <= lg <= LG_SMALL_SLAB,
+                1 <= size,
+                spec_small_lg(size, lg) == spec_small_lg(size, LG_MIN_SLAB),
+            ensures
+                LG_MIN_SLAB <= lg <= LG_SMALL_SLAB,
+                lg == spec_small_lg(size, LG_MIN_SLAB),
             decreases LG_SMALL_SLAB - lg,
         {
             let slab = 1usize << lg;
@@ -1025,6 +1125,9 @@ pub const fn lg_slab_for(size: usize) -> (r: u32)
             requires (want as u64) == 1u64 << (lg as u64), lg < 23;
         assert(lg < 16 ==> (1usize << 16u32) > (1usize << lg)) by (bit_vector)
             requires lg < 23;
+        assert(tz == ku) by (bit_vector)
+            requires w == 1u64 << ku, ku < 64, w == 1u64 << tz, tz < 23;
+        lemma_npot(16 * size as int, want as int, k);
     }
     if lg < LG_MEDIUM_MIN_SLAB { LG_MEDIUM_MIN_SLAB } else { lg }
 }
@@ -1097,6 +1200,24 @@ proof fn lemma_odd_inverse(d: u32)
     assert(d.wrapping_mul(x4) == 1);
 }
 
+/// `n` steps of Newton's iteration `x = x * (2 - d * x)` from `x = d`.
+spec fn spec_newton(d: u32, n: nat) -> u32
+    decreases n,
+{
+    if n == 0 {
+        d
+    } else {
+        let x = spec_newton(d, (n - 1) as nat);
+        x.wrapping_mul(2u32.wrapping_sub(d.wrapping_mul(x)))
+    }
+}
+
+/// [`inverse_of_odd_part`]`(size)`: four Newton steps for the odd part
+/// of `size`.
+spec fn spec_inv_odd(size: usize) -> u32 {
+    spec_newton((size as u32) >> vstd::std_specs::bits::u64_trailing_zeros(size as u64), 4)
+}
+
 /// The inverse of the odd part of `size` modulo `2^32` (the `inv_odd`
 /// field): Newton's iteration `x = x * (2 - d * x)` doubles the correct
 /// low bits from the 3 that `x = d` has for odd `d`.
@@ -1111,6 +1232,7 @@ const fn inverse_of_odd_part(size: usize) -> (r: u32)
             &&& d & 1 == 1
             &&& d.wrapping_mul(r) == 1
         }),
+        r == spec_inv_odd(size),
 {
     let ghost t32 = vstd::std_specs::bits::u64_trailing_zeros(size as u64);
     proof {
@@ -1132,6 +1254,7 @@ const fn inverse_of_odd_part(size: usize) -> (r: u32)
             i == 2 ==> d.wrapping_mul(x) & 0xfff == 1,
             i == 3 ==> d.wrapping_mul(x) & 0xff_ffff == 1,
             i == 4 ==> d.wrapping_mul(x) == 1,
+            x == spec_newton(d, i as nat),
         decreases 4 - i,
     {
         let ghost x0 = x;
@@ -1162,6 +1285,18 @@ proof fn lemma_newton(e: u32)
     assert(e & 0xff_ffff == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) == 1) by (bit_vector);
 }
 
+/// [`slab_bits_for`]`(nslots, lg_slab)`.
+spec fn spec_slab_bits(nslots: usize, lg_slab: u32) -> int {
+    let raw: int = if nslots <= LINE_BITS {
+        spec_npot(nslots as int)
+    } else {
+        (((nslots + LINE_BITS - 1) as usize) & !((LINE_BITS - 1) as usize)) as int
+    };
+    let per_line: int = if raw >= LINE_BITS { 1 } else { LINE_BITS as int / raw };
+    let cap: int = if LG_GROUP_SPAN > lg_slab { (1usize << ((LG_GROUP_SPAN - lg_slab) as u32)) as int } else { 1 };
+    if per_line > cap { LINE_BITS as int / cap } else { raw }
+}
+
 /// See [`Class::slab_bits`].
 const fn slab_bits_for(nslots: usize, lg_slab: u32) -> (r: usize)
     requires 1 <= nslots <= 0x2000, LG_MIN_SLAB <= lg_slab <= LG_MAX_SLAB,
@@ -1171,6 +1306,7 @@ const fn slab_bits_for(nslots: usize, lg_slab: u32) -> (r: usize)
         r >= 64 ==> r % 64 == 0,
         r <= LINE_BITS || (r % LINE_BITS == 0 && r < nslots + LINE_BITS),
         r <= LINE_BITS ==> crate::meta::is_pow2(r),
+        r == spec_slab_bits(nslots, lg_slab),
 {
     let raw = if nslots <= LINE_BITS { nslots.next_power_of_two() } else { (nslots + LINE_BITS - 1) & !(LINE_BITS - 1) };
     proof {
@@ -1187,6 +1323,7 @@ const fn slab_bits_for(nslots: usize, lg_slab: u32) -> (r: usize)
             assert(w == 1u64 << ku);
             assert((w >= 64 && w <= 1024 ==> w % 64 == 0) && (w < 1024 ==> w <= 512)) by (bit_vector)
                 requires w == 1u64 << ku, ku < 64;
+            lemma_npot(nslots as int, raw as int, k);
         }
     }
     let per_line = if raw >= LINE_BITS { 1 } else { LINE_BITS / raw };
@@ -1235,6 +1372,13 @@ const fn slab_bits_for(nslots: usize, lg_slab: u32) -> (r: usize)
     }
 }
 
+/// [`lg_slab_at`]`(size, lg_page)`.
+pub closed spec fn spec_lg_slab_at(size: usize, lg_page: u32) -> u32 {
+    let lg = spec_lg_slab_for(size);
+    let floor = if lg_page < LG_SMALL_SLAB { lg_page } else { LG_SMALL_SLAB };
+    if lg < floor { floor } else { lg }
+}
+
 /// Slab size of a class on a kernel with `1 << lg_page` pages: the
 /// compile-time [`lg_slab_for`] value, raised to the page when the page is
 /// larger, but never above [`LG_SMALL_SLAB`] (every table slab below
@@ -1250,6 +1394,7 @@ pub const fn lg_slab_at(size: usize, lg_page: u32) -> (r: u32)
         size > SMALL_MAX ==> (1usize << r) >= 16 * size,
         size > SMALL_MAX ==> r == LG_MEDIUM_MIN_SLAB || (1usize << r) < 32 * size,
         size < SMALL_SLAB_BELOW ==> r == LG_SMALL_SLAB,
+        r == spec_lg_slab_at(size, lg_page),
 {
     let lg = lg_slab_for(size);
     let floor = if lg_page < LG_SMALL_SLAB { lg_page } else { LG_SMALL_SLAB };
@@ -1263,12 +1408,30 @@ pub const fn lg_slab_at(size: usize, lg_page: u32) -> (r: u32)
     r
 }
 
+/// Entry `i` of [`classes_for_page`]`(lg_page)`, field by field.
+pub closed spec fn spec_entry(i: int, lg_page: u32) -> Class {
+    let size = spec_class_size(i) as usize;
+    let lg_slab = spec_lg_slab_at(size, lg_page);
+    let nslots = (1usize << lg_slab) as int / size as int;
+    Class {
+        size: size as u32,
+        lg_slab: lg_slab as u8,
+        nslots: nslots as u32,
+        slab_mask: ((1usize << lg_slab) - 1) as u32,
+        inv_odd: spec_inv_odd(size),
+        tz: vstd::std_specs::bits::u64_trailing_zeros(size as u64) as u8,
+        slab_bits: spec_slab_bits(nslots as usize, lg_slab) as u16,
+    }
+}
+
 /// The class table for a kernel with `1 << lg_page` pages: sizes and
 /// their inverses are fixed, the slab geometry follows [`lg_slab_at`].
 pub const fn classes_for_page(lg_page: u32) -> (out: [Class; NCLASSES])
     ensures
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] out[i].wf(),
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] out[i].size == spec_class_size(i),
+        forall|i: int| 0 <= i < NCLASSES ==> #[trigger] out[i] == spec_entry(i, lg_page),
+        out == page_table(lg_page),
 {
     let mut out = [Class {
         size: 0,
@@ -1285,6 +1448,7 @@ pub const fn classes_for_page(lg_page: u32) -> (out: [Class; NCLASSES])
             0 <= i <= NCLASSES,
             forall|j: int| 0 <= j < i ==> #[trigger] out[j].wf(),
             forall|j: int| 0 <= j < i ==> #[trigger] out[j].size == spec_class_size(j),
+            forall|j: int| 0 <= j < i ==> #[trigger] out[j] == spec_entry(j, lg_page),
         decreases NCLASSES - i,
     {
         let size = class_size_at(i);
@@ -1352,6 +1516,11 @@ pub const fn classes_for_page(lg_page: u32) -> (out: [Class; NCLASSES])
         };
         i += 1;
     }
+    proof {
+        broadcast use vstd::array::axiom_array_ext_equal;
+        lemma_spec_fill(page_entries(lg_page), NCLASSES as int);
+        assert(out =~= page_table(lg_page));
+    }
     out
 }
 
@@ -1359,6 +1528,7 @@ pub(crate) const fn build_classes() -> (r: [Class; NCLASSES])
     ensures
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].wf(),
         forall|i: int| 0 <= i < NCLASSES ==> #[trigger] r[i].size == spec_class_size(i),
+        r == base_value(),
 {
     classes_for_page(LG_MIN_SLAB)
 }
@@ -1373,10 +1543,11 @@ verus! {
 /// `slab::DESC_STRIDE`) are built from. Its entries are well formed and
 /// sized [`spec_class_size`] ([`table_ok`]), the sizes of [`CLASSES`]',
 /// which [`adopt_page_geometry`] keeps: what readers of a size alone
-/// read, before init as well as after.
+/// read, before init as well as after. Its value is [`base_value`].
 pub exec const BASE_CLASSES: [Class; NCLASSES]
     ensures
         table_ok(BASE_CLASSES),
+        BASE_CLASSES == base_value(),
 {
     build_classes()
 }
@@ -1400,22 +1571,117 @@ verus! {
 #[verifier::external_body]
 pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
-/// The contents of [`CLASSES`] after init. Uninterpreted;
-/// [`axiom_class_table`] fixes it.
-pub uninterp spec fn classes_after_init() -> [Class; NCLASSES];
+/// The table whose entries below `n` are `f`'s ([`lemma_spec_fill`]).
+pub(crate) closed spec fn spec_fill(f: spec_fn(int) -> Class, n: int) -> [Class; NCLASSES]
+    decreases n,
+{
+    if n <= 0 {
+        vstd::array::spec_array_fill_for_copy_type(f(0))
+    } else {
+        vstd::array::spec_array_update(spec_fill(f, n - 1), n - 1, f(n - 1))
+    }
+}
 
-/// The class table in use: the contents of [`CLASSES`] after init
-/// ([`classes_after_init`]) when they are [`table_ok`], as
-/// [`adopt_page_geometry`] leaves them, and otherwise a spec table that
-/// is [`table_ok`] ([`spec_ok_table`]), so every entry is well formed
-/// without an assumption. Opaque; `vspec::class::lemma_class_table_wf` reveals it.
+/// The entries of [`spec_fill`]`(f, n)` below `n` are `f`'s.
+proof fn lemma_spec_fill(f: spec_fn(int) -> Class, n: int)
+    requires
+        0 <= n <= NCLASSES,
+    ensures
+        forall|j: int| 0 <= j < n ==> #[trigger] spec_fill(f, n)[j] == f(j),
+    decreases n,
+{
+    broadcast use vstd::array::axiom_spec_array_update, vstd::array::lemma_array_index;
+    if n > 0 {
+        lemma_spec_fill(f, n - 1);
+        let prev = spec_fill(f, n - 1);
+        vstd::array::array_len_matches_n(&prev);
+        assert(spec_fill(f, n)@ == prev@.update(n - 1, f(n - 1)));
+        assert forall|j: int| 0 <= j < n implies #[trigger] spec_fill(f, n)[j] == f(j) by {
+            assert(spec_fill(f, n)[j] == spec_fill(f, n)@[j]);
+            if j < n - 1 {
+                assert(prev[j] == prev@[j]);
+            }
+        }
+    }
+}
+
+/// The entries of [`page_table`]`(lg_page)`.
+spec fn page_entries(lg_page: u32) -> spec_fn(int) -> Class {
+    |j: int| spec_entry(j, lg_page)
+}
+
+/// [`classes_for_page`]`(lg_page)`: every entry [`spec_entry`]'s.
+pub closed spec fn page_table(lg_page: u32) -> [Class; NCLASSES] {
+    spec_fill(page_entries(lg_page), NCLASSES as int)
+}
+
+/// The value of [`BASE_CLASSES`] (`build_classes`'s postcondition), the
+/// table [`CLASSES`]' storage holds as the process starts
+/// (`api::axiom_start`, trusted): [`page_table`] at the [`MIN_SLAB`]
+/// page.
+pub closed spec fn base_value() -> [Class; NCLASSES] {
+    page_table(LG_MIN_SLAB)
+}
+
+/// `a` with the slab geometry of `w` (`lg_slab`, `nslots`, `slab_mask`
+/// and `slab_bits`) when their `lg_slab` differ, else `a`: what
+/// [`apply_page_geometry`] makes of an entry `a` whose
+/// [`classes_for_page`] entry is `w`.
+spec fn adopt_entry(a: Class, w: Class) -> Class {
+    if a.lg_slab != w.lg_slab {
+        Class {
+            size: a.size,
+            lg_slab: w.lg_slab,
+            nslots: w.nslots,
+            slab_mask: w.slab_mask,
+            inv_odd: a.inv_odd,
+            tz: a.tz,
+            slab_bits: w.slab_bits,
+        }
+    } else {
+        a
+    }
+}
+
+/// The entries of [`adopt_spec`]`(t, lg_page)`.
+spec fn adopt_entries(t: [Class; NCLASSES], lg_page: u32) -> spec_fn(int) -> Class {
+    |j: int| adopt_entry(t[j], spec_entry(j, lg_page))
+}
+
+/// What [`apply_page_geometry`]`(t, lg_page)` leaves of a table `t`:
+/// every entry [`adopt_entry`]'s of its [`classes_for_page`] entry.
+pub closed spec fn adopt_spec(t: [Class; NCLASSES], lg_page: u32) -> [Class; NCLASSES] {
+    spec_fill(adopt_entries(t, lg_page), NCLASSES as int)
+}
+
+/// The class table in use: [`BASE_CLASSES`]' value ([`base_value`])
+/// with the page geometry of the process's kernel page
+/// ([`crate::layout::process_regions`]`().lg_page`) adopted, as
+/// [`adopt_page_geometry`] leaves [`CLASSES`] at init, when that is
+/// [`table_ok`] (as `adopt_page_geometry` ensures), and otherwise a spec
+/// table that is [`table_ok`] ([`spec_ok_table`]), so every entry is well
+/// formed without an assumption. Opaque; `vspec::class::lemma_class_table_wf`
+/// and [`lemma_class_table`] reveal it.
 #[verifier::opaque]
 pub open(crate) spec fn class_table() -> [Class; NCLASSES] {
-    if table_ok(classes_after_init()) {
-        classes_after_init()
+    let t = adopt_spec(base_value(), crate::layout::process_regions().lg_page);
+    if table_ok(t) {
+        t
     } else {
         spec_ok_table(NCLASSES as int)
     }
+}
+
+/// The table `api::init` leaves in [`CLASSES`], [`base_value`] with the
+/// process's page geometry adopted and [`table_ok`], is [`class_table`].
+pub proof fn lemma_class_table(t: [Class; NCLASSES])
+    requires
+        t == adopt_spec(base_value(), crate::layout::process_regions().lg_page),
+        table_ok(t),
+    ensures
+        class_table() == t,
+{
+    reveal(class_table);
 }
 
 /// A spec entry for class `i` that is well formed and sized
@@ -1436,16 +1702,15 @@ closed spec fn spec_ok_entry(i: int) -> Class {
     }
 }
 
+/// The entries of [`spec_ok_table`].
+spec fn ok_entries() -> spec_fn(int) -> Class {
+    |j: int| spec_ok_entry(j)
+}
+
 /// A table whose entries below `n` are [`spec_ok_entry`]'s
-/// ([`lemma_spec_ok_table`]).
-pub(crate) closed spec fn spec_ok_table(n: int) -> [Class; NCLASSES]
-    decreases n,
-{
-    if n <= 0 {
-        vstd::array::spec_array_fill_for_copy_type(spec_ok_entry(0))
-    } else {
-        vstd::array::spec_array_update(spec_ok_table(n - 1), n - 1, spec_ok_entry(n - 1))
-    }
+/// ([`lemma_spec_fill`]).
+pub(crate) closed spec fn spec_ok_table(n: int) -> [Class; NCLASSES] {
+    spec_fill(ok_entries(), n)
 }
 
 /// [`spec_ok_entry`] is well formed and sized [`spec_class_size`].
@@ -1484,36 +1749,13 @@ proof fn lemma_spec_ok_entry(i: int)
     }
 }
 
-/// The entries of [`spec_ok_table`]`(n)` below `n` are [`spec_ok_entry`]'s.
-proof fn lemma_spec_ok_table(n: int)
-    requires
-        0 <= n <= NCLASSES,
-    ensures
-        forall|j: int| 0 <= j < n ==> #[trigger] spec_ok_table(n)[j] == spec_ok_entry(j),
-    decreases n,
-{
-    broadcast use vstd::array::axiom_spec_array_update, vstd::array::lemma_array_index;
-    if n > 0 {
-        lemma_spec_ok_table(n - 1);
-        let prev = spec_ok_table(n - 1);
-        vstd::array::array_len_matches_n(&prev);
-        assert(spec_ok_table(n)@ == prev@.update(n - 1, spec_ok_entry(n - 1)));
-        assert forall|j: int| 0 <= j < n implies #[trigger] spec_ok_table(n)[j] == spec_ok_entry(j) by {
-            assert(spec_ok_table(n)[j] == spec_ok_table(n)@[j]);
-            if j < n - 1 {
-                assert(prev[j] == prev@[j]);
-            }
-        }
-    }
-}
-
 /// [`spec_ok_table`]`(NCLASSES)` is [`table_ok`]: [`class_table`]'s
 /// fallback.
 pub(crate) proof fn lemma_spec_ok_table_ok()
     ensures
         table_ok(spec_ok_table(NCLASSES as int)),
 {
-    lemma_spec_ok_table(NCLASSES as int);
+    lemma_spec_fill(ok_entries(), NCLASSES as int);
     assert forall|i: int| 0 <= i < NCLASSES implies #[trigger] spec_ok_table(NCLASSES as int)[i].wf() by {
         lemma_spec_ok_entry(i);
     }
@@ -1522,23 +1764,6 @@ pub(crate) proof fn lemma_spec_ok_table_ok()
         lemma_spec_ok_entry(i);
     }
 }
-
-/// Trusted: a [`table_ok`] value that a frozen permission to the storage
-/// of [`CLASSES`] holds is [`class_table`], since it is
-/// [`classes_after_init`], the contents of [`CLASSES`] after init. `api::init` freezes
-/// the one permission to it (`STATE`'s initialiser takes it once, from
-/// `api::axiom_start`, and `api::claim_init` hands it to `init`) after
-/// [`adopt_page_geometry`], and
-/// nothing writes the table through a `'static` shared permission, so
-/// every such permission holds that one value.
-pub axiom fn axiom_class_table(tracked t: &'static vstd::raw_ptr::PointsTo<[Class; NCLASSES]>)
-    requires
-        t.ptr() == classes_storage(),
-        t.is_init(),
-        table_ok(t.value()),
-    ensures
-        class_table() == t.value(),
-;
 
 impl ClassTable {
     #[verifier::external_body]
@@ -1672,6 +1897,7 @@ pub unsafe fn adopt_page_geometry(
         final(perm).ptr() == classes_storage(),
         final(perm).is_init(),
         table_ok(final(perm).value()),
+        final(perm).value() == adopt_spec(old(perm).value(), lg_page),
         changed <= NCLASSES,
 {
     apply_page_geometry(vstd::raw_ptr::ptr_mut_ref(classes_ptr(), Tracked(perm)), lg_page)
@@ -1702,6 +1928,7 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
             &&& final(table)[i].tz == old(table)[i].tz
         },
         table_ok(*old(table)) ==> table_ok(*final(table)),
+        *final(table) == adopt_spec(*old(table), lg_page),
 {
     let want = classes_for_page(lg_page);
     let mut changed = 0;
@@ -1710,12 +1937,7 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
             changed <= c,
             forall|i: int| 0 <= i < NCLASSES ==> keeps_size(#[trigger] table[i], old(table)[i]),
             forall|i: int| c <= i < NCLASSES ==> #[trigger] table[i] == old(table)[i],
-            forall|i: int| 0 <= i < c ==> #[trigger] table[i] == old(table)[i] || {
-                &&& table[i].lg_slab == want[i].lg_slab
-                &&& table[i].nslots == want[i].nslots
-                &&& table[i].slab_mask == want[i].slab_mask
-                &&& table[i].slab_bits == want[i].slab_bits
-            },
+            forall|i: int| 0 <= i < c ==> #[trigger] table[i] == adopt_entry(old(table)[i], want[i]),
     {
         let w = &want[c];
         if table[c].lg_slab != w.lg_slab {
@@ -1748,6 +1970,10 @@ pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -
                 assert(keeps_size(table[i], old(table)[i]));
                 assert(old(table)[i].size == spec_class_size(i));
             }
+        }
+        assert(*table =~= adopt_spec(*old(table), lg_page)) by {
+            broadcast use vstd::array::axiom_array_ext_equal;
+            lemma_spec_fill(adopt_entries(*old(table), lg_page), NCLASSES as int);
         }
     }
     changed

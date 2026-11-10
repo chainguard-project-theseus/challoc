@@ -459,9 +459,9 @@ pub tracked struct Statics {
 
 impl Statics {
     /// As the process starts: `FEATURES` and `FEATURE_LINE`
-    /// uninitialised, the class table initialised, its entries well
-    /// formed and sized ([`layout::table_ok`]), and the conf buffer
-    /// initialised.
+    /// uninitialised, the class table initialised to `BASE_CLASSES`'
+    /// value ([`layout::base_value`]), its entries well formed and sized
+    /// ([`layout::table_ok`]), and the conf buffer initialised.
     pub open spec fn fresh(&self) -> bool {
         &&& self.features.ptr() == features_storage()
         &&& self.features.is_uninit()
@@ -469,6 +469,7 @@ impl Statics {
         &&& self.line.is_uninit()
         &&& self.classes.ptr() == layout::classes_storage()
         &&& self.classes.is_init()
+        &&& self.classes.value() == layout::base_value()
         &&& layout::table_ok(self.classes.value())
         &&& self.conf.ptr() == config::conf_storage()
         &&& self.conf.is_init()
@@ -486,11 +487,13 @@ impl Statics {
 /// line's build ([`build_line`]: `FEATURES`' THP table and
 /// `FEATURE_LINE`, through the permissions the line's invariant hands
 /// it) writes them, and the class table's storage holds `BASE_CLASSES`'
-/// value, which meets `table_ok` (the `exec const`'s verified
+/// value, [`layout::base_value`] (this fixes the table's value, not
+/// only that it meets `table_ok`; both are the `exec const`'s verified
 /// `ensures`). Verified code reads [`layout::CLASSES`] only through the
 /// class table's permission, which `init` freezes after
-/// [`layout::adopt_page_geometry`] (`layout::frozen_table`), so the table
-/// it reads is the one [`layout::axiom_class_table`] fixes. The conf
+/// [`layout::adopt_page_geometry`] (`layout::frozen_table`), so the
+/// table it reads is [`layout::class_table`]
+/// (`layout::lemma_class_table`). The conf
 /// buffer's storage is `CONF_BUF` in `config.rs`, a static initialised
 /// to zeros and private to that file's `linux` module, where only
 /// `conf_ptr` (outside the Kani harnesses) names it, and verified code
@@ -1734,7 +1737,7 @@ fn init(
     // table through this one shared permission.
     let tracked classes = vstd::modes::tracked_static_ref(classes);
     proof {
-        layout::axiom_class_table(classes);
+        layout::lemma_class_table(classes.value());
     }
     let config = config::load(config::conf_buffer(Tracked(&mut conf)));
     // The per-size THP files only matter to `thp:auto` and `thp:always`;
