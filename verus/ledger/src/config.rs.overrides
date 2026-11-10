@@ -17,10 +17,9 @@ PERCPU_ARENA_NAMES	core library	Kani	discharged (const assert: `PERCPU_ARENA_NAM
 KEYS	function pointer	Kani	discharged (Kani: config::kani_config::keys_are_the_table_names)	contract 208287259, body none
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 Config::set_listed	function pointer	Kani	discharged (Kani: config::kani_config::set_listed_contract)	contract 1746912615, body 2364960765
-# The static `load` reads the file into, as a `&'static mut`: the
-# harness checks the reference is `CONF_BUF`'s and writable; that no two
-# are live at once is `api::init`'s once-only exchange.
-conf_buffer	raw pointer (internal)	Kani	trusted (partly checked, Kani: config::linux::kani_conf_buffer::conf_buffer_is_conf_buf; not checked: that no two references are live at once, which rests on `load`'s one caller, `api::init`, running once (its exchange on `STATE` lets one thread through))	contract 2174549885, body 3431169048
+# The raw-pointer projection of the static `load` reads the file into:
+# the harness checks it returns one pointer, `CONF_BUF`'s storage, writable.
+conf_ptr	raw pointer (internal)	Kani	discharged (Kani: config::linux::kani_conf_ptr::conf_ptr_is_conf_buf)	contract 819829348, body 1918486632
 # `get_contract` runs all of `get`, the `TABLE` readers included.
 Config::get	function pointer	Kani	discharged (Kani: config::kani_config::get_contract)	contract 2444094337, body 4260931877
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks

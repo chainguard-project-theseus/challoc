@@ -1559,7 +1559,10 @@ impl Name {
 } // verus!
 
 pub(crate) use linux::byte_at;
+#[cfg(verus_keep_ghost)]
+pub(crate) use linux::conf_storage;
 pub use linux::load;
+pub(crate) use linux::{CONF_LEN, conf_buffer};
 #[cfg(test)]
 use linux::{MAX_TEXT, cstr, env_var, first_line_of, malloc_conf_symbol};
 
@@ -1570,6 +1573,7 @@ mod linux {
     use super::{Config, Issue, Report, position_of};
     use crate::sys;
     use vstd::prelude::*;
+    use vstd::raw_ptr::PointsTo;
 
     verus! {
 
@@ -1578,11 +1582,15 @@ mod linux {
     /// configuration comes close.
     pub const MAX_TEXT: usize = 4096;
 
+    /// The length of the buffer [`load`] reads `/etc/challoc.conf` into:
+    /// one byte more than [`MAX_TEXT`].
+    pub const CONF_LEN: usize = MAX_TEXT + 1;
+
     } // verus!
 
-    /// [`conf_buffer`]'s storage (Verus has no `static mut`).
-    #[cfg(not(test))]
-    static mut CONF_BUF: [u8; MAX_TEXT + 1] = [0; MAX_TEXT + 1];
+    /// [`conf_buffer`]'s storage (Verus has no `static mut`), read and
+    /// written only through its pointer ([`conf_ptr`]).
+    static mut CONF_BUF: [u8; CONF_LEN] = [0; CONF_LEN];
 
     use crate::sys::auxv::{AT_SECURE, getauxval};
 
@@ -1634,36 +1642,46 @@ mod linux {
         b'n', b'f', 0,
     ];
 
-    /// The buffer [`load`] reads `/etc/challoc.conf` into: a static, so
-    /// init's frame does not carry 4 KiB of it (design 13.8: init's frame
-    /// is capped, though challoc initialises before `main`, so init does
-    /// not normally run on a program's small thread). Trusted: `load` is called only by
-    /// `api::init`, which runs once (its exchange on `STATE` lets one
-    /// thread through, and a re-entry aborts before it allocates), so no
-    /// two references are live at once. The unit tests call `load`
-    /// concurrently, so each call there gets its own buffer.
+    /// The address of [`CONF_BUF`]'s storage.
+    pub uninterp spec fn conf_storage() -> *mut [u8; CONF_LEN];
+
+    /// The storage of [`CONF_BUF`]. Trusted: a raw-pointer projection of
+    /// a static.
     #[verifier::external_body]
-    fn conf_buffer() -> (r: &'static mut [u8; MAX_TEXT + 1]) {
-        #[cfg(not(test))]
-        {
-            // SAFETY: the exclusion above.
-            unsafe { &mut *core::ptr::addr_of_mut!(CONF_BUF) }
-        }
-        #[cfg(test)]
-        {
-            std::boxed::Box::leak(std::boxed::Box::new([0u8; MAX_TEXT + 1]))
-        }
+    #[inline(always)]
+    fn conf_ptr() -> (p: *mut [u8; CONF_LEN])
+        ensures
+            p == conf_storage(),
+        opens_invariants none
+    {
+        core::ptr::addr_of_mut!(CONF_BUF)
+    }
+
+    /// The buffer `api::init` has [`load`] read `/etc/challoc.conf` into:
+    /// [`CONF_BUF`], a static, so init's frame does not carry 4 KiB of it
+    /// (design 13.8: init's frame is capped, though challoc initialises
+    /// before `main`, so init does not normally run on a program's small
+    /// thread). Through the permission to its storage, which the
+    /// process-start token holds (`api::Statics`), so the reference lives
+    /// no longer than the borrow of that one permission.
+    pub fn conf_buffer(Tracked(conf): Tracked<&mut PointsTo<[u8; CONF_LEN]>>) -> (r: &mut [u8; CONF_LEN])
+        requires
+            old(conf).ptr() == conf_storage(),
+            old(conf).is_init(),
+    {
+        vstd::raw_ptr::ptr_mut_ref(conf_ptr(), Tracked(conf))
     }
 
     /// Read every source in priority order into a `Config`, printing each
     /// problem as `challoc: <source>: <issue>` on stderr. Aborts when
     /// `abort_conf` is set by the time all sources are read and anything was
     /// reported, an inert key or a cut source included. Never allocates: the
-    /// file goes through a static buffer ([`conf_buffer`]) and the
-    /// environment is walked in place. The result is well formed: the defaults are
+    /// file goes through `buf` (`api::init` passes [`CONF_BUF`], through
+    /// [`conf_buffer`]; a unit test, which holds no permission to it, passes
+    /// its own) and the environment is walked in place. The result is well formed: the defaults are
     /// (`Config::lemma_default_wf`) and every source goes through
     /// `Config::parse_source`, which keeps it.
-    pub fn load() -> (r: Config)
+    pub fn load(buf: &mut [u8; CONF_LEN]) -> (r: Config)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -1686,7 +1704,6 @@ mod linux {
         if let Some((text, cut)) = je_sym {
             issues += parse_from(&mut cfg, text, cut, "je_malloc_conf", &mut out);
         }
-        let buf = conf_buffer();
         if let Some((line, cut)) = first_line_of(&CHALLOC_CONF, buf) {
             issues += parse_from(&mut cfg, line, cut, "/etc/challoc.conf", &mut out);
         }
@@ -2036,27 +2053,28 @@ mod linux {
 
     } // verus!
 
-    /// The Kani harness of [`conf_buffer`], next to the private function
-    /// and its static.
+    /// The Kani harness of [`conf_ptr`], next to the private function and
+    /// its static.
     #[cfg(kani)]
-    mod kani_conf_buffer {
-        use super::{CONF_BUF, MAX_TEXT, conf_buffer};
+    mod kani_conf_ptr {
+        use super::{CONF_BUF, MAX_TEXT, conf_ptr};
 
-        /// `conf_buffer`: no `ensures`; the call is defined, and the
-        /// `&'static mut [u8; MAX_TEXT + 1]` it returns is `CONF_BUF`
-        /// (`core::ptr::eq`), writable (`kani::mem::can_write`), and a
-        /// byte written at any index reads back there. Not checked: that
-        /// no two references are live at once, which rests on `load`'s
-        /// caller, `api::init`, running once.
+        /// `conf_ptr`, `ensures p == conf_storage()`, uninterpreted: every
+        /// call returns the same pointer. Beyond the contract, it is
+        /// `CONF_BUF`'s storage (`core::ptr::eq`), non-null, writable for
+        /// the whole array (`kani::mem::can_write`), and a byte written at
+        /// any index reads back there.
         #[kani::proof]
-        fn conf_buffer_is_conf_buf() {
-            let r = conf_buffer();
-            let p: *mut [u8; MAX_TEXT + 1] = r;
+        fn conf_ptr_is_conf_buf() {
+            let p = conf_ptr();
+            assert!(conf_ptr() == p);
             assert!(core::ptr::eq(p, core::ptr::addr_of_mut!(CONF_BUF)));
+            assert!(!p.is_null());
             assert!(kani::mem::can_write(p));
             let (i, v): (usize, u8) = (kani::any(), kani::any());
             kani::assume(i <= MAX_TEXT);
-            // SAFETY: `p` is `r`, the only reference, writable above.
+            // SAFETY: `CONF_BUF`'s storage, writable above; no other code
+            // runs in a harness.
             unsafe { (*p)[i] = v };
             // SAFETY: as above.
             assert_eq!(unsafe { (*p)[i] }, v);

@@ -223,10 +223,11 @@ add.
   `put_cgroup`, `put_policy` and
   `put_tail`. Arena 0 is built the same way, verified:
   `put_head`, `put_sets`, `put_class` and `put_tail` (`arena.rs`).
-- `api::shared_storage_ptr`, `features_ptr`, `line_ptr` and
-  `layout::classes_ptr` (`external_body`): raw-pointer projections of
-  the statics, at `Shared::storage()`, `features_storage()`,
-  `line_storage()` and `classes_storage()`.
+- `api::shared_storage_ptr`, `features_ptr`, `line_ptr`,
+  `layout::classes_ptr` and `config::linux::conf_ptr` (`external_body`):
+  raw-pointer projections of the statics, at `Shared::storage()`,
+  `features_storage()`, `line_storage()`, `classes_storage()` and
+  `config::conf_storage()`.
 - One-shot tokens (`vspec/once.rs`) and `STATE`'s invariant
   (`api::StatePred`), which `STATE`'s initialiser (`exec static STATE`,
   verified) builds at `UNINIT` from the two words' permissions it mints
@@ -248,8 +249,9 @@ add.
   gets the frozen half, `api::ReadyMark` (`marks_ready`). `api::claim_init`
   (verified) is `init_slow`'s compare-exchange from `UNINIT`, and takes
   the tokens and the permissions out of the invariant for its winner,
-  which `init` uses: it writes the class table and `FEATURES` through
-  the statics' permissions and puts `FEATURES`', `FEATURE_LINE`'s and
+  which `init` uses: it writes the class table, `FEATURES` and the conf
+  buffer (`config::conf_buffer`, for `config::load`) through the
+  statics' permissions and puts `FEATURES`', `FEATURE_LINE`'s and
   `STATE.line`'s into the line's invariant, and passes the tokens to
   `Shared::init`.
   `Shared::begin` and `table::axiom_fresh_words` (one token per class)
