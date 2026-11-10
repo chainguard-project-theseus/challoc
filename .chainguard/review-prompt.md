@@ -27,9 +27,17 @@ get wrong.
   the verdict is what the pull request body quotes from that run: the run
   id, the head it ran on, and for each architecture and quantum either the
   `.text hash .. IDENTICAL` line or the `functions old .. changed N` line,
-  with every changed function named with its cause. A body that quotes a
-  different head, or lacks any of the four architecture and quantum
-  results, has a missing verdict. A missing verdict, or a changed hot-set
+  with every changed function named with its cause. A change that moves
+  the rust stream the codegen jobs install builds both sides with the new
+  rustc, so its four results read IDENTICAL whatever the compiler did: its
+  body declares a toolchain-driven hot-set change with cause `rustc 1.NN`
+  and lists the changed `verus/perf-budget*.txt` lines as the changed
+  functions, and that declaration is the fast-path claim. Such a change
+  needs the `make quick` go/no-go verdict in the body, not the cycle
+  attribution or mechanism the Fast-path evidence rule asks of a source
+  change. A body that quotes a different head, lacks any of the four
+  architecture and quantum results, or lacks a stream move's `make quick`
+  verdict, has a missing verdict. A missing verdict, or a changed hot-set
   function in a change that does not claim a fast-path change, is
   Blocking.
 - Proof checks. `Chainguard Checks (presubmit)`, which the `chainguard`

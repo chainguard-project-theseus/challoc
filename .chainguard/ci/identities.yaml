@@ -27,6 +27,9 @@ trust:
       github:
         app:
           dependabot: 49699333
+          # chainguard[bot], which opens the deps agent's pull requests
+          # (.chainguard/deps.yaml).
+          chainguard: 107423345
   subrings:
     member: {authors: [members, bots]}
   github_token: 1.member

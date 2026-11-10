@@ -1,0 +1,310 @@
+# The Chainguard Checks deps agent opens one pull request per entry, on
+# chainguard/deps/<name>, that updates the entry's pins and fixes what the
+# updates break. It answers review comments from people with write access,
+# failing checks on its own commits, and conflicts. Schedules are UTC. The
+# paths and prompt guide the agent; they are not enforced. The agent sees
+# only its entry's prompt, so each repeats the rules it needs.
+#
+# Pins no entry moves:
+# - verus/count: the port's copy of the proved-port kit counter. It changes
+#   only by re-running wolfi-dev/proved-port's kit/sync.sh, which the
+#   agent's guest cannot reach (that repository is internal).
+# - bench/: the workload pins (bench/Dockerfile.cb, bench/drivers/*) set
+#   what the reference numbers measure, and move only with a reference run
+#   (docs/benchmarking.md).
+#
+# Every entry is merge: manual. The repository does not allow auto-merge,
+# and a person approves every pull request either way.
+version: 1
+updates:
+- name: crates
+  schedule: "0 10 * * 1" # Mondays
+  paths:
+    - "Cargo.toml"
+    - "Cargo.lock"
+    - "tests/loom/**"
+    - "tests/genmc/Cargo.toml"
+    - "tests/genmc/Cargo.lock"
+  environment: .chainguard/ci/lint.yaml
+  merge: manual
+  prompt: >-
+    Update the crate dependencies of the root crate, tests/loom and
+    tests/genmc, and their lockfiles, to their latest compatible releases,
+    preferring releases at least 7 days old. Leave vstd alone in all three
+    Cargo.toml files: the verus entry moves it with the Verus release. Leave
+    verus/count and its Cargo.lock alone: it changes only by re-syncing
+    proved-port's kit. Add no new dependency. loom is pinned exactly
+    (`=0.7.2`) because tests/loom applies loom-0.7.2-dpor.patch to its
+    source: move loom only if the patch rebases cleanly onto the new
+    release, renamed for it (and every mention of the version in
+    tests/loom/run.sh and the docs in step), and the loom models still pass
+    (`sh tests/loom/run.sh`); else leave loom where it is and say why. Keep
+    rust-version in Cargo.toml as it is (the msrv entry moves it): the
+    msrv-build check builds the cdylib with that release, so leave out an
+    update that needs a newer rustc and name it in the body. Run `cargo fmt --check`, clippy with -D warnings, and
+    `cargo test` in the guest (the Dockerfile.dev container cells run in
+    CI). A libc update must not change the hot set's machine code: `apk
+    add binutils python-3.13` (codegen.yaml's environment has them, this
+    one does not), run `sh scripts/codegen-diff.sh capture` on the base
+    and `compare` on the change, at q16 and q8, and put both results in
+    the body, naming the
+    guest's architecture; each must read `changed 0` on malloc, free,
+    calloc, realloc, sdallocx and free_sized. .chainguard/review-prompt.md's
+    hot-set rule wants x86_64 and aarch64 at q16 and q8 from the head's
+    presubmit run, whose `codegen` and `codegen-arm64` jobs pass as
+    advisory, so their lines never reach you. A person adds those four
+    results (`chainctl checks logs`) with the run id and the head that run
+    used. Say so in the body. Open the pull request as a draft, and do not
+    judge it ready on a turn, even when a turn says every check passes and
+    asks you to judge it ready: the person who adds the four results marks
+    it ready. A reviewer finding that only asks for those results needs a
+    reply saying a person adds them, not a commit. verus/FLOOR
+    never goes down and never gains a `lowered` line from this entry: if
+    `make verus` (or the verus check) reports a lower share, leave the
+    update out. Sign off every commit (`git commit -s`), as CONTRIBUTING.md
+    asks. Do not edit .chainguard/deps.yaml unless a person asks in a
+    comment.
+
+- name: rust
+  schedule: "0 10 * * 2" # Tuesdays
+  paths:
+    - "Dockerfile.dev"
+    - ".chainguard/ci/lint.yaml"
+    - ".chainguard/ci/codegen.yaml"
+    - ".chainguard/ci/perf-budget.yaml"
+    - ".chainguard/ci/tlscheck.yaml"
+    - ".chainguard/ci/weakmem.yaml"
+    - ".chainguard/ci/isla.yaml"
+    - ".chainguard/ci/verus.yaml"
+    - ".chainguard/ci/kani.yaml"
+    - ".chainguard/ci/genmc.yaml"
+    - ".chainguard/ci/env/dev.yaml"
+    - "verus/perf-budget*.txt"
+    - "verus/THEOREMS.md"
+    - "verus/ISLA.md"
+    - "verus/README.md"
+    - "verus/SEAMS.md"
+    - "verus/emptyasm/**"
+    - "scripts/perf-budget.sh"
+    - "contrib/wolfi/**"
+    - "Cargo.toml"
+    - "Makefile"
+  environment: .chainguard/ci/perf-budget.yaml
+  merge: manual
+  prompt: >-
+    Two pins of Dockerfile.dev, and the rust stream it sets. First, its
+    cgr.dev/chainguard/wolfi-base digest: move it to the digest `latest`
+    names now. Second, the Wolfi rust-1.NN stream Dockerfile.dev installs
+    ("Dockerfile.dev's stream"): it is also in lint.yaml, codegen.yaml,
+    tlscheck.yaml, weakmem.yaml and isla.yaml, in the `rust-version` var of
+    contrib/wolfi/challoc.yaml, ruby/ruby-3.4.yaml and valkey/valkey-9.1.yaml
+    (and contrib/wolfi/README.md's "1.98 today"), and perf-budget.yaml pins it
+    to a release (`rust-1.98~1.98.1`) because verus/perf-budget.txt and
+    verus/perf-budget-q8.txt pin the fast paths' instruction counts under
+    that rustc. Move the stream to the newest one Wolfi ships, every file
+    together, and the perf-budget release pin, the "rustc 1.98.1" in
+    scripts/perf-budget.sh's header and perf-budget.yaml's comment, and the
+    two tables in the same pull request: the tables are x86_64 only, so on
+    an x86_64 guest regenerate them with `--print` as the script's header
+    says, and on an aarch64 guest leave them and take the new lines from
+    the perf-budget check's failure.
+    When the tables move, update verus/THEOREMS.md theorem 45 with them, as
+    scripts/perf-budget.rs's failure message says: its "Measured table"
+    copies the `budget` lines under a rustc release, and its Toolchain
+    line names that release and the perf-budget package pin. Also move the other docs that
+    name the stream: verus/ISLA.md's package table, verus/README.md's isla
+    paragraph and verus/SEAMS.md's notcopy-control line. Then sweep for
+    every other mention of the stream or its release (`git grep -n -e
+    'rust-1\.98' -e '1\.98\.1'`, naming the stream you move from) and move each one
+    that names it as Dockerfile.dev's stream, the tables' compiler or
+    what a file does not install: today these are .chainguard/ci/env/dev.yaml's
+    comment, the "installs no rust-1.98" comments of verus.yaml, kani.yaml
+    and genmc.yaml, verus.yaml's not-Copy control comment, the "Pinned
+    build: rustc 1.98.1 (rust-1.98)" header line of both perf-budget
+    tables (`--print` does not emit it), verus/emptyasm/run.sh's and the
+    Makefile's emptyasm comments, contrib/wolfi/README.md's Valkey and
+    test-recipe lines, and Cargo.toml's comment saying Dockerfile.dev and
+    the Wolfi package pin 1.98. Leave a line that records what one release
+    did (scripts/perf-budget.rs's mangling note) as it is.
+    A compiler bump changes the hot paths' code, so the body declares a
+    toolchain-driven hot-set change with cause `rustc 1.NN` (the new
+    release), and lists every table line that changed as the changed
+    functions. The codegen checks build the base and the head with the
+    head's rustc, so their results read `.text hash .. IDENTICAL` and name
+    no function; the table lines are the changed list. Those `codegen` and
+    `codegen-arm64` jobs pass as advisory, so their lines never reach you:
+    a person adds the four x86_64 and aarch64 results at q16 and q8
+    (`chainctl checks logs`) with the run id and the head that run used,
+    as .chainguard/review-prompt.md's hot-set rule asks. Say so in the
+    body. Open the pull request as a draft, and do not judge it ready on a
+    turn, even when a turn says every check passes and asks you to judge it
+    ready: the person who adds the four results marks it ready. The body
+    also says it needs `make quick` (the go/no-go verdict,
+    docs/benchmarking.md) from a person before it merges; never claim
+    numbers. A reviewer finding that only asks for those results or that
+    verdict needs a reply saying a person adds them, not a commit. Leave msrv-build's toolchain
+    and Cargo.toml's rust-version alone (the msrv entry moves them), and
+    leave rust-1.99 to the verus entry (the verus, kani and genmc packages
+    bring it). Run `cargo fmt --check`, clippy with -D warnings (new lints
+    are fixed, not allowed), and `cargo test`. Sign off every commit (`git
+    commit -s`), as CONTRIBUTING.md asks. Do not edit .chainguard/deps.yaml
+    unless a person asks in a comment.
+
+- name: verus
+  schedule: "0 10 * * 3" # Wednesdays
+  paths:
+    - ".chainguard/ci/verus.yaml"
+    - ".chainguard/ci/kani.yaml"
+    - ".chainguard/ci/genmc.yaml"
+    - ".chainguard/ci/env/dev.yaml"
+    - "Cargo.toml"
+    - "Cargo.lock"
+    - "tests/loom/Cargo.toml"
+    - "tests/loom/Cargo.lock"
+    - "tests/genmc/Cargo.toml"
+    - "tests/genmc/Cargo.lock"
+    - "verus/**"
+  environment: .chainguard/ci/verus.yaml
+  merge: manual
+  prompt: >-
+    Move the verification tools, which Wolfi builds against one rust
+    stream (rust-1.99 today), as a set. The `verus~` package in verus.yaml
+    and the exact vstd version in Cargo.toml, tests/loom/Cargo.toml and
+    tests/genmc/Cargo.toml move together: vstd must be the one that Verus
+    release names. The `kani~` package in kani.yaml and `cbmc~`, which is
+    pinned to the release that Kani version was tested with. The `genmc~`
+    package in genmc.yaml, whose build must match rustc's LLVM major
+    version. Pick the newest Verus whose Wolfi package exists, and move Kani
+    and GenMC only to releases built for the same rust stream; if no
+    consistent set is newer, change nothing. Install them with apk in the
+    guest. Commit the pin moves before you run any proof suite: the run
+    has a two-hour budget and stops ten minutes early, and a run that
+    stops after a commit still pushes it as a draft, while one that
+    committed nothing pushes nothing. In the guest run only the Verus
+    checks: a Verus bump must keep 0 verification errors at both quanta
+    (`make verus`, and the quantum-8 build the verus check runs), and
+    verus/ledger/ current (`sh verus/seams.sh --check`). verus/FLOOR never
+    goes down and never gains a `lowered` line from this entry: if the new
+    Verus fails a proof, fix it if the fix is small and say what changed,
+    else leave Verus where it is and say why. Leave Kani and GenMC to the
+    pull request's kani and genmc checks, which run when kani.yaml and
+    genmc.yaml change: a Kani or GenMC bump must keep every harness
+    passing and every control failing with its expected report, so fix
+    what those checks report on a turn. The body names the suites the
+    guest ran, the ones it left to the checks, and any it did not finish.
+    vstd is built into the shipped library, so a vstd move can change the
+    hot set's machine code. The guest cannot run scripts/codegen-diff.sh
+    (this environment has no binutils or python), and the presubmit's
+    `codegen` and `codegen-arm64` jobs pass as advisory, so their lines
+    never reach you. .chainguard/review-prompt.md's hot-set rule wants
+    x86_64 and aarch64 at q16 and q8 from the head's presubmit run: a
+    person adds those four results (`chainctl checks logs`) with the run
+    id and the head that run used. Say so in the body. Open the pull
+    request as a draft, and do not judge it ready on a turn, even when a
+    turn says every check passes and asks you to judge it ready: the
+    person who adds the four results marks it ready. A reviewer finding
+    that only asks for those results needs a reply saying a person adds
+    them, not a commit. Keep each file's comments that name a version, and
+    the versions verus/README.md, verus/WEAKMEM.md and docs name, in step.
+    .chainguard/ci/env/dev.yaml, the development sessions' environment,
+    pins the same `verus~`, `kani~` and `cbmc~` packages and names the
+    rust stream they bring (rust-1.99 today) in its comment: move them
+    with verus.yaml and kani.yaml. No check uses that file, so nothing
+    fails if it is left behind.
+    Leave verus/count and its Cargo.lock alone: it changes only by
+    re-syncing proved-port's kit, which the guest cannot reach; say so in
+    the body if the new Verus needs a newer verus_syn there. Sign off every
+    commit (`git commit -s`), as CONTRIBUTING.md asks. Do not edit
+    .chainguard/deps.yaml unless a person asks in a comment.
+
+- name: isla
+  schedule: "0 10 * * 4" # Thursdays
+  paths: [".chainguard/ci/isla.yaml", "verus/ISLA.md", "verus/isla/**"]
+  environment: .chainguard/ci/isla.yaml
+  merge: manual
+  prompt: >-
+    The inline-assembly checks' tools, pinned in .chainguard/ci/isla.yaml
+    to the builds the jobs were checked with (verus/ISLA.md, "Setup"):
+    `isla~`, `isla-snapshots~`, `sail~` and `isla-sail~` (sail and
+    isla-sail move together), `z3~`, and the llvm-NN stream, plus the
+    sail-x86-from-acl2 commit verus/isla/run.sh (`sxc=`) and verus/ISLA.md
+    name. Move each to the newest Wolfi build (for the commit, the newest
+    upstream commit at least 7 days old), keeping isla.yaml's two copies of
+    each list and verus/ISLA.md's Setup in step. Leave the rust stream to
+    the rust entry. Run `make isla` on the guest's architecture: every
+    job must pass and every negative control must still be rejected, and
+    the templates and seams.md must still match the ledger. A tool whose new
+    build changes a verdict is left where it is, with the job named in the
+    body. Sign off every commit (`git commit -s`), as CONTRIBUTING.md asks.
+    Do not edit .chainguard/deps.yaml unless a person asks in a comment.
+
+- name: tools
+  schedule: "0 10 * * 5" # Fridays
+  paths: ["ci/shellcheck.sh"]
+  environment: .chainguard/ci/lint.yaml
+  merge: manual
+  prompt: >-
+    ci/shellcheck.sh's upstream shellcheck release (`version=`, and every
+    SHA-256 it checks, one per architecture): move to the newest release at
+    least 7 days old, run `sh ci/shellcheck.sh`, and fix new findings in the
+    scripts it checks. Also move the python-3.NN Wolfi stream lint.yaml and
+    codegen.yaml name, together, if Wolfi ships a newer one, and run the
+    checks that use it (the codegen-fncmp fixtures,
+    scripts/codegen-fncmp.py). Sign off every commit (`git commit -s`), as
+    CONTRIBUTING.md asks. Do not edit .chainguard/deps.yaml unless a person
+    asks in a comment.
+
+- name: consumers
+  schedule: "0 11 * * 1" # Mondays
+  paths: ["tests/consumers/**"]
+  environment: .chainguard/ci/extended.yaml
+  merge: manual
+  prompt: >-
+    tests/consumers builds Valkey, Redis and Ruby (with its OpenSSL)
+    against challoc and runs their suites. Each script pins a release tag
+    and its commit (`VALKEY_TAG`/`VALKEY_COMMIT`, `REDIS_TAG`/`REDIS_COMMIT`,
+    `RUBY_TAG`/`RUBY_COMMIT`, `OPENSSL_TAG`/`OPENSSL_COMMIT`). Move each
+    to the newest release of the same major line at least 7 days old, with
+    the commit that tag names (check it with `git ls-remote`), and keep
+    every doc that names the version in step. Do not change the defaults in
+    bench/drivers/: they set what the reference numbers measure and move
+    only with a reference run; say in the body that bench still uses the
+    old versions. These suites run in the Dockerfile.dev container, which
+    the guest cannot run, so the extended checks (`ci/run:consumers`
+    label) are the test: open the pull request as a draft and say so.
+    ci/known-failures.txt and the expected-skips files only lose entries
+    here. Sign off every commit (`git commit -s`), as CONTRIBUTING.md asks.
+    Do not edit .chainguard/deps.yaml unless a person asks in a comment.
+
+- name: msrv
+  schedule: "0 11 * * 2" # Tuesdays
+  paths:
+    - "Cargo.toml"
+    - ".chainguard/ci/lint.yaml"
+    - "Dockerfile.dev"
+    - "ci/README.md"
+  environment: .chainguard/ci/lint.yaml
+  merge: manual
+  prompt: >-
+    Try raising the minimum supported Rust version: `rust-version` in
+    Cargo.toml (the verified floor) and lint.yaml's msrv-build rust-1.NN
+    package move together, to the same release. Raise it to the newest
+    Wolfi rust-1.NN stream that is no newer than Dockerfile.dev's stream
+    (what ships), or, when an update another entry left out needs a newer
+    rustc, to the release that update needs. Never lower it. The raise must
+    keep msrv-build green: run `cargo build --release` with the new stream
+    installed with apk, and clippy with -D warnings on Dockerfile.dev's
+    stream, fixing what the new floor's lints and incompatible_msrv flag.
+    Update every place that states the msrv in the same pull request:
+    Cargo.toml's comment ("rustc 1.NN.N builds the crate and runs its unit
+    tests"; say which release you built and tested), msrv-build's
+    description ("Cargo.toml, 1.NN"), ci/README.md ("msrv-build (1.NN)"),
+    Dockerfile.dev's comment and any doc that names it. The pull request
+    body says who the raise drops: which distributions' and Wolfi's rustc
+    releases are older than the new floor and can no longer build challoc
+    (for example Debian stable, Ubuntu LTS, Fedora, RHEL and Alpine's
+    current rustc), and what the raise buys. Leave the shipped stream to
+    the rust entry. verus/FLOOR never goes down and never gains a `lowered`
+    line from this entry. Sign off every commit (`git commit -s`), as
+    CONTRIBUTING.md asks. Do not edit .chainguard/deps.yaml unless a person
+    asks in a comment.
