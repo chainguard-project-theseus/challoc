@@ -1,6 +1,4 @@
 ClassTable	UnsafeCell/volatile/transmute	none (assumption)
-# The class table after init is what its one frozen permission holds.
-axiom_class_table	allocator invariant	none (assumption)
 # The class table's static: its constructor and its storage.
 ClassTable::new	UnsafeCell/volatile/transmute	Kani	discharged (Kani: layout::kani_classes::class_table_new)	contract 3932435869, body 785407001
 classes_ptr	UnsafeCell/volatile/transmute	Kani	discharged (Kani: layout::kani_classes::classes_ptr_fixed)	contract 3755770132, body 3659477090
