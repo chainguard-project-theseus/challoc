@@ -445,20 +445,23 @@ pub tracked struct Start {
 }
 
 /// The permissions to the storage of the statics `init` writes itself:
-/// [`FEATURES`], [`FEATURE_LINE`] and the class table
-/// ([`layout::CLASSES`]).
+/// [`FEATURES`], [`FEATURE_LINE`], the class table
+/// ([`layout::CLASSES`]) and the buffer `config::load` reads
+/// `/etc/challoc.conf` into ([`config::conf_buffer`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Statics {
     pub tracked features: PointsTo<Features>,
     pub tracked line: PointsTo<FeatureLine>,
     pub tracked classes: PointsTo<[layout::Class; NCLASSES]>,
+    pub tracked conf: PointsTo<[u8; config::CONF_LEN]>,
 }
 
 impl Statics {
     /// As the process starts: `FEATURES` and `FEATURE_LINE`
     /// uninitialised, the class table initialised, its entries well
-    /// formed and sized ([`layout::table_ok`]).
+    /// formed and sized ([`layout::table_ok`]), and the conf buffer
+    /// initialised.
     pub open spec fn fresh(&self) -> bool {
         &&& self.features.ptr() == features_storage()
         &&& self.features.is_uninit()
@@ -467,6 +470,8 @@ impl Statics {
         &&& self.classes.ptr() == layout::classes_storage()
         &&& self.classes.is_init()
         &&& layout::table_ok(self.classes.value())
+        &&& self.conf.ptr() == config::conf_storage()
+        &&& self.conf.is_init()
     }
 }
 
@@ -485,8 +490,13 @@ impl Statics {
 /// `ensures`). Verified code reads [`layout::CLASSES`] only through the
 /// class table's permission, which `init` freezes after
 /// [`layout::adopt_page_geometry`] (`layout::frozen_table`), so the table
-/// it reads is the one [`layout::axiom_class_table`] fixes. A `static`'s
-/// initialiser runs once, at compile time; the test
+/// it reads is the one [`layout::axiom_class_table`] fixes. The conf
+/// buffer's storage is `CONF_BUF` in `config.rs`, a static initialised
+/// to zeros and private to that file's `linux` module, where only
+/// `conf_ptr` (outside the Kani harnesses) names it, and verified code
+/// reaches it only through this permission ([`config::conf_buffer`]), so
+/// the reference `init` makes for [`config::load`] is the only one live.
+/// A `static`'s initialiser runs once, at compile time; the test
 /// `access_init_once_words_written_by_their_protocol`
 /// (tests/loom/tests/access.rs) checks that it is the one call.
 axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
@@ -1689,8 +1699,9 @@ fn register_fork_handlers()
 /// `reserve_owning` hands over; `init_slow` runs it once, before it
 /// publishes `READY`, with what its winning exchange got
 /// ([`claim_init`]): the statics' permissions ([`Statics`]) and the
-/// feature line's word's permission, for the class table and the features
-/// it writes here (the feature line's permission and its word's go into
+/// feature line's word's permission, for the class table, the features
+/// and the conf buffer ([`config::conf_buffer`]) it writes here (the
+/// feature line's permission and its word's go into
 /// the line's invariant with the features', the line waits for its first
 /// request, [`feature_line_ready`]), and the one-shot tokens for
 /// `Shared::init`, which uses them up. It hands back the
@@ -1713,7 +1724,7 @@ fn init(
         final(seen).ok(),
 {
     let tracked (line_state, statics) = owned;
-    let tracked Statics { features: mut feats, line, mut classes } = statics;
+    let tracked Statics { features: mut feats, line, mut classes, mut conf } = statics;
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
@@ -1725,7 +1736,7 @@ fn init(
     proof {
         layout::axiom_class_table(classes);
     }
-    let config = config::load();
+    let config = config::load(config::conf_buffer(Tracked(&mut conf)));
     // The per-size THP files only matter to `thp:auto` and `thp:always`;
     // under `never` they wait for the feature line (`feature_line_ready`).
     let features = Features::probe(config.thp != config::Thp::Never);

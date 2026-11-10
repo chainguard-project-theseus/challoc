@@ -15,7 +15,7 @@ file.
 | `Read` | ext_type_spec | function pointer | none (assumption) | trusted |
 | `TABLE` | external_body const | function pointer | none (assumption) | trusted |
 | `KEYS` | external_body const | function pointer | Kani | discharged |
-| `conf_buffer` | external_body | raw pointer (internal) | Kani | trusted |
+| `conf_ptr` | external_body | raw pointer (internal) | Kani | discharged |
 | `read_slot` | external_body | raw pointer from C caller | none (assumption) | trusted |
 | `malloc_conf_addr` | external_body | inline asm | Islaris/Isla | discharged |
 | `je_mall...f_addr` | external_body | inline asm | Islaris/Isla | discharged |
@@ -128,22 +128,25 @@ Hashes: contract 208287259, body none.
 pub exec const KEYS: &'static [&'static str] = &NAMES;
 ```
 
-## `conf_buffer`
+## `conf_ptr`
 
-src/config.rs:1646. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: config::linux::kani_conf_buffer::conf_buffer_is_conf_buf; not checked: that no two references are live at once, which rests on `load`'s one caller, `api::init`, running once (its exchange on `STATE` lets one thread through)).
+src/config.rs:1652. Kind: external_body. Category: raw pointer (internal).
+Tool: Kani. Status: discharged (Kani: config::linux::kani_conf_ptr::conf_ptr_is_conf_buf).
 
-> The buffer [`load`] reads `/etc/challoc.conf` into: a static, so init's frame does not carry 4 KiB of it (design 13.8: init's frame is capped, though challoc initialises before `main`, so init does not normally run on a program's small thread).
+> The storage of [`CONF_BUF`].
 
-Hashes: contract 2174549885, body 3431169048.
+Hashes: contract 819829348, body 1918486632.
 
 ```rust
-fn conf_buffer() -> (r: &'static mut [u8; MAX_TEXT + 1])
+fn conf_ptr() -> (p: *mut [u8; CONF_LEN])
+    ensures
+        p == conf_storage(),
+    opens_invariants none
 ```
 
 ## `read_slot`
 
-src/config.rs:1770. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1787. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `const char *` at `slot` (a symbol, or an `environ` entry).
@@ -156,7 +159,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ## `malloc_conf_addr`
 
-src/config.rs:1783. Kind: external_body. Category: inline asm.
+src/config.rs:1800. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -169,7 +172,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ## `je_malloc_conf_addr`
 
-src/config.rs:1808. Kind: external_body. Category: inline asm.
+src/config.rs:1825. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -182,7 +185,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ## `byte_at`
 
-src/config.rs:1871. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1888. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The byte at `p + n`.
@@ -195,7 +198,7 @@ pub(crate) unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ## `bytes_at`
 
-src/config.rs:1883. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1900. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -210,7 +213,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ## `environ_array`
 
-src/config.rs:1895. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1912. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > glibc's `environ`, null before libc has set it up.
@@ -223,7 +226,7 @@ fn environ_array() -> *const *const c_char
 
 ## `env_var`
 
-src/config.rs:1918. Kind: no_decreases. Category: C-program contract.
+src/config.rs:1935. Kind: no_decreases. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.
