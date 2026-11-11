@@ -175,7 +175,8 @@ pub static FAIL_INIT: core::sync::atomic::AtomicUsize = core::sync::atomic::Atom
 verus! {
 
 /// The least metadata (bump and reservation sides together) one arena
-/// build has taken so far ([`Arenas::build`]), per metadata allocator
+/// build has taken so far ([`Arenas::build`]; stored as its complement,
+/// [`note_build_cost`]), per metadata allocator
 /// (keyed by its address: the process has one, the tests build many);
 /// what [`Arenas::create`] keeps free per automatic arena not built yet.
 /// A key that finds no slot (more than `BUILD_COSTS` allocators, tests
@@ -242,27 +243,21 @@ const AUTO_HEADROOM: u32 = 8;
 /// Record a build over `meta` whose tables took `tables` bytes of
 /// metadata ([`BUILD_COST`]). The delta is read without the metadata
 /// lock, so another thread's reservation in between can only inflate a
-/// sample: the smallest sample is kept. Trusted (termination): the weak
-/// compare-and-exchange retries while other threads lower the sample but
-/// leave it above `tables`, or spuriously, so the loop has no bound Verus
-/// can check.
-#[verifier::exec_allows_no_decreases_clause]
+/// sample: the smallest sample is kept. A slot holds the complement
+/// (`!tables`) of its smallest sample, so one `fetch_max` keeps the
+/// smallest. The sample is clamped to `1..usize::MAX`, so its complement
+/// is never 0, the empty slot; a `usize::MAX` sample is kept as
+/// `usize::MAX - 1`, which [`build_cost`] saturates the same way.
 fn note_build_cost(meta: &Meta, tables: usize) {
     let key = meta_key(meta);
-    let tables = tables.max(1);
+    let tables = tables.clamp(1, usize::MAX - 1);
     for (k, c) in BUILD_COST.iter() {
         let found = match k.compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => true,
             Err(cur) => cur == key,
         };
         if found {
-            let mut cur = c.load(Ordering::Relaxed);
-            while cur == 0 || tables < cur {
-                match c.compare_exchange_weak(cur, tables, Ordering::Relaxed, Ordering::Relaxed) {
-                    Ok(_) => break,
-                    Err(now) => cur = now,
-                }
-            }
+            c.fetch_max(!tables, Ordering::Relaxed);
             return;
         }
     }
@@ -279,10 +274,11 @@ fn build_cost(meta: &Meta) -> usize {
     let key = meta_key(meta);
     for (k, c) in BUILD_COST.iter() {
         if k.load(Ordering::Relaxed) == key {
-            let tables = c.load(Ordering::Relaxed);
-            if tables == 0 {
+            let v = c.load(Ordering::Relaxed);
+            if v == 0 {
                 return 0;
             }
+            let tables = !v;
             return tables.saturating_add(ARENA_STORAGE).saturating_add((tables / 8).min(BUILD_SLACK));
         }
     }

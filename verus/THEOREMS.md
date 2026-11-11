@@ -663,8 +663,7 @@ another thread's build of the feature line), `api::init_gate_enter` and
 `sys::cgroup::Deferred::discover` (a waiting discovery's wait for
 another thread's), `api/cxx.rs` `oom`, `purge/background.rs` `main`,
 `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`),
-`sys::cgroup::scan_lines`, `arena::note_build_cost` (`arena.rs`, a
-compare-and-exchange retry loop), and `config.rs` `env_var` (its walk ends at
+`sys::cgroup::scan_lines`, and `config.rs` `env_var` (its walk ends at
 the null pointer that ends `environ`, a fact about the C program). The theorems are
 partial correctness: they say what holds if the call returns. None of
 these is on the thread-cache fast paths, which terminate and take no

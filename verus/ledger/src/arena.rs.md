@@ -7,7 +7,6 @@ file.
 
 | item | kind | category | tool | status |
 |---|---|---|---|---|
-| `note_build_cost` | no_decreases | termination | none (assumption) | trusted |
 | `axiom_array_layout` | axiom | core library | Kani | discharged |
 | `A_INDEX` | external_body const | core library | Kani | discharged |
 | `A_DECAY_NS` | external_body const | core library | Kani | discharged |
@@ -33,22 +32,9 @@ file.
 | `axiom_arenas_layout` | axiom | core library | Kani | discharged |
 | `axiom_a...semble` | axiom | raw pointer (internal) | none (assumption) | trusted |
 
-## `note_build_cost`
-
-src/arena.rs:250. Kind: no_decreases. Category: termination.
-Tool: none (assumption). Status: trusted.
-
-> Record a build over `meta` whose tables took `tables` bytes of metadata ([`BUILD_COST`]).
-
-Hashes: contract 2576555293, body 3806163627.
-
-```rust
-fn note_build_cost(meta: &Meta, tables: usize)
-```
-
 ## `axiom_array_layout`
 
-src/arena.rs:453. Kind: axiom. Category: core library.
+src/arena.rs:449. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_array_layout` at `Arena::split`'s instance in src/arena.rs, `axiom_array_layout` at `Arenas::split`'s two instances in src/arena.rs, `arena::axiom_array_layout` at `split`'s two instances in src/heap/shared.rs, `arena::axiom_array_layout` at `Tcaches::split`'s instance in src/heap/tcaches.rs, and Kani: arena::kani_array_layout::array_layout_samples).
 
 > An array of `N` `T`s is `N` `T`s back to back, aligned as one: the size and alignment the Rust reference gives arrays.
@@ -67,7 +53,7 @@ pub(crate) axiom fn axiom_array_layout<T, const N: usize>()
 
 ## `A_INDEX`
 
-src/arena.rs:624. Kind: external_body const. Category: core library.
+src/arena.rs:620. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 3712976592, body none.
@@ -78,7 +64,7 @@ const A_INDEX: usize = core::mem::offset_of!(Arena, index);
 
 ## `A_DECAY_NS`
 
-src/arena.rs:626. Kind: external_body const. Category: core library.
+src/arena.rs:622. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 1347582757, body none.
@@ -89,7 +75,7 @@ const A_DECAY_NS: usize = core::mem::offset_of!(Arena, decay_ns);
 
 ## `A_SETS`
 
-src/arena.rs:628. Kind: external_body const. Category: core library.
+src/arena.rs:624. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 2722110217, body none.
@@ -100,7 +86,7 @@ const A_SETS: usize = core::mem::offset_of!(Arena, sets);
 
 ## `A_SETS_PERM`
 
-src/arena.rs:630. Kind: external_body const. Category: core library.
+src/arena.rs:626. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 2314139633, body none.
@@ -111,7 +97,7 @@ const A_SETS_PERM: usize = core::mem::offset_of!(Arena, sets_perm);
 
 ## `A_CLASSES`
 
-src/arena.rs:632. Kind: external_body const. Category: core library.
+src/arena.rs:628. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 1613433415, body none.
@@ -122,7 +108,7 @@ const A_CLASSES: usize = core::mem::offset_of!(Arena, classes);
 
 ## `A_LARGE`
 
-src/arena.rs:634. Kind: external_body const. Category: core library.
+src/arena.rs:630. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 3093238991, body none.
@@ -133,7 +119,7 @@ const A_LARGE: usize = core::mem::offset_of!(Arena, large);
 
 ## `A_STATS`
 
-src/arena.rs:636. Kind: external_body const. Category: core library.
+src/arena.rs:632. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 3834723382, body none.
@@ -144,7 +130,7 @@ const A_STATS: usize = core::mem::offset_of!(Arena, stats);
 
 ## `A_LAST_EXIT_PURGE`
 
-src/arena.rs:638. Kind: external_body const. Category: core library.
+src/arena.rs:634. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 Hashes: contract 2958641560, body none.
@@ -155,7 +141,7 @@ const A_LAST_EXIT_PURGE: usize = core::mem::offset_of!(Arena, last_exit_purge);
 
 ## `axiom_arena_layout`
 
-src/arena.rs:646. Kind: axiom. Category: core library.
+src/arena.rs:642. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.rs).
 
 > `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size, and a class state is not empty (a zero-sized one would leave its array outside any allocation, as far as `in_alloc` knows).
@@ -186,7 +172,7 @@ axiom fn axiom_arena_layout()
 
 ## `axiom_arena_assemble`
 
-src/arena.rs:941. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:937. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arena` at `p` (`Arena::split`'s parts and class states, every one initialised), as the `Arena`: the value of each field is what its permission holds.
@@ -235,7 +221,7 @@ axiom fn axiom_arena_assemble(
 
 ## `Arena::put_stats`
 
-src/arena.rs:1125. Kind: external_body. Category: raw pointer (internal).
+src/arena.rs:1121. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`).
 
 > The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
@@ -254,7 +240,7 @@ unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut Points
 
 ## `key_less`
 
-src/arena.rs:2095. Kind: external_body. Category: core library.
+src/arena.rs:2091. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: arena::kani_key_less::key_less_is_key_lt).
 
 > `a < b` on `(u32, bool)`: [`key_lt`].
@@ -269,7 +255,7 @@ fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
 
 ## `AR_TABLE`
 
-src/arena.rs:2108. Kind: external_body const. Category: core library.
+src/arena.rs:2104. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 2025192559, body none.
@@ -280,7 +266,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ## `AR_BOUND`
 
-src/arena.rs:2110. Kind: external_body const. Category: core library.
+src/arena.rs:2106. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 472640039, body none.
@@ -291,7 +277,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ## `AR_LOCK`
 
-src/arena.rs:2112. Kind: external_body const. Category: core library.
+src/arena.rs:2108. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1212088989, body none.
@@ -302,7 +288,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ## `AR_COUNT`
 
-src/arena.rs:2114. Kind: external_body const. Category: core library.
+src/arena.rs:2110. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 2895611472, body none.
@@ -313,7 +299,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ## `AR_AUTO`
 
-src/arena.rs:2116. Kind: external_body const. Category: core library.
+src/arena.rs:2112. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1096182461, body none.
@@ -324,7 +310,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ## `AR_SPARE`
 
-src/arena.rs:2118. Kind: external_body const. Category: core library.
+src/arena.rs:2114. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1690279427, body none.
@@ -335,7 +321,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ## `AR_INVS`
 
-src/arena.rs:2120. Kind: external_body const. Category: core library.
+src/arena.rs:2116. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 875656104, body none.
@@ -346,7 +332,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ## `AR_COUNT_INV`
 
-src/arena.rs:2122. Kind: external_body const. Category: core library.
+src/arena.rs:2118. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 4281409, body none.
@@ -357,7 +343,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ## `AR_SPARE_INV`
 
-src/arena.rs:2124. Kind: external_body const. Category: core library.
+src/arena.rs:2120. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1171311431, body none.
@@ -368,7 +354,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ## `axiom_arenas_layout`
 
-src/arena.rs:2132. Kind: axiom. Category: core library.
+src/arena.rs:2128. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 > `Arenas`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`) by the size, and neither array's element empty (as for `Arena`'s class states).
@@ -401,7 +387,7 @@ axiom fn axiom_arenas_layout()
 
 ## `axiom_arenas_assemble`
 
-src/arena.rs:2339. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:2335. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
