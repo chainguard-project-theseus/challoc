@@ -1,0 +1,41 @@
+# The functions a C caller can reach that Verus does not check
+# (verus/count, reach.rs; verus/README.md, "Entry points").
+#
+# verus/count walks every call from each entry point of a shipped crate,
+# through every shipped crate, resolving calls by name. The entry points
+# are:
+#
+# - each function that exports its symbol (no_mangle or export_name):
+#   {EXPORTED_EXAMPLES};
+# - each function a const or static hands out ({ADDRESSED_EXAMPLES});
+# - {PORT_SPECIFIC_ROOTS: each body an exports macro writes wrappers for,
+#   and the conversions those wrappers apply, as the counter's
+#   configuration names them; delete this item when the port has none}.
+#
+# Functions and impl methods declared inside a function body are walked
+# too. Each function the walk reaches is verified, discharged by Kani, or a
+# row here:
+#
+#   FILE NAME REASON
+#
+# NAME is `Owner::name` for a method (its owner's base type), else `name`.
+# REASON starts with the function's class (`trusted`: inside verus! but
+# external_body, or minting a token on trust; `outside`: not inside
+# verus!) and says why: the seam whose contract it is (SEAMS.md, or the
+# seams table of the theorem that names it), or what keeps it out of
+# verus!. A `trusted` row cites at least one seam, and every seam ID a row
+# cites must be a row of those tables, or the run fails.
+#
+# The run fails on a reachable function that is neither verified,
+# discharged nor listed; on a row that is verified or that no entry point
+# reaches, so a change that verifies a function drops its row; and, with
+# --base-rev (the verus check passes the pull request's base), on a row
+# the base's REACH does not have, unless it starts with `new`:
+#
+#   new FILE NAME REASON
+#
+# So the list only shrinks unless a change says otherwise in the row
+# itself: one that adds an unverified function a C caller reaches, or
+# moves or renames one, marks its row `new`.
+#
+# kit: proved-port v{KIT_VERSION} ({KIT_SHA})

@@ -1,7 +1,8 @@
 # challoc build entry points. The library is Linux-only. The build, test and
 # local benchmark targets run inside the Wolfi dev container built from
 # Dockerfile.dev. These run on the host: `help`, `print-docker-run`, `image`
-# (which builds the container), `verus`, `isla`, `emptyasm`, the `clean-*`
+# (which builds the container), `verus`, `kani` and the other targets of
+# verus/make/proved-port.mk, `verus-seams`, `isla`, `emptyasm`, the `clean-*`
 # targets, and the bench targets that drive GCE or only read results
 # (`quick`, `bench-launch-quick`, `bench-launch`, `bench-image`, `bench-gc`,
 # `bench-compare`, `bench-unit`). `make help` lists the targets
@@ -257,17 +258,40 @@ ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemallo
 check-needed: image ## DT_NEEDED must name the allocator library (tests/as-needed.sh, scripts/check-needed.sh)
 	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) && sh tests/as-needed.sh'
 
-# verus runs where it is invoked, not in the dev container: it needs the
-# Verus release and the rust toolchain verus/README.md names, which the
-# verus check gets from the `verus` package (.chainguard/ci/verus.yaml).
-# VERUS_BASE=<rev> also fails a verus/FLOOR figure lowered below that
-# revision's without a reason (verus/README.md). The ledger under
-# verus/ledger/ must match what `sh verus/seams.sh --write` generates
-# from the tree.
-verus: ## the seam ledger, the Verus proofs, then the coverage floor (verus/README.md, verus/FLOOR, verus/ledger; VERUS_BASE=<rev>)
+# verus, kani and their kin are the kit's targets (verus/make/proved-port.mk,
+# vendored by proved-port's kit/sync.sh). They run where they are invoked,
+# not in the dev container: they need the Verus release, Kani and the rust
+# toolchain verus/README.md names, which the checks get from the `verus`
+# and `kani` packages (.chainguard/ci/verus.yaml, kani.yaml).
+#
+# `make verus VERUS_BASE=<rev>` checks the seam ledger (verus-seams: the
+# ledger under verus/ledger/ must match what `sh verus/seams.sh --write`
+# generates from the tree), runs `cargo verus verify` over challoc, then
+# the vendored counter, which holds the tree to verus/FLOOR and fails a
+# figure lowered below <rev>'s without a reason (verus/README.md).
+# VERUS_BASE=none runs the counter with no base, for a local run. The
+# quantum-8 proofs are `make verus-proofs VERUS_CARGO_FLAGS='--no-default-features
+# --features quantum8' VERUS_STATS=target/verus-stats-q8.json`. challoc has
+# no verus/RLIMIT, so the counter runs without --rlimit.
+#
+# `make kani` runs every Kani harness at QUANTUM, four at a time in terse
+# format; the kani-ignoring check runs one shard of them in regular format
+# with CBMC's verbose output (KANI_SHARD, KANI_SHARDS, KANI_WEIGHTS=
+# ci/kani-weights.txt and the rest, .chainguard/ci/kani.yaml).
+VERUS_MODE = verify
+VERUS_RLIMIT =
+# `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
+# `global_asm!` that no harness reaches; `-Z stubbing` for `kani::stub`,
+# `-Z mem-predicates` for `kani::mem` (.chainguard/ci/kani.yaml).
+KANI_FLAGS = -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm $(FEATURES)
+KANI_LIST_FLAGS = -Z stubbing -Z mem-predicates
+KANI_JOBS = 4
+include verus/make/proved-port.mk
+
+.PHONY: verus-seams
+verus: verus-seams
+verus-seams: ## the seam ledger under verus/ledger/ matches the tree (verus/seams.sh --check)
 	sh verus/seams.sh --check
-	cargo verus verify --locked
-	cd verus/count && cargo run --locked --release -- --floor ../FLOOR $(if $(VERUS_BASE),--base-rev $(VERUS_BASE)) ../..
 
 # isla runs where it is invoked, not in the dev container: it needs the
 # isla, isla-snapshots, sail, isla-sail, z3 and llvm packages

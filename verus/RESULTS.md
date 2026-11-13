@@ -201,7 +201,7 @@ The [counter](count) includes executable functions under `src/` and excludes tes
 | Trusted with no check | 74 | 704 |
 | Ghost functions, counted separately | 2253 | — |
 
-The combined row adds only trusted functions whose seam is discharged, on premises included. The [FLOOR](FLOOR) file holds `functions 86.3`, `lines 94.4`, `combined-functions 91.6` and `combined-lines 96.6`, the figures the counter measures at `3a71dfd6`. Each later raise to measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
+The combined row adds only trusted functions whose seam is discharged, on premises included. The [FLOOR](FLOOR) file holds `functions 86.3`, `lines 94.4`, `checked-functions 91.6` and `checked-lines 96.6` (the combined row), the figures challoc's earlier counter measured at `3a71dfd6`. Each later raise to measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
 
 ## Trust base
 
@@ -250,15 +250,15 @@ Each limit below is part of the stated scope; [issue #397](https://github.com/wo
 Run these at the revision you want to check:
 
 ```sh
-make verus                          # seam ledger check, Verus proofs (quantum 16), coverage floor
-cargo verus verify --locked --no-default-features --features quantum8   # Verus proofs, quantum 8
+make verus VERUS_BASE=none          # seam ledger check, Verus proofs (quantum 16), coverage floor
+make verus-proofs VERUS_CARGO_FLAGS='--no-default-features --features quantum8' \
+    VERUS_STATS=target/verus-stats-q8.json                          # Verus proofs, quantum 8
 sh verus/seams.sh --check           # the ledger matches the source
 sh verus/seams.sh                   # seam totals by category, tool and kind
 grep -rh 'Status: ' verus/ledger    # each seam's status
-(cd verus/count && cargo run --release -- --floor ../FLOOR ../..)   # coverage
-(cd verus/count && cargo run --release -- --list ../..)             # one line per function
-cargo kani -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm \
-    --no-default-features --features quantum16                      # Kani harnesses (or quantum8)
+make verus-count VERUS_BASE=none                                    # coverage
+make verus-count VERUS_BASE=none VERUS_COUNT_FLAGS=--list           # one line per function
+make kani                                                           # Kani harnesses (QUANTUM=8 for quantum 8)
 make isla                           # Isla runs over the inline-assembly seams
 make emptyasm                       # empty asm! templates add no instruction
 sh tests/loom/run.sh                # loom models and source checks

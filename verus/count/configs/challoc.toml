@@ -1,0 +1,49 @@
+# challoc's verus/count.toml: the configuration under which the
+# kit counter's tables and FLOOR report match challoc's in-tree
+# verus/count (kit/count/README.md, "Parity", which lists where they do
+# not yet).
+
+[crates]
+# One crate at the root. Its Cargo.toml says `publish = false` (it is not
+# a crates.io crate), and it ships.
+members = [{ name = "challoc", path = ".", ships = true }]
+# `challoc_tls_check` is the debug TLS check build the tlscheck job makes.
+test_cfgs = ["test", "kani", "challoc_tls_check"]
+# challoc's tests bind a variable named `tracked`, a Verus keyword
+# (api/mallctl.rs); Verus code never writes `let tracked =`.
+stand_ins = [["let tracked =", "let trackd_ ="]]
+# challoc's ghost column counts the proofs of Verus-only code too.
+verus_only_ghost = true
+# challoc runs Verus twice, on x86_64 (`verus`) and natively on aarch64
+# (`verus-arm64`), so each architecture's code is checked by one of the
+# runs. Verus never sets `loom` (vspec's `new`s are `#[cfg(not(loom))]`).
+# Read from the 11-10 snapshot `0497dc34` (.chainguard/ci/verus.yaml's
+# `verus` and `verus-arm64`, both presubmit, both `make verus`, whose
+# `cargo verus verify --locked` passes no `--cfg loom`); re-measured on
+# challoc's own re-sync.
+verus_sets = ['target_arch = "x86_64"', 'target_arch = "aarch64"']
+verus_never_sets = ["loom"]
+
+[floor]
+path = "verus/FLOOR"
+# FLOOR's names today. The change that renames them to `checked-*`
+# (kit/PLAN.md, step 2) drops this line and adds
+# `renamed_from = "combined"`, so its base's copy still compares.
+checked = "combined"
+
+# The generated ledger (verus/seams.sh) says which trusted functions are
+# discharged; the premise files define the labels an Isla or Kani status
+# may name.
+[ledger]
+dir = "verus/ledger"
+
+[ledger.isla]
+file = "verus/isla/seams.md"
+sections = [{ heading = "## Platform premises", prefixes = "PK" }]
+
+[ledger.kani]
+file = "verus/kani/premises.md"
+sections = [
+  { heading = "## Premises", prefixes = "C" },
+  { heading = "## Loader and kernel premises", prefixes = "L", callers = true },
+]

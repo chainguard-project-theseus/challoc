@@ -1,19 +1,73 @@
-# Verus: every proof holds, the verified share of challoc stays at or
-# above verus/FLOOR, and verus/ledger/ is current. All three are `make
-# verus` (verus/README.md): `sh verus/seams.sh --check`, then `cargo
-# verus verify`, then verus/count --floor, which also compares
-# verus/FLOOR with the base revision's copy so that lowering it needs a
-# stated reason. FLOOR rises in its own pull requests between merges, to the
-# figures the step's output names.
+# Verus and Kani: every proof holds, every Kani harness passes, and the
+# checked shares of the shipped crates stay at or above verus/FLOOR. The
+# verus checks are `make verus` (verus/README.md): `cargo verus focus`
+# over challoc (the Makefile's VERUS_MODE makes it `cargo verus verify`,
+# cargo's default package), then the kit counter (verus/count, vendored by
+# proved-port's kit/sync.sh) with --floor, which compares verus/FLOOR
+# with the base revision's copy, so that lowering a figure needs a new
+# `lowered` line, and holds each function's rlimit use to verus/RLIMIT.
+# When a figure rises, and what a `lowered` line needs, is verus/FLOOR's
+# header's rule. The kani checks are `make kani`: verus/make/kani.sh,
+# vendored with the counter, over every harness of the crates
+# KANI_CRATES names (a foreach of KANI_ONLY, KANI_HARNESS or KANI_SHARD
+# splits them; kani.sh's header says how). The two share nothing,
+# so they are separate checks that run at once.
 #
-# The verus package is pinned to the release whose vstd Cargo.toml pins
-# (bump both together), and it brings the rust stream (rust-1.99) and
-# z3 that release runs with, so this file installs no rust-1.98: the two
-# cannot be installed together. The package has no aarch64 cross target
-# (`--target aarch64-unknown-linux-gnu`), so `verus-arm64` runs the same
-# steps natively on an arm64 runner, so Verus also checks the code behind
-# `cfg(target_arch = "aarch64")`. git reads the
-# base revision's verus/FLOOR; build-base is build.rs's C++ compiler.
+# Every run compares with a base, and none skips it: verus takes the pull
+# request's base, verus-main the commit before the one under test. Where
+# verus/FLOOR exists, `make verus` passes `--base-rev "$(VERUS_BASE)"` to
+# the counter and fails when VERUS_BASE is empty; it never prints SKIP and
+# passes, since a run that skips the comparison lets FLOOR fall on main
+# unseen.
+#
+# Shape: one architecture, arm64, on large-arm64 (8 vCPU, 32 GiB), with a
+# 60-minute timeout for verus and 30 minutes for kani. Verus's result
+# does not depend on the guest's architecture unless the proved code
+# does, so one is the default. A port whose proved code differs by
+# target (`cfg(target_arch)`, pointer width, page size) runs the proofs
+# on both, as challoc does: uncomment verus-amd64 below. A port whose
+# proofs outgrow the timeout moves up a class (pcre3: xlarge-arm64) and
+# says why here.
+#
+# Every check here is in the port from its first commit: Checks refuses
+# a change that deselects a check its run selects, so the set only grows
+# (kit/templates/README.md, "The required Verus check set"). verus and
+# verus-main pass at FLOOR 0.0 before the first proof. `make kani` fails
+# when it finds no harness to run, so until the first harness the
+# port's Makefile sets `KANI_NONE = yes`, under which it passes with
+# none and fails with any; the first harness deletes that line. A port
+# that will never discharge a seam with Kani leaves Kani out from its
+# first commit: no kani or kani-main, no `kani~0.68.0` in the
+# packages here or in .chainguard/ci/env/dev.yaml, and no Kani in the
+# toolchain entry of .chainguard/deps.yaml.
+#
+# verus is pinned to the release the workspace's vstd pin names
+# (Cargo.toml; bump both together, and .chainguard/ci/env/dev.yaml's),
+# and it brings the rust stream and z3 that release runs with. kani is
+# pinned to the release the Kani records under verus/seams/ name, built
+# against the same rust stream. git reads the base revision's
+# verus/FLOOR. VERUS_THREADS gives Verus every vCPU of the guest
+# (CG_CPUS), one z3 per module.
+# kit: proved-port v0.2.4 (78fbafe4fa4948f3fa50efa2f4cee7f337645dac)
+#
+# challoc: the checks keep the names and triggers main ran before the
+# kit, since Checks refuses a change whose base would run a check its
+# head does not. So `verus` (x86_64, large-amd64) and `verus-arm64`
+# (aarch64, natively on large-arm64) are the two architectures, with no
+# verus-amd64, and `verus-main` runs on main; Kani stays in
+# .chainguard/ci/kani.yaml as `kani` and `kani-ignoring`, with no
+# kani-main. The verus package has no aarch64 cross target, so
+# `verus-arm64` runs natively, and Verus checks the code behind
+# `cfg(target_arch = "aarch64")` there; verus/count.toml's `verus_sets`
+# names both architectures. The timeouts stay 45 minutes.
+#
+# `make verus` first checks the seam ledger (the Makefile's verus-seams:
+# `sh verus/seams.sh --check`); challoc has no verus/RLIMIT, so the
+# counter runs without --rlimit. The quantum-8 build (`--features
+# quantum8`) has its own class table, so its proofs run too, as `make
+# verus-proofs` with its features. The verus package brings the rust
+# stream (rust-1.99), so this file installs no rust-1.98: the two cannot
+# be installed together. build-base is build.rs's C++ compiler.
 version: 1
 
 environment:
@@ -22,17 +76,20 @@ environment:
 checks:
   verus:
     description: >-
-      make verus: the seam ledger check (verus/ledger/), cargo verus
-      verify over challoc, then verus/count's tests and its coverage floor
-      (verus/FLOOR, against the pull request's base); then cargo verus
-      verify of the quantum-8 build; then the not-Copy control
-      (verus/notcopy-control.sh) under the package's rust stream.
+      make verus: verus/count's tests, then the seam ledger check
+      (verus/ledger/), cargo verus verify over challoc on x86_64, and the
+      kit counter's coverage floor (verus/FLOOR) against the pull
+      request's base; then the proofs of the quantum-8 build; then the
+      not-Copy control (verus/notcopy-control.sh) under the package's
+      rust stream.
     trigger: [presubmit]
     resources: large-amd64
     timeout: 45m
     network: &crates
       egress: [index.crates.io, static.crates.io]
     steps:
+      # The port's CI cannot run kit/sync.sh --check (it cannot reach the
+      # kit), so these tests are what checks the vendored copy here.
       - &counter-tests
         name: counter tests
         cmd: [cargo, test, --locked, --manifest-path, verus/count/Cargo.toml]
@@ -44,12 +101,16 @@ checks:
           # Checks sets the base on every pull request run
           # (CHAINGUARD_BASE_REVISION, a reserved variable); a run without
           # one fails rather than skip the comparison.
-          - make verus VERUS_BASE="${CHAINGUARD_BASE_REVISION:?no base revision to compare verus/FLOOR with}"
+          - make verus VERUS_THREADS="${CG_CPUS:-}" VERUS_BASE="${CHAINGUARD_BASE_REVISION:?no base revision to compare verus/FLOOR with}"
       - &verus-q8
         name: proofs at quantum 8
-        # The quantum-8 build (`--features quantum8`) has its own class
-        # table, so its proofs are checked too.
-        cmd: [cargo, verus, verify, --locked, --no-default-features, --features, quantum8]
+        cmd:
+          - sh
+          - -c
+          - >-
+            make verus-proofs VERUS_THREADS="${CG_CPUS:-}"
+            VERUS_CARGO_FLAGS='--no-default-features --features quantum8'
+            VERUS_STATS=target/verus-stats-q8.json
       - name: not-Copy control
         # The not-Copy checks of src/vspec/notcopy.rs hold only while
         # rustc rejects their ambiguous impls; lint.yaml's
@@ -60,9 +121,10 @@ checks:
   # The same on aarch64: the package's arm64 build, run natively.
   verus-arm64:
     description: >-
-      make verus on aarch64, natively: the seam ledger check, cargo verus
-      verify over the aarch64 build of challoc, and the coverage floor;
-      then the quantum-8 build.
+      make verus on aarch64, natively: verus/count's tests, the seam
+      ledger check, cargo verus verify over the aarch64 build of challoc,
+      and the coverage floor against the pull request's base; then the
+      proofs of the quantum-8 build.
     trigger: [presubmit]
     resources: large-arm64
     timeout: 45m
@@ -73,13 +135,14 @@ checks:
       - *verus-q8
 
   # On main, squash-merged, the commit before the one under test is the
-  # base; verus/count fails when it does not resolve.
+  # base; the counter fails when it does not resolve. This check must fail,
+  # never SKIP, when it has no base to compare verus/FLOOR with.
   verus-main:
     description: >-
-      make verus on main: the seam ledger check, the proofs and the coverage
-      floor, against the commit before this one; then the quantum-8
-      build, so two pull requests that each pass alone cannot break the
-      quantum-8 proofs on main unseen.
+      make verus on main: verus/count's tests, the seam ledger check, the
+      proofs and the coverage floor, against the commit before this one;
+      then the proofs of the quantum-8 build, so two pull requests that
+      each pass alone cannot break them on main unseen.
     trigger: [postsubmit]
     resources: large-amd64
     timeout: 45m
@@ -87,5 +150,5 @@ checks:
     steps:
       - *counter-tests
       - name: seam ledger, proofs and coverage floor
-        cmd: [make, verus, VERUS_BASE=HEAD^]
+        cmd: [sh, -c, 'make verus VERUS_THREADS="${CG_CPUS:-}" VERUS_BASE=HEAD^']
       - *verus-q8
