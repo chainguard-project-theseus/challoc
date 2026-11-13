@@ -20,13 +20,19 @@ rests on, by `file:line`.
 ## Running
 
 ```sh
-make verus     # the seam ledger, the proofs, then the coverage floor
+make verus VERUS_BASE=none          # the seam ledger, the proofs, then the coverage floor
+make verus VERUS_BASE=origin/main   # the same, and FLOOR against main's
 ```
 
-`make verus` runs `sh verus/seams.sh --check` (Seams, below), then
-`cargo verus verify` (the default `quantum16` feature), then
-`verus/count --floor ../FLOOR` (Coverage, below). Unlike the other
-targets it runs where it is invoked, not in the dev container. The
+`make verus` is the kit's target (`verus/make/proved-port.mk`, vendored
+from the proved-port kit by its `kit/sync.sh`; `verus/count/KIT` names
+the kit commit). It runs `sh verus/seams.sh --check` (Seams, below),
+then `cargo verus verify` (the default `quantum16` feature) with Verus's
+statistics in `target/verus-stats.json`, then the vendored counter,
+`verus/count`, with `--floor verus/FLOOR` (Coverage, below). It needs a
+`VERUS_BASE`: a revision whose FLOOR this one is compared with, or `none`
+for no comparison; with neither it fails. Unlike the other targets it
+runs where it is invoked, not in the dev container. The
 `verus` check (`.chainguard/ci/verus.yaml`) runs it on every pull
 request, against the pull request's base, and `verus-main` on main,
 against the commit before, so a change that leaves the seam ledger
@@ -66,9 +72,14 @@ The seam ledger lists every seam but vstd's own (Seams, below).
 ## Coverage
 
 ```sh
-cd verus/count && cargo run --release -- ../..          # the crate
-cd verus/count && cargo run --release -- --list ../..   # per function
+make verus-count VERUS_BASE=none                             # the crate and the floor
+make verus-count VERUS_BASE=none VERUS_COUNT_FLAGS=--list    # per function
+make verus-count-test                                        # the counter's own tests
 ```
+
+`verus/count` is the kit counter, configured by `verus/count.toml`; its
+own README.md gives every key and rule, and governs where this section
+is shorter.
 
 `verus/count` parses every file under `src/`, `verus!` blocks included,
 with `verus_syn`, and counts executable functions and their lines as
@@ -116,28 +127,40 @@ coverage, when two of them share a line, or when the ledger names a kind
 the counter does not know.
 
 `--floor FILE` holds the crate to [FLOOR](FLOOR): the verified share of
-functions and of lines (`functions`, `lines`), and the combined share of
-each (`combined-functions`, `combined-lines`). The run fails below any
-figure, and above one it names the figure to record. A FLOOR without the
-combined figures reads them as 0.0, so a base revision from before they
-existed still compares. `--base-rev REV` (`make verus
+functions and of lines (`functions`, `lines`), and the checked share of
+each (`checked-functions`, `checked-lines`), which is the combined row's.
+The run fails below any figure, and above one it names the figure to
+record. All four figures are required. `--base-rev REV` (`make verus
 VERUS_BASE=REV`; the check passes the pull request's base) also reads
 `REV:verus/FLOOR` and fails a figure set below it, unless FLOOR has a
 `lowered FIGURE P REASON` line for that figure and value that REV's copy
-does not have. A REV that does not resolve to a commit fails the run.
-FLOOR rises in its own pull requests between merges, to the figures the
-check names, so parallel pull requests do not conflict on it; the floor is
-lowered only on purpose, with the reason in FLOOR.
+does not have; a base whose FLOOR still names the checked figures
+`combined-*` compares too (`verus/count.toml`'s `renamed_from`). It also
+compares `verus/count.toml` with REV's. A REV that does not resolve to a
+commit fails the run. FLOOR rises in its own pull requests between
+merges, to the figures the check names, so parallel pull requests do not
+conflict on it; the floor is lowered only on purpose, with the reason in
+FLOOR.
 
-The [README badge](../README.md) shows a snapshot of the verified shares,
-as `verus-main` reported them on main. The repository is private,
-so shields.io cannot read the counts; the badge carries them in its
-URL. It changes in the pull requests that raise FLOOR, to the figures
-the check names, so parallel pull requests do not conflict on it. Each
-`verus-main` log has the current figures.
+A function under a `cfg` Verus's build might not meet counts as trusted,
+not verified. `verus/count.toml` names the atoms the verus checks set:
+`target_arch = "x86_64"` (`verus`, `verus-main`) and `target_arch =
+"aarch64"` (`verus-arm64`), each checked by the run on that
+architecture, and `loom`, which no Verus run sets.
 
-The counter comes from pcre3's `verus/count`, cut to challoc's single
-crate.
+The [README badge](../README.md) shows FLOOR's `functions` and `lines`
+figures. The repository is private, so shields.io cannot read the
+counts; the badge carries them in its URL. `--floor` fails when the
+badge line (`verus/count.toml`'s `[badge]`) does not give FLOOR's
+figures, so the pull request that raises FLOOR replaces it with the line
+`target/verus-count/release/verus-count --badge .` prints (`make
+verus-count` builds it there). Each `verus-main`
+log has the current figures.
+
+The counter is the proved-port kit's counter, vendored, which
+grew from pcre3's `verus/count` and challoc's own. Do not edit
+`verus/count/` or `verus/make/`: change the kit, then re-run its
+`kit/sync.sh`, and check the copy with `kit/sync.sh --check`.
 
 ## Seams
 
@@ -173,12 +196,17 @@ both quanta; locally, with Kani 0.68.0 and CBMC 6.11.0 (Wolfi's `kani` and
 `cbmc` packages):
 
 ```sh
-cargo kani -Z unstable-options -Z stubbing -Z mem-predicates \
-    --ignore-global-asm \
-    --no-default-features --features quantum16      # or quantum8
-cargo kani ... --harness kani_proofs::stats::fig_add_exact   # one harness
-cargo kani ... --harness config::kani_config::get_contract   # one in a file
+make kani                     # every harness at quantum 16 (QUANTUM=8 for quantum 8)
+make kani KANI_HARNESS=kani_proofs::stats::fig_add_exact   # one harness
+make kani KANI_HARNESS=config::kani_config::get_contract   # one in a file
+make kani-list                # the harnesses
 ```
+
+`make kani` is the kit's Kani runner (`verus/make/kani.sh`), with the
+Makefile's `KANI_FLAGS`: `-Z unstable-options -Z stubbing -Z
+mem-predicates --ignore-global-asm` and QUANTUM's feature. The
+`kani-ignoring` check runs it in shards in regular format, balanced by
+`ci/kani-weights.txt` (`.chainguard/ci/kani.yaml`).
 
 ## Restated bodies
 

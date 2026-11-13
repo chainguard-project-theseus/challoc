@@ -34,12 +34,13 @@ get wrong.
   Blocking.
 - Proof checks. `Chainguard Checks (presubmit)`, which the `chainguard`
   app publishes, fails whenever a verus job fails a proof or misses
-  `verus/FLOOR`. When every run of it at the head completed with success,
-  the head's Verus proof, ledger and floor results pass: a body that
-  quotes those results from an earlier head needs no finding for them. The
-  run never runs the mutation check, so the Specifications rule's mutation
-  report is still read from the body for the head. Its codegen jobs are
-  advisory, so that run settles nothing about the hot set.
+  `verus/FLOOR`, or a kani job's harness fails (Evidence, below). When
+  every run of it at the head completed with success, the head's Verus
+  proof, ledger and floor results pass: a body that quotes those results
+  from an earlier head needs no finding for them. The run never runs the
+  mutation check, so the Specifications rule's mutation report is still
+  read from the body for the head. Its codegen jobs are advisory, so that
+  run settles nothing about the hot set.
 - Fast-path evidence. A change meant to change code under `src/heap/`,
   `src/class/`, `src/slab.rs` or `src/api/*.rs` needs the `make quick`
   go/no-go verdict, a per-operation cycle attribution on the workload it
@@ -68,8 +69,34 @@ get wrong.
   could replace it. An item with no caller in the change or on main is a
   Question.
 - The floor. `verus/FLOOR` falls only with a new `lowered FIGURE P
-  REASON` line, and rises only in its own pull requests. A lowered figure
-  with no reason is Blocking.
+  REASON` line, as its header says; anything else, or a lowered figure
+  with no reason, is Blocking. FLOOR and the README badge rise in a pull
+  request of their own, to the figures the check names (FLOOR's header):
+  a raise in a pull request that changes anything else is a Question
+  citing that header. `verus/count.toml` configures the counter and
+  changes how the checks run: the counter compares it with the base
+  revision's and fails a narrowed `[crates]` or a removed or moved
+  `[badge]` without a `[[narrowed]]` line giving its reason, and reads
+  the base's FLOOR at the path the base's copy names
+  (`verus/count/README.md`, "Configuration"); judge such a change from
+  the diff. A `verus_sets` atom no verus check's run sets credits a proof
+  no run checked, and is Blocking.
+- The vendored kit (`verus/count/`, the counter, and `verus/make/`, the
+  make targets, Kani runner and header lint with their templates).
+  Every file in either comes from `kit/sync.sh` in the proved-port kit,
+  at the commit `verus/count/KIT` names, and `kit/sync.sh --check`
+  covers both. A change to a file in either must also move `KIT` to a
+  new proved-port commit. `kit/sync.sh` rewrites `KIT` on every run, so
+  a re-sync moves `KIT` (its `commit` line, or its `tag` line once that
+  commit is tagged) whether or not another file there changes; a
+  `KIT`-only diff is such a re-sync and is fine. The body of a pull
+  request that changes `KIT` names the commit `KIT` records and says
+  `kit/sync.sh --check` passed on this head: the checks here cannot
+  reach proved-port, so that line is the evidence the copies match. An
+  edit under `verus/count/` or `verus/make/` with `KIT` unchanged is
+  Blocking, and so is a `KIT` change whose body names no commit, names
+  one other than `KIT`'s `commit` line, or does not say
+  `kit/sync.sh --check` passed.
 - Specifications. A new or changed specification needs a mutation check
   reported in the pull request body: the code broken the ways the
   specification is meant to catch, each rejected by Verus
@@ -199,13 +226,26 @@ large change, the slices that could land on their own.
 
 ## Evidence
 
-- Ignore CI, with one exception. Do not call `list_checks`, and do not
-  cite or ask about check runs or statuses in a finding or the summary,
-  except to apply the Proof checks rule: there you may call `list_checks`
-  to see whether every `Chainguard Checks (presubmit)` run at the head
-  completed with success, and cite that result for the proof, ledger and
-  floor results only. The codegen verdict and the mutation check are read
-  from the pull request body, as the hot-set and Specifications rules say.
+- CI settles results you cannot run. The `Chainguard Checks (presubmit)`
+  check, which the `chainguard` app publishes, runs the checks in
+  `.chainguard/ci/` that run on pull requests (verus and verus-arm64 on
+  every one; kani and others only on the paths their `when: changed:`
+  lists name). It fails whenever any of them
+  fails. Call `list_checks` to see whether every run under that name at
+  the head completed with success; when it did, treat the build, tests,
+  proofs, ledger and floor as verified, and do not ask the body for them.
+  A pull request that changes `.chainguard/ci/`, the `Makefile` or a
+  script under `ci/` or `verus/` that a check runs changes how the checks
+  run, so its results settle nothing: judge those from the diff. Two
+  results are not in that check: its codegen jobs are advisory, so the
+  codegen verdict is read from the pull request body as the hot-set rule
+  says, and the mutation check is read from the body as the
+  Specifications rule says. The postsubmit checks (verus-main,
+  kani-ignoring, floor, tripwire and the other `-main` checks) and the
+  on-request ones are not part of it.
+- Your verdict is still an independent judgement of the diff and the code
+  at the head: a green check does not stand in for a test that would
+  catch a broken behaviour.
 - Evidence is a file and a line at the head, never a guess from a name.
   Read the callers and callees needed to judge a change, not only the
   diff.

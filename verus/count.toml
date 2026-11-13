@@ -1,0 +1,58 @@
+# The kit counter's configuration (verus/count, vendored by proved-port's
+# kit/sync.sh; its README.md, "Configuration", gives every key). A check
+# whose section is left out does not run, and with --base-rev removing
+# one the base runs fails unless a [[narrowed]] line names it with a
+# reason.
+#
+# kit: proved-port v0.2.3 (0be1c6a11c451d2bd6d8d7ab1c0373342865acfe)
+
+[crates]
+# One crate at the root. Its Cargo.toml says `publish = false` (it is not
+# a crates.io crate), and it ships: every function under src/ but test
+# code.
+members = [{ name = "challoc", path = ".", ships = true }]
+# `challoc_tls_check` is the debug TLS check build the tlscheck job makes.
+test_cfgs = ["test", "kani", "challoc_tls_check"]
+# challoc's tests bind a variable named `tracked`, a Verus keyword
+# (api/mallctl.rs); Verus code never writes `let tracked =`.
+stand_ins = [["let tracked =", "let trackd_ ="]]
+# The ghost column counts the proofs of Verus-only code too.
+verus_only_ghost = true
+# Verus runs twice, natively on x86_64 (`verus`, `verus-main`) and on
+# aarch64 (`verus-arm64`), all three `make verus`
+# (.chainguard/ci/verus.yaml), so each architecture's code is checked by
+# the run that sets its `target_arch`. No run passes `--cfg loom`
+# (vspec's `new`s are `#[cfg(not(loom))]`; tests/loom builds them under
+# it, outside Verus).
+verus_sets = ['target_arch = "x86_64"', 'target_arch = "aarch64"']
+verus_never_sets = ["loom"]
+
+[floor]
+path = "verus/FLOOR"
+# FLOOR's checked figures were `combined-functions` and
+# `combined-lines` before they took the kit's names; a base revision's
+# copy may still give them so.
+renamed_from = "combined"
+
+# With --floor, README.md must hold the one Verus badge line FLOOR's
+# `functions` and `lines` figures give: a change that raises FLOOR pastes
+# what `verus-count --badge .` prints.
+[badge]
+path = "README.md"
+
+# The generated ledger (verus/seams.sh) says which trusted functions are
+# discharged; the premise files define the labels an Isla or Kani status
+# may name.
+[ledger]
+dir = "verus/ledger"
+
+[ledger.isla]
+file = "verus/isla/seams.md"
+sections = [{ heading = "## Platform premises", prefixes = "PK" }]
+
+[ledger.kani]
+file = "verus/kani/premises.md"
+sections = [
+  { heading = "## Premises", prefixes = "C" },
+  { heading = "## Loader and kernel premises", prefixes = "L", callers = true },
+]

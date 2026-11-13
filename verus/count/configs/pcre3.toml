@@ -1,0 +1,61 @@
+# pcre3's verus/count.toml: the configuration under which the
+# kit counter's output is identical to pcre3's in-tree verus/count
+# (kit/count/README.md, "Parity").
+
+[crates]
+# pcre3, pcre3-capi, pcre3-syntax, pcre3-testdata (publish = false, so
+# unshipped) and pcre3-unicode.
+dir = "crates"
+test_cfgs = ["test", "kani"]
+# Only pcre3-capi's tests enable it.
+test_features = ["test-util"]
+# `assert` is a Verus keyword; pcre3 has a module of that name
+# (vm/assert.rs).
+stand_ins = [["assert::", "assrtx::"]]
+# `make verus` builds pcre3-capi's default features, which include `jit`
+# (exec.rs is `#[cfg(all(feature = "jit", not(miri)))]`), and Verus never
+# sets `miri` (tables.rs's `Libc` ctype items are `#[cfg(not(miri))]`).
+verus_sets = ['feature = "jit"']
+verus_never_sets = ["miri"]
+
+[floor]
+path = "verus/FLOOR"
+checked = "checked"
+
+[rlimit]
+path = "verus/RLIMIT"
+
+[kani]
+records = "verus/seams"
+
+[seams]
+tables = ["verus/SEAMS.md"]
+theorems = "verus/theorems"
+
+[recursion]
+table = "verus/theorems/RN1.md"
+
+[reach]
+path = "verus/REACH"
+exports_macro = "exports"
+fn_ptr_macro = "fn_ptr"
+conversion = "from_c"
+
+[inputs]
+table = "verus/theorems/CD1.md"
+crates = ["pcre3", "pcre3-syntax", "pcre3-unicode"]
+# `serialize::encode_as`: the bytes a compile cache hands out with a
+# pattern are its serialized form.
+roots = [
+  { file = "crates/pcre3/src/regex.rs", owner = "Regex", name = "new" },
+  { file = "crates/pcre3/src/serialize.rs", name = "encode_as" },
+]
+lazy = true
+describe = "Regex::new, serialize::encode_as and the lazy builders"
+
+# From pcre3's P15 on; leave it out before then.
+[mints]
+path = "verus/MINTS"
+mint = "c_mint"
+token_trait = "CToken"
+home = "crates/pcre3-capi/src/object.rs"
