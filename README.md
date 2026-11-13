@@ -26,9 +26,25 @@ instead of jemalloc. Three things set it apart:
 - **Runtime feature probing.** One binary runs on the floor below and uses
   whatever newer kernels and CPUs offer, found at init, never at build time.
 
-`docs/overview.md` has the goals, the case against staying on jemalloc and
+`docs/overview.md` contains the goals, how it differs from jemalloc and
 a few pages on how it works; `docs/design.md` is the full design. Where
 the project stands is under "Status" below.
+
+## About Chainguard Project Theseus
+
+challoc is part of [Chainguard Project Theseus](https://github.com/chainguard-project-theseus), an
+effort to rebuild the core components of open source and eliminate entire
+classes of bugs. Each Guarded Component replaces a core open source
+component and is built so a whole class of bugs isn't possible in it.
+
+Before a Guarded Component becomes a default in Chainguard's catalog, it's
+fuzzed against the component it replaces and tested across more than 3,000
+production images. We publish conformance results and performance
+comparisons as they're ready, and formal proofs for the most critical
+pieces.
+
+**Status:** experimental. Try it in a test environment, and file an issue
+in [chainguard-project-theseus/feedback](https://github.com/chainguard-project-theseus/feedback/issues) if something breaks or behaves differently from the allocator you use today. We aren't accepting pull requests.
 
 ## Formal verification
 
@@ -99,9 +115,9 @@ them ([verus/RESULTS.md](verus/RESULTS.md#check-it-yourself)):
   `tests/loom/tests/pins.rs` fails when the source lines a model copies
   change.
 
-## Support
+## Tested environments
 
-challoc supports Chainguard OS and Wolfi containers with glibc 2.44 or
+challoc runs on Chainguard OS and Wolfi containers with glibc 2.44 or
 newer, on host kernels 5.14 and newer, on x86_64 and on aarch64 with 4,
 16 or 64 KiB pages. Newer kernels and CPUs turn features on at run time (the
 table below); they are never required, and a missing feature changes
@@ -110,7 +126,7 @@ about 435 GiB of address space (`RLIMIT_AS`) at quantum 16, the minimum
 layout of `docs/design.md` section 2; under a data limit
 (`RLIMIT_DATA`) in force from the start, challoc makes no metadata
 writable before it uses it. Other distributions, libcs and
-operating systems are not supported.
+operating systems are not tested.
 
 ## Building
 
@@ -235,7 +251,7 @@ seccomp profile hides `mseal`.
 
 ## Documentation
 
-- `docs/overview.md`: goals, why not jemalloc, how it works
+- `docs/overview.md`: goals, how it differs from jemalloc, how it works
 - `docs/design.md`: the design, section by section
 - `docs/tuning.md`: the operator's guide (keys, consumers, cgroup policy, THP, the report)
 - `docs/hardening.md`: security properties against jemalloc, and the windows the defaults leave
@@ -250,10 +266,10 @@ seccomp profile hides `mseal`.
 
 ## Status
 
-We're building challoc in the open at Chainguard. We don't publish it to
+challoc's source is public, but we don't publish it to
 any package registry; it ships only from Chainguard's own repositories.
 
-challoc 0.1.0 is not released. On the reference machines (Google Axion
+challoc 0.1.0 is experimental and not released. On the reference machines (Google Axion
 and Intel Xeon VMs) it is at parity with jemalloc 5.3 on throughput and
 returns memory better under cgroup limits: in a `docker run
 --memory=512m` container, 400 MiB allocated and freed at about 80% of the
@@ -267,7 +283,7 @@ partly used slabs. Redis's and Valkey's active-defrag tests
 (`unit/memefficiency`) pass at their stock targets with no skips or
 calibration, as do both test suites. On the soaks, the Valkey and Redis
 servers settle 12..15% lower in RSS than without slab pages, at the same
-throughput (cb run `20261108t0540z-e600823-soak-h5udv`).
+throughput.
 
 Known limitations are listed in `docs/tuning.md` section 8. The largest:
 on a 16-thread Ruby soak on x86_64, challoc's RSS right after the last
@@ -286,9 +302,10 @@ Intel LAM) are designed but not implemented (design section 18).
 
 ## Contributing
 
-We don't accept pull requests from external contributors. If you and your
-organization would seriously like to get involved, email
-dlorenc@chainguard.dev.
+We don't accept pull requests from external contributors. File bugs and
+differences from expected behavior in [chainguard-project-theseus/feedback](https://github.com/chainguard-project-theseus/feedback/issues). 
+
+## Trademarks 
 
 Use of the challoc and Chainguard names is governed by Chainguard's
 trademark policy.
