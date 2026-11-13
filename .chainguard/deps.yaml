@@ -1,0 +1,66 @@
+# The Chainguard Checks deps agent (mono's ai-cicd/sandbox/cmd/deps) opens
+# one pull request per entry, on chainguard/deps/<name>, that updates the
+# entry's pins and fixes what the updates break. It answers review comments
+# from people with write access, failing checks on its own commits, and
+# conflicts. Schedules are UTC. The paths and prompt guide the agent; they
+# are not enforced. The agent sees only its entry's prompt, so each repeats
+# the rules it needs.
+#
+# The two entries take over what Dependabot did: the crate dependencies of
+# the root Cargo.toml (weekly, releases at least 7 days old) and the
+# wolfi-base digest pin of Dockerfile.dev (weekly). Dependabot's security
+# updates stay on in the repository settings.
+#
+# Pins no entry moves:
+# - vstd's exact version in Cargo.toml: it must be the one the verus~
+#   package of .chainguard/ci/verus.yaml names, so it moves with Verus.
+# - the rust-1.98 stream, Cargo.toml's rust-version, the tests/loom,
+#   tests/genmc and verus/count workspaces, and bench/Dockerfile.cb:
+#   Dependabot never moved them either.
+#
+# Every entry is merge: manual. The repository does not allow auto-merge,
+# and a person approves every pull request either way.
+version: 1
+updates:
+- name: crates
+  schedule: "0 9 * * 1" # Mondays
+  paths: ["Cargo.toml", "Cargo.lock"]
+  environment: .chainguard/ci/lint.yaml
+  merge: manual
+  prompt: >-
+    Update the crate dependencies of the root Cargo.toml and Cargo.lock to
+    their latest compatible releases, preferring releases at least 7 days
+    old. Leave vstd alone: its exact version must be the one the verus~
+    package of .chainguard/ci/verus.yaml names, and it moves only with
+    Verus. Leave tests/loom, tests/genmc and verus/count and their
+    Cargo.lock files alone. Add no new dependency, and keep libc at
+    default-features = false: the library is no_std. Keep rust-version in
+    Cargo.toml as it is; every update must still pass the msrv-build
+    check of .chainguard/ci/lint.yaml (`cargo build --release` on the
+    rust-version toolchain, installed with apk as that check names it),
+    and an update that needs a newer rustc is left out and named in the
+    body. Run, in the guest (the lint check's
+    environment, no container): `cargo fmt --check`, the clippy check's
+    three steps with -D warnings, `cargo build --release`, and `cargo test
+    -- --skip api::` then `cargo test api::`, at the default quantum and
+    with `--no-default-features --features quantum8`. The pull request's
+    linux and privileged checks run the container suite (`make test`). Do
+    not edit .chainguard/deps.yaml unless a person asks in a comment.
+
+- name: wolfi-base
+  schedule: "0 10 * * 1" # Mondays
+  paths: ["Dockerfile.dev"]
+  environment: dev
+  merge: manual
+  prompt: >-
+    Dockerfile.dev's base stage pins cgr.dev/chainguard/wolfi-base:latest
+    by digest. Move the pin to the current digest of that tag (the
+    multi-arch index digest, as the pin is now), and change nothing else
+    in the file. If the digest is already current, change nothing. Then
+    build the image and run the suite in the guest: start dockerd as
+    .chainguard/ci/env/dev.yaml's comment says (with
+    --data-root=/var/lib/chainguard-microvm/docker), then run `make test`.
+    The pull request's linux and privileged checks run the same suite on
+    both architectures. A failure the new base causes is described in the
+    body, with the pin left where it was. Do not edit .chainguard/deps.yaml
+    unless a person asks in a comment.

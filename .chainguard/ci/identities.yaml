@@ -23,9 +23,13 @@ trust:
     members: {github: {org: chainguard-dev}}
     # Pinned by the <slug>[bot] account's numeric ID
     # (gh api '/users/<slug>%5Bbot%5D' --jq .id); the slug is a label.
+    # chainguard is the Checks App, whose bot account opens the deps
+    # agent's pull requests (.chainguard/deps.yaml); dependabot opens only
+    # security updates now.
     bots:
       github:
         app:
+          chainguard: 107423345
           dependabot: 49699333
   subrings:
     member: {authors: [members, bots]}
