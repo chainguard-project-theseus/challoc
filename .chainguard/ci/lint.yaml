@@ -1,11 +1,11 @@
-# Lint, on every pull request: rustfmt, clippy with -D warnings (which
-# also fails the build on any rustc warning), the ctest-cc.sh cache race
-# test, the loom models, shellcheck, the codegen-fncmp fixtures, the Kani
-# bool-comparison lint, the not-Copy control and the bench harness's unit
-# tests all block.
+# Lint, on every pull request and on main: rustfmt, clippy with -D
+# warnings (which also fails the build on any rustc warning), the
+# ctest-cc.sh cache race test, the loom models, shellcheck, the
+# codegen-fncmp fixtures, the Kani bool-comparison lint, the not-Copy
+# control and the bench harness's unit tests all block.
 # msrv-build builds the shipped cdylib with the rust-version toolchain.
-# loom-count, the slow loom count model, blocks too but runs only on pull
-# requests that change what it models.
+# loom-count, the slow loom count model, blocks too but runs only on
+# changes to what it models.
 # The toolchains run in the guest directly, no container.
 version: 1
 
@@ -24,6 +24,7 @@ checks:
     description: >-
       cargo fmt --check over the crate. CI requires it; run `cargo fmt`
       before committing.
+    trigger: [presubmit, postsubmit]
     timeout: 5m
     cmd: [cargo, fmt, --check]
 
@@ -32,6 +33,7 @@ checks:
       cargo clippy -D warnings over the shipped no_std library (release) and
       over every target, tests included, at quantum 16 and 8. Any clippy or
       rustc warning fails it.
+    trigger: [presubmit, postsubmit]
     resources: medium
     timeout: 20m
     network: &crates
@@ -49,6 +51,7 @@ checks:
       tests/ctest-cc-race.sh: concurrent scripts/ctest-cc.sh --quantum calls
       on a cold cache all exit 0 with the built library's quantum and leave
       no temporary file behind.
+    trigger: [presubmit, postsubmit]
     resources: medium
     timeout: 15m
     network: *crates
@@ -66,6 +69,7 @@ checks:
       (tests/loom/loom-0.7.2-dpor.patch); the slow count model is ignored
       here and runs in loom-count. Worth a look on any change to the
       atomics a model copies (tests/loom/tests/pins.rs).
+    trigger: [presubmit, postsubmit]
     resources: medium
     timeout: 20m
     network: *crates
@@ -77,7 +81,8 @@ checks:
 
   # count::loom_count_bind_assign_unbind took about 6 of the loom check's
   # 7 minutes, so it is #[ignore]d there and runs here, on pull requests
-  # that change the loom crate, the code the count model copies (the
+  # and pushes to main (whose `changed:` set is the pushed commits'
+  # first-parent diffs) that change the loom crate, the code the count model copies (the
   # Arenas counts of src/arena.rs, the RawLock of src/lock.rs
   # (tests/loom/src/lock.rs), and src/heap/mod.rs, whose try_rehome calls
   # try_bind_idle without a lock: tests/loom/src/count.rs,
@@ -91,8 +96,10 @@ checks:
       The loom count model with the shipped orderings
       (count::loom_count_bind_assign_unbind, ignored in the loom check):
       tests/loom/run.sh -- --ignored, under loom 0.7.2 with the DPOR patch.
-      Runs on pull requests that change tests/loom/, the arena counts and
-      lock the model copies, or the wrappers it runs and src/sync.rs.
+      Runs on pull requests and pushes to main that change tests/loom/,
+      the arena counts and lock the model copies, or the wrappers it runs
+      and src/sync.rs.
+    trigger: [presubmit, postsubmit]
     when:
       changed:
         - "tests/loom/**"
@@ -111,6 +118,7 @@ checks:
     description: >-
       shellcheck (pinned upstream release) over every *.sh file git
       tracks (ci/shellcheck.sh).
+    trigger: [presubmit, postsubmit]
     timeout: 5m
     network:
       egress:
@@ -127,6 +135,7 @@ checks:
       scripts/testdata/codegen-fncmp, each pair's verdict line against the
       expected one; the crate-hash and impl-disambiguator pairs run with
       c++filt hidden from PATH and the crate-hash pair also with it.
+    trigger: [presubmit, postsubmit]
     environment:
       packages: [python-3.13, busybox, binutils]
     timeout: 5m
@@ -140,6 +149,7 @@ checks:
       them (`warning: ignoring >=`) and the harness can pass vacuously.
       The positive control scripts/testdata/kani-boolcmp/probe.rs, on
       which CBMC prints that warning, must be flagged.
+    trigger: [presubmit, postsubmit]
     environment:
       packages: [busybox]
     timeout: 5m
@@ -153,6 +163,7 @@ checks:
       controls, which must fail with exactly their three E0283 errors and
       no other error. verus.yaml's verus check runs it again under the
       Verus package's rust stream.
+    trigger: [presubmit, postsubmit]
     resources: medium
     timeout: 15m
     network: *crates
@@ -165,6 +176,7 @@ checks:
       defines, so CI and a local run execute the same command. Standard
       library only, no VMs or network; the launch planner's tests resolve
       HEAD with git.
+    trigger: [presubmit, postsubmit]
     environment:
       packages: [python-3.13, git, make, busybox]
     timeout: 5m
@@ -174,6 +186,7 @@ checks:
     description: >-
       cargo build --release of the shipped cdylib with the rust-version
       toolchain (Cargo.toml, 1.94).
+    trigger: [presubmit, postsubmit]
     environment:
       packages: [rust-1.94, build-base]
     resources: medium

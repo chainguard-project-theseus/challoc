@@ -3,5 +3,15 @@
 # hack/codeowners-gate/run.sh apply, which rewrites the rule lines here and
 # keeps these comments. GitHub ignores the #cgr: annotations.
 
-# every path, gated: the maintainers, the wolfi-dev/foundations-squad team and the challoc Checks reviewer (bot:challoc, .chainguard/reviewers.yaml), whose approve verdict at a head satisfies the gate as an owner approval does (mono code-reviewer README, "4. Let its approvals count")
-* @dlorenc @mattmoor @tcnghia @wolfi-dev/foundations-squad #cgr: gate=1
+# every path, gated: the maintainers, the theseus-team and the challoc Checks reviewer (bot:challoc, .chainguard/reviewers.yaml), whose approve verdict at a head satisfies the gate as an owner approval does (mono code-reviewer README, "4. Let its approvals count")
+* @dlorenc @mattmoor @tcnghia @chainguard-project-theseus/theseus-team #cgr: gate=1
+# the threat model: never the Checks reviewer alone, so a person approves
+/SECURITY.md @dlorenc @mattmoor @tcnghia @chainguard-project-theseus/theseus-team #cgr: gate=1
+# the check definitions (which checks run, and which block): never the Checks reviewer alone, so a person approves
+/.chainguard/ci/ @dlorenc @mattmoor @tcnghia @chainguard-project-theseus/theseus-team #cgr: gate=1
+# the gate scripts (expected skips, known failures, the kernel floor): never the Checks reviewer alone, so a person approves
+/ci/ @dlorenc @mattmoor @tcnghia @chainguard-project-theseus/theseus-team #cgr: gate=1
+# the crate's lint levels, features and release profile: never the Checks reviewer alone, so a person approves
+/Cargo.toml @dlorenc @mattmoor @tcnghia @chainguard-project-theseus/theseus-team #cgr: gate=1
+# the public C headers (challoc and jemalloc-compat), which declare what the library exports: never the Checks reviewer alone, so a person approves
+/include/ @dlorenc @mattmoor @tcnghia @chainguard-project-theseus/theseus-team #cgr: gate=1
