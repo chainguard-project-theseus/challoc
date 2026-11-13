@@ -307,8 +307,9 @@ differences from expected behavior in [chainguard-project-theseus/feedback](http
 
 ## Trademarks 
 
-Use of the challoc and Chainguard names is governed by Chainguard's
-trademark policy.
+Use of the Chainguard and challoc names, as well as other Chainguard
+trademarks, logos, and brand assets, is governed by the
+[Chainguard Trademark Use Policy](https://www.chainguard.dev/legal/chainguard-trademark-use-policy).
 
 ## License
 
