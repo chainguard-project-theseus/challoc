@@ -269,7 +269,7 @@ seccomp profile hides `mseal`.
 challoc's source is public, but we don't publish it to
 any package registry; it ships only from Chainguard's own repositories.
 
-challoc 0.1.0 experimental. On the reference machines (Google Axion
+challoc 0.1.0 is experimental and not released. On the reference machines (Google Axion
 and Intel Xeon VMs) it is at parity with jemalloc 5.3 on throughput and
 returns memory better under cgroup limits: in a `docker run
 --memory=512m` container, 400 MiB allocated and freed at about 80% of the
