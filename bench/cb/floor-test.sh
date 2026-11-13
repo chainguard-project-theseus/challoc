@@ -96,8 +96,10 @@ if [ -n "$cg_ready" ]; then
   cg_step cgroup-churn-512-keep $M512 0 sh scripts/cgroup-tests.sh churn challoc-off keep 400 100
   cg_step cgroup-churn-256-purge $M256 0 sh scripts/cgroup-tests.sh churn challoc purge 200 50
   cg_step cgroup-churn-256-keep $M256 0 sh scripts/cgroup-tests.sh churn challoc-off keep 200 50
-  cg_step cgroup-lazy-lazy $M512 0 sh scripts/cgroup-tests.sh lazy challoc lazy 200
-  cg_step cgroup-lazy-eager $M512 0 sh scripts/cgroup-tests.sh lazy challoc-eager eager 200
+  # As the Makefile's test-cgroup-lazy: eager purges are the default, the
+  # lazy band is the lazy_band:true opt-in.
+  cg_step cgroup-lazy-eager $M512 0 sh scripts/cgroup-tests.sh lazy challoc eager 200
+  cg_step cgroup-lazy-lazy $M512 0 sh scripts/cgroup-tests.sh lazy challoc-lazy lazy 200
 elif [ "${CB_CONTAINER:-}" = privileged ]; then
   # The privileged profile can always write its cgroup: failing to set it
   # up is a failure, not a skip.
