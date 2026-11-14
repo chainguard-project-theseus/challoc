@@ -2,19 +2,25 @@
 # checked shares of the shipped crates stay at or above verus/FLOOR. The
 # verus checks are `make verus` (verus/README.md): `cargo verus focus`
 # over challoc (the Makefile's VERUS_MODE makes it `cargo verus verify`,
-# cargo's default package), then the kit counter (verus/count, vendored by
-# proved-port's kit/sync.sh) with --floor, which compares verus/FLOOR
+# cargo's default package), then the kit counter (verus-count, from the
+# theseus-proved-port package) with --floor, which compares verus/FLOOR
 # with the base revision's copy, so that lowering a figure needs a new
 # `lowered` line, and holds each function's rlimit use to verus/RLIMIT.
 # When a figure rises, and what a `lowered` line needs, is verus/FLOOR's
-# header's rule. The kani checks are `make kani`: verus/make/kani.sh,
-# vendored with the counter, over every harness of the crates
-# KANI_CRATES names (a foreach of KANI_ONLY, KANI_HARNESS or KANI_SHARD
-# splits them; kani.sh's header says how). The two share nothing,
-# so they are separate checks that run at once.
+# header's rule. The kani checks are `make kani`: the kit's kani.sh,
+# from the same package, over every harness of the crates KANI_CRATES
+# names (a foreach of KANI_ONLY, KANI_HARNESS or KANI_SHARD splits them;
+# kani.sh's header says how). The two share nothing, so they are
+# separate checks that run at once.
 #
-# Every run compares with a base, and none skips it: verus takes the pull
-# request's base, verus-main the commit before the one under test. Where
+# Every run compares with a base, and none skips it, and both checks take
+# the one Checks sets (CHAINGUARD_BASE_REVISION). On a pull request,
+# verus takes the pull request's base. On main, verus-main takes the
+# start of the push the run covers: Checks settles a burst of pushes into
+# one run at the last, and names as its base the tip its previous run
+# planned (when that is a first-parent ancestor, else the first parent).
+# HEAD^ would be the merge before the last one, and a merge inside the
+# burst would never be compared with main before it. Where
 # verus/FLOOR exists, `make verus` passes `--base-rev "$(VERUS_BASE)"` to
 # the counter and fails when VERUS_BASE is empty; it never prints SKIP and
 # passes, since a run that skips the comparison lets FLOOR fall on main
@@ -45,11 +51,13 @@
 # (Cargo.toml; bump both together, and .chainguard/ci/env/dev.yaml's),
 # and it brings the rust stream and z3 that release runs with. kani is
 # pinned to the release the Kani records under verus/seams/ name, built
-# against the same rust stream. git reads the base revision's
-# verus/FLOOR. VERUS_THREADS gives Verus every vCPU of the guest
-# (CG_CPUS), one z3 per module.
-# kit: proved-port v0.2.4 (78fbafe4fa4948f3fa50efa2f4cee7f337645dac)
-#
+# against the same rust stream. theseus-proved-port is pinned to the kit
+# release the Makefile's PROVED_PORT_VERSION names (bump both together,
+# and .chainguard/ci/env/dev.yaml's). git reads the base revision's
+# verus/FLOOR.
+# VERUS_THREADS gives Verus every vCPU of the guest (CG_CPUS), one z3
+# per module.
+
 # challoc: the checks keep the names and triggers main ran before the
 # kit, since Checks refuses a change whose base would run a check its
 # head does not. So `verus` (x86_64, large-amd64) and `verus-arm64`
@@ -71,13 +79,12 @@
 version: 1
 
 environment:
-  packages: [verus~0.2026.10.18, build-base, busybox, make, git]
+  packages: [verus~0.2026.10.18, theseus-proved-port~0.3.0, build-base, busybox, make, git]
 
 checks:
   verus:
     description: >-
-      make verus: verus/count's tests, then the seam ledger check
-      (verus/ledger/), cargo verus verify over challoc on x86_64, and the
+      make verus: the seam ledger check (verus/ledger/), cargo verus verify over challoc on x86_64, and the
       kit counter's coverage floor (verus/FLOOR) against the pull
       request's base; then the proofs of the quantum-8 build; then the
       not-Copy control (verus/notcopy-control.sh) under the package's
@@ -88,19 +95,15 @@ checks:
     network: &crates
       egress: [index.crates.io, static.crates.io]
     steps:
-      # The port's CI cannot run kit/sync.sh --check (it cannot reach the
-      # kit), so these tests are what checks the vendored copy here.
-      - &counter-tests
-        name: counter tests
-        cmd: [cargo, test, --locked, --manifest-path, verus/count/Cargo.toml]
       - &verus-step
         name: seam ledger, proofs and coverage floor
         cmd:
           - sh
           - -c
-          # Checks sets the base on every pull request run
-          # (CHAINGUARD_BASE_REVISION, a reserved variable); a run without
-          # one fails rather than skip the comparison.
+          # Checks sets the base on every run, a pull request's and
+          # main's (CHAINGUARD_BASE_REVISION, a reserved variable); a run
+          # without one fails rather than skip the comparison. verus-main
+          # runs this same step.
           - make verus VERUS_THREADS="${CG_CPUS:-}" VERUS_BASE="${CHAINGUARD_BASE_REVISION:?no base revision to compare verus/FLOOR with}"
       - &verus-q8
         name: proofs at quantum 8
@@ -121,8 +124,8 @@ checks:
   # The same on aarch64: the package's arm64 build, run natively.
   verus-arm64:
     description: >-
-      make verus on aarch64, natively: verus/count's tests, the seam
-      ledger check, cargo verus verify over the aarch64 build of challoc,
+      make verus on aarch64, natively: the seam ledger check, cargo verus
+      verify over the aarch64 build of challoc,
       and the coverage floor against the pull request's base; then the
       proofs of the quantum-8 build.
     trigger: [presubmit]
@@ -130,25 +133,23 @@ checks:
     timeout: 45m
     network: *crates
     steps:
-      - *counter-tests
       - *verus-step
       - *verus-q8
 
-  # On main, squash-merged, the commit before the one under test is the
-  # base; the counter fails when it does not resolve. This check must fail,
-  # never SKIP, when it has no base to compare verus/FLOOR with.
+  # On main, the base is the start of the push the run covers, which
+  # Checks sets as for a pull request; the counter fails when it does not
+  # resolve. This check must fail, never SKIP, when it has no base to
+  # compare verus/FLOOR with.
   verus-main:
     description: >-
-      make verus on main: verus/count's tests, the seam ledger check, the
-      proofs and the coverage floor, against the commit before this one;
-      then the proofs of the quantum-8 build, so two pull requests that
-      each pass alone cannot break them on main unseen.
+      make verus on main: the seam ledger check, the proofs and the
+      coverage floor, against main before the push this run covers; then
+      the proofs of the quantum-8 build, so two pull requests that each
+      pass alone cannot break them on main unseen.
     trigger: [postsubmit]
     resources: large-amd64
     timeout: 45m
     network: *crates
     steps:
-      - *counter-tests
-      - name: seam ledger, proofs and coverage floor
-        cmd: [sh, -c, 'make verus VERUS_THREADS="${CG_CPUS:-}" VERUS_BASE=HEAD^']
+      - *verus-step
       - *verus-q8

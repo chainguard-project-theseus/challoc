@@ -274,8 +274,8 @@ CI runs the same checks on Chainguard Checks:
 
 | Check | Runs | What it runs |
 | --- | --- | --- |
-| `verus`, `verus-arm64` | every pull request, x86_64 and native arm64 | counter tests, `make verus` against the pull request's base, quantum 8 proofs |
-| `verus-main` | after each landing | the same against the commit before |
+| `verus`, `verus-arm64` | every pull request, x86_64 and native arm64 | `make verus` against the pull request's base, quantum 8 proofs (the counter's own tests run in the theseus-proved-port package's build) |
+| `verus-main` | after each landing | `make verus` and the quantum 8 proofs against main before the push the run covers, which may span several merges (the base Checks sets) |
 | `kani` | pull requests that change `src/kani/`, `src/vspec/` or listed files | every harness at quantum 16 and 8 |
 | `kani-ignoring` | after each landing | every harness, one at a time in regular format; fails on a CBMC `warning: ignoring` line |
 | `kani-boolcmp` | every pull request (lint) | rejects ordering comparisons on Booleans in Kani code, which CBMC `6.11` ignores |
@@ -300,7 +300,7 @@ Guard tests (`cargo test`) pin where trusted items whose premise is about their 
 | [tests/loom/tests/pins.rs](../tests/loom/tests/pins.rs) | The source lines the loom models copy stay pinned; every atomic ordering, fence, or futex line in a pinned function is pinned or waived with a reason. |
 | [tests/loom/tests/kani_trigger.rs](../tests/loom/tests/kani_trigger.rs) | Every file with a `kani_*` module appears in the Kani presubmit list or `kani-ignoring`. |
 
-The `verus` presubmit check (x86_64) runs the seam check, quantum 16 proofs, counter tests, the coverage floor against the PR base, and quantum 8 proofs; `verus-arm64` runs the same steps natively on arm64. `verus-main` runs postsubmit against the preceding main commit. The `lint` checks include rustfmt, clippy, loom, shellcheck, the codegen function-comparison self-test, `kani-boolcmp`, and an MSRV build. `kani-boolcmp` rejects ordering comparisons on Booleans in Kani code because CBMC `6.11` ignores them and could let a harness pass without checking that comparison.
+The `verus` presubmit check (x86_64) runs the seam check, quantum 16 proofs, the coverage floor against the PR base, and quantum 8 proofs; `verus-arm64` runs the same steps natively on arm64. The counter is the theseus-proved-port package's, and its own tests run in that package's build, not in these checks. `verus-main` runs postsubmit against main before the push the run covers: the base Checks sets, which spans every merge the run settled, not only the preceding commit. The `lint` checks include rustfmt, clippy, loom, shellcheck, the codegen function-comparison self-test, `kani-boolcmp`, and an MSRV build. `kani-boolcmp` rejects ordering comparisons on Booleans in Kani code because CBMC `6.11` ignores them and could let a harness pass without checking that comparison.
 
 Verus, codegen, and Linux tests run natively on both x86_64 and arm64 in CI. The postsubmit floor checks also run `make test` and `make fuzz` on AlmaLinux 9’s 5.14 kernel on GCE VMs for both architectures.
 

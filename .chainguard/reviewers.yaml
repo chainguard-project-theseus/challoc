@@ -2,8 +2,7 @@
 # Chainguard Checks code reviewer, so a change here takes effect once it
 # merges. The reviewer named here is the `bot:challoc` owner of every path
 # in .github/codeowners.yaml (CONTRIBUTING.md, "Code review").
-# kit: proved-port v0.2.4 (78fbafe4fa4948f3fa50efa2f4cee7f337645dac)
-#
+
 # challoc: the `bot:challoc` owner sits on a gated entry: with
 # `approve: true`, Checks submits an approving review as chainguard[bot]
 # when the verdict at a head is approve. Paths the reviewers read as their

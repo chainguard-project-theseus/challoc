@@ -24,18 +24,19 @@ make verus VERUS_BASE=none          # the seam ledger, the proofs, then the cove
 make verus VERUS_BASE=origin/main   # the same, and FLOOR against main's
 ```
 
-`make verus` is the kit's target (`verus/make/proved-port.mk`, vendored
-from the proved-port kit by its `kit/sync.sh`; `verus/count/KIT` names
-the kit commit). It runs `sh verus/seams.sh --check` (Seams, below),
+`make verus` is the kit's target (`proved-port.mk`, from the
+theseus-proved-port package, pinned as `theseus-proved-port~0.3.0` in the
+checks and as the Makefile's `PROVED_PORT_VERSION`; the installed `KIT`
+names the release). It runs `sh verus/seams.sh --check` (Seams, below),
 then `cargo verus verify` (the default `quantum16` feature) with Verus's
-statistics in `target/verus-stats.json`, then the vendored counter,
-`verus/count`, with `--floor verus/FLOOR` (Coverage, below). It needs a
+statistics in `target/verus-stats.json`, then the kit counter,
+`verus-count`, with `--floor verus/FLOOR` (Coverage, below). It needs a
 `VERUS_BASE`: a revision whose FLOOR this one is compared with, or `none`
 for no comparison; with neither it fails. Unlike the other targets it
 runs where it is invoked, not in the dev container. The
 `verus` check (`.chainguard/ci/verus.yaml`) runs it on every pull
 request, against the pull request's base, and `verus-main` on main,
-against the commit before, so a change that leaves the seam ledger
+against main before the push the run covers, so a change that leaves the seam ledger
 stale, breaks a proof or lowers the verified share fails CI.
 
 The check gets Verus from the `verus` package, release
@@ -74,14 +75,14 @@ The seam ledger lists every seam but vstd's own (Seams, below).
 ```sh
 make verus-count VERUS_BASE=none                             # the crate and the floor
 make verus-count VERUS_BASE=none VERUS_COUNT_FLAGS=--list    # per function
-make verus-count-test                                        # the counter's own tests
+make verus-count-test                                        # the release check (the package's build runs the counter's tests)
 ```
 
-`verus/count` is the kit counter, configured by `verus/count.toml`; its
-own README.md gives every key and rule, and governs where this section
-is shorter.
+`verus-count` is the kit counter, configured by `verus/count.toml`; its
+README.md (kit/count in the proved-port kit) gives every key and rule,
+and governs where this section is shorter.
 
-`verus/count` parses every file under `src/`, `verus!` blocks included,
+`verus-count` parses every file under `src/`, `verus!` blocks included,
 with `verus_syn`, and counts executable functions and their lines as
 verified, trusted (inside `verus!` but `external_body`, `external`, or
 calling `assume`, `admit` or `Tracked::assume_new`) or outside `verus!`.
@@ -153,14 +154,14 @@ figures. The repository is private, so shields.io cannot read the
 counts; the badge carries them in its URL. `--floor` fails when the
 badge line (`verus/count.toml`'s `[badge]`) does not give FLOOR's
 figures, so the pull request that raises FLOOR replaces it with the line
-`target/verus-count/release/verus-count --badge .` prints (`make
-verus-count` builds it there). Each `verus-main`
-log has the current figures.
+`verus-count --badge .` prints. Each `verus-main` log has the current
+figures.
 
-The counter is the proved-port kit's counter, vendored, which
-grew from pcre3's `verus/count` and challoc's own. Do not edit
-`verus/count/` or `verus/make/`: change the kit, then re-run its
-`kit/sync.sh`, and check the copy with `kit/sync.sh --check`.
+The counter is the proved-port kit's counter, which grew from pcre3's
+`verus/count` and challoc's own. challoc carries no copy of it or of the
+make targets: a change to either lands in the kit and reaches challoc
+with the next release, through the deps agent's kit entry
+(`.chainguard/deps.yaml`).
 
 ## Seams
 
@@ -202,7 +203,7 @@ make kani KANI_HARNESS=config::kani_config::get_contract   # one in a file
 make kani-list                # the harnesses
 ```
 
-`make kani` is the kit's Kani runner (`verus/make/kani.sh`), with the
+`make kani` is the kit's Kani runner (`kani.sh`, from the same package), with the
 Makefile's `KANI_FLAGS`: `-Z unstable-options -Z stubbing -Z
 mem-predicates --ignore-global-asm` and QUANTUM's feature. The
 `kani-ignoring` check runs it in shards in regular format, balanced by

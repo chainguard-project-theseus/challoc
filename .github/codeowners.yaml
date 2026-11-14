@@ -28,8 +28,9 @@
 # They are the template's set as it applies here, not every input a gate
 # reads. Every other path stays with the `*` entry, so the reviewer alone
 # can approve it, held to review-prompt.md and AGENTS.md. That includes,
-# for example, the Makefile, scripts/, verus/ (its counter, FLOOR and
-# RLIMIT), tests/ and source-level lint allows.
+# for example, the Makefile (with the kit's PROVED_PORT_VERSION), scripts/,
+# verus/ (FLOOR and the counter's count.toml), .claude/settings.json,
+# tests/ and source-level lint allows.
 version: 1
 entries:
   - pattern: '*'

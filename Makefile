@@ -2,7 +2,7 @@
 # local benchmark targets run inside the Wolfi dev container built from
 # Dockerfile.dev. These run on the host: `help`, `print-docker-run`, `image`
 # (which builds the container), `verus`, `kani` and the other targets of
-# verus/make/proved-port.mk, `verus-seams`, `isla`, `emptyasm`, the `clean-*`
+# the kit's proved-port.mk, `verus-seams`, `isla`, `emptyasm`, the `clean-*`
 # targets, and the bench targets that drive GCE or only read results
 # (`quick`, `bench-launch-quick`, `bench-launch`, `bench-image`, `bench-gc`,
 # `bench-compare`, `bench-unit`). `make help` lists the targets
@@ -258,16 +258,21 @@ ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemallo
 check-needed: image ## DT_NEEDED must name the allocator library (tests/as-needed.sh, scripts/check-needed.sh)
 	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) && sh tests/as-needed.sh'
 
-# verus, kani and their kin are the kit's targets (verus/make/proved-port.mk,
-# vendored by proved-port's kit/sync.sh). They run where they are invoked,
-# not in the dev container: they need the Verus release, Kani and the rust
-# toolchain verus/README.md names, which the checks get from the `verus`
-# and `kani` packages (.chainguard/ci/verus.yaml, kani.yaml).
+# verus, kani and their kin are the kit's targets (proved-port.mk, from the
+# theseus-proved-port package, which installs it under PROVED_PORT_HOME
+# with the counter as verus-count). PROVED_PORT_VERSION is the kit release
+# the checks pin (theseus-proved-port~, .chainguard/ci/verus.yaml,
+# kani.yaml and env/dev.yaml; the deps agent's kit entry moves them
+# together), and every kit target fails unless PROVED_PORT_HOME/KIT
+# records it. They run where they are invoked, not in the dev container:
+# they need the Verus release, Kani, the rust toolchain verus/README.md
+# names and the kit, which the checks get from the `verus`, `kani` and
+# `theseus-proved-port` packages.
 #
 # `make verus VERUS_BASE=<rev>` checks the seam ledger (verus-seams: the
 # ledger under verus/ledger/ must match what `sh verus/seams.sh --write`
 # generates from the tree), runs `cargo verus verify` over challoc, then
-# the vendored counter, which holds the tree to verus/FLOOR and fails a
+# the kit counter, which holds the tree to verus/FLOOR and fails a
 # figure lowered below <rev>'s without a reason (verus/README.md).
 # VERUS_BASE=none runs the counter with no base, for a local run. The
 # quantum-8 proofs are `make verus-proofs VERUS_CARGO_FLAGS='--no-default-features
@@ -286,7 +291,26 @@ VERUS_RLIMIT =
 KANI_FLAGS = -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm $(FEATURES)
 KANI_LIST_FLAGS = -Z stubbing -Z mem-predicates
 KANI_JOBS = 4
-include verus/make/proved-port.mk
+# The proved-port kit, from the theseus-proved-port package. Set the
+# port's variables (VERUS_CRATES, KANI_CRATES, KANI_NONE, ...) above this.
+# PROVED_PORT_VERSION is the kit release, which the theseus-proved-port
+# pin in every .chainguard/ci file that installs it, and in
+# .chainguard/ci/env/dev.yaml, names too; the kit targets fail on any
+# other install. Where the package is not
+# installed, the kit targets fail with the message below, and every other
+# target still runs; point PROVED_PORT_HOME at a root laid out as
+# /usr/share/proved-port (make/, templates/ and KIT) and VERUS_COUNT at a
+# counter built from the kit at that tag to run them.
+PROVED_PORT_VERSION = 0.3.0
+PROVED_PORT_HOME ?= /usr/share/proved-port
+ifneq ($(wildcard $(PROVED_PORT_HOME)/make/proved-port.mk),)
+include $(PROVED_PORT_HOME)/make/proved-port.mk
+else
+PROVED_PORT_TARGETS = verus verus-proofs verus-count verus-count-test verus-headers kani kani-list
+.PHONY: $(PROVED_PORT_TARGETS)
+$(PROVED_PORT_TARGETS):
+	@echo "$@: no proved-port kit at $(PROVED_PORT_HOME): install theseus-proved-port~$(PROVED_PORT_VERSION), or set PROVED_PORT_HOME to a kit install root (make/, templates/ and KIT, as the package lays out /usr/share/proved-port)" >&2; exit 1
+endif
 
 .PHONY: verus-seams
 verus: verus-seams

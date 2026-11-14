@@ -6,17 +6,21 @@
 # are not enforced. The agent sees only its entry's prompt, so each repeats
 # the rules it needs.
 #
-# The two entries take over what Dependabot did: the crate dependencies of
-# the root Cargo.toml (weekly, releases at least 7 days old) and the
-# wolfi-base digest pin of Dockerfile.dev (weekly). Dependabot's security
-# updates stay on in the repository settings.
+# The crates and wolfi-base entries take over what Dependabot did: the
+# crate dependencies of the root Cargo.toml (weekly, releases at least 7
+# days old) and the wolfi-base digest pin of Dockerfile.dev (weekly).
+# Dependabot's security updates stay on in the repository settings. The
+# kit entry moves the proved-port kit's pin (every `theseus-proved-port~`
+# package version, the Makefile's PROVED_PORT_VERSION, and the
+# proved-port marketplace ref in .claude/settings.json), and no other
+# entry touches it.
 #
 # Pins no entry moves:
 # - vstd's exact version in Cargo.toml: it must be the one the verus~
 #   package of .chainguard/ci/verus.yaml names, so it moves with Verus.
-# - the rust-1.98 stream, Cargo.toml's rust-version, the tests/loom,
-#   tests/genmc and verus/count workspaces, and bench/Dockerfile.cb:
-#   Dependabot never moved them either.
+# - the rust-1.98 stream, Cargo.toml's rust-version, the tests/loom and
+#   tests/genmc workspaces, and bench/Dockerfile.cb: Dependabot never
+#   moved them either.
 #
 # Every entry is merge: manual. The repository does not allow auto-merge,
 # and a person approves every pull request either way.
@@ -32,8 +36,8 @@ updates:
     their latest compatible releases, preferring releases at least 7 days
     old. Leave vstd alone: its exact version must be the one the verus~
     package of .chainguard/ci/verus.yaml names, and it moves only with
-    Verus. Leave tests/loom, tests/genmc and verus/count and their
-    Cargo.lock files alone. Add no new dependency, and keep libc at
+    Verus. Leave tests/loom and tests/genmc and their Cargo.lock files
+    alone. Add no new dependency, and keep libc at
     default-features = false: the library is no_std. Keep rust-version in
     Cargo.toml as it is: an update that needs a newer rustc than
     rust-version is left out and named in the body, and the pull request's
@@ -66,3 +70,42 @@ updates:
     both architectures. A failure the new base causes is described in the
     body, with the pin left where it was. Do not edit .chainguard/deps.yaml
     unless a person asks in a comment.
+
+- name: kit
+  schedule: "30 10 * * 1" # Mondays
+  paths:
+    - ".chainguard/ci/**"
+    - "Makefile"
+    - "verus/FLOOR"
+    - "verus/count.toml"
+    - ".chainguard/reviewers.yaml"
+    - ".chainguard/review-prompt.md"
+    - ".claude/settings.json"
+  environment: dev
+  merge: manual
+  prompt: >-
+    Move the proved-port kit. Its pin is every `theseus-proved-port~`
+    package version in .chainguard/ci/** and .chainguard/ci/env/dev.yaml,
+    PROVED_PORT_VERSION in the Makefile, and the `ref` (vX.Y.Z) of the
+    proved-port marketplace in .claude/settings.json; move them together,
+    in this one pull request, to the newest theseus-proved-port release in
+    Wolfi that is at least 7 days old. If the pin is already that release,
+    change nothing. Install the new package with apk in the guest and
+    commit the pin moves before you run anything; fold later fixes in this
+    run into that commit, and on a turn add a commit on top of the pull
+    request's head. Then run `make verus-headers`: for each file it lists
+    as drifted, take the kit's header text from the installed template of
+    the same path under /usr/share/proved-port/templates/, with the
+    placeholders filled as challoc filled them before and challoc's own
+    comments below the header kept. These files carry no `# kit:` line.
+    Change nothing else in those files. Then run `make verus-headers`,
+    `make verus VERUS_BASE=none` (a local run; the verus checks pass the
+    base) and `make kani-list`; the pull request's kani check runs the
+    harnesses, since the Makefile changes. The body names the targets the
+    guest ran and any it did not finish. verus/FLOOR never goes down and
+    never gains a `lowered` line from this entry. When the new counter
+    fails a gate the old one passed (a lower share, a configuration it
+    refuses), fix nothing in challoc's code or ledgers: leave the bump for
+    a person, as a draft, and say in the body which gate fails and what it
+    reports. Do not edit .chainguard/deps.yaml unless a person asks in a
+    comment.
