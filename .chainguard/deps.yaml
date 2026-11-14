@@ -78,31 +78,55 @@ updates:
     - "Makefile"
     - "verus/FLOOR"
     - "verus/count.toml"
+    - "verus/README.md"
     - ".chainguard/reviewers.yaml"
     - ".chainguard/review-prompt.md"
+    - ".chainguard/develop.yaml"
     - ".claude/settings.json"
   environment: dev
   merge: manual
   prompt: >-
     Move the proved-port kit. Its pin is every `theseus-proved-port~`
-    package version in .chainguard/ci/** and .chainguard/ci/env/dev.yaml,
-    PROVED_PORT_VERSION in the Makefile, and the `ref` (vX.Y.Z) of the
-    proved-port marketplace in .claude/settings.json; move them together,
+    package version in .chainguard/ci/** and in the development sessions'
+    environment (.chainguard/develop.yaml, or the file its `from:` names),
+    PROVED_PORT_VERSION in the Makefile, the `ref` (vX.Y.Z) of the
+    proved-port marketplace in .claude/settings.json, and the version
+    verus/README.md names for the package; move them together,
     in this one pull request, to the newest theseus-proved-port release in
-    Wolfi that is at least 7 days old. If the pin is already that release,
-    change nothing. Install the new package with apk in the guest and
-    commit the pin moves before you run anything; fold later fixes in this
-    run into that commit, and on a turn add a commit on top of the pull
-    request's head. Then run `make verus-headers`: for each file it lists
-    as drifted, take the kit's header text from the installed template of
-    the same path under /usr/share/proved-port/templates/, with the
-    placeholders filled as challoc filled them before and challoc's own
-    comments below the header kept. These files carry no `# kit:` line.
-    Change nothing else in those files. Then run `make verus-headers`,
+    Wolfi, with no waiting period: the kit is first-party. If the pin is
+    already that release, change nothing. Install the new package with
+    apk in the guest and commit the pin moves before you run anything;
+    fold later fixes in this run into that commit, and on a turn add a
+    commit on top of the pull request's head. Then run `make
+    verus-headers`: for each file it lists as drifted, take the kit's
+    header text from the installed template of the same path under
+    /usr/share/proved-port/templates/, with the placeholders filled as
+    challoc filled them before and challoc's own comments below the header
+    kept. These files carry no `# kit:` line. Change nothing else in those
+    files. Then apply what the new release asks of ports that is new
+    since the release the pin moved from, as its notes say:
+    /usr/share/proved-port/CHANGELOG.md where the package has one. A
+    package with no CHANGELOG leaves only the new release's files in the
+    guest, so nothing says what is new: then apply only the example below,
+    and list in the body, for a person, anything the installed templates'
+    PORT-README.md and README.md or the targets list atop proved-port.mk
+    ask that challoc does not yet follow. Make only the changes that fall
+    in this entry's paths, and list anything else the release asks for in
+    the body, for a person. For example, when a release adds `make
+    verify`, which runs VERIFY_TARGETS, that list names every target
+    challoc's checks verify with Verus and Kani, their controls and extra
+    quanta included, but not its other verifying checks (isla, GenMC,
+    loom, the weak-memory stress): the Makefile's VERIFY_TARGETS and its
+    comment say which, so keep it naming those. Where the Makefile has no
+    VERIFY_TARGETS, set none and design no targets: say so in the body,
+    for a person (#712 adds the list and its wrapper targets). Add
+    `verify` to the Makefile's fallback list of kit targets where it has
+    one. Then run `make verus-headers`,
     `make verus VERUS_BASE=none` (a local run; the verus checks pass the
     base) and `make kani-list`; the pull request's kani check runs the
     harnesses, since the Makefile changes. The body names the targets the
-    guest ran and any it did not finish. verus/FLOOR never goes down and
+    guest ran, any it did not finish, and what the release asked of the
+    port. verus/FLOOR never goes down and
     never gains a `lowered` line from this entry. When the new counter
     fails a gate the old one passed (a lower share, a configuration it
     refuses), fix nothing in challoc's code or ledgers: leave the bump for
