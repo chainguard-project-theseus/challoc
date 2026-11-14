@@ -276,15 +276,16 @@ check-needed: image ## DT_NEEDED must name the allocator library (tests/as-neede
 # figure lowered below <rev>'s without a reason (verus/README.md).
 # VERUS_BASE=none runs the counter with no base, for a local run. The
 # quantum-8 proofs are `make verus-proofs VERUS_CARGO_FLAGS='--no-default-features
-# --features quantum8' VERUS_STATS=target/verus-stats-q8.json`. challoc has
-# no verus/RLIMIT, so the counter runs without --rlimit.
+# --features quantum8' VERUS_STATS=target/verus-stats-q8.json`. The counter
+# also holds each verified function's rlimit use, from the statistics of
+# the quantum-16 run, to verus/RLIMIT (VERUS_RLIMIT, on by default in the
+# kit; verus/README.md, "Headroom").
 #
 # `make kani` runs every Kani harness at QUANTUM, four at a time in terse
 # format; the kani-ignoring check runs one shard of them in regular format
 # with CBMC's verbose output (KANI_SHARD, KANI_SHARDS, KANI_WEIGHTS=
 # ci/kani-weights.txt and the rest, .chainguard/ci/kani.yaml).
 VERUS_MODE = verify
-VERUS_RLIMIT =
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` that no harness reaches; `-Z stubbing` for `kani::stub`,
 # `-Z mem-predicates` for `kani::mem` (.chainguard/ci/kani.yaml).

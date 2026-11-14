@@ -163,6 +163,17 @@ make targets: a change to either lands in the kit and reaches challoc
 with the next release, through the deps agent's kit entry
 (`.chainguard/deps.yaml`).
 
+## Headroom
+
+`make verus` writes Verus's statistics to `target/verus-stats.json`, and
+the counter holds each verified function's rlimit use, as a share of its
+limit, to [RLIMIT](RLIMIT). Z3's count is deterministic, so a function
+near its limit passes on the change that put it there and fails on main
+once a change beside it adds a little; RLIMIT's header says how to
+restore headroom. `verus` and `verus-main` hold the x86_64 run to it and
+`verus-arm64` the aarch64 run, so an `allow` line gives the larger of a
+function's two shares. The quantum-8 proofs run without the counter.
+
 ## Seams
 
 ```sh
