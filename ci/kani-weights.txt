@@ -1,0 +1,59 @@
+# The seconds each Kani harness takes, which the kani-ignoring check's
+# shards balance by (`make kani KANI_WEIGHTS=ci/kani-weights.txt`;
+# verus/make/kani.sh, KANI_WEIGHTS). One `NAME SECONDS [alone]` row per
+# harness, NAME the full name `make kani-list` prints. A harness marked
+# `alone` gets a shard of its own, from shard 1 up; the rest go longest
+# first, each to the shard with the least time so far. A harness not
+# listed counts as 2 seconds, so a new one lands in some shard without an
+# edit here; add it when it takes more than half a minute.
+#
+# The times: one harness per `cargo kani` call, in regular format with
+# `--verbosity 9`, at quantum 16, on an 8 vCPU guest, less the 5 s
+# rebuild of each call (2026-10-31). The `select_ptrs` rows are CBMC's
+# verification times with all eight in one call, run beside the same
+# call at quantum 8 (2026-11-04). The `no_arrays_are_zero`,
+# `zero_records_zeroes` and `untracked_in_place_is_untracked` rows are
+# CBMC's verification times, one harness per call at quantum 16 on the
+# 8 vCPU guest (2026-11-04). The `caches_array_view` row is CBMC's
+# verification time, one harness per call at quantum 16 on the 8 vCPU
+# guest (2026-11-05). The `init_writes_every_field` and
+# `writers_store_the_assembled_fields` rows are CBMC's verification
+# times, both harnesses in one call at quantum 16 on the 8 vCPU guest,
+# beside the same call at quantum 8 (2026-11-06).
+kani_proofs::misc::formatter_write_fmt 1261 alone
+kani_proofs::slice::select_ptrs_by_key_12 416
+kani_proofs::slice::select_ptrs_12 380
+sys::cgroup::kani_fmt::display_cgroup 355
+kani_proofs::slice::select_ptrs_short 349
+config::kani_config::display_bytes 342
+kani_proofs::slice::select_ptrs_by_key_short 322
+config::kani_config::set_listed_contract 304
+kani_proofs::slice::slice_is_sorted 249
+kani_proofs::slice::sort_ptrs_by_key_12 216
+kani_proofs::slice::select_ptrs_by_key_11 195
+kani_proofs::slice::sort_ptrs_12 171
+api::print::kani_print::hist_line_returns 171
+kani_proofs::slice::select_ptrs_11 140
+kani_proofs::slice::sort_ptrs_by_key_short 132
+kani_proofs::slice::sort_ptrs_short 130
+config::kani_config::display_issue_rounded 125
+kani_proofs::slice::select_ptrs_10 115
+kani_proofs::ptr::ptr_copy_nonoverlapping 104
+heap::tcaches::kani_assemble::init_writes_every_field 104
+kani_proofs::slice::sort_ptrs_11 98
+kani_proofs::ptr::ptr_write_unaligned 71
+kani_proofs::slice::sort_ptrs_by_key_11 70
+kani_proofs::slice::select_ptrs_by_key_10 67
+kani_proofs::slice::sort_ptrs_10 57
+config::kani_config::display_issue_bad_value 57
+config::kani_config::display_issue_out_of_range 56
+heap::others::kani_view::caches_array_view 55
+kani_proofs::stats::fig_mul_exact 54
+kani_proofs::slice::sort_ptrs_by_key_10 33
+heap::cache::kani_cache::home_ptr_at_is_the_home_header 28
+config::kani_config::display_issue_unknown_key 26
+config::kani_config::get_contract 25
+heap::slotstate::kani_arrays::no_arrays_are_zero 10
+heap::fresh::kani_assemble::writers_store_the_assembled_fields 7
+stats::kani_records::zero_records_zeroes 6
+sys::cgroup::kani_in_place::untracked_in_place_is_untracked 3

@@ -1,18 +1,25 @@
 # Checks code reviewers for challoc. Read from the default branch by the
-# Checks code reviewer (mono's ai-cicd/sandbox/cmd/code-reviewer), so a
-# change here takes effect once it merges. The reviewer named here is the
-# `bot:challoc` owner of every path in .github/codeowners.yaml, on a gated
-# entry: with `approve: true` below, Checks submits an approving review as
-# chainguard[bot] when its verdict at a head is approve (mono's code-reviewer
-# README, "The approving review"). Paths the reviewers read as their own
-# definitions still need a person.
+# Chainguard Checks code reviewer, so a change here takes effect once it
+# merges. The reviewer named here is the `bot:challoc` owner of every path
+# in .github/codeowners.yaml (CONTRIBUTING.md, "Code review").
+# kit: proved-port v0.2.4 (78fbafe4fa4948f3fa50efa2f4cee7f337645dac)
+#
+# challoc: the `bot:challoc` owner sits on a gated entry: with
+# `approve: true`, Checks submits an approving review as chainguard[bot]
+# when the verdict at a head is approve. Paths the reviewers read as their
+# own definitions still need a person.
+# challoc's CONTRIBUTING.md has no "Code review" section; review-prompt.md
+# holds the rules.
 version: 1
+# Checks submits the approving review once every changed path has its
+# approval (root file only).
 approve: true
-# Per-pass limits (mono's code-reviewer README, "Limits"), at their
-# ceilings: a challoc proof pull request reaches 2,000 to 3,000 changed
-# lines, often in one source file plus its generated ledger file under
-# verus/ledger/, so each pass may read the diff and its context up to these
-# ceilings.
+# Per-pass read limits, at their ceilings: a proof pull request can move a
+# whole file inside `verus!`, so each pass may read the diff and its
+# context. No `diff_lines`: the code reviewer's documentation lists it as
+# deprecated, and the reviewer ignores it. A challoc proof pull request
+# reaches 2,000 to 3,000 changed lines, often in one source file plus its
+# generated ledger file under verus/ledger/.
 limits:
   read_calls: 60
   read_kib: 800
@@ -21,7 +28,8 @@ reviewers:
     trigger:
       paths: ["**"]
     prompt_file: review-prompt.md
-    # Run again at the same head once the presubmit aggregate finishes, so
-    # a verdict that waited on CI (codegen, verus) reads the results
-    # (mono's code-reviewer README, "Finished checks").
+    # The reviewer reads the presubmit results (review-prompt.md,
+    # "Evidence"), so it runs again at the same head once the presubmit
+    # aggregate finishes, and a verdict that waited on CI (verus, kani)
+    # reads them.
     rerun_on_checks: ["Chainguard Checks (presubmit)"]

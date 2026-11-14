@@ -10,8 +10,12 @@
 # (rust-1.99, so this file installs no rust-1.98) and kissat, the solver
 # `fig_mul_exact` and `set_listed_contract` select; cbmc is pinned to the
 # release Kani 0.68.0 was tested with. build-base is build.rs's C++
-# compiler. cargo kani takes no --locked, so `cargo fetch --locked` holds
-# the run to Cargo.lock first.
+# compiler, make runs the Makefile.
+#
+# Both checks are `make kani`: the kit's verus/make/kani.sh (vendored with
+# the counter by proved-port's kit/sync.sh), with the Makefile's
+# KANI_FLAGS. cargo kani takes no --locked, so kani.sh runs `cargo fetch
+# --locked` first, holding the run to Cargo.lock. The Makefile's flags:
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` (symbol aliases and the TLS slot) that no harness reaches;
 # `-Z stubbing` for the harnesses that replace a call with a model
@@ -28,20 +32,21 @@
 version: 1
 
 environment:
-  packages: [kani~0.68.0, cbmc~6.11.0, build-base, busybox]
+  packages: [kani~0.68.0, cbmc~6.11.0, build-base, busybox, make]
 
 checks:
   kani:
     description: >-
-      cargo kani over every harness (src/kani/ and the kani_* modules of
+      make kani over every harness (src/kani/ and the kani_* modules of
       other files), at quantum 16 and at quantum 8: each must verify. Runs
       on pull requests that change src/kani/, src/vspec/, a file in its
       changed: list, or this file.
     trigger: [presubmit]
     # On pull requests that change src/kani/, a specification its harnesses
     # check, a file with an in-source kani_* module that hot proof lanes
-    # rarely touch, or this file; other pull requests do not plan the check.
-    # The files most proof pull requests touch (src/heap/cache.rs,
+    # rarely touch, how the harnesses run (the Makefile's KANI_* variables,
+    # and kani.sh and proved-port.mk, which a kit re-sync rewrites), or this
+    # file; other pull requests do not plan the check. The files most proof pull requests touch (src/heap/cache.rs,
     # src/purge.rs, and any later kani_* module in a hot file) are covered by
     # kani-ignoring below instead, after each landing, so presubmit doesn't
     # pay for Kani on every proof round. Items outside both (src/stats.rs,
@@ -65,6 +70,9 @@ checks:
         - "src/slab.rs"
         - "src/sys/cgroup.rs"
         - "src/sys/mod.rs"
+        - "Makefile"
+        - "verus/make/kani.sh"
+        - "verus/make/proved-port.mk"
         - ".chainguard/ci/kani.yaml"
     foreach:
       - {name: q16, vars: {QUANTUM: "16"}}
@@ -76,29 +84,25 @@ checks:
     network: &kani-net
       egress: [index.crates.io, static.crates.io]
     steps:
-      - name: fetch the locked dependencies
-        cmd: [cargo, fetch, --locked]
       - name: harnesses
-        cmd:
-          - sh
-          - -c
-          - >-
-            cargo kani -Z unstable-options -Z stubbing -Z mem-predicates --ignore-global-asm
-            --output-format terse -j 4
-            --no-default-features --features "quantum${QUANTUM:?}"
+        # The Makefile's KANI_FLAGS (at QUANTUM's feature) and KANI_JOBS 4,
+        # which implies terse output.
+        cmd: [sh, -c, 'make kani QUANTUM="${QUANTUM:?}"']
 
   # Every harness, one at a time in regular format, after each landing on
   # main: covers the kani_* modules in files the presubmit trigger leaves
   # out and the checked items outside any listed path, and fails when a
-  # harness does not verify (ci/kani-regular.sh exits with cargo kani's
-  # status). Kani 0.68.0 with CBMC 6.11.0 leaves `<`, `<=`, `>` and
+  # harness does not verify (kani.sh exits 1 when a cargo kani call
+  # fails). Kani 0.68.0 with CBMC 6.11.0 leaves `<`, `<=`, `>` and
   # `>=` on two non-constant bools unconstrained (CBMC prints
   # `warning: ignoring >=` and the harness can pass vacuously), and the
-  # terse output `-j` requires hides that warning. ci/kani-regular.sh fails
-  # on it; scripts/kani-boolcmp.sh (the lint check) is the presubmit half.
+  # terse output `-j` requires hides that warning, so this check runs
+  # without KANI_JOBS, in regular format with `--verbosity 9`, and
+  # KANI_FAIL_PATTERN fails it on that line; scripts/kani-boolcmp.sh (the
+  # lint check) is the presubmit half.
   # In regular format the harnesses take about 75 min per quantum one at a
   # time, past one job's timeout, so each quantum runs as 4 shards that
-  # split them by the script's table of seconds:
+  # kani.sh splits by ci/kani-weights.txt's seconds:
   # `formatter_write_fmt` alone (about 21 min) and three of about 18 min.
   # large-amd64's 32 GiB holds CBMC's 11.6 GiB peak with one harness at
   # a time. It gates nothing.
@@ -123,7 +127,11 @@ checks:
     timeout: 40m
     network: *kani-net
     steps:
-      - name: fetch the locked dependencies
-        cmd: [cargo, fetch, --locked]
       - name: harnesses, regular format
-        cmd: [sh, -c, 'sh ci/kani-regular.sh "${SHARD:?}" "${SHARDS:?}"']
+        cmd:
+          - sh
+          - -c
+          - >-
+            make kani QUANTUM="${QUANTUM:?}" KANI_SHARD="${SHARD:?}" KANI_SHARDS="${SHARDS:?}"
+            KANI_JOBS= KANI_FORMAT=regular KANI_CBMC_ARGS='--verbosity 9'
+            KANI_FAIL_PATTERN='warning: ignoring' KANI_WEIGHTS=ci/kani-weights.txt
