@@ -18,7 +18,9 @@
 # Pins no entry moves:
 # - vstd's exact version in Cargo.toml: it must be the one the verus~
 #   package of .chainguard/ci/verus.yaml names, so it moves with Verus.
-# - the rust-1.98 stream, Cargo.toml's rust-version, the tests/loom and
+# - the rust-1.99 stream (the one the verus and kani pins bring; it moves
+#   with them, and perf-budget.yaml's rust-1.98~1.98.1 with its tables),
+#   Cargo.toml's rust-version, the tests/loom and
 #   tests/genmc workspaces, and bench/Dockerfile.cb: Dependabot never
 #   moved them either.
 #
@@ -42,7 +44,7 @@ updates:
     Cargo.toml as it is: an update that needs a newer rustc than
     rust-version is left out and named in the body, and the pull request's
     msrv-build check (.chainguard/ci/lint.yaml) confirms the rest. Do not
-    install a second rust stream: the guest has the lint check's rust-1.98,
+    install a second rust stream: the guest has the lint check's rust-1.99,
     and two streams cannot be installed together. Run, in the guest (the
     lint check's environment, no container): `cargo fmt --check`, the
     clippy check's three steps with -D warnings, and `cargo build

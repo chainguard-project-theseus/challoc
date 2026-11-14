@@ -16,15 +16,16 @@
 # `make test`.
 FROM cgr.dev/chainguard/wolfi-base@sha256:24f549a7fcace88e69b9557941168c74645688ecc4acf7fb6d734a6b74e9019d AS base
 
-# Toolchain. `rust-1.98` is the stream contrib/wolfi/challoc.yaml builds the
-# package with (Cargo.toml's `rust-version` is the lower, host-verified
+# Toolchain. `rust-1.99` is the stream the package build compiles with:
+# the one the verus and kani packages bring, which the package build
+# installs (Cargo.toml's `rust-version` is the lower, host-verified
 # floor); `rust` alone would follow Wolfi's default stream when it moves.
 # gcc includes g++, which build.rs needs for src/api/cxx_handler.cpp.
 # posix-libc-utils gives `getconf` (the harnesses read the page size and
 # CLK_TCK), procps `ps`/`pgrep`, patch the loom DPOR patch
 # (tests/loom/run.sh; busybox has no `patch` applet).
 RUN apk add --no-cache \
-      rust-1.98 \
+      rust-1.99 \
       build-base \
       gcc \
       git \

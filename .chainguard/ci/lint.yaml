@@ -11,7 +11,7 @@ version: 1
 
 environment:
   packages:
-    - rust-1.98        # rustc, cargo, rustfmt and clippy; Dockerfile.dev's stream
+    - rust-1.99        # rustc, cargo, rustfmt and clippy; Dockerfile.dev's stream, the one verus and kani bring
     - build-base       # cc and g++ for build.rs (src/api/cxx_handler.cpp)
     - bash
     - curl             # ci/shellcheck.sh fetches the pinned release
@@ -151,9 +151,10 @@ checks:
       which CBMC prints that warning, must be flagged.
     trigger: [presubmit, postsubmit]
     environment:
-      packages: [busybox]
+      packages: [busybox, make]
     timeout: 5m
-    cmd: [sh, ci/kani-boolcmp-test.sh]
+    # The Makefile's kani-boolcmp, which `make verify` runs too.
+    cmd: [make, kani-boolcmp]
 
   notcopy-control:
     description: >-
@@ -167,7 +168,8 @@ checks:
     resources: medium
     timeout: 15m
     network: *crates
-    cmd: [sh, verus/notcopy-control.sh]
+    # The Makefile's notcopy-control (make comes with build-base).
+    cmd: [make, notcopy-control]
 
   bench-unit:
     description: >-

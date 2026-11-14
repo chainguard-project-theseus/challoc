@@ -74,8 +74,8 @@
 # counter runs without --rlimit. The quantum-8 build (`--features
 # quantum8`) has its own class table, so its proofs run too, as `make
 # verus-proofs` with its features. The verus package brings the rust
-# stream (rust-1.99), so this file installs no rust-1.98: the two cannot
-# be installed together. build-base is build.rs's C++ compiler.
+# stream (rust-1.99, which lint.yaml and Dockerfile.dev pin too), so this
+# file installs no rust of its own. build-base is build.rs's C++ compiler.
 version: 1
 
 environment:
@@ -107,19 +107,15 @@ checks:
           - make verus VERUS_THREADS="${CG_CPUS:-}" VERUS_BASE="${CHAINGUARD_BASE_REVISION:?no base revision to compare verus/FLOOR with}"
       - &verus-q8
         name: proofs at quantum 8
-        cmd:
-          - sh
-          - -c
-          - >-
-            make verus-proofs VERUS_THREADS="${CG_CPUS:-}"
-            VERUS_CARGO_FLAGS='--no-default-features --features quantum8'
-            VERUS_STATS=target/verus-stats-q8.json
+        # The Makefile's verus-q8: make verus-proofs with the quantum-8
+        # features, statistics to target/verus-stats-q8.json.
+        cmd: [sh, -c, 'make verus-q8 VERUS_THREADS="${CG_CPUS:-}"']
       - name: not-Copy control
         # The not-Copy checks of src/vspec/notcopy.rs hold only while
         # rustc rejects their ambiguous impls; lint.yaml's
-        # notcopy-control shows that for rust-1.98, and this step for
-        # the rust stream the verus package brings.
-        cmd: [sh, verus/notcopy-control.sh]
+        # notcopy-control shows that for lint's rust stream, and this
+        # step for the one the verus package brings (both rust-1.99).
+        cmd: [make, notcopy-control]
 
   # The same on aarch64: the package's arm64 build, run natively.
   verus-arm64:

@@ -12,9 +12,9 @@
 # reads), pinned as verus.yaml pins it and to the Makefile's
 # PROVED_PORT_VERSION; and apk-tools and wolfi-keys, with which the deps
 # agent's kit entry installs the release it moves the pin to before it
-# runs the kit targets. verus and kani bring rust-1.99, so the session
-# installs no rust-1.98: the two streams cannot be installed together, and
-# the container targets build with Dockerfile.dev's rust-1.98. For lint's
+# runs the kit targets. verus and kani bring rust-1.99, the stream
+# Dockerfile.dev and lint.yaml pin too, so the session installs no rust
+# of its own. For lint's
 # toolchain outside the container, open a session on that check
 # (`chainctl develop --check clippy`).
 version: 1

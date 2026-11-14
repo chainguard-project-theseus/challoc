@@ -14,7 +14,7 @@ version: 1
 
 environment:
   packages:
-    - rust-1.98        # Dockerfile.dev's stream
+    - rust-1.99        # Dockerfile.dev's stream
     - build-base       # cc and g++ for build.rs (src/api/cxx_handler.cpp)
     - bash
 

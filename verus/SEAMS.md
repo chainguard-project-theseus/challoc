@@ -365,9 +365,11 @@ name, alone or after a path, with or without arguments that hold no
 for `Copy` and `Clone` types, without which the checks compile for any
 type. It reads text only: that those names resolve to the file's traits
 and that rustc rejects the ambiguity is what the control script shows,
-which CI runs on x86_64 on every pull request under both toolchains:
-lint.yaml's `notcopy-control` check under rust-1.98, and a step of
-verus.yaml's `verus` check under the verus package's rust stream.
+which CI runs on x86_64 on every pull request in two places, both under
+rust-1.99 today: lint.yaml's `notcopy-control` check, under lint's
+stream, and a step of verus.yaml's `verus` check, under the verus
+package's. The second run is the one that matters to the proofs, and it
+keeps them covered if lint's stream ever moves apart from Verus's.
 `--check` also fails when a `tracked` struct or enum under `src/`, test
 files included, seam or not, has no such assertion in
 `src/vspec/notcopy.rs` under the label `` `T` `` with no attribute above

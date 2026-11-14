@@ -280,9 +280,29 @@ check-needed: image ## DT_NEEDED must name the allocator library (tests/as-neede
 # no verus/RLIMIT, so the counter runs without --rlimit.
 #
 # `make kani` runs every Kani harness at QUANTUM, four at a time in terse
-# format; the kani-ignoring check runs one shard of them in regular format
-# with CBMC's verbose output (KANI_SHARD, KANI_SHARDS, KANI_WEIGHTS=
-# ci/kani-weights.txt and the rest, .chainguard/ci/kani.yaml).
+# format; `make kani-regular` (kit 0.3.1) runs them one at a time in
+# regular format with CBMC's verbose output, failing on `warning:
+# ignoring`, as the kani-ignoring check does a shard at a time
+# (.chainguard/ci/kani.yaml, which spells the flags out until the kit pin
+# moves to 0.3.1 and calls `make kani-regular` then).
+#
+# `make verify` (the kit's) runs every target VERIFY_TARGETS lists, in
+# order, which is what the package build runs (with VERUS_BASE=none). The
+# list is what the Verus and Kani checks verify, and the controls they
+# run (the kit's rule): verus.yaml's verus checks, kani.yaml's kani and
+# kani-ignoring, and lint's notcopy-control and kani-boolcmp. A Verus or
+# Kani check that verifies something more adds its target here in the
+# same pull request. verus-q8, notcopy-control and kani-boolcmp are the
+# steps those checks run besides the kit's targets, as targets the checks
+# call too. kani-q8 and kani-regular-q8 match the commands kani.yaml's
+# checks run at QUANTUM=8 (`make kani QUANTUM=8`, and kani-ignoring's
+# regular-format run), but the checks don't call them: they run the kit
+# target with QUANTUM over a matrix. The other verifying checks
+# stay with CI and are not in the package build: isla and emptyasm
+# (isla.yaml), genmc (genmc.yaml), loom and loom-count (lint.yaml),
+# weakmem-stress (weakmem.yaml), perf-budget (perf-budget.yaml), and the
+# tests, Miri and fuzzing.
+VERIFY_TARGETS = verus verus-q8 notcopy-control kani-boolcmp kani kani-q8 kani-regular kani-regular-q8
 VERUS_MODE = verify
 VERUS_RLIMIT =
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
@@ -306,7 +326,7 @@ PROVED_PORT_HOME ?= /usr/share/proved-port
 ifneq ($(wildcard $(PROVED_PORT_HOME)/make/proved-port.mk),)
 include $(PROVED_PORT_HOME)/make/proved-port.mk
 else
-PROVED_PORT_TARGETS = verus verus-proofs verus-count verus-count-test verus-headers kani kani-list
+PROVED_PORT_TARGETS = verus verus-proofs verus-count verus-count-test verus-headers kani kani-list kani-regular verify
 .PHONY: $(PROVED_PORT_TARGETS)
 $(PROVED_PORT_TARGETS):
 	@echo "$@: no proved-port kit at $(PROVED_PORT_HOME): install theseus-proved-port~$(PROVED_PORT_VERSION), or set PROVED_PORT_HOME to a kit install root (make/, templates/ and KIT, as the package lays out /usr/share/proved-port)" >&2; exit 1
@@ -316,6 +336,21 @@ endif
 verus: verus-seams
 verus-seams: ## the seam ledger under verus/ledger/ matches the tree (verus/seams.sh --check)
 	sh verus/seams.sh --check
+
+# The steps the checks run besides the kit's targets (VERIFY_TARGETS).
+# The quantum-8 runs are each a make of their own, so QUANTUM=8 and the
+# quantum-8 features reach the kit target as command-line variables.
+.PHONY: verus-q8 notcopy-control kani-boolcmp kani-q8 kani-regular-q8
+verus-q8: ## the Verus proofs of the quantum-8 build (verus.yaml's second step)
+	$(MAKE) --no-print-directory verus-proofs VERUS_CARGO_FLAGS='--no-default-features --features quantum8' VERUS_STATS=target/verus-stats-q8.json
+notcopy-control: ## the not-Copy checks reject a Copy and a Clone type (verus/notcopy-control.sh)
+	sh verus/notcopy-control.sh
+kani-boolcmp: ## no ordering comparison on bools in Kani code, and the scan's fixtures (ci/kani-boolcmp-test.sh)
+	sh ci/kani-boolcmp-test.sh
+kani-q8: ## make kani at quantum 8
+	$(MAKE) --no-print-directory kani QUANTUM=8
+kani-regular-q8: ## make kani-regular at quantum 8
+	$(MAKE) --no-print-directory kani-regular QUANTUM=8
 
 # isla runs where it is invoked, not in the dev container: it needs the
 # isla, isla-snapshots, sail, isla-sail, z3 and llvm packages

@@ -12,7 +12,7 @@ version: 1
 
 environment:
   packages:
-    - rust-1.98~1.98.1 # the tables' compiler; Dockerfile.dev's stream
+    - rust-1.98~1.98.1 # the tables' compiler, not Dockerfile.dev's rust-1.99, until #718
     - build-base       # cc and g++ for build.rs
     - binutils         # objdump
     - busybox

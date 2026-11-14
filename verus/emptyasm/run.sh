@@ -55,7 +55,7 @@
 # on exit). The build goes to EMPTYASM_TARGET_DIR (default OUT/target);
 # EMPTYASM_CARGO_FLAGS adds cargo options (for example
 # `--no-default-features --features quantum8`). CARGO and RUSTC name the
-# build's cargo and rustc (default: on PATH; rust-1.98 is Dockerfile.dev's
+# build's cargo and rustc (default: on PATH; rust-1.99 is Dockerfile.dev's
 # stream; build.rs also needs a C++ compiler), LLVM_OBJDUMP its
 # llvm-objdump (default: on PATH, from the llvm-21 package). Exit status 0
 # when every check holds. A listed block's seam is marked discharged by an

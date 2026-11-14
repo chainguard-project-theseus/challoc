@@ -7,8 +7,8 @@ license = "Apache-2.0"
 publish = false
 # The verified floor, not the true minimum: rustc 1.94.1 builds the crate
 # and runs its unit tests, and nothing older has been tried. Dockerfile.dev
-# and the Wolfi package (contrib/wolfi/challoc.yaml) pin 1.98; that is what
-# ships.
+# pins rust-1.99, the stream the package build compiles with (the one the
+# verus and kani packages bring); that is what ships.
 rust-version = "1.94"
 
 [lib]

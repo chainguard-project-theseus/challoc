@@ -30,8 +30,10 @@
 # bring them back to the presubmit.
 #
 # isla, isla-snapshots, sail and isla-sail are pinned to the builds the
-# jobs were checked with (verus/ISLA.md, "Setup"). rust-1.98 is
-# Dockerfile.dev's stream; build-base is build.rs's C++ compiler and
+# jobs were checked with (verus/ISLA.md, "Setup"). rust-1.98 is the
+# stream the Isla jobs and verus/emptyasm/core.txt were checked with;
+# it moves to Dockerfile.dev's rust-1.99 with a re-check of both (#717).
+# build-base is build.rs's C++ compiler and
 # isla-check's linker; llvm-21 gives llvm-objdump and llvm-ar.
 version: 1
 
@@ -40,7 +42,7 @@ environment:
     - isla~0.1.0_git20260923
     - isla-snapshots~0_git20260602
     - z3~4.16
-    - rust-1.98
+    - rust-1.98 # until #717
     - build-base
     - llvm-21
     - make
@@ -113,7 +115,7 @@ checks:
         - sail~0.20.3
         - isla-sail~0.20.3
         - z3~4.16
-        - rust-1.98
+        - rust-1.98 # until #717
         - build-base
         - llvm-21
         - make
@@ -164,6 +166,7 @@ checks:
       the harness or the build.
     trigger: [presubmit]
     environment: &emptyasm-env
+      # rust-1.98 until #717.
       packages: [rust-1.98, build-base, llvm-21, make, git, busybox]
     # Every asm! block in the crate's assembly is checked (each must come
     # from an `asm!(` line, and only the listed ones may hold a comment),
