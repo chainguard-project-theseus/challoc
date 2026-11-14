@@ -1036,10 +1036,9 @@ fn slab_histogram<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats)
     Ok(())
 }
 
-/// One class's line of [`slab_histogram`]. Trusted: `{:?}` of an array is
-/// outside what vstd's formatting specifies; a write has no other effect
-/// the proofs track.
-#[verifier::external_body]
+/// One class's line of [`slab_histogram`]. `hist` is written element by
+/// element, as `{:?}` of the array writes it (`[a, b, ...]`): vstd's
+/// formatting specifies `{}` of an integer, not `{:?}` of an array.
 fn hist_line<W: Write>(
     out: &mut W,
     size: usize,
@@ -1051,8 +1050,21 @@ fn hist_line<W: Write>(
 ) -> fmt::Result {
     writeln!(
         out,
-        "  {:>13} {:>3} slabs {:>6}  hist {:?}  live!=bits {}  nonfull not in partial set {}",
-        size, j, slabs, hist, mismatched, unlisted
+        "  {:>13} {:>3} slabs {:>6}  hist [{}, {}, {}, {}, {}, {}, {}, {}, {}]  live!=bits {}  nonfull not in partial set {}",
+        size,
+        j,
+        slabs,
+        hist[0],
+        hist[1],
+        hist[2],
+        hist[3],
+        hist[4],
+        hist[5],
+        hist[6],
+        hist[7],
+        hist[8],
+        mismatched,
+        unlisted
     )
 }
 
@@ -1758,11 +1770,11 @@ mod exports {
 mod tests;
 
 /// Kani harnesses for this file's seams that Kani can run
-/// (`verus/ledger/src/api/print.rs.md`): `hist_line` and `call_back`;
-/// `kani_cancel` below checks `cancel_disable` and `cancel_restore`.
+/// (`verus/ledger/src/api/print.rs.md`): `call_back`; `kani_cancel` below
+/// checks `cancel_disable` and `cancel_restore`.
 #[cfg(kani)]
 mod kani_print {
-    use super::{WriteCallback, call_back, hist_line};
+    use super::{WriteCallback, call_back};
     use core::ffi::{c_char, c_void};
     use core::ptr;
     use vstd::prelude::Tracked;
@@ -1803,24 +1815,6 @@ mod kani_print {
         if called {
             assert_eq!(got, (opaque as usize, buf.as_ptr() as usize));
         }
-    }
-
-    /// `hist_line`, no `requires`, no `ensures`: it returns for every
-    /// argument, whatever the writer returns (`Sink` may fail any write;
-    /// Kani fails the harness on any panic).
-    #[kani::proof]
-    #[kani::unwind(24)]
-    fn hist_line_returns() {
-        let hist: [usize; 9] = kani::any();
-        let _ = hist_line(
-            &mut crate::kani_proofs::fmt::Sink,
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            hist,
-            kani::any(),
-            kani::any(),
-        );
     }
 }
 

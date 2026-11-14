@@ -1217,3 +1217,23 @@ fn word_is_the_c_name() {
         assert_eq!(Ok(word(n)), n.cstr().to_str(), "{n:?}");
     }
 }
+
+/// `hist_line` writes `hist` as `{:?}` of the array does, so the line is
+/// the one the report wrote before it spelled the elements out.
+#[test]
+fn hist_line_writes_the_array_as_debug_does() {
+    for hist in [[0usize; 9], [1, 0, 22, 333, 4444, 55555, 0, 7, usize::MAX]] {
+        let mut got = String::new();
+        hist_line(&mut got, 4096, 37, 12, hist, 3, 1).unwrap();
+        let want = std::format!(
+            "  {:>13} {:>3} slabs {:>6}  hist {:?}  live!=bits {}  nonfull not in partial set {}\n",
+            4096,
+            37,
+            12,
+            hist,
+            3,
+            1
+        );
+        assert_eq!(got, want);
+    }
+}

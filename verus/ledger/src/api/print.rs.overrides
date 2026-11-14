@@ -2,8 +2,6 @@
 axiom_c_call	C-program contract	none (assumption)
 # Opaque wrapper of the caller's callback, a function pointer.
 WriteCallback	function pointer	none (assumption)	trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it)	contract 3845522629, body none
-# `{:?}` of an array, core formatting.
-hist_line	core library	Kani	discharged (Kani: api::print::kani_print::hist_line_returns)	contract 3431982733, body 2091081685
 # The report's call of the caller's callback: Kani runs the body on a
 # recording callback or none, any `cbopaque` and any buffer holding a NUL;
 # what the program's callback is and does is its contract (C3).

@@ -32,7 +32,6 @@ kani_proofs::slice::slice_is_sorted 249
 kani_proofs::slice::sort_ptrs_by_key_12 216
 kani_proofs::slice::select_ptrs_by_key_11 195
 kani_proofs::slice::sort_ptrs_12 171
-api::print::kani_print::hist_line_returns 171
 kani_proofs::slice::select_ptrs_11 140
 kani_proofs::slice::sort_ptrs_by_key_short 132
 kani_proofs::slice::sort_ptrs_short 130
