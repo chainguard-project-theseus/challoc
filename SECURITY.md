@@ -8,9 +8,8 @@ and what is out of scope. `docs/hardening.md` has the exact windows and
 compares each property with jemalloc. `docs/design.md` section 14 is
 the design view.
 
-To report a vulnerability, follow the
-[Wolfi security policy](https://github.com/wolfi-dev/.github/blob/main/SECURITY.md).
-Don't open a public issue. Include the commit, the architecture, the
+To report a vulnerability, email security@chainguard.dev. Don't open a
+public issue. Include the commit, the architecture, the
 kernel version and the `challoc_features()` line (or the `Kernel and
 CPU features:` line of `malloc_stats_print`). challoc has no releases
 yet, so fixes go to `main`.
