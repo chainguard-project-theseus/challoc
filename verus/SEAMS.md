@@ -137,7 +137,7 @@ for platform premises: the P and K premises of `verus/isla/seams.md`
 ("Platform premises"), which `<what>` lists by label, each label
 optionally followed by a gloss in parentheses, as a partly checked
 status lists what it leaves unchecked. The premises stay assumed, and
-`verus/count` counts the seam as discharged. A contract that also rests
+`verus-count` counts the seam as discharged. A contract that also rests
 on a premise of Verus's own model (a trusted seam such as
 `TlsSlot::entry`, or a ghost cell such as `TlsCell::tp`) is
 `trusted (partly checked, ...)`.
@@ -157,7 +157,7 @@ premises"), which `<what>` lists by label, each label optionally
 followed by a gloss in parentheses, as for Isla. `seams.sh --check`
 resolves its harness paths as it does those of a `discharged (Kani:
 ...)` status. The premises stay assumed, and
-`verus/count` counts the seam as discharged. A contract that also rests
+`verus-count` counts the seam as discharged. A contract that also rests
 on anything else is `trusted (partly checked, ...)`: a premise of
 Verus's own model, as for Isla, and also two things a harness can leave
 out that an Isla run cannot: an obligation on Rust callers inside
@@ -175,7 +175,7 @@ known escapes, the uses it cannot see, in a `Known escapes:` part.
 `seams.sh --check` fails unless `<test path>` names a `#[test]` fn
 (resolved as a harness path is, with `#[test]` for `#[kani::proof]`)
 and the guard-test table has a row whose first cell names that path in
-full with both parts; `verus/count` fails on a `callers:` clause
+full with both parts; `verus-count` fails on a `callers:` clause
 anywhere but in a Kani `discharged on premises` status, or on one that
 names no `#[test]` fn under `src/`, and on a Kani status that names an
 L premise without one, since an L premise holds only for the addresses
@@ -195,7 +195,7 @@ tool checks that argument; a status whose pointer comes from an
 `asm!` output names it in its gloss. The harness runs such an item on
 a stand-in for the memory no larger and no more aligned than the
 premises state, holding any value.
-Only Isla's and Kani's checks take this status: `verus/count` fails on
+Only Isla's and Kani's checks take this status: `verus-count` fails on
 one that cites another check or both, names no premise, or names
 anything but labels the cited check's file defines: it reads the
 `- **LABEL, ...**` bullets of `verus/isla/seams.md`'s "Platform
@@ -307,7 +307,7 @@ on not being `Copy`, or a type with an `unsafe impl` of `Sync` or
 `Send`, which rustc does not check. Source comments also say "claims
 nothing" of a function with no `ensures`; that function still claims
 that its call returns, and its status is "trusted".
-The status is not a check: `verus/count` counts such a seam as trusted,
+The status is not a check: `verus-count` counts such a seam as trusted,
 and since only an `external_body`, `external_body proof` or `axiom` seam
 classes a function, none enters a coverage figure. `seams.sh --check`
 fails on the status for any other kind of seam. It fails for an item

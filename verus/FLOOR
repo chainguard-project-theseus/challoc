@@ -1,5 +1,6 @@
 # The shares of executable functions and of their lines that the verus
-# check holds main to (verus/count --floor; verus/README.md, "Coverage"):
+# check holds main to (the kit counter (verus-count) with --floor;
+# verus/README.md, "Coverage"):
 # the counter's `shipped` row, every function under src/ but test code,
 # rounded down to a tenth of a percent.
 #
@@ -16,15 +17,19 @@
 # README badge that shows them, rise in a pull request of their own, to
 # the figures the check names, never in the pull request that earns them,
 # so that pull requests landing in parallel do not conflict here. The one
-# exception is the first proof pull request, which brings the counter and
-# raises every figure from 0.0.
+# exception is the port's first proof pull request, which may raise every
+# figure from 0.0 in the same pull request, whether it brings the counter
+# or the counter landed earlier with every figure at 0.0.
 #
 # README.md's Verus badge gives `functions` and `lines` as written here
 # (verus/count.toml's `[badge]`), and the check fails when it does not, so
 # the change that moves either figure replaces the badge line with the one
 # `verus-count --badge .` prints.
 #
-# A figure set below the base revision's fails unless a
+# The base revision is the one Checks sets: the pull request's base on a
+# pull request, and on main the start of the push the run covers, main
+# before its first merge (.chainguard/ci/verus.yaml). A figure
+# set below the base revision's fails unless a
 # `lowered FIGURE P REASON` line here, new in that change, names that
 # figure and value.
 #
@@ -32,9 +37,7 @@
 # code first. Its REASON names exactly what became trusted or outside, and
 # the counts before and after (`N of M shipped functions verified, P%,
 # against main's SHA at N' of M'`).
-#
-# kit: proved-port v0.2.4 (78fbafe4fa4948f3fa50efa2f4cee7f337645dac)
-#
+
 # challoc: one crate at the root, which ships though its Cargo.toml says
 # `publish = false` (verus/count.toml's `ships`). The checked figures were
 # `combined-functions` and `combined-lines` before they took the kit's

@@ -24,7 +24,7 @@ harness assumes it in the values it stores before it runs the item, in
 running the item on one thread, and in running a recording stand-in in
 place of the program's callback or the runtime's function; its comment
 states those values.
-`verus/count` reads the labels of this section's bullets and of the next
+`verus-count` reads the labels of this section's bullets and of the next
 section's, and fails on a Kani status that names any other.
 
 - **C1, the hook slots.** The program stores into `malloc_message` and

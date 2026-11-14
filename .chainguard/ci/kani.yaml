@@ -9,13 +9,14 @@
 # with. It brings the rust stream its kani-compiler is built against
 # (rust-1.99, so this file installs no rust-1.98) and kissat, the solver
 # `fig_mul_exact` and `set_listed_contract` select; cbmc is pinned to the
-# release Kani 0.68.0 was tested with. build-base is build.rs's C++
-# compiler, make runs the Makefile.
+# release Kani 0.68.0 was tested with. theseus-proved-port is the kit,
+# pinned to the Makefile's PROVED_PORT_VERSION as verus.yaml pins it.
+# build-base is build.rs's C++ compiler, make runs the Makefile.
 #
-# Both checks are `make kani`: the kit's verus/make/kani.sh (vendored with
-# the counter by proved-port's kit/sync.sh), with the Makefile's
-# KANI_FLAGS. cargo kani takes no --locked, so kani.sh runs `cargo fetch
-# --locked` first, holding the run to Cargo.lock. The Makefile's flags:
+# Both checks are `make kani`: the kit's kani.sh (from the
+# theseus-proved-port package), with the Makefile's KANI_FLAGS. cargo
+# kani takes no --locked, so kani.sh runs `cargo fetch --locked` first,
+# holding the run to Cargo.lock. The Makefile's flags:
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` (symbol aliases and the TLS slot) that no harness reaches;
 # `-Z stubbing` for the harnesses that replace a call with a model
@@ -32,7 +33,7 @@
 version: 1
 
 environment:
-  packages: [kani~0.68.0, cbmc~6.11.0, build-base, busybox, make]
+  packages: [kani~0.68.0, cbmc~6.11.0, theseus-proved-port~0.3.0, build-base, busybox, make]
 
 checks:
   kani:
@@ -45,8 +46,9 @@ checks:
     # On pull requests that change src/kani/, a specification its harnesses
     # check, a file with an in-source kani_* module that hot proof lanes
     # rarely touch, how the harnesses run (the Makefile's KANI_* variables,
-    # and kani.sh and proved-port.mk, which a kit re-sync rewrites), or this
-    # file; other pull requests do not plan the check. The files most proof pull requests touch (src/heap/cache.rs,
+    # and the kit release whose kani.sh and proved-port.mk run them, which
+    # its PROVED_PORT_VERSION and this file's theseus-proved-port pin name),
+    # or this file; other pull requests do not plan the check. The files most proof pull requests touch (src/heap/cache.rs,
     # src/purge.rs, and any later kani_* module in a hot file) are covered by
     # kani-ignoring below instead, after each landing, so presubmit doesn't
     # pay for Kani on every proof round. Items outside both (src/stats.rs,
@@ -71,8 +73,6 @@ checks:
         - "src/sys/cgroup.rs"
         - "src/sys/mod.rs"
         - "Makefile"
-        - "verus/make/kani.sh"
-        - "verus/make/proved-port.mk"
         - ".chainguard/ci/kani.yaml"
     foreach:
       - {name: q16, vars: {QUANTUM: "16"}}

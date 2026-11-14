@@ -1,6 +1,6 @@
 # The seconds each Kani harness takes, which the kani-ignoring check's
 # shards balance by (`make kani KANI_WEIGHTS=ci/kani-weights.txt`;
-# verus/make/kani.sh, KANI_WEIGHTS). One `NAME SECONDS [alone]` row per
+# the kit's kani.sh, KANI_WEIGHTS). One `NAME SECONDS [alone]` row per
 # harness, NAME the full name `make kani-list` prints. A harness marked
 # `alone` gets a shard of its own, from shard 1 up; the rest go longest
 # first, each to the shard with the least time so far. A harness not

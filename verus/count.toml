@@ -1,10 +1,8 @@
-# The kit counter's configuration (verus/count, vendored by proved-port's
-# kit/sync.sh; its README.md, "Configuration", gives every key). A check
-# whose section is left out does not run, and with --base-rev removing
-# one the base runs fails unless a [[narrowed]] line names it with a
-# reason.
-#
-# kit: proved-port v0.2.4 (78fbafe4fa4948f3fa50efa2f4cee7f337645dac)
+# The configuration of the kit counter (verus-count; its README.md,
+# "Configuration", in the proved-port kit's kit/count, gives every
+# key). A check whose section is left out does not run, and with
+# --base-rev removing one the base runs fails unless a [[narrowed]] line
+# names it with a reason.
 
 [crates]
 # One crate at the root. Its Cargo.toml says `publish = false` (it is not
