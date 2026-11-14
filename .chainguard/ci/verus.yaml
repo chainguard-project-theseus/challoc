@@ -70,10 +70,11 @@
 # names both architectures. The timeouts stay 45 minutes.
 #
 # `make verus` first checks the seam ledger (the Makefile's verus-seams:
-# `sh verus/seams.sh --check`); challoc has no verus/RLIMIT, so the
-# counter runs without --rlimit. The quantum-8 build (`--features
-# quantum8`) has its own class table, so its proofs run too, as `make
-# verus-proofs` with its features. The verus package brings the rust
+# `sh verus/seams.sh --check`), and the counter holds each function's
+# rlimit use on that architecture to verus/RLIMIT. The quantum-8 build
+# (`--features quantum8`) has its own class table, so its proofs run too,
+# as `make verus-proofs` with its features; that step runs no counter, so
+# its rlimit use is not held to verus/RLIMIT. The verus package brings the rust
 # stream (rust-1.99), so this file installs no rust-1.98: the two cannot
 # be installed together. build-base is build.rs's C++ compiler.
 version: 1
