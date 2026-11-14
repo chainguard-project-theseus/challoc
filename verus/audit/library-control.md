@@ -2,7 +2,7 @@
 
 *An adversarial audit of the Verus seams in four categories: core
 library, function pointer, panic/abort and termination, made during
-[#138](https://github.com/wolfi-dev/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
+[#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
 *This file lists the 116 of those seams that the ledger at `26f535a9`
 still lists. The others are verified at `26f535a9` or no longer exist
@@ -25,7 +25,7 @@ for a derivation of `false`. Verdicts: **sound** means no derivation of
 documented behaviour; **fixed** means the audit found the contract
 false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
-[wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
+[chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
 Totals for the 116 seams listed: 111 sound and 5 fixed; at `26f535a9`,
 84 discharged, 9 partly checked and 23 trusted. The category column is

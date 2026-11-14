@@ -2,7 +2,7 @@
 
 *An adversarial audit of the Verus seams in five categories: inline asm,
 FFI/syscall, platform/kernel fact, C-program contract and raw pointer from
-C caller, made during [#138](https://github.com/wolfi-dev/challoc/pull/138). There it covered 76 seams: 68 sound,
+C caller, made during [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 76 seams: 68 sound,
 7 fixed, 0 weakened, 1 removed and 0 unsound-open.*
 
 *This file lists the 51 of those seams that the ledger at `26f535a9`
@@ -27,7 +27,7 @@ Verdicts: **sound** means no defect was found; a premise that the seam
 names is not a defect. **fixed** means the audit found the contract
 false or unsound and corrected it; the reason gives the corrected
 contract. Remaining seam work is tracked in
-[wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
+[chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
 Totals for the 52 seams listed: 50 sound, 2 fixed.
 

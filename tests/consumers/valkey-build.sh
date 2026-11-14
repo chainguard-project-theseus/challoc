@@ -84,7 +84,7 @@ check_server ./src/valkey-server "$LIB"
 # 5. Tests.
 find_tclsh
 # Every memefficiency test runs at Valkey's stock targets: slab pages
-# (wolfi-dev/challoc#604, #660) release the free pages of sparse slabs, so
+# (chainguard-project-theseus/challoc#604, #660) release the free pages of sparse slabs, so
 # "Active Defrag eval scripts: standalone", skipped here before, passes.
 set --
 run_stages "$@"

@@ -27,7 +27,7 @@
 #   5. runs the test suite (tests/test_helper.tcl, as ./runtest does, from
 #      any tclsh 8.5 or newer): `unit/memefficiency` alone (the active
 #      defrag tests), then the full suite, every active-defrag test at its
-#      stock targets (slab pages, wolfi-dev/challoc#604, removed the slab
+#      stock targets (slab pages, chainguard-project-theseus/challoc#604, removed the slab
 #      floor that used to fail eight of them).
 #
 # The steps shared with valkey-build.sh are in tests/consumers/lib.sh.

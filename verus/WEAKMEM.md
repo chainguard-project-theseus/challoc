@@ -850,4 +850,4 @@ stand-in), and the C11 arguments, which `access.rs` backs by matching
 source text only and which no GenMC case checks, since the cases erase
 the permissions. Remaining weak-memory
 work is tracked in
-[wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
+[chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).

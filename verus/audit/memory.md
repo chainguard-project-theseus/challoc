@@ -3,7 +3,7 @@
 *An adversarial audit of the Verus seams in the categories raw pointer
 (internal), UnsafeCell/volatile/transmute and atomics primitive, together
 with the core-library pointer and atomic specifications they rest on,
-made during [#138](https://github.com/wolfi-dev/challoc/pull/138). There it covered 93 seams: 76 sound, 10 fixed,
+made during [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 93 seams: 76 sound, 10 fixed,
 1 weakened, 5 removed, and 1 unsound-open that was fixed after the
 audit. It machine-checked two derivations of `false`, through
 `from_raw` and `Lock::get_unlocked`, whose contracts it fixed.*
@@ -36,7 +36,7 @@ contract holds of the body. Where that truth rests on an unchecked
 `# Safety` duty, the reason says which one. **fixed** means the audit
 found the contract false or unsound and corrected it; the reason gives
 the corrected contract. Remaining seam work is tracked in
-[wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
+[chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
 Totals for the 37 seams listed: 33 sound, 4 fixed.
 
