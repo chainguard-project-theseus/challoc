@@ -65,3 +65,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)", "cfg(k
 # CONTRIBUTING.md, "Code style": every `unsafe` block names the invariant it
 # relies on in a `// SAFETY:` comment. CI's clippy runs with `-D warnings`.
 undocumented_unsafe_blocks = "warn"
+# The template's: no `dbg!` (it writes to stderr through std) and no
+# `todo!` stub reaches main.
+dbg_macro = "deny"
+todo = "deny"
