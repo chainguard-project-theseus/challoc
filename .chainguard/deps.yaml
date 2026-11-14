@@ -83,6 +83,7 @@ updates:
     - ".chainguard/review-prompt.md"
     - ".chainguard/develop.yaml"
     - ".claude/settings.json"
+    - "**/Cargo.toml"
   environment: dev
   merge: manual
   prompt: >-
@@ -112,7 +113,11 @@ updates:
     PORT-README.md and README.md or the targets list atop proved-port.mk
     ask that challoc does not yet follow. Make only the changes that fall
     in this entry's paths, and list anything else the release asks for in
-    the body, for a person. For example, when a release adds `make
+    the body, for a person. In a Cargo.toml, add or change only the
+    `[package.metadata.verus]` table the CHANGELOG asks for (0.3.1: every
+    crate with Verus code opts in with `verify = true`), and nothing else
+    there: no dependency, version or feature edit, which belong to the
+    other entries. For example, when a release adds `make
     verify`, which runs VERIFY_TARGETS, that list names every target
     challoc's checks verify with Verus and Kani, their controls and extra
     quanta included, but not its other verifying checks (isla, GenMC,
