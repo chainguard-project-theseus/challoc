@@ -540,8 +540,8 @@ fn no_use_of_the_narrow_aborts() {
 /// `may_abort() || *len == 0`, and `vspec::check::check`'s
 /// `may_abort_corrupt() || c`). Or it is listed as unfailing (its panic
 /// is its `requires`). Every listed function must still be one. Not
-/// seen: a panic of an index or a slice (`vspec::print::base_slab_sizes` and
-/// `layout::regions`' `word` index under their `requires`), and an
+/// seen: a panic of an index or a slice (`layout::regions`' `word`
+/// indexes under its `requires`), and an
 /// abort only through a function the body calls (Verus checks a call
 /// against the callee's `requires` only in a verified body).
 #[test]

@@ -8,12 +8,11 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `libc::FILE` | ext_type_spec | core library | none (assumption) | trusted |
-| `base_slab_sizes` | external_body | function pointer | Kani | discharged |
 | `PartialEqSpe...PercpuArena` | spec_impl | core library | Kani | discharged |
 
 ## `libc::FILE`
 
-src/vspec/print.rs:16. Kind: ext_type_spec. Category: core library.
+src/vspec/print.rs:14. Kind: ext_type_spec. Category: core library.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 > libc's `FILE`, opaque: `malloc_info` only passes the caller's stream on.
@@ -24,24 +23,9 @@ Hashes: contract 2139486100, body none.
 pub struct ExFile(libc::FILE);
 ```
 
-## `base_slab_sizes`
-
-src/vspec/print.rs:28. Kind: external_body. Category: function pointer.
-Tool: Kani. Status: discharged (Kani: kani_proofs::report::base_slab_sizes_returns).
-
-> The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of the classes `lo..=hi` (0 for an empty range), the table geometry the report compares a page-raised range with.
-
-Hashes: contract 394246006, body 2274552930.
-
-```rust
-pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
-    requires
-        hi < crate::layout::NCLASSES,
-```
-
 ## `PartialEqSpecImpl for config::PercpuArena`
 
-src/vspec/print.rs:44. Kind: spec_impl. Category: core library.
+src/vspec/print.rs:54. Kind: spec_impl. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_percpu_arena).
 
 Hashes: contract 3424993698, body none.

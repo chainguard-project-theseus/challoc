@@ -120,6 +120,21 @@ fn slabs_are_never_smaller_than_the_page() {
     }
 }
 
+/// `base_slab_sizes` gives what the iterator chain it replaced gave, the
+/// least and greatest table slab size of `lo..=hi` (0 for an empty
+/// range), for every range inside the table.
+#[test]
+fn base_slab_sizes_are_the_range_min_and_max() {
+    use crate::layout::{BASE_CLASSES, NCLASSES};
+    for hi in 0..NCLASSES {
+        for lo in 0..=hi + 1 {
+            let sizes = || (lo..=hi).map(|c| BASE_CLASSES[c].slab_size());
+            let want = (sizes().min().unwrap_or(0), sizes().max().unwrap_or(0));
+            assert_eq!(base_slab_sizes(lo, hi), want, "classes {lo}..={hi}");
+        }
+    }
+}
+
 #[test]
 fn text_report_has_every_section_and_live_figures() {
     let live: Vec<*mut u8> = (0..100)
