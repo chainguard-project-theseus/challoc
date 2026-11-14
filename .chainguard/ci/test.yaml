@@ -1,5 +1,5 @@
-# The test cells, on every pull request. The kernel floor (5.14, with a
-# 5.10 tripwire below it) has its own checks in floor.yaml.
+# The test cells, on every pull request and on main. The kernel floor
+# (5.14, with a 5.10 tripwire below it) has its own checks in floor.yaml.
 #
 #   linux        `make test` in the Wolfi dev container, {x86_64, aarch64} x
 #                quantum {16, 8}, plus the GLIBC <= 2.44 readelf assertion
@@ -26,6 +26,7 @@ checks:
       dev container on x86_64 and aarch64 at quantum 16 and 8, with the
       GLIBC <= 2.44 and built-quantum assertions and the expected-skips
       comparison.
+    trigger: [presubmit, postsubmit]
     foreach:
       - {name: amd64-q16, resources: medium-amd64, vars: {QUANTUM: "16"}}
       - {name: amd64-q8, resources: medium-amd64, vars: {QUANTUM: "8"}}
@@ -50,6 +51,7 @@ checks:
       namespace, read-write cgroupfs) on x86_64 and aarch64, so the
       privilege-gated tests (mseal, the cgroup writes) run; the features
       line must show mseal=yes.
+    trigger: [presubmit, postsubmit]
     foreach:
       - {name: amd64, resources: medium-amd64}
       - {name: arm64, resources: medium-arm64}
