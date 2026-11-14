@@ -1,9 +1,7 @@
-//! Calls the report writers of `api/print.rs` make into code Verus does
-//! not model, and the external type and ghost `std_specs` impls those
-//! writers need (`ExFile`, `PercpuArena`'s
-//! `PartialEq`). Each wrapper claims nothing about its result; the report
-//! prints what it gives. Delete `base_slab_sizes` when Verus can check
-//! its iterator chain over `BASE_CLASSES`.
+//! Helpers of the report writers of `api/print.rs`, and the external type
+//! and ghost `std_specs` impls those writers need (`ExFile`,
+//! `PercpuArena`'s `PartialEq`). Each helper claims nothing about its
+//! result; the report prints what it gives.
 
 use vstd::prelude::*;
 
@@ -17,25 +15,37 @@ pub struct ExFile(libc::FILE);
 
 /// The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of
 /// the classes `lo..=hi` (0 for an empty range), the table geometry the
-/// report compares a page-raised range with. Trusted: the iterator chain
-/// with function-pointer reducers of the report's code, and
-/// `BASE_CLASSES` is an `exec const` whose entries the verifier cannot
-/// see. `hi` must index the table: `BASE_CLASSES[c]` panics past it (the
-/// one caller passes `page_sized_classes`, which ensures
-/// `lo <= hi < NCLASSES`).
-#[verifier::external_body]
+/// report compares a page-raised range with. `hi` must index the table
+/// (the one caller passes `page_sized_classes`, which ensures
+/// `lo <= hi < NCLASSES`). A loop rather than the iterator chain with
+/// function-pointer reducers, which Verus does not specify.
 #[inline(always)]
 pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize)
     requires
         hi < crate::layout::NCLASSES,
 {
-    let base = |f: fn(usize, usize) -> usize| {
-        (lo..=hi)
-            .map(|c| crate::layout::BASE_CLASSES[c].slab_size())
-            .reduce(f)
-            .unwrap_or(0)
-    };
-    (base(usize::min), base(usize::max))
+    if lo > hi {
+        return (0, 0);
+    }
+    let first = crate::layout::BASE_CLASSES[lo].slab_size();
+    let (mut min, mut max) = (first, first);
+    let mut c = lo + 1;
+    while c <= hi
+        invariant
+            lo < c <= hi + 1,
+            hi < crate::layout::NCLASSES,
+        decreases hi + 1 - c,
+    {
+        let s = crate::layout::BASE_CLASSES[c].slab_size();
+        if s < min {
+            min = s;
+        }
+        if s > max {
+            max = s;
+        }
+        c += 1;
+    }
+    (min, max)
 }
 
 // The derived `PartialEq` of `config::PercpuArena` compares variants

@@ -1,5 +1,6 @@
-//! The report's trusted helper in `vspec/print.rs` that Kani can run:
-//! `base_slab_sizes` (`verus/ledger/src/vspec/print.rs.md`).
+//! The report's helper in `vspec/print.rs`, `base_slab_sizes`: Verus
+//! checks that it returns, and this harness checks what its contract
+//! leaves out, that its pair brackets the range's slab sizes.
 
 use crate::layout::{BASE_CLASSES, NCLASSES};
 use crate::vspec::print::base_slab_sizes;
