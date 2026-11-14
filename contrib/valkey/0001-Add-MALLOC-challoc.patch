@@ -3,7 +3,7 @@ Subject: [PATCH 1/2] Add MALLOC=challoc: link the system challoc instead of the 
 
 Valkey 9.1.2 (tag 9.1.2, commit 7f1dffedff6de73058b2c2a389422b6ecd56c8fb).
 
-challoc (https://github.com/wolfi-dev/challoc) is a malloc replacement
+challoc (https://github.com/chainguard-project-theseus/challoc) is a malloc replacement
 that exports jemalloc's je_-prefixed API and mallctl namespace, including
 experimental.utilization.batch_query, arena.<i>.purge, background_thread
 and the stats.* keys Valkey reads. `make MALLOC=challoc` (or
@@ -58,7 +58,7 @@ diff --git a/src/Makefile b/src/Makefile
  	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
 +endif
 +
-+# challoc (https://github.com/wolfi-dev/challoc) is a system allocator
++# challoc (https://github.com/chainguard-project-theseus/challoc) is a system allocator
 +# that exports jemalloc's je_-prefixed API and mallctl namespace. Keep the
 +# USE_JEMALLOC code paths (stats, purge, background thread, defrag) and link
 +# the shared library instead of building the bundled jemalloc. The header

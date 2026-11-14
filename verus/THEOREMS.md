@@ -53,7 +53,7 @@ functions are `cfg(verus_keep_ghost)` and absent
 from the shipped build. A function that takes a lock also takes
 `Tracked<&mut LockOrder>` arguments, which the abridged signatures below
 leave out (theorem 33). Remaining work is tracked in
-[wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
+[chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
 ## Theorems outside the numbered sections
 
@@ -3942,7 +3942,7 @@ run authority stay those the batch's `free` was made from. The makers:
   `MADV_DONTNEED` and the slab is untouched since is a premise.
   `Batch::flush` mints no `Zeroed`
   token, and no lock value holds one per `Purged` slab or extent
-  (wolfi-dev/challoc#397, fresh-slab zero facts).
+  (chainguard-project-theseus/challoc#397, fresh-slab zero facts).
 - `MADV_FREE` and `MADV_DONTNEED` are treated alike: the theorem is
   about which bytes are discarded, not what they read afterwards.
 - `SlabDesc::sub_live` (`slab.rs`) is verified; it requires
@@ -9078,7 +9078,7 @@ only `check_zero()`'s `true` grants it.
   `r ==> may_read_user()` and in the grant's own `ensures`, and
   otherwise only as a `requires` or loop invariant clause that ends with
   it, apart from its definition and the grant's `reveal`, is read from
-  the code; no source test checks it (wolfi-dev/challoc#397).
+  the code; no source test checks it (chainguard-project-theseus/challoc#397).
 
 **Premises beyond the common ones.**
 - Theorem 4's: metadata permissions lie apart from every block, and
@@ -10384,4 +10384,4 @@ What each partial or missing cell leaves out, and what it rests on:
   on the same link.
 - **I7**: see its bullet above.
 
-Remaining work on these cells is tracked in wolfi-dev/challoc#397.
+Remaining work on these cells is tracked in chainguard-project-theseus/challoc#397.

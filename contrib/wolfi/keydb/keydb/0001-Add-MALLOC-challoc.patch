@@ -1,7 +1,7 @@
 From: challoc <noreply@chainguard.dev>
 Subject: [PATCH] Add MALLOC=challoc: link the system challoc (jemalloc-compat) instead of the bundled jemalloc
 
-challoc (https://github.com/wolfi-dev/challoc) is a malloc replacement
+challoc (https://github.com/chainguard-project-theseus/challoc) is a malloc replacement
 that exports jemalloc's non-standard API (mallocx family, mallctl, the
 stats.* keys zmalloc.cpp reads) and Redis's get_defrag_hint, the extension
 of the bundled jemalloc that zmalloc.h's HAVE_DEFRAG requires: its
@@ -33,7 +33,7 @@ behaviour without MALLOC=challoc is unchanged.
  	FINAL_LIBS := ../deps/memkind/src/.libs/libmemkind.a -lnuma $(FINAL_LIBS)
 +endif
 +
-+# challoc (https://github.com/wolfi-dev/challoc) is a system allocator
++# challoc (https://github.com/chainguard-project-theseus/challoc) is a system allocator
 +# with jemalloc's non-standard API, including the get_defrag_hint of the
 +# bundled jemalloc that HAVE_DEFRAG needs. MALLOC=challoc keeps every
 +# USE_JEMALLOC code path (stats, purge, background thread, active defrag)

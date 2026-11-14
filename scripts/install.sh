@@ -109,7 +109,7 @@ includedir=$pc_includedir
 
 Name: challoc
 Description: A memory-safe, jemalloc-compatible malloc replacement
-URL: https://github.com/wolfi-dev/challoc
+URL: https://github.com/chainguard-project-theseus/challoc
 Version: $VERSION
 Cflags: -I\${includedir}
 Libs: -L\${libdir} -Wl,--push-state,--no-as-needed -lchalloc -Wl,--pop-state
@@ -133,7 +133,7 @@ install_suffix=
 
 Name: jemalloc
 Description: challoc, a jemalloc-compatible malloc replacement, under jemalloc's soname (libjemalloc.so.2)
-URL: https://github.com/wolfi-dev/challoc
+URL: https://github.com/chainguard-project-theseus/challoc
 Version: $VERSION
 Cflags: -I\${includedir}/jemalloc\${install_suffix}
 Libs: -L\${libdir} -ljemalloc\${install_suffix}

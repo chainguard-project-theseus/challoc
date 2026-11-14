@@ -237,7 +237,7 @@ Kani `0.68.0` with CBMC `6.11.0` runs the 203 harnesses; each harness comment na
 
 ## What the proofs do not cover
 
-Each limit below is part of the stated scope; [issue #397](https://github.com/wolfi-dev/challoc/issues/397) tracks the work that would narrow it.
+Each limit below is part of the stated scope; [issue #397](https://github.com/chainguard-project-theseus/challoc/issues/397) tracks the work that would narrow it.
 
 - **Lock release:** the holders of 10 locks release through the explicit `LockGuard::unlock`, which requires the lock invariant and frame: the metadata lock, the explicit-cache table lock, the slab-set tables' lock, the huge lock, the process statistics lock, the arena creation lock, the per-arena statistics locks, the class lock, the slab table's commit lock and the background thread's state lock (`api::tests::guards_end_in_unlock` checks that none of their guards drops without it). Every holder of those 10 locks is verified. For all 10, no axiom states the invariant or frame: each lock type's `LockSpec` impl defines both. Every other lock is released by dropping its guard, and its next acquisition (`axiom_acquired`) assumes the invariant holds again. `unlock_held_perm`, the fork handlers' release of the arena creation lock and the background state lock, requires the invariant and frame of the value it hands back, as `LockGuard::unlock` does.
 - **Restated paths:** the no-syscall and read-only theorems restate fast-path bodies instead of calling them, and the 2 `mallctl` theorems restate the bodies of `mallctl` and `mallctlbymib`. The restated-body tests check the names and order of the calls, not their arguments or control flow.
@@ -322,5 +322,5 @@ A background purge wake-up could also be lost at startup: `start` published `PRE
 - [SEAMS.md](SEAMS.md) and the [seam ledger](ledger/src): what Verus takes on trust and how each seam is checked.
 - [README.md](README.md): running Verus, Kani, Isla and `make emptyasm`, and the conventions for proof changes.
 - [ISLA.md](ISLA.md) and [WEAKMEM.md](WEAKMEM.md): the inline-assembly checks and the weak-memory scope of the loom models.
-- [audit/](audit): adversarial audits of the seam contracts, made during [#138](https://github.com/wolfi-dev/challoc/pull/138), for the audited seams the ledger still lists.
-- [Issue #397](https://github.com/wolfi-dev/challoc/issues/397): the remaining proof, check and audit work.
+- [audit/](audit): adversarial audits of the seam contracts, made during [#138](https://github.com/chainguard-project-theseus/challoc/pull/138), for the audited seams the ledger still lists.
+- [Issue #397](https://github.com/chainguard-project-theseus/challoc/issues/397): the remaining proof, check and audit work.

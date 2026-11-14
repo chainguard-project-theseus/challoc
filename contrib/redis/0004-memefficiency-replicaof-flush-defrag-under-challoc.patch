@@ -8,7 +8,7 @@ runs, which is within a few ms of REPLICAOF, before the next cron tick.
 The bundled jemalloc still holds about 22 MB of fragmentation when the
 flush ends, so defrag starts on what the flush leaves. challoc gives the
 freed memory back as the flush frees it (slab pages close the freed pages
-and empty slabs leave the bins, wolfi-dev/challoc#604), so defrag would
+and empty slabs leave the bins, chainguard-project-theseus/challoc#604), so defrag would
 start only if a defrag decision fell between the deletes and the flush,
 and the test fails with "defrag not started.". Under MALLOC=challoc the
 replica now waits for defrag to start on the fragmentation the test's

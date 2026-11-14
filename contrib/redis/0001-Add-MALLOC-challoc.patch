@@ -4,7 +4,7 @@ Subject: [PATCH 1/4] Add MALLOC=challoc: link the system challoc instead of
 
 Redis 8.10.3 (tag 8.10.3, commit 1a2574ce1551d3de6e0b4a56756c0fdbc6659e4f).
 
-challoc (https://github.com/wolfi-dev/challoc) is a malloc replacement
+challoc (https://github.com/chainguard-project-theseus/challoc) is a malloc replacement
 that exports jemalloc's je_-prefixed API and mallctl namespace (the
 stats.*, arenas.bin.*, epoch, purge, tcache, arenas.create and
 background_thread keys zmalloc.c, defrag.c and the Lua engines read) and
@@ -65,7 +65,7 @@ diff --git a/src/Makefile b/src/Makefile
  	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
  endif
  
-+# challoc (https://github.com/wolfi-dev/challoc) is a malloc replacement that
++# challoc (https://github.com/chainguard-project-theseus/challoc) is a malloc replacement that
 +# exports jemalloc's je_-prefixed API and mallctl namespace, and the
 +# je_get_defrag_hint extension of the bundled jemalloc that active defrag
 +# needs. MALLOC=challoc keeps every USE_JEMALLOC code path (stats, purge,

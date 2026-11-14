@@ -2,7 +2,7 @@
 
 *An adversarial audit of the Verus seams of kind `axiom` or
 `external_body proof` (any category) and of category allocator invariant
-(any kind), made during [#138](https://github.com/wolfi-dev/challoc/pull/138). There it covered 69 seams: 28
+(any kind), made during [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 69 seams: 28
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
@@ -50,7 +50,7 @@ Verdicts:
   it; the reason gives the corrected contract.
 
 Remaining seam work is tracked in
-[wolfi-dev/challoc#397](https://github.com/wolfi-dev/challoc/issues/397).
+[chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
 Totals for the 24 seams listed: 7 sound, 11 sound (premise), 6 fixed.
 
