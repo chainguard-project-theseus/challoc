@@ -121,6 +121,7 @@ use crate::lock::{Lock, LockHeld, LockOrder};
 use crate::lock::{RawLock, rank_arena_stats, rank_class, rank_sets, rank_state, rank_table};
 use crate::purge;
 use crate::purge::background::{State, StateHold};
+use crate::sync::patomic::PAtomicU32;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 #[cfg(verus_keep_ghost)]
@@ -170,7 +171,7 @@ pub const READY: u32 = 2;
 /// `STATE`'s address.
 #[repr(C)]
 struct InitWords {
-    word: AtomicU32,
+    word: PAtomicU32,
     line: AtomicU8,
     inv: Tracked<AtomicInvariant<(), StateVal, StatePred>>,
 }
@@ -533,7 +534,7 @@ impl Statics {
 /// computed). A `static`'s initialiser runs once, at compile time; the test
 /// `access_init_once_words_written_by_their_protocol`
 /// (tests/loom/tests/access.rs) checks that it is the one call.
-axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
+axiom fn axiom_start(word: &PAtomicU32, line: &AtomicU8) -> (tracked s: Start)
     ensures
         crate::vspec::count::count_id(word) == state_word_id(),
         crate::vspec::byte::byte_id(line) == line_word_id(),
@@ -690,7 +691,7 @@ spec fn state_ns() -> int {
 /// `STATE`'s invariant, and its word, with the facts `STATE`'s
 /// initialiser ensures ([`InitWords::wf`]).
 #[inline(always)]
-fn state() -> (r: (&'static AtomicU32, Tracked<&'static AtomicInvariant<(), StateVal, StatePred>>))
+fn state() -> (r: (&'static PAtomicU32, Tracked<&'static AtomicInvariant<(), StateVal, StatePred>>))
     ensures
         crate::vspec::count::count_id(r.0) == state_word_id(),
         r.1@.namespace() == state_ns(),
@@ -794,7 +795,7 @@ fn load_state(Tracked(seen): Tracked<&mut Seen>) -> (s: u32)
     let (word, Tracked(inv)) = state();
     let s;
     vstd::open_atomic_invariant!(inv => v => {
-        s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));
+        s = crate::vspec::count::load(word, Tracked(&v.perm));
         proof {
             if s == READY {
                 seen.published = v.published;
@@ -819,7 +820,7 @@ fn load_state_marked(Tracked(seen): Tracked<&mut Seen>, Tracked(mark): Tracked<&
     let (word, Tracked(inv)) = state();
     let s;
     vstd::open_atomic_invariant!(inv => v => {
-        s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));
+        s = crate::vspec::count::load(word, Tracked(&v.perm));
         proof {
             v.auth.agree(mark);
             seen.published = v.published;
@@ -1369,7 +1370,7 @@ fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8, Tracked(ord): Tracked
 /// [`shared_if_ready`]).
 #[cfg(test)]
 pub fn is_ready() -> bool {
-    STATE.word.load(Ordering::Acquire) == READY
+    STATE.word.load(Tracked::assume_new()) == READY
 }
 
 unsafe extern "C" {
@@ -1416,7 +1417,7 @@ fn claim_init(Tracked(seen): Tracked<&mut Seen>) -> (r: (Result<u32, u32>, Track
     let tracked mut owned = None;
     let won;
     vstd::open_atomic_invariant!(inv => v => {
-        won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));
+        won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Tracked(&mut v.perm));
         proof {
             if won is Ok {
                 steps = v.steps.tracked_take();
@@ -1449,7 +1450,7 @@ fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half):
     let tracked mut half = half;
     let tracked mut out = None;
     vstd::open_atomic_invariant!(inv => v => {
-        crate::vspec::count::store(word, READY, Ordering::Release, Tracked(&mut v.perm));
+        crate::vspec::count::store(word, READY, Tracked(&mut v.perm));
         proof {
             v.auth.update(&mut half, true);
             let tracked m = vstd::modes::tracked_static_ref(half);

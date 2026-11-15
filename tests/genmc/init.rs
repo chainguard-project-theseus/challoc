@@ -6,12 +6,13 @@
 // `vspec::count` calls on `STATE.word`, so it is a copy through and
 // through, tied to the code by its pins.
 //
-// - `init_slow`: `compare_exchange(UNINIT, INITIALISING, Acquire,
-//   Acquire)`; the winner stores its tid in `INIT_TID` `Relaxed`, runs
-//   `init` and stores `READY` `Release`; a loser that sees `READY`
+// - `init_slow`: `compare_exchange(UNINIT, INITIALISING, SeqCst,
+//   SeqCst)` (vstd's `PAtomicU32`, under `vspec::count`); the winner
+//   stores its tid in `INIT_TID` `Relaxed`, runs `init` and stores
+//   `READY` (`SeqCst` as shipped, `PUBLISH`); a loser that sees `READY`
 //   returns, one whose tid is `INIT_TID` aborts (re-entry), any other
-//   spins on an `Acquire` load of `STATE.word` until `READY`;
-// - `shared`: an `Acquire` load of `STATE.word`, `shared_ref` on `READY`,
+//   spins on a `SeqCst` load of `STATE.word` until `READY`;
+// - `shared`: a `SeqCst` load of `STATE.word`, `shared_ref` on `READY`,
 //   `init_slow` otherwise; `shared_if_ready`, the `free` path's: the
 //   load, and `shared_ref` on `READY`;
 // - `init`: a plain write of the published value (`SHARED` and the rest
@@ -90,18 +91,18 @@ impl Statics {
     /// so that rustc at `-Copt-level=1` does not hoist it above the
     /// `READY` test (it is still a non-atomic access to GenMC).
     fn shared_ref(&self) -> u64 {
-        // SAFETY: `READY` observed by an `Acquire` load on this thread, or
+        // SAFETY: `READY` observed by a `SeqCst` load on this thread, or
         // published by it (GenMC reports a race if not).
         unsafe { core::ptr::read_volatile(self.shared.get()) }
     }
 
-    /// `api::load_state`'s `vspec::count::load`: an `Acquire` load of
+    /// `api::load_state`'s `vspec::count::load`: a `SeqCst` load of
     /// `STATE.word`. `seen` is the thread's last value of it, read or
     /// written (model
     /// bookkeeping): the load reads one of the three values, never one
     /// before `seen` in the modification order, and becomes `seen`.
     fn state_load(&self, seen: &mut u32) -> u32 {
-        let s = self.state.load(Ordering::Acquire);
+        let s = self.state.load(Ordering::SeqCst);
         gassert!(s <= READY, "STATE read an unknown value");
         gassert!(s >= *seen, "STATE went back");
         *seen = s;
@@ -127,7 +128,7 @@ impl Statics {
     fn init_slow(&self, tid: u32, seen: &mut u32) -> u64 {
         let won =
             self.state
-                .compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);
+                .compare_exchange(UNINIT, INITIALISING, Ordering::SeqCst, Ordering::SeqCst);
         // The exchange read `UNINIT` (and wrote `INITIALISING`) or the
         // value it returns, never one before `seen`.
         let s = match won {

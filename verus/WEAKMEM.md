@@ -19,11 +19,14 @@ and not run.
 
 ## Inventory
 
-406 lines of source carry an `Ordering::` (`grep` over `src/`,
+392 lines of source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
 `src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
-`cfg(challoc_tls_check)`), inline `#[cfg(test)]` and `#[cfg(kani)]`
-modules, and comment lines). The count keeps lines in `#[cfg(test)]`
+`cfg(challoc_tls_check)`), `src/sync.rs`'s `cfg(loom)` stand-ins for
+vstd's atomics (built only by the loom crate), inline `#[cfg(test)]`
+and `#[cfg(kani)]` modules, and comment lines). The counters behind
+`vspec/count.rs` and the route byte behind `vspec/flags.rs` are vstd
+atomics, whose operations are `SeqCst` with no ordering argument. The count keeps lines in `#[cfg(test)]`
 functions and statements outside those modules: `sys/abort.rs` and
 `sys/pac.rs` have only such lines (test hooks), and several other rows
 include a few.
@@ -41,10 +44,10 @@ a compiler barrier.
 | `thp.rs` | 45 | init-time configuration and counters |
 | `sys/cgroup.rs` | 40 | sampled cgroup limits and the deferred discovery's phase |
 | `purge.rs` | 37 | flags, counters, `Decayer` |
-| `arena.rs` | 30 | registry `AtomicPtr`s, counts, statistics |
-| `api/mod.rs` | 28 | `STATE` (`word`, `line`), `INIT_TID`, `SEALED` |
-| `stats.rs`, `policy.rs` | 26, 26 | statistics and the sampled policy, `Relaxed` |
+| `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 24 | `SlabDesc`: state, arena, `live`, dirty, `closed`, `shadow`, `stamp` |
+| `arena.rs` | 23 | registry `AtomicPtr`s, statistics |
+| `api/mod.rs` | 23 | `STATE.line`, `INIT_TID`, `SEALED` |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 16 | watermark; bitmap and owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
 | `lock.rs` | 12 | the lock word; the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` |
@@ -162,10 +165,12 @@ a compiler barrier.
 ### P4. Publishing `Shared`
 
 - `api::init_slow`: `STATE.word`'s `compare_exchange(UNINIT,
-  INITIALISING, Acquire, Acquire)` (`claim_init`, through
-  `vspec::count::compare_exchange`), `init()`, then its `store(READY,
-  Release)` (`publish_ready`, `vspec::count::store`). Readers load
-  `Acquire` (`load_state`, `vspec::count::load`), and waiters spin on an `Acquire` load. The `READY`
+  INITIALISING)` (`claim_init`, through
+  `vspec::count::compare_exchange`), `init()`, then its `store(READY)`
+  (`publish_ready`, `vspec::count::store`), each vstd's `SeqCst`
+  operation (`STATE.word` is a `PAtomicU32`; acquire and release are
+  what the protocol needs). Readers load `SeqCst` (`load_state`,
+  `vspec::count::load`), and waiters spin on that load. The `READY`
   store publishes `SHARED`, `FEATURES` and `FEATURE_LINE` (`UnsafeCell`
   statics in `api/mod.rs`), the class table's page geometry
   (`layout::adopt_page_geometry`), and the init-time `Relaxed`
@@ -219,8 +224,9 @@ a compiler barrier.
   `AcqRel`, then frees. Concurrent use of one explicit cache, or use
   after `destroy`, is the caller's bug, as in jemalloc.
 - Arena entries (`arena.rs`) are stored `Release` and loaded `Acquire`
-  (through `vspec/entry.rs`); `Arenas::count` likewise (through
-  `vspec/count.rs`).
+  (through `vspec/entry.rs`); `Arenas::count` is stored and loaded
+  `SeqCst` (vstd's `PAtomicU32`, through `vspec/count.rs`), which
+  includes release and acquire.
 - Thread heaps are touched only by their own thread; no code walks
   another thread's heap.
 
@@ -347,7 +353,8 @@ copies, as the loom models' are:
 - `slotstate.rs` (`vspec::byte`): two simultaneous frees of one slot.
 - `bitmap.rs` (P1, `vspec::word`): release then reserve, two claimers,
   and `init`'s publication through the commit count.
-- `litmus.rs` (`vspec::count`): the two shapes of loom's limits above.
+- `litmus.rs` (`core`'s `Relaxed` atomics): the two shapes of loom's
+  limits above.
 - `init.rs` (P4, `api/mod.rs`'s own functions over `STATE` and
   `INIT_TID`, no `vspec` wrapper, so a copy through and through): one,
   two and three callers with a free, a re-entrant `init`, and the
@@ -627,7 +634,8 @@ shows the check can fail.
   load `Relaxed`, a synchronised free can read the owner as 0. The
   `free_flags` route bit is modelled in `flags.rs`, not here.
 - Arena bound counts, `count.rs` (`vspec/count.rs`'s wrappers as they
-  are, `Relaxed` as in `arena.rs`, driven by copies of `assign` under the
+  are, over the `cfg(loom)` stand-in for vstd's `PAtomicU32`, `SeqCst`
+  as shipped, driven by copies of `assign` under the
   `RawLock` copy, `count_in`, `unbind`, `load_bound` and
   `try_bind_idle`): no `unbind` reads 0, no holder reads its arena's
   count below its own tickets, the counts end at the tickets out, and a
@@ -643,9 +651,10 @@ shows the check can fail.
   a `create` under the lock reads the count as the lock's value with
   every arena below it built, the frozen table that `api::count_held`
   and `api::arena_held` prove for the fork handlers in the SC model; and
-  the count ends at the lock's value. Controls: a `Relaxed` count store
-  lets a scan see a count before its arena; a `Relaxed` entry store
-  races.
+  the count ends at the lock's value. Controls: the count stored before
+  `build` stores the entry lets a scan see a count before its arena (the
+  count's store is vstd's `SeqCst`, which takes no weaker ordering); a
+  `Relaxed` entry store races.
 - Policy position, `position.rs` (`Policy::scaled16`, one more than the
   position; copies of `apply`'s swap and `position`): two concurrent
   appliers and a reader. Every load is a stored value, at most
@@ -762,12 +771,6 @@ another thread's exchange as often as other threads retake the lock.
 | `vspec/byte.rs.md` | `load` | partly checked (Kani, loom) |
 | `vspec/byte.rs.md` | `store` | partly checked (Kani, loom) |
 | `vspec/byte.rs.md` | `compare_exchange` | partly checked (Kani, loom, GenMC) |
-| `vspec/count.rs.md` | `fetch_add` | partly checked (Kani, loom, GenMC) |
-| `vspec/count.rs.md` | `fetch_sub` | partly checked (Kani, loom, GenMC) |
-| `vspec/count.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
-| `vspec/count.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
-| `vspec/count.rs.md` | `swap` | partly checked (Kani, loom) |
-| `vspec/count.rs.md` | `compare_exchange` | partly checked (Kani, loom, GenMC) |
 | `vspec/entry.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
 | `vspec/entry.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `WordPerm` | partly checked (loom) |
@@ -780,14 +783,14 @@ The arguments, by group (the overrides comments give each in full):
 
 - `init_slow` (P4 models): it terminates given `init` returns, a fair
   scheduler and visible stores. `claim_init`'s exchange on `STATE.word`
-  (`vspec::count::compare_exchange`) reads the last value in its
-  modification order, for every ordering, so the permission carries it;
+  (`vspec::count::compare_exchange`, vstd's `SeqCst` exchange) reads the
+  last value in its modification order, so the permission carries it;
   at most one success follows from `STATE`'s invariant, which `STATE`'s
   verified initialiser builds once (`axiom_start`, assumed, is the token
-  it takes). The loads and stores on `STATE.word` and `STATE.line`
-  (`vspec/count.rs`, `vspec/byte.rs`) give the release/acquire pairs the
-  init and once-cell models check on copies of the steps
-  (`count.rs.overrides`, `byte.rs.overrides`).
+  it takes). The loads and stores on `STATE.word` (`vspec/count.rs`,
+  vstd's `SeqCst`) and `STATE.line` (`vspec/byte.rs`) give the
+  release/acquire pairs the init and once-cell models check on copies
+  of the steps (`byte.rs.overrides`).
 - `background::main` (exit models): it returns after a final
   `request(false)`, given each pass returns and the exit takes the state
   lock.
@@ -805,13 +808,10 @@ The arguments, by group (the overrides comments give each in full):
   is the SC abstraction itself; its content is the wrappers' contracts
   and the fact that every write goes through them, which `access.rs`
   checks.
-- The count wrappers (`vspec/count.rs`): RMW atomicity holds for every
-  ordering (`fetch_add`, `fetch_sub`, `swap`, `compare_exchange`); each
-  invariant bounds one atomic by a constant (`NarenasPred`, `FracPred`)
-  or names one counter and pure ghost tickets (theorem 34), so any
-  ordering keeps it; `store` writes under the creation lock, which
-  orders the stores; `load`'s contract excludes `Release` and `AcqRel`,
-  for which `core`'s `load` panics. Count, narenas and position models.
+- The count wrappers (`vspec/count.rs`) are not in the table: they are
+  verified over vstd's `PAtomicU32`, whose `SeqCst` operations vstd
+  specifies under its sequentially consistent model. The count, narenas
+  and position models still check the callers' protocols around them.
 - The watermark wrappers (`vspec/atom.rs`): `store_usize` writes under
   the commit lock, and `CommittedPred` bounds one atomic by a constant;
   `load_usize` and `load_usize_seen` get the held permission's value by

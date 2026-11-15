@@ -142,8 +142,8 @@ add.
   writes a field `wf` reads afterwards, is proved from narrower
   premises: `axiom_start` (the process-start token `STATE`'s verified
   initialiser takes to build the one invariant at its initial state),
-  `vspec/count.rs`'s wrappers on `STATE.word` (under sequential
-  consistency), and `heap::shared::axiom_shared_built`'s join, whose `shared_at`
+  `vspec/count.rs`'s wrappers on `STATE.word` (verified over vstd's
+  `PAtomicU32`, under vstd's sequentially consistent model), and `heap::shared::axiom_shared_built`'s join, whose `shared_at`
   carries the "nothing unverified writes it" assumption. `shared` and
   `shared_if_ready` load `READY` and get the permission. The fact
   that it was published travels in
@@ -237,7 +237,7 @@ add.
   verified) builds at `UNINIT` from the two words' permissions it mints
   (`vspec::count::new`, `vspec::byte::new`) and the process-start token
   (`api::axiom_start`): the invariant holds `STATE.word`'s
-  permission (a `vspec::count::CountPerm`, through `vspec/count.rs`'s
+  permission (a `vspec::count::CountPerm`, vstd's `PermissionU32`, through `vspec/count.rs`'s
   `load`, `compare_exchange` and `store`), every step's `Once` token,
   `STATE.line`'s permission and the statics' permissions
   (`api::Statics`) while
@@ -273,8 +273,9 @@ add.
   runs once (so the token is taken once: the source test
   `access_init_once_words_written_by_their_protocol` in
   `tests/loom/tests/access.rs` checks that `axiom_start` has that one
-  call), and the wrappers (`vspec/count.rs` and `vspec/byte.rs`, trusted;
-  the loom models of `tests/loom/src/init.rs` and `oncecell.rs` check
+  call), and the wrappers (`vspec/byte.rs`, trusted; `vspec/count.rs`,
+  verified over vstd's `PAtomicU32`, whose operations vstd trusts; the
+  loom models of `tests/loom/src/init.rs` and `oncecell.rs` check
   copies of the steps that call them), with `STATE.word`'s and
   `STATE.line`'s writes only theirs (the same test checks that the
   only writes in shipped code are `claim_init`'s and `publish_ready`'s
@@ -6400,8 +6401,8 @@ bounds, and `Sink::write_str` (verified) keeps it.
   results are discarded, so `EAGAIN` or `EINTR` loops) under
   `RawLock::lock`/`unlock`, `LockGuard::drop` and `deref`, the static
   projections, `shared_base` and `shared_deref`, `STATE.word`'s
-  wrappers (`vspec::count::load`, `compare_exchange`, `store`: one bare
-  atomic operation each), and `STATE.line`'s and the deferred record's
+  wrappers (`vspec::count::load`, `compare_exchange`, `store`: one vstd
+  `PAtomicU32` operation each, `SeqCst`), and `STATE.line`'s and the deferred record's
   phase's wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
   atomic operation each), `class_entry`,
   the watermark's load `vspec::atom::load_usize` (the registry is read
@@ -6472,8 +6473,9 @@ bounds, and `Sink::write_str` (verified) keeps it.
   trusted bodies (`sys::tests::trusted_aborts_require_a_capability`).
 
 Machine code: `Arenas::count`'s load and `Arenas::create`'s store are
-the bare `core` calls (the `vspec::count` wrappers are
-`#[inline(always)]`), and the count's ghost field has no bytes.
+vstd's `SeqCst` `core` calls (the `vspec::count` wrappers and vstd's
+operations are `#[inline(always)]`), and the count's ghost field has no
+bytes.
 
 ## 33. Lock order is acyclic
 
@@ -6816,19 +6818,18 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
 `try_bind_idle` and the moved binding.
 
 **Premises beyond the common ones.**
-- `vspec::count` (`vspec/count.rs`, the `vspec::word` pattern): a
-  `CountPerm` is the counter with its `id` (`count_id`), and `fetch_add`,
-  `fetch_sub` (wrapping), `load` and `compare_exchange` (the strong form:
-  it fails only on a different value, by C++20's semantics) are one
-  atomic operation on it, sequentially consistent in the model (the
-  orderings, all `Relaxed`, are ignored, as for the bitmap words). The
-  four are trusted, partly checked by Kani and loom
-  (`verus/ledger/src/vspec/count.rs.md`).
+- `vspec::count` (`vspec/count.rs`): each counter is a vstd
+  `PAtomicU32`, a `CountPerm` is vstd's `PermissionU32` with the
+  counter's `id` (`count_id`), and `fetch_add`, `fetch_sub` (wrapping),
+  `load` and `compare_exchange` (the strong form: it fails only on a
+  different value) are verified over vstd's operations, one `SeqCst`
+  atomic operation each. What remains trusted is vstd's: its atomic
+  specifications under a sequentially consistent model.
 - `Arenas::init` (verified) ensures `wf` of the
   registry it writes: each bound count is written with a permission of
-  value 0 from `vspec::count::new` (verified, its identity a ghost one;
-  the only place a `CountPerm` is minted, one per counter; `Policy::new` mints the
-  position's there too), and its invariant holds that
+  value 0 from `vspec::count::new` (verified; vstd's `PAtomicU32::new`
+  is the only place a counter's permission is minted, one per counter;
+  `Policy::new` mints the position's there too), and its invariant holds that
   permission and a fresh ticket set emptied of the `{0}` that shows its
   location is its own (`fresh_sets`, `fresh_invs`). Its field writes go
   through the permissions `axiom_arenas_layout` (rustc's field order,

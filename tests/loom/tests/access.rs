@@ -485,7 +485,9 @@ fn access_watermark_control() {
     assert!(!check_watermark(&t2).is_empty());
 }
 
-// The counters (`vspec/count.rs`'s seams): arena.rs names the bound counts
+// The counters (`vspec/count.rs`, vstd `PAtomicU32`s, whose every
+// operation takes the permission the counter's invariant holds; this guard
+// keeps the accesses where the invariants are): arena.rs names the bound counts
 // (`bound`) and the arena count (`self.count`), and policy.rs the position
 // (`scaled16`), only in a `vspec::count` wrapper call, the spec `count_id`
 // and ghost `assert`/`forall` lines, and moves a count into place raw
@@ -874,15 +876,16 @@ fn access_desc_fields_control() {
     );
 }
 
-// One permission per atomic (the count, watermark, phase and entry
-// wrappers' seams): each file builds its permission type only in its
-// minting fn, with one literal, and names the type only in the struct
+// One permission per atomic (the watermark, phase and entry wrappers'
+// seams; the counters' permissions are vstd's, which only
+// `PAtomicU32::new` mints): each file builds its permission type only in
+// its minting fn, with one literal, and names the type only in the struct
 // and impl lines and in type position (no `Self`, derive, trait impl or
-// child module); and no `const` item copies a minted atomic (each use of
-// such a const would be a fresh atomic with a copy of its permission).
+// child module); and no `const` item copies a minted atomic, the
+// counters' included (each use of such a const would be a fresh atomic
+// with a copy of its permission).
 
 const PERMS: &[(&str, &str, &str)] = &[
-    ("src/vspec/count.rs", "CountPerm", "new"),
     ("src/vspec/atom.rs", "UsizePerm", "new_usize"),
     ("src/vspec/byte.rs", "BytePerm", "new"),
     ("src/vspec/entry.rs", "EntryPerm", "new"),
@@ -968,12 +971,12 @@ fn access_one_permission_per_atomic() {
 #[test]
 fn access_one_permission_per_atomic_control() {
     let t = tree();
-    let anchor = "(c, Tracked(CountPerm { id: count_id(&c), value: v }))";
+    let anchor = "(b, Tracked(BytePerm { id: byte_id(&b), value: v }))";
     let t2 = with(
         &t,
-        "src/vspec/count.rs",
+        "src/vspec/byte.rs",
         anchor,
-        "(c, Tracked(CountPerm { id: count_id(&c), value: v }))",
+        "(b, Tracked(BytePerm { id: byte_id(&b), value: v }))",
     );
     assert!(!check_perms(&t2).is_empty());
     let anchor = "use crate::vspec::flags::RouteByte;";
@@ -981,7 +984,7 @@ fn access_one_permission_per_atomic_control() {
         &t,
         "src/heap/shared.rs",
         anchor,
-        "const C: (AtomicU32, Tracked<CountPerm>) = crate::vspec::count::new(0);",
+        "const C: (PAtomicU32, Tracked<CountPerm>) = crate::vspec::count::new(0);",
     );
     assert!(!check_perms(&t2).is_empty());
 }
@@ -1142,7 +1145,7 @@ fn access_init_once_words_control() {
         &t,
         "src/api/mod.rs",
         anchor,
-        "fn f() { crate::vspec::count::store(state().0, 0, Ordering::Relaxed, Tracked::assume_new()); }",
+        "fn f() { crate::vspec::count::store(state().0, 0, Tracked::assume_new()); }",
     );
     assert!(!check_once(&t2).is_empty());
 }

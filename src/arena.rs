@@ -32,7 +32,7 @@
 //! arena that load is skipped, since every slab and every heap is arena 0.
 
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use crate::class::{ClassState, SetTable, SlabTable};
 use crate::heap::Shared;
@@ -48,6 +48,7 @@ use crate::lock::{
 use crate::meta::{Meta, MetaClaim};
 use crate::purge::Left;
 use crate::stats::ArenaStats;
+use crate::sync::patomic::PAtomicU32;
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::cbuf::CCall;
 use crate::vspec::count::CountPerm;
@@ -1798,7 +1799,7 @@ pub struct Arenas {
     table: [AtomicPtr<Arena>; MAX_ARENAS],
     /// Thread heaps currently homed on each arena (`assign`/`bind` add,
     /// `unbind` subtracts); explicit caches are not counted.
-    bound: [AtomicU32; MAX_ARENAS],
+    bound: [PAtomicU32; MAX_ARENAS],
     /// Creation lock; the value is `count` for the writer ([`Created`]).
     lock: Lock<Created>,
     /// The storage of a build whose `Arena::init` failed, for the next
@@ -1807,7 +1808,7 @@ pub struct Arenas {
     /// when there is none; only touched under `lock`, inside its
     /// invariant ([`SparePred`]).
     spare: PAtomicPtr<Arena>,
-    count: AtomicU32,
+    count: PAtomicU32,
     /// Indices below this are automatic (`narenas`).
     auto: u32,
     /// Ghost (no bytes): the invariant of each bound count
@@ -2134,16 +2135,16 @@ axiom fn axiom_arenas_layout()
         field_fits::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND as int),
         0 < size_of::<AtomicPtr<Arena>>(),
         MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
-        field_fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK as int),
-        0 < size_of::<AtomicU32>(),
-        MAX_ARENAS * size_of::<AtomicU32>() <= isize::MAX,
+        field_fits::<Arenas, [PAtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK as int),
+        0 < size_of::<PAtomicU32>(),
+        MAX_ARENAS * size_of::<PAtomicU32>() <= isize::MAX,
         // Over several lines, as in `axiom_arena_layout`.
         field_fits::<
             Arenas,
             Lock<Created>,
         >(AR_LOCK, AR_SPARE as int),
         field_fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT as int),
-        field_fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO as int),
+        field_fits::<Arenas, PAtomicU32>(AR_COUNT, AR_AUTO as int),
         field_fits::<Arenas, u32>(AR_AUTO, AR_INVS as int),
         field_fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV as int),
         field_fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, AR_SPARE_INV as int),
@@ -2162,12 +2163,12 @@ const _: () = assert!(
         && core::mem::size_of::<AtomicPtr<Arena>>() > 0
         && MAX_ARENAS as u128 * core::mem::size_of::<AtomicPtr<Arena>>() as u128
             <= isize::MAX as u128
-        && fits::<Arenas, [AtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK)
-        && core::mem::size_of::<AtomicU32>() > 0
-        && MAX_ARENAS as u128 * core::mem::size_of::<AtomicU32>() as u128 <= isize::MAX as u128
+        && fits::<Arenas, [PAtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK)
+        && core::mem::size_of::<PAtomicU32>() > 0
+        && MAX_ARENAS as u128 * core::mem::size_of::<PAtomicU32>() as u128 <= isize::MAX as u128
         && fits::<Arenas, Lock<Created>>(AR_LOCK, AR_SPARE)
         && fits::<Arenas, PAtomicPtr<Arena>>(AR_SPARE, AR_COUNT)
-        && fits::<Arenas, AtomicU32>(AR_COUNT, AR_AUTO)
+        && fits::<Arenas, PAtomicU32>(AR_COUNT, AR_AUTO)
         && fits::<Arenas, u32>(AR_AUTO, AR_INVS)
         && fits::<Arenas, Tracked<Map<int, BoundInv>>>(AR_INVS, AR_COUNT_INV)
         && fits::<Arenas, Tracked<NarenasInv>>(AR_COUNT_INV, AR_SPARE_INV)
@@ -2181,9 +2182,9 @@ const _: () = assert!(
         == MAX_ARENAS * core::mem::size_of::<AtomicPtr<Arena>>()
         && core::mem::align_of::<[AtomicPtr<Arena>; MAX_ARENAS]>()
             == core::mem::align_of::<AtomicPtr<Arena>>()
-        && core::mem::size_of::<[AtomicU32; MAX_ARENAS]>()
-            == MAX_ARENAS * core::mem::size_of::<AtomicU32>()
-        && core::mem::align_of::<[AtomicU32; MAX_ARENAS]>() == core::mem::align_of::<AtomicU32>()
+        && core::mem::size_of::<[PAtomicU32; MAX_ARENAS]>()
+            == MAX_ARENAS * core::mem::size_of::<PAtomicU32>()
+        && core::mem::align_of::<[PAtomicU32; MAX_ARENAS]>() == core::mem::align_of::<PAtomicU32>()
 );
 
 verus! {
@@ -2195,7 +2196,7 @@ verus! {
 #[allow(dead_code)]
 pub(crate) tracked struct ArenasParts {
     tracked lock: PointsTo<Lock<Created>>,
-    tracked count: PointsTo<AtomicU32>,
+    tracked count: PointsTo<PAtomicU32>,
     tracked auto: PointsTo<u32>,
     tracked invs: PointsTo<Tracked<Map<int, BoundInv>>>,
     tracked count_inv: PointsTo<Tracked<NarenasInv>>,
@@ -2209,7 +2210,7 @@ impl ArenasParts {
     spec fn at(&self, p: *mut Arenas) -> bool {
         &&& storage_ok(p)
         &&& self.lock.ptr() == field_ptr::<Arenas, Lock<Created>>(p, AR_LOCK)
-        &&& self.count.ptr() == field_ptr::<Arenas, AtomicU32>(p, AR_COUNT)
+        &&& self.count.ptr() == field_ptr::<Arenas, PAtomicU32>(p, AR_COUNT)
         &&& self.auto.ptr() == field_ptr::<Arenas, u32>(p, AR_AUTO)
         &&& self.invs.ptr() == field_ptr::<Arenas, Tracked<Map<int, BoundInv>>>(p, AR_INVS)
         &&& self.count_inv.ptr() == field_ptr::<Arenas, Tracked<NarenasInv>>(p, AR_COUNT_INV)
@@ -2217,8 +2218,8 @@ impl ArenasParts {
         &&& self.spare_inv.ptr() == field_ptr::<Arenas, Tracked<SpareInv>>(p, AR_SPARE_INV)
         &&& in_alloc(field_ptr::<Arenas, AtomicPtr<Arena>>(p, AR_TABLE), MAX_ARENAS as int * size_of::<AtomicPtr<Arena>>())
         &&& MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX
-        &&& in_alloc(field_ptr::<Arenas, AtomicU32>(p, AR_BOUND), MAX_ARENAS as int * size_of::<AtomicU32>())
-        &&& MAX_ARENAS * size_of::<AtomicU32>() <= isize::MAX
+        &&& in_alloc(field_ptr::<Arenas, PAtomicU32>(p, AR_BOUND), MAX_ARENAS as int * size_of::<PAtomicU32>())
+        &&& MAX_ARENAS * size_of::<PAtomicU32>() <= isize::MAX
     }
 }
 
@@ -2228,8 +2229,8 @@ spec fn tables_at(m: Map<int, PointsTo<AtomicPtr<Arena>>>, p: *mut Arenas) -> bo
 }
 
 /// The bound count permissions of the `Arenas` at `p`, element by element.
-spec fn bounds_at(m: Map<int, PointsTo<AtomicU32>>, p: *mut Arenas) -> bool {
-    elems_at(m, field_ptr::<Arenas, AtomicU32>(p, AR_BOUND), 0, MAX_ARENAS as int)
+spec fn bounds_at(m: Map<int, PointsTo<PAtomicU32>>, p: *mut Arenas) -> bool {
+    elems_at(m, field_ptr::<Arenas, PAtomicU32>(p, AR_BOUND), 0, MAX_ARENAS as int)
 }
 
 /// Byte `x` is in the field of type `T` at offset `off` of the `Arenas`
@@ -2245,10 +2246,10 @@ spec fn arenas_pad_covers(pad: PointsToRaw, p: *mut Arenas) -> bool {
     forall|x: int|
         p@.addr <= x < p@.addr + size_of::<Arenas>() ==> #[trigger] pad.dom().contains(x)
             || in_arenas_field::<[AtomicPtr<Arena>; MAX_ARENAS]>(x, p, AR_TABLE)
-            || in_arenas_field::<[AtomicU32; MAX_ARENAS]>(x, p, AR_BOUND)
+            || in_arenas_field::<[PAtomicU32; MAX_ARENAS]>(x, p, AR_BOUND)
             || in_arenas_field::<Lock<Created>>(x, p, AR_LOCK)
             || in_arenas_field::<PAtomicPtr<Arena>>(x, p, AR_SPARE)
-            || in_arenas_field::<AtomicU32>(x, p, AR_COUNT)
+            || in_arenas_field::<PAtomicU32>(x, p, AR_COUNT)
             || in_arenas_field::<u32>(x, p, AR_AUTO)
             || in_arenas_field::<Tracked<Map<int, BoundInv>>>(x, p, AR_INVS)
             || in_arenas_field::<Tracked<NarenasInv>>(x, p, AR_COUNT_INV)
@@ -2263,7 +2264,7 @@ impl Arenas {
     proof fn split(tracked perm: PointsTo<Arenas>) -> (tracked r: (
         ArenasParts,
         Map<int, PointsTo<AtomicPtr<Arena>>>,
-        Map<int, PointsTo<AtomicU32>>,
+        Map<int, PointsTo<PAtomicU32>>,
         PointsToRaw,
     ))
         requires
@@ -2294,10 +2295,10 @@ impl Arenas {
         let tracked raw = perm.into_raw();
         axiom_raw_readable(&raw, p as *mut u8, size_of::<Arenas>() as int);
         let tracked (table, raw) = take_field::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(raw, p, AR_TABLE, AR_BOUND as int);
-        let tracked (bound, raw) = take_field::<Arenas, [AtomicU32; MAX_ARENAS]>(raw, p, AR_BOUND, AR_LOCK as int);
+        let tracked (bound, raw) = take_field::<Arenas, [PAtomicU32; MAX_ARENAS]>(raw, p, AR_BOUND, AR_LOCK as int);
         let tracked (lock, raw) = take_field::<Arenas, Lock<Created>>(raw, p, AR_LOCK, AR_SPARE as int);
         let tracked (spare, raw) = take_field::<Arenas, PAtomicPtr<Arena>>(raw, p, AR_SPARE, AR_COUNT as int);
-        let tracked (count, raw) = take_field::<Arenas, AtomicU32>(raw, p, AR_COUNT, AR_AUTO as int);
+        let tracked (count, raw) = take_field::<Arenas, PAtomicU32>(raw, p, AR_COUNT, AR_AUTO as int);
         let tracked (auto, raw) = take_field::<Arenas, u32>(raw, p, AR_AUTO, AR_INVS as int);
         let tracked (invs, raw) = take_field::<Arenas, Tracked<Map<int, BoundInv>>>(raw, p, AR_INVS, AR_COUNT_INV as int);
         let tracked (count_inv, raw) = take_field::<Arenas, Tracked<NarenasInv>>(raw, p, AR_COUNT_INV, AR_SPARE_INV as int);
@@ -2308,21 +2309,21 @@ impl Arenas {
             size_of::<Arenas>() as int,
         );
         axiom_array_layout::<AtomicPtr<Arena>, MAX_ARENAS>();
-        axiom_array_layout::<AtomicU32, MAX_ARENAS>();
+        axiom_array_layout::<PAtomicU32, MAX_ARENAS>();
         assert(0 < MAX_ARENAS * size_of::<AtomicPtr<Arena>>()) by (nonlinear_arith)
             requires
                 0 < MAX_ARENAS,
                 0 < size_of::<AtomicPtr<Arena>>(),
         ;
-        assert(0 < MAX_ARENAS * size_of::<AtomicU32>()) by (nonlinear_arith)
+        assert(0 < MAX_ARENAS * size_of::<PAtomicU32>()) by (nonlinear_arith)
             requires
                 0 < MAX_ARENAS,
-                0 < size_of::<AtomicU32>(),
+                0 < size_of::<PAtomicU32>(),
         ;
         let tracked tables = split_array(table);
         let tracked bounds = split_array(bound);
         lemma_field_cast::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS], AtomicPtr<Arena>>(p, AR_TABLE);
-        lemma_field_cast::<Arenas, [AtomicU32; MAX_ARENAS], AtomicU32>(p, AR_BOUND);
+        lemma_field_cast::<Arenas, [PAtomicU32; MAX_ARENAS], PAtomicU32>(p, AR_BOUND);
         (ArenasParts { lock, count, auto, invs, count_inv, spare, spare_inv }, tables, bounds, pad)
     }
 }
@@ -2339,7 +2340,7 @@ impl Arenas {
 axiom fn axiom_arenas_assemble(
     tracked parts: ArenasParts,
     tracked tables: Map<int, PointsTo<AtomicPtr<Arena>>>,
-    tracked bounds: Map<int, PointsTo<AtomicU32>>,
+    tracked bounds: Map<int, PointsTo<PAtomicU32>>,
     tracked pad: PointsToRaw,
     p: *mut Arenas,
 ) -> (tracked a: PointsTo<Arenas>)
@@ -2553,17 +2554,17 @@ impl Arenas {
         this: *mut Arenas,
         i: usize,
         Tracked(t): Tracked<&mut PointsTo<AtomicPtr<Arena>>>,
-        Tracked(b): Tracked<&mut PointsTo<AtomicU32>>,
+        Tracked(b): Tracked<&mut PointsTo<PAtomicU32>>,
     ) -> (r: Tracked<(CountPerm, EntryPerm<Arena>)>)
         requires
             storage_ok(this),
             i < MAX_ARENAS,
             old(t).ptr() == ptr_add(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), i),
-            old(b).ptr() == ptr_add(field_ptr::<Arenas, AtomicU32>(this, AR_BOUND), i),
+            old(b).ptr() == ptr_add(field_ptr::<Arenas, PAtomicU32>(this, AR_BOUND), i),
             in_alloc(field_ptr::<Arenas, AtomicPtr<Arena>>(this, AR_TABLE), MAX_ARENAS as int * size_of::<AtomicPtr<Arena>>()),
             MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
-            in_alloc(field_ptr::<Arenas, AtomicU32>(this, AR_BOUND), MAX_ARENAS as int * size_of::<AtomicU32>()),
-            MAX_ARENAS * size_of::<AtomicU32>() <= isize::MAX,
+            in_alloc(field_ptr::<Arenas, PAtomicU32>(this, AR_BOUND), MAX_ARENAS as int * size_of::<PAtomicU32>()),
+            MAX_ARENAS * size_of::<PAtomicU32>() <= isize::MAX,
         ensures
             final(t).ptr() == old(t).ptr(),
             final(t).is_init(),
@@ -2580,7 +2581,7 @@ impl Arenas {
         // SAFETY: element `i` of each array field, through its permission.
         unsafe {
             let table: *mut AtomicPtr<Arena> = field_at(this, AR_TABLE);
-            let bound: *mut AtomicU32 = field_at(this, AR_BOUND);
+            let bound: *mut PAtomicU32 = field_at(this, AR_BOUND);
             let (e, Tracked(eperm)) = crate::vspec::entry::new(ptr::null_mut());
             ptr_mut_write(elem_at(table, i, MAX_ARENAS), Tracked(t), e);
             let (c, Tracked(cperm)) = crate::vspec::count::new(0);
@@ -2868,7 +2869,7 @@ impl Arenas {
                         assert(b0.contains_key(j));
                     }
                     assert forall|j: int| 0 <= j < MAX_ARENAS implies (#[trigger] bounds[j]).ptr()
-                        == ptr_add(field_ptr::<Arenas, AtomicU32>(this, AR_BOUND), j as usize) by {
+                        == ptr_add(field_ptr::<Arenas, PAtomicU32>(this, AR_BOUND), j as usize) by {
                         assert(b0.contains_key(j));
                     }
                     assert forall|j: int| 0 <= j < i + 1 implies (#[trigger] tables[j]).is_init() by {
@@ -3062,7 +3063,7 @@ impl Arenas {
                 held = auth@.len() as int;
                 vstd::set::lemma_set_contains_len(auth@, t.tok@);
             }
-            prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));
+            prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Tracked(&mut perm));
             proof {
                 let n = auth@.len() as int;
                 let ghost s0 = auth@;
@@ -3272,7 +3273,7 @@ impl Arenas {
             proof {
                 v.auth.agree(c.half.borrow());
             }
-            r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));
+            r = crate::vspec::count::load(&self.count, Tracked(&v.count));
         });
         r
     }
@@ -3454,7 +3455,7 @@ impl Arenas {
         let n;
         vstd::open_atomic_invariant!(inv => v => {
             let tracked (perm, auth, next) = v;
-            n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));
+            n = crate::vspec::count::load(&self.bound[i], Tracked(&perm));
             proof {
                 assert(n == wrap32(auth@.len() as int));
                 v = (perm, auth, next);
@@ -3480,7 +3481,7 @@ impl Arenas {
         let tracked t;
         vstd::open_atomic_invariant!(inv => v => {
             let tracked (mut perm, mut auth, next) = v;
-            crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));
+            crate::vspec::count::fetch_add(&self.bound[i], 1, Tracked(&mut perm));
             proof {
                 let n = auth@.len() as int;
                 t = Homed { tok: new_ticket(&mut auth, next@), arena: i as int };
@@ -3504,7 +3505,7 @@ impl Arenas {
         }
         let r;
         vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
-            r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));
+            r = crate::vspec::count::load(&self.count, Tracked(&v.count));
         });
         r
     }
@@ -3579,7 +3580,7 @@ impl Arenas {
         let r;
         vstd::open_atomic_invariant!(inv => v => {
             let tracked (mut perm, mut auth, next) = v;
-            r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm));
+            r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Tracked(&mut perm));
             proof {
                 if r is Ok {
                     let n = auth@.len() as int;
@@ -4086,7 +4087,7 @@ impl Arenas {
             proof {
                 v.auth.agree(c.half.borrow());
             }
-            crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut v.count));
+            crate::vspec::count::store(&self.count, index + 1, Tracked(&mut v.count));
             proof {
                 let ghost s0 = v.auth@;
                 v.auth.update(c.half.borrow_mut(), ((index + 1) as u32, s0.1));
@@ -4381,7 +4382,7 @@ mod array_layout_tests {
         (
             "arena.rs:",
             "proof fn split(tracked perm: PointsTo<Arenas>)",
-            "AtomicU32",
+            "PAtomicU32",
             "MAX_ARENAS",
             1,
             concat!(

@@ -287,7 +287,7 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/arena.rs",
         &[
-            "prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));",
+            "prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Tracked(&mut perm));",
             "if prev == 0 {",
             "unbind_unbound(index);",
             "pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)",
@@ -299,13 +299,13 @@ const PINS: &[(&str, &[&str])] = &[
             "if key_less(key, best_key) {",
             "if key == (0, false) {",
             "let t = self.count_in(best);",
-            "n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));",
-            "crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));",
-            "r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));",
+            "n = crate::vspec::count::load(&self.bound[i], Tracked(&perm));",
+            "crate::vspec::count::fetch_add(&self.bound[i], 1, Tracked(&mut perm));",
+            "r = crate::vspec::count::load(&self.count, Tracked(&v.count));",
             "if self.load_bound(i) != 0 {",
             "return (false, Tracked(no_ticket(index)));",
             "self.bind_if_idle(i)",
-            "r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm));",
+            "r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Tracked(&mut perm));",
             "shared.set_multi_arena();",
             "crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));",
             "let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));",
@@ -314,7 +314,7 @@ const PINS: &[(&str, &[&str])] = &[
             "return None;",
             "if self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under)).is_none() {",
             "c.n = index + 1;",
-            "crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut v.count));",
+            "crate::vspec::count::store(&self.count, index + 1, Tracked(&mut v.count));",
         ],
     ),
     // `Policy::position` and `apply`'s swap (tests/loom/src/position.rs),
@@ -322,8 +322,8 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/policy.rs",
         &[
-            "f = crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked(&perm));",
-            "prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Ordering::Relaxed, Tracked(&mut perm));",
+            "f = crate::vspec::count::load(&self.scaled16, Tracked(&perm));",
+            "prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Tracked(&mut perm));",
             "changed = (prev_frac != scaled) || changed;",
             "let n = shared.arenas.count() as usize;",
             "if let Some(arena) = shared.arenas.get_existing(i as u16) {",
@@ -360,7 +360,7 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/api/mod.rs",
         &[
-            "s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));",
+            "s = crate::vspec::count::load(word, Tracked(&v.perm));",
             "s = crate::vspec::byte::load(w, Ordering::Acquire, Tracked(&v.perm));",
             "won = crate::vspec::byte::compare_exchange(w, LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
             "crate::vspec::byte::store(w, LINE_READY, Ordering::Release, Tracked(&mut v.perm));",
@@ -381,8 +381,8 @@ const PINS: &[(&str, &[&str])] = &[
             "if crate::lock::in_child_fork_window() {",
             "feature_line_fork_child(Tracked(published));",
             "core::hint::spin_loop();",
-            "won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
-            "crate::vspec::count::store(word, READY, Ordering::Release, Tracked(&mut v.perm));",
+            "won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Tracked(&mut v.perm));",
+            "crate::vspec::count::store(word, READY, Tracked(&mut v.perm));",
             "let (won, Tracked(parts)) = claim_init(Tracked(&mut seen));",
             "match won {",
             "Ok(_) => {",
@@ -636,15 +636,15 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));",
-                "self.state.load(Ordering::Acquire) == READY",
+                "s = crate::vspec::count::load(word, Tracked(&v.perm));",
+                "self.state.load(Ordering::SeqCst) == READY",
             ),
             (
                 "fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half): Tracked<GhostVar<bool>>) -> (r: Tracked<&'static ReadyMark>)",
                 "",
             ),
             (
-                "crate::vspec::count::store(word, READY, Ordering::Release, Tracked(&mut v.perm));",
+                "crate::vspec::count::store(word, READY, Tracked(&mut v.perm));",
                 "self.state.store(READY, PUBLISH);",
             ),
         ],
@@ -780,8 +780,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "src/arena.rs",
         &[
             (
-                "prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Ordering::Relaxed, Tracked(&mut perm));",
-                "let prev = count::fetch_sub(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());",
+                "prev = crate::vspec::count::fetch_sub(&self.bound[index as usize], 1, Tracked(&mut perm));",
+                "let prev = count::fetch_sub(&self.bound[i], 1, Tracked::assume_new());",
             ),
             (
                 "if prev == 0 {",
@@ -809,13 +809,13 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("g.unlock();", "drop(g);"),
             ("fn load_bound(&self, i: usize) -> u32", ""),
             (
-                "n = crate::vspec::count::load(&self.bound[i], Ordering::Relaxed, Tracked(&perm));",
-                "count::load(&self.bound[i], Ordering::Relaxed, Tracked::assume_new())",
+                "n = crate::vspec::count::load(&self.bound[i], Tracked(&perm));",
+                "count::load(&self.bound[i], Tracked::assume_new())",
             ),
             ("fn count_in(&self, i: usize) -> (r: Tracked<Homed>)", ""),
             (
-                "crate::vspec::count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked(&mut perm));",
-                "count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());",
+                "crate::vspec::count::fetch_add(&self.bound[i], 1, Tracked(&mut perm));",
+                "count::fetch_add(&self.bound[i], 1, Tracked::assume_new());",
             ),
             (
                 "pub fn try_bind_idle(&self, index: u16) -> (r: (bool, Tracked<Homed>))",
@@ -834,8 +834,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm));",
-                "count::compare_exchange(\n&self.bound[i],\n0,\n1,\nOrdering::Relaxed,\nOrdering::Relaxed,\nTracked::assume_new(),\n)",
+                "r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Tracked(&mut perm));",
+                "count::compare_exchange(&self.bound[i], 0, 1, Tracked::assume_new()).is_ok()",
             ),
         ],
     ),
@@ -863,8 +863,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "fn count(&self) -> u32 {",
             ),
             (
-                "r = crate::vspec::count::load(&self.count, Ordering::Acquire, Tracked(&v.count));",
-                "count::load(&self.count, Ordering::Acquire, Tracked::assume_new())",
+                "r = crate::vspec::count::load(&self.count, Tracked(&v.count));",
+                "count::load(&self.count, Tracked::assume_new())",
             ),
             ("fn build<'a>(", ""),
             (
@@ -897,8 +897,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "unsafe { *self.next.get() = index + 1 };",
             ),
             (
-                "crate::vspec::count::store(&self.count, index + 1, Ordering::Release, Tracked(&mut v.count));",
-                "count::store(&self.count, index + 1, PUBLISH, Tracked::assume_new());",
+                "crate::vspec::count::store(&self.count, index + 1, Tracked(&mut v.count));",
+                "count::store(&self.count, index + 1, Tracked::assume_new());",
             ),
         ],
     ),
@@ -1116,8 +1116,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "s = crate::vspec::count::load(word, Ordering::Acquire, Tracked(&v.perm));",
-                "let s = self.state.load(Ordering::Acquire);",
+                "s = crate::vspec::count::load(word, Tracked(&v.perm));",
+                "let s = self.state.load(Ordering::SeqCst);",
             ),
             ("pub fn shared() -> (r: &'static Shared)", ""),
             (
@@ -1138,15 +1138,15 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));",
-                "self.state\n.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);",
+                "won = crate::vspec::count::compare_exchange(word, UNINIT, INITIALISING, Tracked(&mut v.perm));",
+                "self.state\n.compare_exchange(UNINIT, INITIALISING, Ordering::SeqCst, Ordering::SeqCst);",
             ),
             (
                 "fn publish_ready(Tracked(published): Tracked<&'static Published>, Tracked(half): Tracked<GhostVar<bool>>) -> (r: Tracked<&'static ReadyMark>)",
                 "",
             ),
             (
-                "crate::vspec::count::store(word, READY, Ordering::Release, Tracked(&mut v.perm));",
+                "crate::vspec::count::store(word, READY, Tracked(&mut v.perm));",
                 "self.state.store(READY, PUBLISH);",
             ),
             (
@@ -1504,7 +1504,7 @@ const GENMC_SHIPPED: &[(&str, &[&str])] = &[
     (
         "flags.rs",
         &[
-            "const PUBLISH: Ordering = Ordering::Release;",
+            "const PUBLISH: Ordering = Ordering::SeqCst;",
             "const BITS: u8 = ROUTE;",
         ],
     ),
@@ -1525,7 +1525,7 @@ const GENMC_SHIPPED: &[(&str, &[&str])] = &[
     (
         "narenas.rs",
         &[
-            "const PUBLISH: Ordering = Ordering::Release;",
+            "const EARLY: bool = false;",
             "const ENTRY: Ordering = Ordering::Release;",
         ],
     ),
@@ -1541,7 +1541,7 @@ const GENMC_SHIPPED: &[(&str, &[&str])] = &[
     (
         "init.rs",
         &[
-            "const PUBLISH: Ordering = Ordering::Release;",
+            "const PUBLISH: Ordering = Ordering::SeqCst;",
             "const UNPUBLISHED: bool = false;",
         ],
     ),

@@ -3,8 +3,9 @@
 //! `crate::sync::atomic` is loom's (`src/sync.rs`): the models call these
 //! bodies, not copies of them. The `const fn new`s of `byte`, `count` and
 //! `entry` are left out under `cfg(loom)` (loom's atomics are not built
-//! in `const`), so the models make the atomic with loom's `new` and pass
-//! the erased permission as `Tracked::assume_new()`.
+//! in `const`), so the models make the atomic with loom's `new` (for
+//! `count`, the `cfg(loom)` stand-in `PAtomicU32::new` of `src/sync.rs`'s
+//! `patomic`) and pass the erased permission as `Tracked::assume_new()`.
 //!
 //! The GenMC harnesses (`tests/genmc/prelude.rs`) compile this file too,
 //! without `cfg(loom)`, so there `crate::sync::atomic` is `core`'s and

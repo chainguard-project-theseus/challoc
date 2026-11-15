@@ -1,7 +1,8 @@
 //! The policy's position (`src/policy.rs`, `Policy::scaled16`), a copy of
 //! the `Policy` steps that touch it through `vspec/count.rs`'s wrappers
-//! (`swap`, `load`), which run here as they are, over loom's `AtomicU32`
-//! (`crate::vspec`), with the steps' orderings (both `Relaxed`):
+//! (`swap`, `load`), which run here as they are, over the `cfg(loom)`
+//! stand-in for vstd's `PAtomicU32` (`src/sync.rs`'s `patomic`, `SeqCst`
+//! on loom's `AtomicU32`):
 //!
 //! - [`Policy::apply`] is the position's step of `Policy::apply`:
 //!   `count::swap` of one more than the band's position (0 outside the
@@ -18,9 +19,9 @@
 //! modification order (what `changed` compares). Left out: the other
 //! fields `apply` writes, each its own `Relaxed` atomic.
 
+use crate::sync::patomic::PAtomicU32;
 use crate::vspec::count;
 use crate::{leak, model};
-use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
 use vstd::prelude::Tracked;
 
@@ -35,9 +36,9 @@ const B: u32 = FRAC_ONE + 1;
 
 struct Policy {
     /// `Policy::scaled16`.
-    scaled16: AtomicU32,
-    /// The swap of [`Policy::apply`] split into a load and a store, for
-    /// the control.
+    scaled16: PAtomicU32,
+    /// The swap of [`Policy::apply`] split into a `load` and a `store`
+    /// (the wrappers), for the control.
     split: bool,
 }
 
@@ -45,29 +46,24 @@ impl Policy {
     /// `Policy::new`: position 0.
     fn new(split: bool) -> Policy {
         Policy {
-            scaled16: AtomicU32::new(0),
+            scaled16: PAtomicU32::new(0).0,
             split,
         }
     }
 
     /// `Policy::position`.
     fn position(&self) -> u32 {
-        count::load(&self.scaled16, Ordering::Relaxed, Tracked::assume_new())
+        count::load(&self.scaled16, Tracked::assume_new())
     }
 
     /// `Policy::apply`'s swap of the position: the previous value.
     fn apply(&self, scaled: u32) -> u32 {
         if self.split {
-            let prev = self.scaled16.load(Ordering::Relaxed);
-            self.scaled16.store(scaled, Ordering::Relaxed);
+            let prev = count::load(&self.scaled16, Tracked::assume_new());
+            count::store(&self.scaled16, scaled, Tracked::assume_new());
             prev
         } else {
-            count::swap(
-                &self.scaled16,
-                scaled,
-                Ordering::Relaxed,
-                Tracked::assume_new(),
-            )
+            count::swap(&self.scaled16, scaled, Tracked::assume_new())
         }
     }
 }

@@ -65,6 +65,7 @@ use crate::lock::LockOrder;
 use crate::lock::rank_class;
 use crate::purge::NEVER;
 use crate::stats::fig_add64;
+use crate::sync::patomic::PAtomicU32;
 use crate::sys::cgroup::{Cgroup, LEVELS, UNLIMITED};
 use crate::vspec::count::CountPerm;
 #[cfg(verus_keep_ghost)]
@@ -716,7 +717,7 @@ pub struct Policy {
     /// so `Scaled(0)` at the 70% edge is told from `Low`; 0 outside it.
     /// Read and written only through the `vspec::count` wrappers, inside
     /// [`FracPred`]'s invariant: a direct access would bypass its bound.
-    scaled16: AtomicU32,
+    scaled16: PAtomicU32,
     /// In the immediate band.
     immediate: AtomicBool,
     /// Keep ratio for the walks ([`KEEP_ALL`] when uncapped).
@@ -823,7 +824,7 @@ impl Policy {
         }
         let f;
         vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
-            f = crate::vspec::count::load(&self.scaled16, Ordering::Relaxed, Tracked(&perm));
+            f = crate::vspec::count::load(&self.scaled16, Tracked(&perm));
         });
         f
     }
@@ -937,7 +938,7 @@ impl Policy {
         }
         let prev_frac;
         vstd::open_atomic_invariant!(self.frac_inv.borrow() => perm => {
-            prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Ordering::Relaxed, Tracked(&mut perm));
+            prev_frac = crate::vspec::count::swap(&self.scaled16, scaled, Tracked(&mut perm));
         });
         changed = (prev_frac != scaled) || changed;
         changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;

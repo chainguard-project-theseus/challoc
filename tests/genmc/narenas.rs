@@ -1,33 +1,35 @@
 // GenMC port of tests/loom/src/narenas.rs: the arena registry's arena
 // count and table (`src/arena.rs`, `Arenas::count`, `Arenas::table`).
-// challoc's `vspec/count.rs` wrappers (`store`, `load`, over the
-// `AtomicU32` count) and `vspec/entry.rs`'s (`store`, `load`, over the
-// `AtomicPtr` entries) run unchanged over `core` atomics;
-// `Arenas::create`, `count`, `get_existing`'s load and the scan below the
-// count are copies, as in the loom model, with the source's orderings.
-// The creation lock is genmc-std's `Mutex`, not the `RawLock` copy:
-// GenMC has no futex.
+// challoc's `vspec/count.rs` wrappers (`store`, `load`, over the count,
+// vstd's `PAtomicU32`, `SeqCst` on `core`'s `AtomicU32`) and
+// `vspec/entry.rs`'s (`store`, `load`, over the `AtomicPtr` entries) run
+// unchanged; `Arenas::create`, `count`, `get_existing`'s load and the
+// scan below the count are copies, as in the loom model, with the
+// source's orderings. The creation lock is genmc-std's `Mutex`, not the
+// `RawLock` copy: GenMC has no futex.
 //
 // Two threads each create an arena while the main thread probes and
 // scans the registry; then a third creation finds the table full.
-// `PUBLISH` and `ENTRY` are the orderings of the count's and the entry's
-// stores (`Release` as shipped; loom's controls make each `Relaxed`).
-// Each arena's fields are a plain value `build` writes before the entry,
-// so a reader that finds the entry without the writes ordered before it
-// is a non-atomic race. The readers' plain reads are volatile: at
-// `-Copt-level=1` LLVM may hoist a plain read of a static above the
-// null test that guards it, a race the source does not have.
+// `EARLY` stores the count before `build` stores the entry (`false` as
+// shipped; loom's control sets it), and `ENTRY` is the ordering of the
+// entry's store (`Release` as shipped; loom's control makes it
+// `Relaxed`). Each arena's fields are a plain value `build` writes
+// before the entry, so a reader that finds the entry without the writes
+// ordered before it is a non-atomic race. The readers' plain reads are
+// volatile: at `-Copt-level=1` LLVM may hoist a plain read of a static
+// above the null test that guards it, a race the source does not have.
 //
 // The seam ledger cites this template's pass cases (verus/SEAMS.md,
-// "Status") for `count::store`, `count::load`, `entry::store` and
-// `entry::load`, as evidence only: the permissions are erased
-// (`Tracked::assume_new()`), so no case checks a wrapper's contract.
+// "Status") for `entry::store` and `entry::load`, as evidence only: the
+// permissions are erased (`Tracked::assume_new()`), so no case checks a
+// wrapper's contract. The count's wrappers are verified (no seams).
 
+use crate::sync::patomic::PAtomicU32;
 use crate::vspec::{count, entry};
 use core::cell::UnsafeCell;
 use core::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::thread;
 use vstd::prelude::Tracked;
 
@@ -41,7 +43,7 @@ struct Arenas {
     lock: Mutex<()>,
     // The creation lock's value: the next index.
     next: UnsafeCell<u32>,
-    count: AtomicU32,
+    count: PAtomicU32,
     // A non-null entry stands for a built arena.
     table: [AtomicPtr<u64>; MAX_ARENAS as usize],
     fields: [UnsafeCell<u64>; MAX_ARENAS as usize],
@@ -56,7 +58,7 @@ unsafe impl Sync for Arenas {}
 static A: Arenas = Arenas {
     lock: Mutex::new(()),
     next: UnsafeCell::new(AUTO),
-    count: AtomicU32::new(AUTO),
+    count: count::new(AUTO).0,
     table: [
         AtomicPtr::new(ptr::dangling_mut()),
         AtomicPtr::new(ptr::null_mut()),
@@ -74,7 +76,7 @@ impl Arenas {
 
     // `Arenas::count`.
     fn count(&self) -> u32 {
-        count::load(&self.count, Ordering::Acquire, Tracked::assume_new())
+        count::load(&self.count, Tracked::assume_new())
     }
 
     fn field(&self, i: usize) -> u64 {
@@ -106,6 +108,9 @@ impl Arenas {
         }
         // `build`: `Arena::init`, then the entry.
         let i = index as usize;
+        if EARLY {
+            count::store(&self.count, index + 1, Tracked::assume_new());
+        }
         // SAFETY: entry `i` is not published yet.
         unsafe { *self.fields[i].get() = u64::from(index) + 1 };
         entry::store(
@@ -116,7 +121,9 @@ impl Arenas {
         );
         // SAFETY: under the lock.
         unsafe { *self.next.get() = index + 1 };
-        count::store(&self.count, index + 1, PUBLISH, Tracked::assume_new());
+        if !EARLY {
+            count::store(&self.count, index + 1, Tracked::assume_new());
+        }
         drop(g);
         Some(index)
     }

@@ -1,11 +1,11 @@
 // GenMC port of tests/loom/src/count.rs: the arena registry's bound
 // counts (`src/arena.rs`, `Arenas::bound`). challoc's `vspec/count.rs`
 // wrappers (`fetch_add`, `fetch_sub`, `load`, `compare_exchange`) run
-// unchanged over `core` atomics; `Arenas::count_in`, `unbind`,
-// `load_bound`, `assign` and `try_bind_idle` are copies, as in the loom
-// model, with the source's orderings (all `Relaxed`). The creation lock
-// is genmc-std's `Mutex` (GenMC's own lock), not the `RawLock` copy:
-// GenMC has no futex.
+// unchanged over vstd's `PAtomicU32` (`SeqCst` on `core`'s `AtomicU32`);
+// `Arenas::count_in`, `unbind`, `load_bound`, `assign` and
+// `try_bind_idle` are copies, as in the loom model. The creation lock is
+// genmc-std's `Mutex` (GenMC's own lock), not the `RawLock` copy: GenMC
+// has no futex.
 //
 // `MODE` 0 is loom's `run`: the main thread's heap is homed on arena 0
 // and counts a second heap in on arena 1 and out again, while two
@@ -13,17 +13,15 @@
 // `run_idle`: two threads race `try_bind_idle` on the idle arena 1,
 // with (`RIVAL`) the main thread counting a heap in and out of it.
 // `SPLIT` and `SPLIT_CAS` are loom's controls: the `fetch_add` or the
-// `compare_exchange` split into a load and a store.
+// `compare_exchange` split into the wrappers' `load` and `store`.
 //
-// The seam ledger cites this template's pass cases (verus/SEAMS.md,
-// "Status") for `count::fetch_add`, `count::fetch_sub`, `count::load`
-// and `count::compare_exchange`, as evidence only: the permissions are
-// erased (`Tracked::assume_new()`), so no case checks a wrapper's
-// contract.
+// The wrappers are verified (no seams); the pass cases check the
+// callers' ticket protocol around them. The permissions are erased in
+// this build (`Tracked::assume_new()`).
 
+use crate::sync::patomic::PAtomicU32;
 use crate::vspec::count;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use vstd::prelude::Tracked;
 
@@ -34,33 +32,33 @@ const BUILT: [bool; NARENAS] = [true, false];
 
 struct Arenas {
     lock: Mutex<()>,
-    bound: [AtomicU32; NARENAS],
+    bound: [PAtomicU32; NARENAS],
 }
 
 static A: Arenas = Arenas {
     lock: Mutex::new(()),
-    bound: [AtomicU32::new(0), AtomicU32::new(0)],
+    bound: [count::new(0).0, count::new(0).0],
 };
 
 impl Arenas {
     // `Arenas::load_bound`.
     fn load_bound(&self, i: usize) -> u32 {
-        count::load(&self.bound[i], Ordering::Relaxed, Tracked::assume_new())
+        count::load(&self.bound[i], Tracked::assume_new())
     }
 
     // `Arenas::count_in`: a fresh ticket for arena `i`.
     fn count_in(&self, i: usize) {
         if SPLIT {
-            let n = self.bound[i].load(Ordering::Relaxed);
-            self.bound[i].store(n.wrapping_add(1), Ordering::Relaxed);
+            let n = count::load(&self.bound[i], Tracked::assume_new());
+            count::store(&self.bound[i], n.wrapping_add(1), Tracked::assume_new());
         } else {
-            count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());
+            count::fetch_add(&self.bound[i], 1, Tracked::assume_new());
         }
     }
 
     // `Arenas::unbind`: the ticket for arena `i` goes back.
     fn unbind(&self, i: usize) {
-        let prev = count::fetch_sub(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());
+        let prev = count::fetch_sub(&self.bound[i], 1, Tracked::assume_new());
         gassert!(prev != 0, "unbinding a heap that was never bound (count 0)");
     }
 
@@ -91,21 +89,13 @@ impl Arenas {
             return false;
         }
         if SPLIT_CAS {
-            if self.bound[i].load(Ordering::Relaxed) != 0 {
+            if count::load(&self.bound[i], Tracked::assume_new()) != 0 {
                 return false;
             }
-            self.bound[i].store(1, Ordering::Relaxed);
+            count::store(&self.bound[i], 1, Tracked::assume_new());
             true
         } else {
-            count::compare_exchange(
-                &self.bound[i],
-                0,
-                1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                Tracked::assume_new(),
-            )
-            .is_ok()
+            count::compare_exchange(&self.bound[i], 0, 1, Tracked::assume_new()).is_ok()
         }
     }
 }

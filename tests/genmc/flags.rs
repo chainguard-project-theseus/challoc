@@ -47,7 +47,7 @@ impl Model {
         self.state.store(READY, PUBLISH);
     }
     fn ready(&self) -> bool {
-        self.state.load(Ordering::Acquire) == READY
+        self.state.load(Ordering::SeqCst) == READY
     }
     fn fields(&self) -> (u8, &RouteByte) {
         // SAFETY: called after `READY` (or after every thread is joined),

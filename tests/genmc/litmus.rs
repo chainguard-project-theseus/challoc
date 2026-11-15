@@ -1,7 +1,8 @@
-// Two shapes C11 allows and loom 0.7.2 cannot produce, over challoc's
-// `vspec/count.rs` wrappers (`load`, `store`, run unchanged, `Relaxed`,
-// as `arena.rs` loads the bound counts). Synthetic: no challoc protocol
-// is copied.
+// Two shapes C11 allows and loom 0.7.2 cannot produce, over `core`'s
+// `AtomicU32` with `Relaxed` loads and stores (challoc's `vspec/count.rs`
+// wrappers are vstd's `SeqCst` operations, which forbid both shapes, so
+// they are not the operations here). Synthetic: no challoc protocol is
+// copied.
 //
 // - `MODE` 0, load buffering: each thread loads one count, then stores
 //   the other. `r1 == r2 == 1` needs each load to read a store that is
@@ -14,19 +15,17 @@
 //   stores, 1 included. loom keeps the last 7 stores of an atomic
 //   (`MAX_ATOMIC_HISTORY`), so once the flag store has run, 1 is gone.
 
-use crate::vspec::count;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
-use vstd::prelude::Tracked;
 
 static X: AtomicU32 = AtomicU32::new(0);
 static Y: AtomicU32 = AtomicU32::new(0);
 
 fn ld(c: &AtomicU32) -> u32 {
-    count::load(c, Ordering::Relaxed, Tracked::assume_new())
+    c.load(Ordering::Relaxed)
 }
 fn st(c: &AtomicU32, v: u32) {
-    count::store(c, v, Ordering::Relaxed, Tracked::assume_new())
+    c.store(v, Ordering::Relaxed)
 }
 
 fn harness() {

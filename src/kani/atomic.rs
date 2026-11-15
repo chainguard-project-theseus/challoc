@@ -9,7 +9,7 @@
 //! return any value, the contracts' "any pointer", is what lets other
 //! threads in, and no harness constrains it.
 //!
-//! Then the trusted atomic wrappers of `vspec/byte.rs`, `vspec/count.rs`,
+//! Then the trusted atomic wrappers of `vspec/byte.rs`,
 //! `vspec/entry.rs`, `vspec/word.rs` and `vspec/atom.rs`
 //! (all but its `load_usize_seen`, whose persistent set is ghost, and
 //! `usize_ptr`, checked in its own file), each run on a real `core`
@@ -29,7 +29,7 @@
 //! its harness leaves out. Each module's `*_bad_orders` harness shows that
 //! the orderings a `requires` excludes are the ones `core` panics on.
 
-use crate::vspec::{atom, byte, count, entry, word};
+use crate::vspec::{atom, byte, entry, word};
 use core::cell::Cell;
 use core::sync::atomic::{
     AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
@@ -192,124 +192,6 @@ fn bad_store_order() -> Ordering {
     o
 }
 
-/// `vspec::count::fetch_add`: `prev == old(perm).value()` and
-/// `final(perm).value() == wrap32(prev + v)`, the sum reduced mod 2^32,
-/// which is `wrapping_add`; under every ordering (it has no ordering
-/// `requires`).
-#[kani::proof]
-fn count_fetch_add() {
-    let v0: u32 = kani::any();
-    let v: u32 = kani::any();
-    let c = AtomicU32::new(v0);
-    let prev = count::fetch_add(&c, v, any_order(), Tracked::assume_new());
-    assert_eq!(prev, v0);
-    assert_eq!(c.load(Ordering::Relaxed), prev.wrapping_add(v));
-}
-
-/// `vspec::count::fetch_sub`: `prev == old(perm).value()` and
-/// `final(perm).value() == wrap32(prev - v)`, the difference reduced mod
-/// 2^32 (Verus's `%` on `int` is Euclidean, so a negative difference
-/// wraps up), which is `wrapping_sub`; under every ordering.
-#[kani::proof]
-fn count_fetch_sub() {
-    let v0: u32 = kani::any();
-    let v: u32 = kani::any();
-    let c = AtomicU32::new(v0);
-    let prev = count::fetch_sub(&c, v, any_order(), Tracked::assume_new());
-    assert_eq!(prev, v0);
-    assert_eq!(c.load(Ordering::Relaxed), prev.wrapping_sub(v));
-}
-
-/// `vspec::count::store`: under `!(ordering is Acquire) && !(ordering is
-/// AcqRel)`, `final(perm).value() == v`.
-#[kani::proof]
-fn count_store() {
-    let c = AtomicU32::new(kani::any());
-    let v: u32 = kani::any();
-    count::store(&c, v, store_order(), Tracked::assume_new());
-    assert_eq!(c.load(Ordering::Relaxed), v);
-}
-
-/// `vspec::count::load`: under `!(ordering is Release) && !(ordering is
-/// AcqRel)`, `r == perm.value()`, and the counter is unchanged.
-#[kani::proof]
-fn count_load() {
-    let v0: u32 = kani::any();
-    let c = AtomicU32::new(v0);
-    assert_eq!(count::load(&c, load_order(), Tracked::assume_new()), v0);
-    assert_eq!(c.load(Ordering::Relaxed), v0);
-}
-
-/// `vspec::count::swap`: `prev == old(perm).value()` and
-/// `final(perm).value() == v`, under every ordering.
-#[kani::proof]
-fn count_swap() {
-    let v0: u32 = kani::any();
-    let v: u32 = kani::any();
-    let c = AtomicU32::new(v0);
-    assert_eq!(count::swap(&c, v, any_order(), Tracked::assume_new()), v0);
-    assert_eq!(c.load(Ordering::Relaxed), v);
-}
-
-/// `vspec::count::compare_exchange`: under `!(failure is Release) &&
-/// !(failure is AcqRel)` and any success ordering, `Ok(prev)` means
-/// `prev == current`, the counter held `current` and now holds `new`;
-/// `Err(prev)` means `prev` is the old value, not `current`, and the
-/// counter still holds it. A `kani::cover!` marks each side (Kani reports
-/// whether it is reached, and does not fail when it is not).
-#[kani::proof]
-fn count_compare_exchange() {
-    let v0: u32 = kani::any();
-    let current: u32 = kani::any();
-    let new: u32 = kani::any();
-    let c = AtomicU32::new(v0);
-    let r = count::compare_exchange(
-        &c,
-        current,
-        new,
-        any_order(),
-        load_order(),
-        Tracked::assume_new(),
-    );
-    let now = c.load(Ordering::Relaxed);
-    match r {
-        Ok(prev) => {
-            kani::cover!(true, "count compare_exchange Ok");
-            assert!(prev == current && v0 == current && now == new);
-        }
-        Err(prev) => {
-            kani::cover!(true, "count compare_exchange Err");
-            assert!(prev == v0 && prev != current && now == prev);
-        }
-    }
-}
-
-/// The orderings `vspec::count`'s `requires` exclude panic: a store with
-/// `Acquire` or `AcqRel`, a load with `Release` or `AcqRel`, a
-/// compare-and-swap with a `Release` or `AcqRel` failure ordering. Not
-/// part of a contract.
-#[kani::proof]
-#[kani::should_panic]
-fn count_bad_orders() {
-    let c = AtomicU32::new(kani::any());
-    let pick: u8 = kani::any();
-    if pick == 0 {
-        count::store(&c, kani::any(), bad_store_order(), Tracked::assume_new());
-    } else if pick == 1 {
-        count::load(&c, bad_load_order(), Tracked::assume_new());
-    } else {
-        let _ = count::compare_exchange(
-            &c,
-            kani::any(),
-            kani::any(),
-            any_order(),
-            bad_load_order(),
-            Tracked::assume_new(),
-        );
-    }
-    super::must_not_return();
-}
-
 /// `vspec::byte::load`: under `!(ordering is Release) && !(ordering is
 /// AcqRel)`, `r == perm.value()`, and the byte is unchanged.
 #[kani::proof]
@@ -330,8 +212,12 @@ fn byte_store() {
     assert_eq!(b.load(Ordering::Relaxed), v);
 }
 
-/// `vspec::byte::compare_exchange`: as `count_compare_exchange`, on a
-/// byte.
+/// `vspec::byte::compare_exchange`: under `!(failure is Release) &&
+/// !(failure is AcqRel)` and any success ordering, `Ok(prev)` means
+/// `prev == current`, the byte held `current` and now holds `new`;
+/// `Err(prev)` means `prev` is the old value, not `current`, and the
+/// byte still holds it. A `kani::cover!` marks each side (Kani reports
+/// whether it is reached, and does not fail when it is not).
 #[kani::proof]
 fn byte_compare_exchange() {
     let v0: u8 = kani::any();
@@ -359,8 +245,10 @@ fn byte_compare_exchange() {
     }
 }
 
-/// The orderings `vspec::byte`'s `requires` exclude panic, as
-/// `count_bad_orders`. Not part of a contract.
+/// The orderings `vspec::byte`'s `requires` exclude panic: a store with
+/// `Acquire` or `AcqRel`, a load with `Release` or `AcqRel`, a
+/// compare-and-swap with a `Release` or `AcqRel` failure ordering. Not
+/// part of a contract.
 #[kani::proof]
 #[kani::should_panic]
 fn byte_bad_orders() {

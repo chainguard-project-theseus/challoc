@@ -1,89 +1,57 @@
-//! `u32` counters as atomics with a ghost permission, for the arena
-//! registry's bound counts (`arena.rs`, `Arenas::bound`) and its arena
-//! count (`Arenas::count`), for the cgroup policy's position in the
-//! scaled band (`policy.rs`, `Policy::position`), and for the allocator's
-//! init state (`api/mod.rs`, `STATE.word`).
+//! `u32` counters as vstd permissioned atomics, for the arena registry's
+//! bound counts (`arena.rs`, `Arenas::bound`) and its arena count
+//! (`Arenas::count`), for the cgroup policy's position in the scaled band
+//! (`policy.rs`, `Policy::position`), and for the allocator's init state
+//! (`api/mod.rs`, `STATE.word`).
 //!
-//! The same pattern as `word.rs` for the class bitmap words: a
-//! [`CountPerm`] names the counter's identity and value, each operation is
-//! an `#[verifier::atomic]` function (so it can run inside an
-//! `open_atomic_invariant!` block) that passes the caller's ordering
-//! through unchanged, and `#[inline(always)]` leaves the machine code of
-//! the bare `core` call.
+//! Each counter is a vstd `PAtomicU32`, and its [`CountPerm`] is vstd's
+//! `PermissionU32`: the counter's identity and value. Each operation is
+//! an `#[verifier::atomic]` function over the one vstd operation (so it
+//! can run inside an `open_atomic_invariant!` block), and
+//! `#[inline(always)]` leaves the machine code of that call. vstd's
+//! operations are `SeqCst`. The trusted part is vstd's: each
+//! `PAtomicU32` operation is one atomic operation on the counter, under a
+//! sequentially consistent model, `PAtomicU32::new` mints the one
+//! permission to the atomic it makes, and atomics have distinct
+//! identities.
 //!
-//! Trusted, all of it:
-//! - each wrapped `core` operation is one atomic operation on the counter
-//!   (a load, a store, a swap, a strong compare-and-swap or a
-//!   wrapping read-modify-write), as `core` documents;
-//! - the proof model is sequentially consistent: the specifications ignore
-//!   `ordering`, so nothing here proves that `Relaxed` is strong enough;
-//! - [`count_id`] is the counter's identity, and a permission is for the
-//!   counter with its [`CountPerm::id`]. The identity is a ghost one, as
-//!   vstd's `PAtomicU32::id`: a function of the atomic's value, so fixed
-//!   when `AtomicU32::new` makes the atomic and kept when the atomic is
-//!   moved into place (`Arenas::init`'s writes, `Policy::new`'s and
-//!   `STATE`'s initialiser's struct literals), not its address;
-//! - atomics made by different calls have different identities: assumed,
-//!   as no code makes two atomics Verus can prove equal (it knows nothing
-//!   of `AtomicU32::new`'s result); a `const` item holding [`new`]'s result
-//!   would, each use of it copying one atomic and its permission;
-//! - one permission per counter: [`CountPerm`]'s fields are private to
-//!   this module and [`new`] is the only code that builds one, once, with
-//!   the atomic it makes (`new` itself is verified);
-//! - a permission's value is its counter's: every access to a bound count
-//!   or the arena count goes through these wrappers (`Arenas::assign`,
-//!   `bind`, `try_bind_idle`, `unbind`, `bound`, `count`, `create`), each
-//!   inside the counter's invariant once the registry is built
-//!   (`arena::BoundPred`, `arena::NarenasPred`), and `Arenas::init` writes
-//!   each counter before the registry is published.
-//!   The policy's position goes through [`load`] and [`swap`] only, inside
-//!   its invariant (`policy::FracPred`), which `Policy::new` builds with
-//!   the permission [`new`] returns. `STATE.word` goes through [`load`],
-//!   [`compare_exchange`] and [`store`] only (`api::load_state`,
-//!   `load_state_marked`, `claim_init`, `publish_ready`), inside `STATE`'s
-//!   invariant (`api::StatePred`), which `STATE`'s initialiser builds with
-//!   the permission [`new`] returns.
+//! A permission's value is its counter's: every access to a bound count
+//! or the arena count goes through these wrappers (`Arenas::assign`,
+//! `bind`, `try_bind_idle`, `unbind`, `bound`, `count`, `create`), each
+//! inside the counter's invariant once the registry is built
+//! (`arena::BoundPred`, `arena::NarenasPred`), and `Arenas::init` writes
+//! each counter before the registry is published. The policy's position
+//! goes through [`load`] and [`swap`] only, inside its invariant
+//! (`policy::FracPred`), which `Policy::new` builds with the permission
+//! [`new`] returns. `STATE.word` goes through [`load`],
+//! [`compare_exchange`] and [`store`] only (`api::load_state`,
+//! `load_state_marked`, `claim_init`, `publish_ready`), inside `STATE`'s
+//! invariant (`api::StatePred`), which `STATE`'s initialiser builds with
+//! the permission [`new`] returns.
 
-use crate::sync::atomic::{AtomicU32, Ordering};
+use crate::sync::patomic::{PAtomicU32, PermissionU32};
 use vstd::prelude::*;
 
 verus! {
 
+/// Ghost permission to a counter: vstd's `PermissionU32`, whose `id()` is
+/// the counter's [`count_id`] and whose `value()` is the counter's value.
+pub type CountPerm = PermissionU32;
+
 /// The identity of an atomic counter: what a [`CountPerm`] is for.
-pub uninterp spec fn count_id(c: &AtomicU32) -> int;
+pub open spec fn count_id(c: &PAtomicU32) -> int {
+    c.id()
+}
 
 /// `x` reduced to a `u32` the way the hardware wraps it.
 pub open spec fn wrap32(x: int) -> u32 {
     (x % 0x1_0000_0000) as u32
 }
 
-/// Ghost permission to the counter with identity [`id`](CountPerm::id):
-/// its current [`value`](CountPerm::value). It is not `Copy`, and its
-/// fields are private to this module, which builds one only in [`new`].
-// Ghost: built and read only by proof code.
-#[allow(dead_code)]
-pub tracked struct CountPerm {
-    ghost id: int,
-    ghost value: u32,
-}
-
-impl CountPerm {
-    /// The counter this permission is for.
-    pub closed spec fn id(&self) -> int {
-        self.id
-    }
-
-    /// The counter's value.
-    pub closed spec fn value(&self) -> u32 {
-        self.value
-    }
-}
-
-/// `c.fetch_add(v, ordering)`, wrapping.
+/// `c.fetch_add(v, SeqCst)`, wrapping.
 #[inline(always)]
-#[verifier::external_body]
 #[verifier::atomic]
-pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
+pub fn fetch_add(c: &PAtomicU32, v: u32, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
     requires
         old(perm).id() == count_id(c),
     ensures
@@ -93,14 +61,13 @@ pub fn fetch_add(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
     opens_invariants none
     no_unwind
 {
-    c.fetch_add(v, ordering)
+    c.fetch_add_wrapping(Tracked(perm), v)
 }
 
-/// `c.fetch_sub(v, ordering)`, wrapping.
+/// `c.fetch_sub(v, SeqCst)`, wrapping.
 #[inline(always)]
-#[verifier::external_body]
 #[verifier::atomic]
-pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
+pub fn fetch_sub(c: &PAtomicU32, v: u32, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
     requires
         old(perm).id() == count_id(c),
     ensures
@@ -110,51 +77,42 @@ pub fn fetch_sub(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Track
     opens_invariants none
     no_unwind
 {
-    c.fetch_sub(v, ordering)
+    c.fetch_sub_wrapping(Tracked(perm), v)
 }
 
-/// `c.store(v, ordering)` (it panics for an `Acquire` or `AcqRel`
-/// ordering).
+/// `c.store(v, SeqCst)`.
 #[inline(always)]
-#[verifier::external_body]
 #[verifier::atomic]
-pub fn store(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>)
+pub fn store(c: &PAtomicU32, v: u32, Tracked(perm): Tracked<&mut CountPerm>)
     requires
         old(perm).id() == count_id(c),
-        !(ordering is Acquire),
-        !(ordering is AcqRel),
     ensures
         final(perm).id() == old(perm).id(),
         final(perm).value() == v,
     opens_invariants none
     no_unwind
 {
-    c.store(v, ordering)
+    c.store(Tracked(perm), v)
 }
 
-/// `c.load(ordering)`: the permission's value (it panics for a `Release`
-/// or `AcqRel` ordering).
+/// `c.load(SeqCst)`: the permission's value.
 #[inline(always)]
-#[verifier::external_body]
 #[verifier::atomic]
-pub fn load(c: &AtomicU32, ordering: Ordering, Tracked(perm): Tracked<&CountPerm>) -> (r: u32)
+pub fn load(c: &PAtomicU32, Tracked(perm): Tracked<&CountPerm>) -> (r: u32)
     requires
         perm.id() == count_id(c),
-        !(ordering is Release),
-        !(ordering is AcqRel),
     ensures
         r == perm.value(),
     opens_invariants none
     no_unwind
 {
-    c.load(ordering)
+    c.load(Tracked(perm))
 }
 
-/// `c.swap(v, ordering)`: the previous value.
+/// `c.swap(v, SeqCst)`: the previous value.
 #[inline(always)]
-#[verifier::external_body]
 #[verifier::atomic]
-pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
+pub fn swap(c: &PAtomicU32, v: u32, Tracked(perm): Tracked<&mut CountPerm>) -> (prev: u32)
     requires
         old(perm).id() == count_id(c),
     ensures
@@ -164,46 +122,37 @@ pub fn swap(c: &AtomicU32, v: u32, ordering: Ordering, Tracked(perm): Tracked<&m
     opens_invariants none
     no_unwind
 {
-    c.swap(v, ordering)
+    c.swap(Tracked(perm), v)
 }
 
-/// `AtomicU32::new(v)`, with the one permission to it: the only place a
-/// [`CountPerm`] is minted, one per counter, with the counter it is for.
-/// It must not appear in a `const` item, each use of which would be a
-/// new atomic with the same permission. Not under `cfg(loom)`, whose
-/// `AtomicU32::new` is not `const`.
+/// `PAtomicU32::new(v)`, with the one permission to it, which only vstd's
+/// `new` mints. It must not appear in a `const` item, each use of which
+/// would be a new atomic with the same permission. Not under `cfg(loom)`,
+/// whose atomics are not built in `const`.
 #[cfg(not(loom))]
 #[inline(always)]
-pub const fn new(v: u32) -> (r: (AtomicU32, Tracked<CountPerm>))
+pub const fn new(v: u32) -> (r: (PAtomicU32, Tracked<CountPerm>))
     ensures
         r.1@.id() == count_id(&r.0),
         r.1@.value() == v,
 {
-    let c = AtomicU32::new(v);
-    (c, Tracked(CountPerm { id: count_id(&c), value: v }))
+    PAtomicU32::new(v)
 }
 
-
-/// `c.compare_exchange(current, new, success, failure)`: `Ok` with the
+/// `c.compare_exchange(current, new, SeqCst, SeqCst)`: `Ok` with the
 /// previous value, `current`, when the counter held it and now holds
 /// `new`; otherwise `Err` with the value it holds, unchanged (the strong
-/// form never fails spuriously). It panics for a `Release` or `AcqRel`
-/// failure ordering.
+/// form never fails spuriously).
 #[inline(always)]
-#[verifier::external_body]
 #[verifier::atomic]
 pub fn compare_exchange(
-    c: &AtomicU32,
+    c: &PAtomicU32,
     current: u32,
     new: u32,
-    success: Ordering,
-    failure: Ordering,
     Tracked(perm): Tracked<&mut CountPerm>,
 ) -> (r: Result<u32, u32>)
     requires
         old(perm).id() == count_id(c),
-        !(failure is Release),
-        !(failure is AcqRel),
     ensures
         final(perm).id() == old(perm).id(),
         r matches Ok(prev) ==> prev == current && old(perm).value() == current && final(perm).value() == new,
@@ -211,7 +160,7 @@ pub fn compare_exchange(
     opens_invariants none
     no_unwind
 {
-    c.compare_exchange(current, new, success, failure)
+    c.compare_exchange(Tracked(perm), current, new)
 }
 
 } // verus!

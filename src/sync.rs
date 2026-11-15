@@ -19,15 +19,72 @@ pub(crate) mod atomic {
 /// permission they take is erased.
 pub(crate) mod patomic {
     #[cfg(not(loom))]
-    pub(crate) use vstd::atomic::{PAtomicU8, PermissionU8};
+    pub(crate) use vstd::atomic::{PAtomicU8, PAtomicU32, PermissionU8, PermissionU32};
 
     #[cfg(loom)]
     pub(crate) use loom_patomic::*;
 
     #[cfg(loom)]
     mod loom_patomic {
-        use loom::sync::atomic::{AtomicU8, Ordering};
+        use loom::sync::atomic::{AtomicU8, AtomicU32, Ordering};
         use vstd::prelude::Tracked;
+
+        /// The erased permission of a [`PAtomicU32`].
+        pub(crate) struct PermissionU32;
+
+        /// `vstd::atomic::PAtomicU32` over loom's `AtomicU32`.
+        pub(crate) struct PAtomicU32 {
+            ato: AtomicU32,
+        }
+
+        impl PAtomicU32 {
+            pub(crate) fn new(v: u32) -> (Self, Tracked<PermissionU32>) {
+                (
+                    PAtomicU32 {
+                        ato: AtomicU32::new(v),
+                    },
+                    Tracked::assume_new(),
+                )
+            }
+
+            pub(crate) fn load(&self, _perm: Tracked<&PermissionU32>) -> u32 {
+                self.ato.load(Ordering::SeqCst)
+            }
+
+            pub(crate) fn store(&self, _perm: Tracked<&mut PermissionU32>, v: u32) {
+                self.ato.store(v, Ordering::SeqCst)
+            }
+
+            pub(crate) fn swap(&self, _perm: Tracked<&mut PermissionU32>, v: u32) -> u32 {
+                self.ato.swap(v, Ordering::SeqCst)
+            }
+
+            pub(crate) fn compare_exchange(
+                &self,
+                _perm: Tracked<&mut PermissionU32>,
+                current: u32,
+                new: u32,
+            ) -> Result<u32, u32> {
+                self.ato
+                    .compare_exchange(current, new, Ordering::SeqCst, Ordering::SeqCst)
+            }
+
+            pub(crate) fn fetch_add_wrapping(
+                &self,
+                _perm: Tracked<&mut PermissionU32>,
+                v: u32,
+            ) -> u32 {
+                self.ato.fetch_add(v, Ordering::SeqCst)
+            }
+
+            pub(crate) fn fetch_sub_wrapping(
+                &self,
+                _perm: Tracked<&mut PermissionU32>,
+                v: u32,
+            ) -> u32 {
+                self.ato.fetch_sub(v, Ordering::SeqCst)
+            }
+        }
 
         /// The erased permission of a [`PAtomicU8`].
         pub(crate) struct PermissionU8;

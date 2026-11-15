@@ -19,10 +19,10 @@
 #   reject.
 
 # flags.rs (P5, vspec::flags): the dispatch byte.
-flags1 | flags | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const BUILDERS: usize = 1; const BITS: u8 = ROUTE; | pass
-flags2 | flags | rc11 imm arm8 | const PUBLISH: Ordering = Ordering::Release; const BUILDERS: usize = 2; const BITS: u8 = ROUTE; | pass
+flags1 | flags | rc11 imm | const PUBLISH: Ordering = Ordering::SeqCst; const BUILDERS: usize = 1; const BITS: u8 = ROUTE; | pass
+flags2 | flags | rc11 imm arm8 | const PUBLISH: Ordering = Ordering::SeqCst; const BUILDERS: usize = 2; const BITS: u8 = ROUTE; | pass
 flags_relaxed | flags | rc11 imm | const PUBLISH: Ordering = Ordering::Relaxed; const BUILDERS: usize = 1; const BITS: u8 = ROUTE; | fail | did not make | Non-atomic race
-flags_badbit | flags | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const BUILDERS: usize = 1; const BITS: u8 = ROUTE + 0x10; | fail | the joined byte | did not make
+flags_badbit | flags | rc11 imm | const PUBLISH: Ordering = Ordering::SeqCst; const BUILDERS: usize = 1; const BITS: u8 = ROUTE + 0x10; | fail | the joined byte | did not make
 
 # watermark.rs (vspec::atom): the hand-out watermark and its copy.
 wm | watermark | rc11 imm | const PUBLISH: Ordering = Ordering::Release; const MIRROR_UNLOCKED: bool = false; const MODE: u32 = 0; const NSLABS: usize = 2; const HANDOUTS: usize = 2; | pass
@@ -41,14 +41,14 @@ count_idle_rival | count | rc11 imm arm8 | const MODE: u32 = 1; const SPLIT: boo
 count_idle_one_wins | count | rc11 imm | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = false; const RIVAL: bool = false; | pass
 count_split_cas | count | rc11 imm | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = true; const RIVAL: bool = false; | fail | two heaps bound
 # The split compare-and-swap can also overwrite the rival's ticket.
-count_split_cas_rival | count | rc11 imm | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = true; const RIVAL: bool = true; | fail | two heaps bound | count is not its tickets
+count_split_cas_rival | count | rc11 imm | const MODE: u32 = 1; const SPLIT: bool = false; const SPLIT_CAS: bool = true; const RIVAL: bool = true; | fail | two heaps bound | count is not its tickets | read its arena's count as 0
 
 # narenas.rs (vspec::count, vspec::entry): the arena count and table.
 # RC11 only: under IMM and ARMv8 GenMC 0.20 stops on an internal check
 # (`it != allocInfoMap_.end()`, in `ExecutionState::onFree`).
-narenas | narenas | rc11 | const PUBLISH: Ordering = Ordering::Release; const ENTRY: Ordering = Ordering::Release; | pass
-narenas_relaxed_store | narenas | rc11 | const PUBLISH: Ordering = Ordering::Relaxed; const ENTRY: Ordering = Ordering::Release; | fail | is not built
-narenas_relaxed_entry | narenas | rc11 | const PUBLISH: Ordering = Ordering::Release; const ENTRY: Ordering = Ordering::Relaxed; | fail | Non-atomic race
+narenas | narenas | rc11 | const EARLY: bool = false; const ENTRY: Ordering = Ordering::Release; | pass
+narenas_early_store | narenas | rc11 | const EARLY: bool = true; const ENTRY: Ordering = Ordering::Release; | fail | is not built
+narenas_relaxed_entry | narenas | rc11 | const EARLY: bool = false; const ENTRY: Ordering = Ordering::Relaxed; | fail | Non-atomic race
 
 # slotstate.rs (vspec::byte): the slot state byte's free step.
 slotstate | slotstate | rc11 imm | const LOAD_STORE: bool = false; | pass
@@ -68,7 +68,7 @@ bitmap_init_published | bitmap | rc11 imm | const MODE: u32 = 2; const MUTANT: u
 bitmap_relaxed_commit | bitmap | rc11 imm | const MODE: u32 = 2; const MUTANT: u32 = 0; const PUBLISH: Ordering = Ordering::Relaxed; | fail | the hint missed the padding
 bitmap_unclaimed_write | bitmap | rc11 imm | const MODE: u32 = 3; const MUTANT: u32 = 0; const PUBLISH: Ordering = Ordering::Release; | fail | Non-atomic race
 
-# litmus.rs (vspec::count): two shapes loom 0.7.2 cannot produce, as
+# litmus.rs (core's Relaxed atomics): two shapes loom 0.7.2 cannot produce, as
 # evidence for verus/WEAKMEM.md's loom limits. RC11 forbids load
 # buffering, IMM and ARMv8 allow it.
 lb | litmus | rc11 | const MODE: u32 = 0; const N: u32 = 0; | pass
@@ -78,14 +78,14 @@ hist8 | litmus | rc11 imm | const MODE: u32 = 1; const N: u32 = 8; | fail | stor
 
 # init.rs (P4, api/mod.rs's own functions): publishing `Shared`. Three
 # callers put two waiters on `STATE` at once, which loom cannot run.
-init1 | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
-init2 | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 2; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
-init3 | init | rc11+live imm+live arm8+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
-init3_reenter | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 3; const REENTER: bool = true; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
-init3_readback | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = true; const UNPUBLISHED: bool = false; | pass
+init1 | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::SeqCst; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init2 | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::SeqCst; const CALLERS: u32 = 2; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init3 | init | rc11+live imm+live arm8+live | const PUBLISH: Ordering = Ordering::SeqCst; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init3_reenter | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::SeqCst; const CALLERS: u32 = 3; const REENTER: bool = true; const READBACK: bool = false; const UNPUBLISHED: bool = false; | pass
+init3_readback | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::SeqCst; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = true; const UNPUBLISHED: bool = false; | pass
 init1_relaxed | init | rc11 imm | const PUBLISH: Ordering = Ordering::Relaxed; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | fail | Non-atomic race
 init3_relaxed | init | rc11 imm | const PUBLISH: Ordering = Ordering::Relaxed; const CALLERS: u32 = 3; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = false; | fail | Non-atomic race
-init_unpublished | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::Release; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = true; | fail | Liveness violation
+init_unpublished | init | rc11+live imm+live | const PUBLISH: Ordering = Ordering::SeqCst; const CALLERS: u32 = 1; const REENTER: bool = false; const READBACK: bool = false; const UNPUBLISHED: bool = true; | fail | Liveness violation
 
 # background.rs (P3, the futex stand-in): the thread's wake-up against a
 # class's first `Empty` slab.

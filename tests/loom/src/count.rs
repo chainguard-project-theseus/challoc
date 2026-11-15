@@ -1,8 +1,9 @@
 //! The arena registry's bound counts (`src/arena.rs`, `Arenas::bound`), a
 //! copy of the `Arenas` steps that touch them through `vspec/count.rs`'s
 //! wrappers (`fetch_add`, `fetch_sub`, `load`, `compare_exchange`), which
-//! run here as they are, over loom's `AtomicU32` (`crate::vspec`), with
-//! the steps' orderings (all `Relaxed`):
+//! run here as they are, over the `cfg(loom)` stand-in for vstd's
+//! `PAtomicU32` (`src/sync.rs`'s `patomic`, `SeqCst` on loom's
+//! `AtomicU32`):
 //!
 //! - [`Arenas::count_in`] is `Arenas::count_in` (and `bind`, its one-line
 //!   caller): `fetch_add(1)`;
@@ -29,9 +30,9 @@
 //! pattern), building an arena, and the `u32` wrap (2^32 tickets).
 
 use crate::lock::RawLock;
+use crate::sync::patomic::PAtomicU32;
 use crate::vspec::count;
 use crate::{leak, model};
-use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
 use vstd::prelude::Tracked;
 
@@ -44,12 +45,12 @@ struct Arenas {
     /// The creation lock.
     lock: RawLock,
     /// `Arenas::bound`.
-    bound: [AtomicU32; NARENAS],
-    /// The `fetch_add` of [`Arenas::count_in`] split into a load and a
-    /// store, for the control.
+    bound: [PAtomicU32; NARENAS],
+    /// The `fetch_add` of [`Arenas::count_in`] split into a `load` and a
+    /// `store` (the wrappers), for the control.
     split: bool,
     /// The `compare_exchange` of [`Arenas::try_bind_idle`] split into a
-    /// load and a store of 1 on 0, for its control.
+    /// `load` and a `store` of 1 on 0 (the wrappers), for its control.
     split_cas: bool,
 }
 
@@ -57,7 +58,7 @@ impl Arenas {
     fn new(split: bool, split_cas: bool) -> Arenas {
         Arenas {
             lock: RawLock::new(),
-            bound: [AtomicU32::new(0), AtomicU32::new(0)],
+            bound: [PAtomicU32::new(0).0, PAtomicU32::new(0).0],
             split,
             split_cas,
         }
@@ -65,22 +66,22 @@ impl Arenas {
 
     /// `Arenas::load_bound`.
     fn load_bound(&self, i: usize) -> u32 {
-        count::load(&self.bound[i], Ordering::Relaxed, Tracked::assume_new())
+        count::load(&self.bound[i], Tracked::assume_new())
     }
 
     /// `Arenas::count_in`: a fresh ticket for arena `i`.
     fn count_in(&self, i: usize) {
         if self.split {
-            let n = self.bound[i].load(Ordering::Relaxed);
-            self.bound[i].store(n.wrapping_add(1), Ordering::Relaxed);
+            let n = count::load(&self.bound[i], Tracked::assume_new());
+            count::store(&self.bound[i], n.wrapping_add(1), Tracked::assume_new());
         } else {
-            count::fetch_add(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());
+            count::fetch_add(&self.bound[i], 1, Tracked::assume_new());
         }
     }
 
     /// `Arenas::unbind`: the ticket for arena `i` goes back.
     fn unbind(&self, i: usize) {
-        let prev = count::fetch_sub(&self.bound[i], 1, Ordering::Relaxed, Tracked::assume_new());
+        let prev = count::fetch_sub(&self.bound[i], 1, Tracked::assume_new());
         assert!(
             prev != 0,
             "arena {i}: unbinding a heap that was never bound (count 0)"
@@ -115,21 +116,13 @@ impl Arenas {
             return false;
         }
         if self.split_cas {
-            if self.bound[i].load(Ordering::Relaxed) != 0 {
+            if count::load(&self.bound[i], Tracked::assume_new()) != 0 {
                 return false;
             }
-            self.bound[i].store(1, Ordering::Relaxed);
+            count::store(&self.bound[i], 1, Tracked::assume_new());
             true
         } else {
-            count::compare_exchange(
-                &self.bound[i],
-                0,
-                1,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                Tracked::assume_new(),
-            )
-            .is_ok()
+            count::compare_exchange(&self.bound[i], 0, 1, Tracked::assume_new()).is_ok()
         }
     }
 }
@@ -265,11 +258,12 @@ fn loom_count_split_cas_binds_twice() {
 }
 
 /// As [`loom_count_split_cas_binds_twice`], against a rival: both racers
-/// can still read 0 and win (a racer's store of 1 can also overwrite the
-/// rival's ticket; the first failing execution loom reaches is a double
-/// win).
+/// can still read 0 and win, and a racer's store of 1 can also overwrite
+/// the rival's ticket, so a holder reads its count as 0. Which check fires
+/// first depends on the order loom explores (each message names the
+/// count).
 #[test]
-#[should_panic(expected = "two heaps bound")]
+#[should_panic(expected = "count")]
 fn loom_count_split_cas_binds_twice_rival() {
     run_idle(true, true);
 }

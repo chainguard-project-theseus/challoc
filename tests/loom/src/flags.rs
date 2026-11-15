@@ -8,16 +8,16 @@
 //! - [`Model::init`] is `init`'s `Shared::put_flags`: plain writes of
 //!   `push_flags` and of the byte `flags::new(push_flags)` made, into the
 //!   unpublished storage (here one loom `UnsafeCell`), then `init_slow`'s
-//!   `READY` store (`api::publish_ready`, `Release` as shipped);
+//!   `READY` store (`api::publish_ready`, `SeqCst` as shipped);
 //! - [`Model::build`] is `Arenas::build`'s `Shared::set_multi_arena`,
-//!   which runs with the published `Shared` (`api::shared`'s `Acquire`
+//!   which runs with the published `Shared` (`api::shared`'s `SeqCst`
 //!   load of `STATE` saw `READY` earlier in the thread):
 //!   `flags::fetch_or(ROUTE)` (`SeqCst`);
 //! - [`Model::free`] is the `free` fast path's `Shared::free_flags`,
 //!   reached through `api::shared_base` once the thread's heap proves
-//!   init complete (the heap is created after `api::shared`'s `Acquire`
+//!   init complete (the heap is created after `api::shared`'s `SeqCst`
 //!   load); the model stands in for that edge with
-//!   `api::shared_if_ready`'s `Acquire` load, then `flags::load` (`SeqCst`),
+//!   `api::shared_if_ready`'s `SeqCst` load, then `flags::load` (`SeqCst`),
 //!   twice.
 //!
 //! Checked: every value a load or the `fetch_or` returns is `push_flags`
@@ -53,7 +53,7 @@ struct Model {
     /// `Shared`'s `push_flags` and `free_flags`, written by `init` before
     /// `READY` (`None`: the storage before `init`).
     shared: UnsafeCell<Option<(u8, RouteByte)>>,
-    /// The ordering of the `READY` store (`Release` as shipped).
+    /// The ordering of the `READY` store (`SeqCst` as shipped).
     publish: Ordering,
 }
 
@@ -79,9 +79,9 @@ impl Model {
     }
 
     /// `api::shared_if_ready` (and `api::shared` once ready): the
-    /// `Acquire` load of `STATE`.
+    /// `SeqCst` load of `STATE`.
     fn ready(&self) -> bool {
-        self.state.load(Ordering::Acquire) == READY
+        self.state.load(Ordering::SeqCst) == READY
     }
 
     /// `set_multi_arena` on a ready `Shared`, setting `bits` (`ROUTE` as
@@ -168,7 +168,7 @@ fn run(publish: Ordering, builders: usize, bits: u8) {
 /// `vspec::flags::fetch_or`.
 #[test]
 fn loom_flags_route_byte_keeps_push_flags() {
-    run(Ordering::Release, 1, ROUTE);
+    run(Ordering::SeqCst, 1, ROUTE);
 }
 
 /// Two builders (a third arena built while the second's `fetch_or` is in
@@ -178,7 +178,7 @@ fn loom_flags_route_byte_keeps_push_flags() {
 /// `vspec::flags::fetch_or`.
 #[test]
 fn loom_flags_two_builders() {
-    run(Ordering::Release, 2, ROUTE);
+    run(Ordering::SeqCst, 2, ROUTE);
 }
 
 /// Control: a `Relaxed` `READY` store does not order `init`'s writes
@@ -195,5 +195,5 @@ fn loom_flags_relaxed_publish_is_a_race() {
 #[test]
 #[should_panic(expected = "did not make")]
 fn loom_flags_bit_outside_route_is_caught() {
-    run(Ordering::Release, 1, ROUTE | 0x10);
+    run(Ordering::SeqCst, 1, ROUTE | 0x10);
 }

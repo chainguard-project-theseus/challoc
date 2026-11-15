@@ -3,14 +3,14 @@
 //! construct). Each step names the code it mirrors:
 //!
 //! - [`Statics::init_slow`] is `api::init_slow`: `claim_init`'s
-//!   `compare_exchange(UNINIT, INITIALISING, Acquire, Acquire)` on
-//!   `STATE.word` (a `vspec::count` call); the winner stores its tid in
-//!   `INIT_TID` `Relaxed`, runs `init` and stores `READY` `Release`
-//!   (`publish_ready`); a loser that sees `READY` returns, one whose tid
-//!   is `INIT_TID` aborts (re-entry), any other spins on an `Acquire`
-//!   load of `STATE.word` (`load_state`) with `spin_loop` until
-//!   `READY`;
-//! - [`Statics::shared`] is `api::shared`: an `Acquire` load of `STATE`,
+//!   `compare_exchange(UNINIT, INITIALISING, SeqCst, SeqCst)` on
+//!   `STATE.word` (a `vspec::count` call, over vstd's `PAtomicU32`); the
+//!   winner stores its tid in `INIT_TID` `Relaxed`, runs `init` and stores
+//!   `READY` `SeqCst` (`publish_ready`); a loser that sees `READY`
+//!   returns, one whose tid is `INIT_TID` aborts (re-entry), any other
+//!   spins on a `SeqCst` load of `STATE.word` (`load_state`) with
+//!   `spin_loop` until `READY`;
+//! - [`Statics::shared`] is `api::shared`: a `SeqCst` load of `STATE`,
 //!   `shared_ref` on `READY`, `init_slow` otherwise;
 //!   [`Statics::shared_if_ready`] is `api::shared_if_ready`, the `free`
 //!   path's;
@@ -65,7 +65,7 @@ enum Out {
 
 #[derive(Clone, Copy)]
 struct Variant {
-    /// The ordering of `init_slow`'s `READY` store (`Release` as shipped).
+    /// The ordering of `init_slow`'s `READY` store (`SeqCst` as shipped).
     publish: Ordering,
     /// `init` itself calls `shared()` (an allocation during
     /// initialisation).
@@ -76,7 +76,7 @@ struct Variant {
 }
 
 const SHIPPED: Variant = Variant {
-    publish: Ordering::Release,
+    publish: Ordering::SeqCst,
     reenter: false,
     readback: false,
 };
@@ -111,18 +111,18 @@ impl Statics {
 
     /// `api::shared_ref`: the plain read of the published value.
     fn shared_ref(&self) -> u64 {
-        // SAFETY: `READY` observed by an `Acquire` load on this thread, or
+        // SAFETY: `READY` observed by a `SeqCst` load on this thread, or
         // published by it (loom reports a race if not).
         self.shared.with(|p| unsafe { *p })
     }
 
-    /// `api::load_state`'s `vspec::count::load`: an `Acquire` load of
+    /// `api::load_state`'s `vspec::count::load`: a `SeqCst` load of
     /// `STATE.word`. `seen` is the
     /// thread's last value of `STATE`, read or written (model
     /// bookkeeping): the load reads one of the three values, never one
     /// before `seen` in the modification order, and becomes `seen`.
     fn state_load(&self, seen: &mut u32) -> u32 {
-        let s = self.state.load(Ordering::Acquire);
+        let s = self.state.load(Ordering::SeqCst);
         assert!(s <= READY, "STATE read {s}");
         assert!(s >= *seen, "STATE went back from {} to {s}", *seen);
         *seen = s;
@@ -148,7 +148,7 @@ impl Statics {
     fn init_slow(&self, tid: u32, v: Variant, seen: &mut u32) -> Out {
         let won =
             self.state
-                .compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire);
+                .compare_exchange(UNINIT, INITIALISING, Ordering::SeqCst, Ordering::SeqCst);
         // The exchange read `UNINIT` (and wrote `INITIALISING`) or the
         // value it returns, never one before `seen`.
         let s = won.unwrap_or_else(|s| s);
