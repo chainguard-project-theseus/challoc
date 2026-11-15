@@ -148,7 +148,7 @@ At a quiescent state, reported allocated bytes equal the usable bytes of live bl
 
 ## Vulnerability classes ruled out
 
-Each row names a bug class motivated by real CVEs in other allocators and the entry-point contracts that exclude it for the named entry points; challoc never had these bugs. As with every theorem here, these claims depend on the [trust base](#trust-base) and callers obeying the C allocation contract. `heap::fits(r, size, align)` means a non-null result is a slot start of a class at least `size` bytes large, or a huge-region page start with `size` bytes of the region from it, at an address that is a multiple of `align`; `size` is an unbounded specification integer, so `n * m` does not wrap.
+Each row names a bug class motivated by real CVEs in other allocators and the entry-point contracts that exclude it for the named entry points; challoc never had these bugs. As with every theorem here, these claims depend on the [trust base](#trust-base) and callers obeying the C allocation contract. `heap::fits(r, size, align)` means a non-null result is a slot start of a class at least `size` bytes large, or a huge-region page start with `size` bytes of the region from it, at an address that is a multiple of `align`; `size` is an unbounded specification integer, so `n * m` does not wrap. [VULN-CLASSES.md](VULN-CLASSES.md) catalogs every historical allocator CVE and advisory found (glibc, jemalloc, TCMalloc, newlib, uClibc-ng, NuttX, Scudo) with the theorem that rules each out, or the "vuln class:" issue that will.
 
 | Class | Ruled out by | Entry points covered | Motivating CVEs |
 | --- | --- | --- | --- |
