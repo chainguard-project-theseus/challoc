@@ -337,7 +337,13 @@ For a reviewer:
   code for the hot set (`malloc`, `free`, `calloc`, `realloc`, `sdallocx`,
   `free_sized` and everything inlined into them) unchanged:
   `scripts/codegen-diff.sh compare` must report `changed 0` there
-  (CONTRIBUTING.md, "Performance rules").
+  (CONTRIBUTING.md, "Performance rules"). The exception is an exec
+  change a proof needs, under CONTRIBUTING.md's "Proof changes" rule: it
+  behaves as the base does in every profile, keeping every
+  `debug_assert!` and dev-profile overflow check (the #751 exception
+  aside), and only its timing may differ; the
+  codegen verdict names each changed hot-set function with that cause,
+  and the pull request carries its measured cost.
 - A `static` computed by a `const fn` inside `verus!` is an `exec static`.
 - Every loop needs `invariant` and `decreases`. Quantifiers name their
   triggers.

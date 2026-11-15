@@ -144,6 +144,32 @@ code on or near the hot paths is justified with evidence.
   workload's cb report, the soak's perf sidecar, or the sampler). The
   change names the mechanism it attacks. larson counters do not stand in
   for Valkey or Ruby.
+- **Proof changes** (an exec change made so a proof holds) follow the
+  coverage-first rule (Matt Moore, 2026-11-14, recorded in
+  https://github.com/chainguard-project-theseus/challoc/issues/756): a
+  measured runtime cost from a proof is accepted by default. The change
+  still measures it: it reports its codegen verdict and a bench of the
+  paths it changes, puts the bench table in the pull request with the
+  words "accepted under the coverage-first rule", and opens an "optimize
+  within proof bounds" follow-up issue for a cost above about 2% on a hot
+  path. When that bench shows more than about 2% on a hot path, the pull
+  request also carries a real-workload number for the workload the path
+  serves (the `make quick` verdict or a cb run on that workload, with its
+  run id), so that the 10% check below can be made. A cost above about 10% on a
+  real workload goes back to the maintainer before it lands: the pull
+  request links a maintainer's comment accepting it.
+  Accepted means not blocked on the cost, not exempt from measuring it.
+  The rule decides only whether a measured cost blocks. The exec change
+  is one the proof needs, named in the pull request with why; it behaves
+  as the base does in every profile, keeping every `debug_assert!` and
+  dev-profile overflow check (the #751 exception aside), and only its
+  timing may differ; and the codegen verdict names every
+  changed function with that cause, a changed hot-set function included.
+  Where a ghost or spec route to the property exists, the change takes
+  it instead (`.chainguard/review-prompt.md`, "Runtime costs of proof").
+  The **Fast-path changes** evidence is for a change meant to make the
+  allocator faster; a proof change's bench is the one this bullet asks
+  for.
 - Cite the cb run id for every number in a pull
   request. Reference numbers come only from the reference cells described
   in `docs/benchmarking.md`. A laptop or emulated number is

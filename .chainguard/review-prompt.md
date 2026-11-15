@@ -30,8 +30,8 @@ get wrong.
   with every changed function named with its cause. A body that quotes a
   different head, or lacks any of the four architecture and quantum
   results, has a missing verdict. A missing verdict, or a changed hot-set
-  function in a change that does not claim a fast-path change, is
-  Blocking.
+  function in a change that does not claim a fast-path change or a
+  proof's exec change ("Proof and exec stay apart"), is Blocking.
 - Proof checks. `Chainguard Checks (presubmit)`, which the `chainguard`
   app publishes, fails whenever a verus job fails a proof or misses
   `verus/FLOOR`, or a kani job's harness fails (Evidence, below). When
@@ -46,7 +46,9 @@ get wrong.
   go/no-go verdict, a per-operation cycle attribution on the workload it
   targets, the mechanism it attacks, and a cb run id for every number
   (CONTRIBUTING.md, "Performance rules"). A laptop or emulated number set
-  against a reference number is Blocking.
+  against a reference number is Blocking. A proof's exec change is not
+  meant to change speed; its bench is the one "Runtime costs of proof"
+  asks for.
 - Proof and exec stay apart. A proof pull request adds specifications,
   proofs, ghost code, and the `src/vspec/` items its proofs call. Its
   executable statements change only by ghost-only rearrangement that
@@ -61,8 +63,17 @@ get wrong.
   release build is unchanged: the codegen checks report every `.text`
   hash IDENTICAL (maintainer ruling,
   https://github.com/chainguard-project-theseus/challoc/pull/730#issuecomment-6898020613).
-  Any other proof change that alters what the library does, in either
-  profile, or a pull request that mixes the two, is Blocking.
+  A proof pull request may also change executable code its proof needs,
+  under CONTRIBUTING.md's "Proof changes" rule: the body names each such
+  change and why the proof needs it, the change behaves as the base does
+  in every profile, keeping every `debug_assert!` and dev-profile
+  overflow check (the exception above aside), and only its timing may
+  differ, and its cost is measured as "Runtime costs of proof" says. A
+  changed hot-set function named in the codegen verdict with that cause
+  is such a change saying so, for the hot-set rule. Any other proof
+  change that alters what the library does, in either profile, or a pull
+  request that mixes an exec rewrite the proof does not need with a
+  proof, is Blocking.
 - Seams. Every item Verus takes on trust (`external_body`, `axiom fn` and
   `axiom_*`, `assume_specification`, external type and trait
   specifications, `PartialEqSpecImpl` and fmt spec impls,
@@ -145,7 +156,26 @@ get wrong.
   word). A pass that walks or re-checks a whole structure the allocator
   built (a free list on every refill, a size class table) is inside the
   rule even when it is named heap integrity: a caller's corruption of it
-  is caught where each word is used.
+  is caught where each word is used. A proof's exec change that costs
+  time follows CONTRIBUTING.md's "Proof changes" rule (coverage first,
+  Matt Moore, 2026-11-14, recorded in
+  https://github.com/chainguard-project-theseus/challoc/issues/756). That
+  rule decides only whether a measured cost blocks. When the body
+  carries the codegen verdict, the measured bench table with the words
+  "accepted under the coverage-first rule" and, for a cost above about
+  2% on a hot path, the follow-up issue and a real-workload number (the
+  `make quick` verdict or a cb run, with its run id, on the workload the
+  path serves), the cost is accepted, not a finding. A cost the body does
+  not measure is a Question, and so is a hot-path cost above about 2%
+  with no real-workload number, since the 10% check below needs one. A
+  cost above about 10% on a real workload is Blocking until
+  the body links a maintainer's comment on the pull request accepting
+  it; you cannot tell who wrote a comment, so that link is a Question
+  for a person to check, never a reason to approve. Every other rule
+  still applies to the change: the earlier sentences of this bullet (an
+  added pass or copy where a ghost or spec route exists stays a
+  Question), the hot-set rule, and "Proof and exec stay apart", which
+  says when a proof pull request may change executable code.
 - Weakened checks. A change that weakens a check to get to green is
   Blocking: it sets `advisory: true` on or removes a check in
   `.chainguard/ci/`, lowers a lint level (`Cargo.toml`, an `#[allow]`
