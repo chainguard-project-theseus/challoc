@@ -157,6 +157,26 @@ both architectures (`PLATFORM=linux/amd64` for the second one).
 add a C test program. A test that cannot check its claim on a host prints
 a `SKIP` line; it never passes silently.
 
+**Scheduled checks are read the day they go red.** `fuzz-nightly`
+(daily), `oscillate-weekly`, `check-needed-weekly` and `consumers-weekly`
+run on main with no pull request (`ci/README.md`). Checks reports each
+run only on the main commit it ran at and notifies no one, so the
+owner reads them every day. `chainctl checks failures` on a checkout
+reads only the newest Run at its HEAD, so a later passing scheduled Run,
+or a push to main, hides an earlier red one. List the failed and the
+errored Runs on main instead, then read each one by its Run ID:
+
+    chainctl checks list --repo chainguard-project-theseus/challoc --ref refs/heads/main --outcome failed
+    chainctl checks list --repo chainguard-project-theseus/challoc --ref refs/heads/main --outcome errored
+    chainctl checks failures <RUN>
+
+`--outcome` matches one outcome exactly, and a Run whose instance hung
+until its timeout (`timeout:` in the check's YAML) is `errored`, not
+`failed`, so both lists are read. The scheduled ones are those with `cron` in the TRIGGER column
+(their Run IDs start `cron-`). A red one gets an issue that day,
+with the failing instance and, for fuzz, its seed; it is not left for
+the next run to clear.
+
 ## Sending a change
 
 - Keep a pull request to one logical change, with a description of what

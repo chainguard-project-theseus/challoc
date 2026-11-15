@@ -1,6 +1,6 @@
 #!/bin/bash
-# ci/extended.sh [TASK]: one task of the on-request extended and consumers
-# checks (.chainguard/ci/extended.yaml, consumers.yaml), a Makefile target
+# ci/extended.sh [TASK]: one task of the extended and consumers checks, on
+# request and scheduled (.chainguard/ci/extended.yaml, consumers.yaml), a Makefile target
 # run through ci/make.sh with the log in .ci/TASK.log. TASK defaults to
 # $TASK. The dev image (Dockerfile.dev's `test` stage, `consumers` for the
 # consumers) is

@@ -3,13 +3,15 @@
 # their own file, consumers.yaml. Each task is ci/extended.sh TASK in the
 # dev container, on both architectures.
 #
-# These run only on request: the label ci/run:<check> on a pull request,
-# or `chainctl checks run . --check <check>` for any pushed commit (main
-# included). Checks has a scheduled trigger (`trigger: cron` with
-# `schedule:`), but it fires only for repositories on the
-# schedule_repositories list in mono's Checks IaC
-# (ai-cicd/sandbox/iac/github), and this one is not on it. Once it is,
-# these go back to nightly.
+# On request: the label ci/run:<check> on a pull request, or `chainctl
+# checks run . --check <check>` for any pushed commit (main included).
+#
+# Scheduled (UTC), on main's head, with no pull request: fuzz-nightly is
+# the fuzz check daily, and oscillate-weekly and check-needed-weekly are
+# the other two weekly, each with the same instances as its on-request
+# key. Red means a failure on main (a fuzz failure prints its seed, for a
+# rerun with FUZZ_SEED), and it gets an issue that day (CONTRIBUTING.md,
+# "Scheduled checks are read the day they go red").
 #
 # A Checks run is limited to 50 minutes, so no check here may take longer.
 #
@@ -30,7 +32,7 @@ checks:
       exact_sized_free alone) and quantum 8, on x86_64 and aarch64. 25-45
       minutes per instance. Worth running on changes to the allocation and
       free paths, the size classes or the hardening options.
-    foreach:
+    foreach: &fuzz_legs
       - {name: default-amd64, resources: medium-amd64, vars: {TASK: fuzz}}
       - {name: default-arm64, resources: medium-arm64, vars: {TASK: fuzz}}
       - {name: hardened-amd64, resources: medium-amd64, vars: {TASK: fuzz-hardened}}
@@ -56,9 +58,33 @@ checks:
       The 600 s cgroup oscillation soak (200..480 MiB live in a 512 MiB
       cgroup, with the cgroup:false control run) on x86_64 and aarch64.
       Worth running on changes to the cgroup policy, purge or decay.
-    foreach:
+    foreach: &arches
       - {name: amd64, resources: medium-amd64}
       - {name: arm64, resources: medium-arm64}
+    vars: {TASK: oscillate}
+    timeout: 50m
+    network: *build
+    cmd: [bash, ci/extended.sh]
+
+  fuzz-nightly:
+    trigger: cron
+    schedule: "23 6 * * *"
+    description: >-
+      The fuzz check on main, daily: fuzz/fuzz.c under LD_PRELOAD for 50M
+      operations with a random seed (printed), default, hardened, sized
+      and quantum 8, on x86_64 and aarch64. Red means a failure on main.
+    foreach: *fuzz_legs
+    timeout: 50m
+    network: *build
+    cmd: [bash, ci/extended.sh]
+
+  oscillate-weekly:
+    trigger: cron
+    schedule: "43 7 * * 0"
+    description: >-
+      The oscillate check on main, weekly: the 600 s cgroup oscillation
+      soak with its cgroup:false control, on x86_64 and aarch64.
+    foreach: *arches
     vars: {TASK: oscillate}
     timeout: 50m
     network: *build
@@ -70,9 +96,19 @@ checks:
       make check-needed: a program linked against the jemalloc-compat
       library names it in DT_NEEDED, on x86_64 and aarch64. Worth running on
       changes to build.rs, the soname or the jemalloc-compat staging.
-    foreach:
-      - {name: amd64, resources: medium-amd64}
-      - {name: arm64, resources: medium-arm64}
+    foreach: *arches
+    vars: {TASK: check-needed}
+    timeout: 30m
+    network: *build
+    cmd: [bash, ci/extended.sh]
+
+  check-needed-weekly:
+    trigger: cron
+    schedule: "13 8 * * 0"
+    description: >-
+      The check-needed check on main, weekly: a program linked against the
+      jemalloc-compat library names it in DT_NEEDED, on x86_64 and aarch64.
+    foreach: *arches
     vars: {TASK: check-needed}
     timeout: 30m
     network: *build

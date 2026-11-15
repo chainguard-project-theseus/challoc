@@ -67,8 +67,7 @@ require); each file is a workflow:
 - `genmc.yaml`: `genmc`, rustfmt over the harness templates (`tests/genmc/run.sh --templates`), the control that a template no case names stops the run at setup (`--self-test`), then `tests/genmc/run.sh` (`verus/WEAKMEM.md`, "GenMC"): every case in `tests/genmc/cases`, GenMC ports of loom models that run the `src/vspec` wrappers and `src/sync.rs` unchanged over `core`'s atomics, under each memory model the case names (RC11, IMM, ARMv8); a pass case must pass and a control must fail with its expected report; on pull requests that change `src/sync.rs`, `src/vspec/**`, the source files the harnesses copy steps from, `Cargo.toml`, `tests/genmc/**`, `tests/loom/src/vspec.rs` or `genmc.yaml` itself. The pins that tie the harnesses' copies to the source run in `lint.yaml`'s loom check, on every pull request.
 
 On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
---check <check>` for any pushed commit), until Checks schedules this
-repository (`extended.yaml`'s header says why it does not yet):
+--check <check>` for any pushed commit):
 
 - `extended.yaml`: `fuzz` (50M operations: default, hardened, sized, q8),
   `oscillate` (the 600 s soak), `check-needed`, each on both arches.
@@ -79,6 +78,19 @@ repository (`extended.yaml`'s header says why it does not yet):
 - `weakmem.yaml`: `weakmem-stress`, the three weak-memory stress tests
   (`verus/WEAKMEM.md`, "Hardware stress tests"), 60 s each, on aarch64
   only.
+
+Scheduled (UTC), on main's head with no pull request, the same instances
+as the on-request keys: `fuzz-nightly` daily, and `oscillate-weekly`,
+`check-needed-weekly` (`extended.yaml`) and `consumers-weekly`
+(`consumers.yaml`) weekly. Checks notifies no one of a scheduled run.
+`chainctl checks failures` on a checkout reads only the newest Run at
+its HEAD, which a later scheduled Run or a push to main replaces, so list
+main's failed and errored Runs and read each by its Run ID:
+`chainctl checks list --repo chainguard-project-theseus/challoc --ref refs/heads/main --outcome failed`,
+the same with `--outcome errored` (a Run whose instance hung until its
+`timeout:` is `errored`, and `--outcome` matches one outcome exactly), then `chainctl checks failures <RUN>` for each with `cron` in
+the TRIGGER column (Run ID `cron-...`). Each gets an issue the day it
+goes red (CONTRIBUTING.md).
 
 `chainctl checks run` plans a commit without a pull request; name the
 checks to run with `--check`, which runs that check (and what it needs)

@@ -1,7 +1,11 @@
-# Real consumers of challoc, on request only: the label ci/run:consumers
-# on a pull request, or `chainctl checks run . --check consumers` for a
-# pushed commit (ci/README.md). Each instance is ci/extended.sh TASK in the dev
-# container's `consumers` stage (tests/consumers/README.md).
+# Real consumers of challoc, on request: the label ci/run:consumers on a
+# pull request, or `chainctl checks run . --check consumers` for a pushed
+# commit (ci/README.md); and consumers-weekly, the same instances on main's
+# head weekly (UTC), with no pull request, so a Wolfi update of Valkey,
+# Ruby, python3 or git that breaks under challoc shows up within a week.
+# A red one gets an issue that day (CONTRIBUTING.md, "Scheduled checks are
+# read the day they go red"). Each instance is ci/extended.sh TASK in the
+# dev container's `consumers` stage (tests/consumers/README.md).
 #
 #   valkey, ruby   built against challoc and run with their own suites
 #                  (Valkey at Wolfi's tag with the contrib patches; Ruby
@@ -10,7 +14,7 @@
 #                  libchalloc.so preloaded, against a run without it; a
 #                  test that fails only with challoc fails the instance
 #
-# All stay on request. Ruby's sharded test-all is the long one; the
+# On pull requests, all stay on request. Ruby's sharded test-all is the long one; the
 # preload cases' run time is measured on their first requested run, and a
 # case short enough for every pull request moves to presubmit then, in its
 # own change.
@@ -33,7 +37,7 @@ checks:
       run without it (make preload CASE=cpython|git). Worth running on
       changes to the jemalloc compatibility surface (mallctl, the soname,
       the exported symbols) and the malloc entry points.
-    foreach:
+    foreach: &instances
       - {name: valkey-amd64, resources: medium-amd64, vars: {TASK: valkey}}
       - {name: valkey-arm64, resources: medium-arm64, vars: {TASK: valkey}}
       # Ruby's test-all outlasts the 50-minute run limit in one guest, so
@@ -53,7 +57,7 @@ checks:
       - {name: git-amd64, resources: medium-amd64, vars: {TASK: git}}
       - {name: git-arm64, resources: medium-arm64, vars: {TASK: git}}
     timeout: 50m
-    network:
+    network: &egress
       egress:
         - cgr.dev
         - 9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com
@@ -67,4 +71,18 @@ checks:
         - index.rubygems.org
         - www.python.org        # CPython's source tarball (Lib/test)
         - mirrors.edge.kernel.org  # git's source tarball and sha256sums.asc
+    cmd: [bash, ci/extended.sh]
+
+  consumers-weekly:
+    trigger: cron
+    schedule: "53 8 * * 6"
+    description: >-
+      The consumers check on main, weekly: Valkey and Ruby 3.4 built
+      against challoc with their suites, and Wolfi's python3 and git
+      running their own tests with libchalloc.so preloaded against a run
+      without it, on x86_64 and aarch64. Red means a consumer fails under
+      challoc on main.
+    foreach: *instances
+    timeout: 50m
+    network: *egress
     cmd: [bash, ci/extended.sh]

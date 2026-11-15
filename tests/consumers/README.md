@@ -4,8 +4,8 @@ Real programs under challoc. The `consumers` check
 (`.chainguard/ci/consumers.yaml`) runs each case on x86_64 and aarch64,
 on request: the label `ci/run:consumers` on a pull request, or
 `chainctl checks run . --check consumers` for a pushed commit
-(`ci/README.md`). Each case
-also runs locally in the dev container through its make target.
+(`ci/README.md`); `consumers-weekly` runs the same instances on main
+weekly. Each case also runs locally in the dev container through its make target.
 
 | Case | How it meets challoc | Run it | Script |
 |---|---|---|---|
