@@ -53,8 +53,16 @@ get wrong.
   erases to the same code. An exec pull request rewrites executable code
   and carries no `requires`, `ensures`, invariants or proof functions
   beyond what a `src/vspec/` wrapper needs to compile. An exec rewrite
-  must behave as the base does. A proof change that alters what the
-  library does, or a pull request that mixes the two, is Blocking.
+  must behave as the base does, in every profile: it keeps every
+  `debug_assert!` and dev-profile overflow check, because the unit tests
+  rely on them. The one exception is for proof pull requests: a proof
+  pull request may turn an arithmetic overflow that panics only in test
+  builds into defined wrapping when its proof needs that, provided the
+  release build is unchanged: the codegen checks report every `.text`
+  hash IDENTICAL (maintainer ruling,
+  https://github.com/chainguard-project-theseus/challoc/pull/730#issuecomment-6898020613).
+  Any other proof change that alters what the library does, in either
+  profile, or a pull request that mixes the two, is Blocking.
 - Seams. Every item Verus takes on trust (`external_body`, `axiom fn` and
   `axiom_*`, `assume_specification`, external type and trait
   specifications, `PartialEqSpecImpl` and fmt spec impls,
