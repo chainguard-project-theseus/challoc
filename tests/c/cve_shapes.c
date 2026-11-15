@@ -44,6 +44,11 @@
  *                   xallocx with such a size, or with an `extra` that
  *                   makes size + extra wrap, returns the block's current
  *                   usable size and leaves it intact.
+ *   cve-2026-0861   memalign, aligned_alloc, posix_memalign and their je_
+ *                   twins at alignments 2^62 and 2^63 with sizes around
+ *                   PTRDIFF_MAX fail with ENOMEM, and a non-power-of-two
+ *                   alignment in [2^62 + 1, 2^63) fails with EINVAL
+ *                   (glibc 2.30 to 2.42, GLIBC-SA-2026-0001).
  *
  * Each mode prints `cve_shapes: <mode>: <n> requests` with the number of
  * requests it made, then `ok cve_shapes`.
@@ -338,6 +343,68 @@ static void cve_2005_4895(void)
     }
 }
 
+/* ---- CVE-2026-0861: alignments of 2^62 and 2^63 near PTRDIFF_MAX ----- */
+
+/* A power-of-two `align` larger than the huge region with `n` bytes:
+ * every aligned entry point fails with ENOMEM, and posix_memalign leaves
+ * *out as the caller left it. */
+static void aligned_huge(size_t align, size_t n, size_t k)
+{
+    NULL_ERRNO(memalign(align, n), ENOMEM, k);
+    NULL_ERRNO(je_memalign(align, n), ENOMEM, k);
+    NULL_ERRNO(aligned_alloc(align, n), ENOMEM, k);
+    NULL_ERRNO(je_aligned_alloc(align, n), ENOMEM, k);
+    void *const mark = (void *)&mark;
+    void *q = mark;
+    int rc = posix_memalign(&q, align, n);
+    requests++;
+    CHECK(rc == ENOMEM && q == mark, "posix_memalign(%zu, %zu): rc %d out %p", align, n, rc, q);
+    q = mark;
+    rc = je_posix_memalign(&q, align, n);
+    requests++;
+    CHECK(rc == ENOMEM && q == mark, "je_posix_memalign(%zu, %zu): rc %d out %p", align, n, rc, q);
+}
+
+static void cve_2026_0861(void)
+{
+    /* glibc 2.30 to 2.42 overflowed computing the padded size for a size
+     * near PTRDIFF_MAX at these alignments (glibc's fix c9188d33 extends
+     * malloc/tst-malloc-too-large.c to them). */
+    const size_t ptrdiff_max = size_max >> 1;
+    for (int lg = 62; lg <= 63; lg++) {
+        size_t align = one << lg;
+        const size_t ks[] = {0, 1, 2, 15, 16, 4095, 4096, align - 1};
+        for (size_t i = 0; i < sizeof ks / sizeof ks[0]; i++) {
+            aligned_huge(align, ptrdiff_max - ks[i], ks[i]);
+            aligned_huge(align, ptrdiff_max + ks[i], ks[i]);
+        }
+        aligned_huge(align, 1, 0);
+    }
+    /* memalign took a non-power-of-two alignment in [2^62 + 1, 2^63) and
+     * rounded it up past 2^63; challoc rejects any non-power-of-two
+     * alignment with EINVAL. */
+    const size_t two62 = one << 62;
+    const size_t bad[] = {two62 + 1, two62 + 16, two62 + (two62 >> 1), (one << 63) - 1, (one << 63) - 16};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        size_t ns[] = {1, 64, ptrdiff_max};
+        for (size_t j = 0; j < sizeof ns / sizeof ns[0]; j++) {
+            NULL_ERRNO(memalign(bad[i], ns[j]), EINVAL, i);
+            NULL_ERRNO(je_memalign(bad[i], ns[j]), EINVAL, i);
+            NULL_ERRNO(aligned_alloc(bad[i], ns[j]), EINVAL, i);
+            NULL_ERRNO(je_aligned_alloc(bad[i], ns[j]), EINVAL, i);
+            void *const mark = (void *)&mark;
+            void *q = mark;
+            int rc = posix_memalign(&q, bad[i], ns[j]);
+            requests++;
+            CHECK(rc == EINVAL && q == mark, "posix_memalign(%zu, %zu): rc %d out %p", bad[i], ns[j], rc, q);
+            q = mark;
+            rc = je_posix_memalign(&q, bad[i], ns[j]);
+            requests++;
+            CHECK(rc == EINVAL && q == mark, "je_posix_memalign(%zu, %zu): rc %d out %p", bad[i], ns[j], rc, q);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     require_challoc();
@@ -360,6 +427,8 @@ int main(int argc, char **argv)
         malloc_near_max_both();
     } else if (strcmp(mode, "cve-2005-4895") == 0) {
         cve_2005_4895();
+    } else if (strcmp(mode, "cve-2026-0861") == 0) {
+        cve_2026_0861();
     } else {
         REQUIRE(0, "unknown mode %s", mode);
     }

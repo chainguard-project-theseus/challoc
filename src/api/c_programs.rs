@@ -897,6 +897,11 @@ ctests! {
     /// with such a size, or a wrapping `extra`, returns the block's usable
     /// size, the block intact.
     c_cve_2005_4895 => [ CTest { prog: "cve_shapes", args: &["cve-2005-4895"], ..BASE } ];
+    /// CVE-2026-0861 (GLIBC-SA-2026-0001): `memalign`, `aligned_alloc`,
+    /// `posix_memalign` and their `je_` twins with an alignment of 2^62 or
+    /// 2^63 and a size around `PTRDIFF_MAX` fail with `ENOMEM`, and a
+    /// non-power-of-two alignment in [2^62 + 1, 2^63) fails with `EINVAL`.
+    c_cve_2026_0861 => [ CTest { prog: "cve_shapes", args: &["cve-2026-0861"], ..BASE } ];
     /// `tests/c/raw_clone.c`: `malloc` and `free` on a raw `clone` child,
     /// which premises C9 to C12, C14, C15 and L2 (verus/kani/premises.md) put
     /// outside every theorem. The row records what happens, once with the
