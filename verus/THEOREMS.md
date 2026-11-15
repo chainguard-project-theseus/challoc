@@ -728,7 +728,8 @@ they also restate the core's `fits` in their own `ensures`.
 | `realloc` (`api/libc.rs`) | `size`, `QUANTUM` |
 | `reallocarray` (`api/libc.rs`) | `n * m`, `QUANTUM` |
 | `aligned_alloc` = `memalign` (`api/libc.rs`) | `size`, `align` (pow2) |
-| `valloc`, `pvalloc` (`api/libc.rs`) | `size`, the page |
+| `valloc` (`api/libc.rs`) | `size`, the page |
+| `pvalloc` (`api/libc.rs`) | `size` and `page_round(size, page)`, the page |
 | `malloc_usable` (`api/libc.rs`) | `size`, `QUANTUM` |
 | `calloc_usable` (`api/libc.rs`) | `n * m`, `QUANTUM` |
 | `realloc_usable` (`api/libc.rs`) | `size`, `QUANTUM` |
@@ -9766,7 +9767,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 5  | `aligned_alloc`, `memalign`                 | P | P | . | . | P | P | . |
 | 6  | `posix_memalign`                            | P | P | . | . | P | P | . |
 | 7  | `valloc`                                    | P | P | . | . | P | . | . |
-| 8  | `pvalloc`                                   | p | P | . | . | P | . | . |
+| 8  | `pvalloc`                                   | P | P | . | . | P | . | . |
 | 9  | `malloc_usable_size`                        | . | . | . | . | P | p | p |
 | 10 | `free`                                      | . | . | . | . | P | p | . |
 | 11 | `free_sized`, `free_aligned_sized`          | . | . | . | . | P | p | . |
@@ -9997,9 +9998,12 @@ alone):
    by the `_block`-core rule above.
 7. `valloc` (`api/libc.rs`). R: `fits` at the page
    (`1 << lg_page`). F: NULL with `ENOMEM`.
-8. `pvalloc` (`api/libc.rs`). R: `fits(r, size, page)`. The
-   page-rounded size the code allocates is not stated. F: NULL with
-   `ENOMEM`, the `checked_add` overflow included.
+8. `pvalloc` (`api/libc.rs`). R: `fits(r, size, page)` and
+   `fits(r, page_round(size, page), page)`, the size rounded up to a
+   whole page, which `pvalloc_block`'s token also gives; a rounding
+   past `usize::MAX` returns NULL (the class of CVE-2013-4332 and
+   CVE-2021-3420).
+   F: NULL with `ENOMEM`, the `checked_add` overflow included.
 9. `malloc_usable_size` (`api/libc.rs`). F: `p == 0 ==> r == 0` and
    `p != 0 ==> 0 < r` (0 exactly for NULL, "No block at address 0"). B:
    `p != 0 ==> free_target(p)`, *(live)*. Before init, a non-NULL `p`
@@ -10366,7 +10370,6 @@ What each partial or missing cell leaves out, and what it rests on:
   `P` cells (rows 10, 11, 15, 26-28) and the unchanged `errno` of rows
   20 and 21 rest on the premise that no libc call in trusted code on
   their paths leaves `errno` changed (*(errno)*).
-- **R** (row 8): `pvalloc`'s page-rounded size is not stated.
 - **U** (rows 9, 18, 19): the huge half of a query. `usable_size` with
   the block's run token gives exactly its usable bytes, but the queries
   take no token (giving them one would add an `axiom_c_claim` site for a

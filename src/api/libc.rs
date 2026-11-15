@@ -2970,8 +2970,18 @@ pub fn valloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno
     alloc_aligned(page, size, Tracked(blk), Tracked(errno), Tracked(ord))
 }
 
+/// `size` rounded up to a multiple of `page`: the bytes `pvalloc(size)`
+/// promises. An `int` definition by `%`, kept apart from
+/// `meta::align_up_spec` on purpose: that is the code's mask form over
+/// `usize`, which wraps on overflow, so stating the contract with it would
+/// restate the code instead of checking it.
+pub open spec fn page_round(size: int, page: int) -> int {
+    size + (page - 1) - (size + (page - 1)) % page
+}
+
 /// `pvalloc`: page-aligned, size rounded up to a whole page. The block's
-/// token goes to C with it.
+/// token goes to C with it. A non-null block fits the rounded size, and a
+/// rounding that would overflow returns NULL.
 pub fn pvalloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: *mut u8)
     requires
         crate::sys::may_abort(),
@@ -2980,6 +2990,11 @@ pub fn pvalloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(o
     ensures
         *final(ord) == *old(ord),
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        ({
+            let page = (1usize << crate::layout::process_regions().lg_page) as int;
+            &&& heap::fits(r, page_round(size as int, page), page)
+            &&& size as int + (page - 1) > usize::MAX ==> r@.addr == 0
+        }),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
@@ -2996,6 +3011,12 @@ pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errn
         *final(ord) == *old(ord),
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
         final(blk).gives(r, size as int),
+        ({
+            let page = (1usize << crate::layout::process_regions().lg_page) as int;
+            &&& heap::fits(r, page_round(size as int, page), page)
+            &&& final(blk).gives(r, page_round(size as int, page))
+            &&& size as int + (page - 1) > usize::MAX ==> r@.addr == 0
+        }),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let page = page_size(super::shared());
@@ -3012,6 +3033,17 @@ pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errn
                 rounded == size + (page - 1),
                 m == rounded & !((page - 1) as usize),
         ;
+        // m is `rounded` less its low bits, which are `rounded % page`.
+        assert(rounded % page == rounded & sub(page, 1)) by (bit_vector)
+            requires
+                page > 0,
+                page & sub(page, 1) == 0,
+        ;
+        assert(m <= rounded && sub(rounded, m) == rounded & sub(page, 1)) by (bit_vector)
+            requires
+                m == rounded & !sub(page, 1),
+        ;
+        assert(m as int == page_round(size as int, page as int));
         if p@.addr != 0 {
             lemma_user_block_shrink(p@.addr, m as int, size as int);
         }
@@ -3388,6 +3420,11 @@ mod exports {
         }
         fn pvalloc / je_pvalloc(size: usize) -> (r: *mut c_void) ensures [
             heap::fits(r as *mut u8, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+            ({
+                let page = (1usize << crate::layout::process_regions().lg_page) as int;
+                &&& heap::fits(r as *mut u8, super::page_round(size as int, page), page)
+                &&& size as int + (page - 1) > usize::MAX ==> r@.addr == 0
+            }),
             r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
