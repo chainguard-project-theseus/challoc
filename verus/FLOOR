@@ -55,6 +55,6 @@
 # deleted functions, that nothing became trusted or outside, and the
 # counts before and after.
 functions 86.9
-lines 94.6
+lines 94.7
 checked-functions 91.7
-checked-lines 96.7
+checked-lines 96.8
