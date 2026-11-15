@@ -190,7 +190,11 @@ impl ClassStats {
 /// the order slots are handed out in, which is a heap-layout obstacle, not
 /// a secret.
 #[inline]
-pub(crate) fn xorshift(state: &mut u64) -> u64 {
+pub(crate) fn xorshift(state: &mut u64) -> (r: u64)
+    ensures
+        r == xorshift_spec(*old(state)),
+        *final(state) == r,
+{
     let mut x = *state;
     x ^= x << 13;
     x ^= x >> 7;
@@ -199,15 +203,321 @@ pub(crate) fn xorshift(state: &mut u64) -> u64 {
     x
 }
 
+/// One [`xorshift`] step: the state after it, which is also its output.
+pub open spec fn xorshift_spec(x: u64) -> u64 {
+    let a = x ^ (x << 13u64);
+    let b = a ^ (a >> 7u64);
+    b ^ (b << 17u64)
+}
+
+/// A non-zero state stays non-zero: each of xorshift's three steps
+/// (`x ^ (x << k)` or `x ^ (x >> k)`) maps only zero to zero. A zero
+/// state would be stuck there, every draw zero and every shuffle the same
+/// order; `Heap::rng` never hands one out.
+pub(crate) proof fn theorem_xorshift_nonzero(x: u64)
+    requires
+        x != 0,
+    ensures
+        xorshift_spec(x) != 0,
+{
+    let a = x ^ (x << 13u64);
+    let b = a ^ (a >> 7u64);
+    assert(a != 0) by (bit_vector)
+        requires x != 0, a == x ^ (x << 13u64);
+    assert(b != 0) by (bit_vector)
+        requires a != 0, b == a ^ (a >> 7u64);
+    assert(b ^ (b << 17u64) != 0) by (bit_vector)
+        requires b != 0;
+}
+
+/// `s` with entries `i` and `j` exchanged (what `<[T]>::swap` does).
+pub open spec fn swap_at(s: Seq<*mut u8>, i: int, j: int) -> Seq<*mut u8> {
+    s.update(i, s[j]).update(j, s[i])
+}
+
+/// The draws a Fisher-Yates pass over `k` entries makes from generator
+/// state `st`: entry `i` (`1 <= i < k`) is the index entry `i` is
+/// exchanged with, the `(k - i)`-th [`xorshift`] output modulo `i + 1`.
+/// Entry 0 (no draw) is 0.
+pub open spec fn draws(k: nat, st: u64) -> Seq<int>
+    decreases k,
+{
+    if k <= 1 {
+        Seq::new(k, |i: int| 0int)
+    } else {
+        let x = xorshift_spec(st);
+        draws((k - 1) as nat, x).push((x % (k as u64)) as int)
+    }
+}
+
+/// The generator state after the `k`-entry pass of [`draws`].
+pub open spec fn draws_state(k: nat, st: u64) -> u64
+    decreases k,
+{
+    if k <= 1 {
+        st
+    } else {
+        draws_state((k - 1) as nat, xorshift_spec(st))
+    }
+}
+
+/// Draw `i` picks one of the entries `0..=i`, for each of `k` entries:
+/// the choices of a Fisher-Yates pass.
+pub open spec fn valid_draws(c: Seq<int>, k: nat) -> bool {
+    &&& c.len() == k
+    &&& forall|i: int| 0 <= i < k ==> 0 <= #[trigger] c[i] <= i
+}
+
+/// Fisher-Yates over the first `k` entries of `s` with draws `c`: entry
+/// `k - 1` is exchanged with entry `c[k - 1]`, then the first `k - 1`
+/// entries are shuffled the same way.
+pub open spec fn fisher_yates(s: Seq<*mut u8>, c: Seq<int>, k: nat) -> Seq<*mut u8>
+    decreases k,
+{
+    if k <= 1 {
+        s
+    } else {
+        fisher_yates(swap_at(s, k - 1, c[k - 1]), c, (k - 1) as nat)
+    }
+}
+
+/// The draws of a pass are valid choices.
+proof fn lemma_draws_valid(k: nat, st: u64)
+    requires
+        k <= u64::MAX,
+    ensures
+        valid_draws(draws(k, st), k),
+    decreases k,
+{
+    if k > 1 {
+        let x = xorshift_spec(st);
+        lemma_draws_valid((k - 1) as nat, x);
+        assert((x % (k as u64)) < k as u64);
+        let c = draws(k, st);
+        assert forall|i: int| 0 <= i < k implies 0 <= #[trigger] c[i] <= i by {
+            if i < k - 1 {
+                assert(c[i] == draws((k - 1) as nat, x)[i]);
+            }
+        }
+    }
+}
+
+/// [`fisher_yates`] reads only the first `k` draws.
+proof fn lemma_fisher_yates_draws(s: Seq<*mut u8>, c: Seq<int>, d: Seq<int>, k: nat)
+    requires
+        forall|i: int| 0 <= i < k ==> c[i] == d[i],
+    ensures
+        fisher_yates(s, c, k) == fisher_yates(s, d, k),
+    decreases k,
+{
+    if k > 1 {
+        assert(c[k - 1] == d[k - 1]);
+        lemma_fisher_yates_draws(swap_at(s, k - 1, c[k - 1]), c, d, (k - 1) as nat);
+    }
+}
+
+/// Exchanging two entries of a sequence with no duplicates leaves none.
+proof fn lemma_swap_no_duplicates(s: Seq<*mut u8>, i: int, j: int)
+    requires
+        s.no_duplicates(),
+        0 <= i < s.len(),
+        0 <= j < s.len(),
+    ensures
+        swap_at(s, i, j).no_duplicates(),
+        swap_at(s, i, j).len() == s.len(),
+{
+    let t = swap_at(s, i, j);
+    assert forall|a: int, b: int| 0 <= a < t.len() && 0 <= b < t.len() && a != b implies t[a] != t[b] by {
+        let sa = if a == j { i } else if a == i { j } else { a };
+        let sb = if b == j { i } else if b == i { j } else { b };
+        assert(t[a] == s[sa]);
+        assert(t[b] == s[sb]);
+    }
+}
+
+/// A Fisher-Yates pass over the first `k` entries keeps the length and
+/// the entries from `k` on, and leaves no duplicates where there were
+/// none.
+proof fn lemma_fisher_yates_frame(s: Seq<*mut u8>, c: Seq<int>, k: nat)
+    requires
+        k <= s.len(),
+        forall|i: int| 0 <= i < k ==> 0 <= #[trigger] c[i] <= i,
+    ensures
+        fisher_yates(s, c, k).len() == s.len(),
+        forall|m: int| k <= m < s.len() ==> #[trigger] fisher_yates(s, c, k)[m] == s[m],
+        s.no_duplicates() ==> fisher_yates(s, c, k).no_duplicates(),
+    decreases k,
+{
+    if k > 1 {
+        let t = swap_at(s, k - 1, c[k - 1]);
+        assert(0 <= c[k - 1] <= k - 1);
+        lemma_fisher_yates_frame(t, c, (k - 1) as nat);
+        if s.no_duplicates() {
+            lemma_swap_no_duplicates(s, k - 1, c[k - 1]);
+        }
+        assert forall|m: int| k <= m < s.len() implies #[trigger] fisher_yates(s, c, k)[m] == s[m] by {
+            assert(fisher_yates(t, c, (k - 1) as nat)[m] == t[m]);
+        }
+    }
+}
+
+/// Fisher-Yates is one to one on draws: over entries with no duplicates,
+/// two valid draw sequences give the same order only when they agree at
+/// every draw. Entry `k - 1` ends as the entry draw `k - 1` picked and is
+/// not moved again, so the first draw where two sequences differ puts
+/// different entries there.
+pub(crate) proof fn theorem_shuffle_order_injective(s: Seq<*mut u8>, c: Seq<int>, d: Seq<int>, k: nat)
+    requires
+        s.no_duplicates(),
+        k <= s.len(),
+        valid_draws(c, k),
+        valid_draws(d, k),
+        fisher_yates(s, c, k) == fisher_yates(s, d, k),
+    ensures
+        forall|i: int| 0 <= i < k ==> c[i] == d[i],
+    decreases k,
+{
+    if k > 1 {
+        let ci = c[k - 1];
+        let di = d[k - 1];
+        let tc = swap_at(s, k - 1, ci);
+        let td = swap_at(s, k - 1, di);
+        lemma_fisher_yates_frame(tc, c, (k - 1) as nat);
+        lemma_fisher_yates_frame(td, d, (k - 1) as nat);
+        assert(fisher_yates(tc, c, (k - 1) as nat)[k - 1] == tc[k - 1]);
+        assert(fisher_yates(td, d, (k - 1) as nat)[k - 1] == td[k - 1]);
+        assert(tc[k - 1] == s[ci]);
+        assert(td[k - 1] == s[di]);
+        assert(ci == di);
+        assert(tc == td);
+        lemma_swap_no_duplicates(s, k - 1, ci);
+        assert(valid_draws(c.take(k - 1), (k - 1) as nat));
+        assert(valid_draws(d.take(k - 1), (k - 1) as nat));
+        lemma_fisher_yates_draws(tc, c, c.take(k - 1), (k - 1) as nat);
+        lemma_fisher_yates_draws(tc, d, d.take(k - 1), (k - 1) as nat);
+        theorem_shuffle_order_injective(tc, c.take(k - 1), d.take(k - 1), (k - 1) as nat);
+        assert forall|i: int| 0 <= i < k implies c[i] == d[i] by {
+            if i < k - 1 {
+                assert(c.take(k - 1)[i] == c[i]);
+                assert(d.take(k - 1)[i] == d[i]);
+            }
+        }
+    } else if k == 1 {
+        assert(c[0] == 0 && d[0] == 0);
+    }
+}
+
+/// `t` agrees with `s` from entry `k` on, and its first `k` entries are
+/// among the first `k` of `s`: what a Fisher-Yates pass over the first
+/// `k` entries of `s` can still reach.
+pub open spec fn reachable_from(s: Seq<*mut u8>, t: Seq<*mut u8>, k: nat) -> bool {
+    &&& t.len() == s.len()
+    &&& k <= s.len()
+    &&& forall|m: int| k <= m < s.len() ==> #[trigger] t[m] == s[m]
+    &&& forall|a: int| 0 <= a < k ==> in_prefix(s, #[trigger] t[a], k as int)
+}
+
+/// `x` is one of the first `k` entries of `s`.
+pub open spec fn in_prefix(s: Seq<*mut u8>, x: *mut u8, k: int) -> bool {
+    exists|b: int| 0 <= b < k && #[trigger] s[b] == x
+}
+
+/// Every order of the first `k` entries is the result of some valid draws
+/// (the draws are built back to front: draw `k - 1` picks the entry the
+/// order puts last).
+proof fn lemma_shuffle_order_reach(s: Seq<*mut u8>, t: Seq<*mut u8>, k: nat) -> (c: Seq<int>)
+    requires
+        s.no_duplicates(),
+        t.no_duplicates(),
+        reachable_from(s, t, k),
+    ensures
+        valid_draws(c, k),
+        fisher_yates(s, c, k) == t,
+    decreases k,
+{
+    if k <= 1 {
+        if k == 1 {
+            assert(in_prefix(s, t[0], 1));
+            let b = choose|b: int| 0 <= b < 1 && #[trigger] s[b] == t[0];
+            assert(s[b] == t[0]);
+        }
+        assert(s =~= t);
+        Seq::new(k, |i: int| 0int)
+    } else {
+        assert(in_prefix(s, t[k - 1], k as int));
+        let b = choose|b: int| 0 <= b < k && #[trigger] s[b] == t[k - 1];
+        assert(s[b] == t[k - 1]);
+        let u = swap_at(s, k - 1, b);
+        lemma_swap_no_duplicates(s, k - 1, b);
+        assert forall|a: int| 0 <= a < k - 1 implies in_prefix(u, #[trigger] t[a], k - 1) by {
+            assert(in_prefix(s, t[a], k as int));
+            let e = choose|e: int| 0 <= e < k && #[trigger] s[e] == t[a];
+            assert(s[e] == t[a]);
+            assert(t[a] != t[k - 1]);
+            assert(e != b);
+            if e == k - 1 {
+                assert(u[b] == t[a]);
+            } else {
+                assert(u[e] == t[a]);
+            }
+        }
+        assert forall|m: int| k - 1 <= m < u.len() implies #[trigger] t[m] == u[m] by {
+            if m == k - 1 {
+                assert(u[m] == s[b]);
+            } else {
+                assert(u[m] == s[m]);
+            }
+        }
+        assert(reachable_from(u, t, (k - 1) as nat));
+        let d = lemma_shuffle_order_reach(u, t, (k - 1) as nat);
+        let c = d.push(b);
+        assert(c[k - 1] == b);
+        assert forall|i: int| 0 <= i < k - 1 implies c[i] == d[i] by {}
+        lemma_fisher_yates_draws(u, c, d, (k - 1) as nat);
+        assert forall|i: int| 0 <= i < k implies 0 <= #[trigger] c[i] <= i by {
+            if i < k - 1 {
+                assert(c[i] == d[i]);
+            }
+        }
+        c
+    }
+}
+
+/// Every order of a batch with no duplicates is the shuffle's result for
+/// exactly one valid draw sequence ([`theorem_shuffle_order_injective`]
+/// for "at most one"): Fisher-Yates is a bijection from draws to orders,
+/// so the order a shuffle hands out is the generator's choice alone and
+/// no order is out of its range.
+pub(crate) proof fn theorem_shuffle_order_reach(s: Seq<*mut u8>, t: Seq<*mut u8>) -> (c: Seq<int>)
+    requires
+        s.no_duplicates(),
+        permutes(t, s),
+    ensures
+        valid_draws(c, s.len()),
+        fisher_yates(s, c, s.len()) == t,
+{
+    theorem_shuffle_permutation(t, s, arbitrary());
+    assert forall|a: int| 0 <= a < s.len() implies in_prefix(s, #[trigger] t[a], s.len() as int) by {
+        theorem_shuffle_permutation(t, s, t[a]);
+        assert(t.contains(t[a]));
+        let b = choose|b: int| 0 <= b < s.len() && s[b] == t[a];
+        assert(s[b] == t[a]);
+    }
+    assert(reachable_from(s, t, s.len()));
+    lemma_shuffle_order_reach(s, t, s.len())
+}
+
 /// Fisher-Yates shuffle of `out` with [`xorshift`]: a permutation
-/// ([`permutes`]), whatever `rng` holds ([`shuffle_zero`] with no tokens
-/// to carry).
+/// ([`permutes`]), whatever `rng` holds, and the order the draws from
+/// `rng` pick ([`shuffle_zero`] with no tokens to carry).
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64)
     ensures
         final(out)@.len() == old(out)@.len(),
         permutes(final(out)@, old(out)@),
         forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
+        final(out)@ == fisher_yates(old(out)@, draws(old(out)@.len(), *old(rng)), old(out)@.len()),
+        *final(rng) == draws_state(old(out)@.len(), *old(rng)),
 {
     let tracked mut z = Map::tracked_empty();
     let tracked mut t = Map::tracked_empty();
@@ -242,12 +552,23 @@ pub(crate) fn shuffle_zero(
         zeroed ==> tokens_cover(*final(z), final(out)@, size),
         loc matches Some(l) ==> keyed(*final(t), ptr_addrs(final(out)@), l, 0, final(out)@.len() as int),
         keyed_frame(*final(t), *old(t), 0, old(out)@.len() as int),
+        final(out)@ == fisher_yates(old(out)@, draws(old(out)@.len(), *old(rng)), old(out)@.len()),
+        *final(rng) == draws_state(old(out)@.len(), *old(rng)),
 {
     proof {
         lemma_from_seq_refl(out@);
     }
-    for i in (1..out.len()).rev()
+    let ghost n = out@.len();
+    let ghost c = draws(n, *rng);
+    for i in it: (1..out.len()).rev()
         invariant
+            n == old(out)@.len(),
+            c == draws(n, *old(rng)),
+            it.seq().len() == if n == 0 { 0 } else { n - 1 },
+            forall|m: int| 0 <= m < it.seq().len() ==> #[trigger] it.seq()[m] == n - 1 - m,
+            fisher_yates(out@, c, (n - it.index()) as nat) == fisher_yates(old(out)@, c, n),
+            forall|m: int| 0 <= m < n - it.index() ==> #[trigger] draws((n - it.index()) as nat, *rng)[m] == c[m],
+            draws_state((n - it.index()) as nat, *rng) == draws_state(n, *old(rng)),
             out@.len() == old(out)@.len(),
             permutes(out@, old(out)@),
             forall|k: int| 0 <= k < old(out)@.len() ==> #[trigger] from_seq(out@, old(out)@, k),
@@ -255,10 +576,23 @@ pub(crate) fn shuffle_zero(
             keyed_frame(*t, *old(t), 0, old(out)@.len() as int),
             zeroed ==> tokens_cover(*z, out@, size),
     {
+        let ghost st = *rng;
         let j = (xorshift(rng) % (i as u64 + 1)) as usize;
         let ghost cur = out@;
         out.swap(i, j);
         proof {
+            // This pass's draw: entry `i` of `draws(i + 1, st)`, which `c`
+            // agrees with below `i + 1`.
+            let k = (i + 1) as nat;
+            lemma_draws_valid((k - 1) as nat, *rng);
+            assert(draws(k, st) == draws((k - 1) as nat, *rng).push(j as int));
+            assert(c[i as int] == draws(k, st)[i as int]);
+            assert(out@ == swap_at(cur, i as int, c[i as int]));
+            assert(fisher_yates(cur, c, k) == fisher_yates(out@, c, (k - 1) as nat));
+            assert forall|m: int| 0 <= m < k - 1 implies #[trigger] draws((k - 1) as nat, *rng)[m] == c[m] by {
+                assert(draws(k, st)[m] == draws((k - 1) as nat, *rng)[m]);
+            }
+            assert(draws_state(k, st) == draws_state((k - 1) as nat, *rng));
             lemma_swap_permutes(cur, i as int, j as int);
             assert forall|k: int| 0 <= k < old(out)@.len() implies #[trigger] from_seq(out@, old(out)@, k) by {
                 let src = if k == i as int { j as int } else if k == j as int { i as int } else { k };
@@ -328,6 +662,12 @@ pub(crate) fn shuffle_zero(
                 assert(tokens_cover(*z, out@, size));
             }
         }
+    }
+    proof {
+        // One entry or none left: the pass is done.
+        let k = if n == 0 { 0nat } else { 1nat };
+        assert(fisher_yates(out@, c, k) == out@);
+        assert(draws_state(k, *rng) == *rng);
     }
 }
 

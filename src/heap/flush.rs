@@ -117,6 +117,7 @@ impl Heap {
             crate::sys::may_syscall(),
         ensures
             *final(self) == (Heap { rng: *final(r), ..*old(self) }),
+            *r != 0,
     {
         if self.rng == 0 {
             let mut seed = seed();

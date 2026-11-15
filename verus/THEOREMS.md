@@ -2345,20 +2345,110 @@ authority per entry, and two such tokens are disjoint), but no lemma
 states it for the claimed batch; `class::gather` derives it when a
 batch's tokens are collected.
 
+**The order is the generator's** (`class/mod.rs`; the predictable
+allocation order class, `verus/VULN-CLASSES.md` CVE-2023-21366, #738):
+
+```rust
+pub(crate) fn shuffle_zero(out: &mut [*mut u8], rng: &mut u64, /* ghost */)
+    ensures
+        // ... as above ...
+        final(out)@ == fisher_yates(old(out)@, draws(old(out)@.len(), *old(rng)), old(out)@.len()),
+        *final(rng) == draws_state(old(out)@.len(), *old(rng)),
+
+pub(crate) proof fn theorem_shuffle_order_injective(s: Seq<*mut u8>, c: Seq<int>, d: Seq<int>, k: nat)
+    requires
+        s.no_duplicates(),
+        k <= s.len(),
+        valid_draws(c, k),
+        valid_draws(d, k),
+        fisher_yates(s, c, k) == fisher_yates(s, d, k),
+    ensures
+        forall|i: int| 0 <= i < k ==> c[i] == d[i],
+
+pub(crate) proof fn theorem_shuffle_order_reach(s: Seq<*mut u8>, t: Seq<*mut u8>) -> (c: Seq<int>)
+    requires
+        s.no_duplicates(),
+        permutes(t, s),
+    ensures
+        valid_draws(c, s.len()),
+        fisher_yates(s, c, s.len()) == t,
+
+pub(crate) proof fn theorem_xorshift_nonzero(x: u64)
+    requires
+        x != 0,
+    ensures
+        xorshift_spec(x) != 0,
+
+pub(super) fn rng(&mut self) -> (r: &mut u64)   // heap/flush.rs
+    ensures
+        // ... only `rng` changes ...
+        *r != 0,
+```
+
+The order a shuffle hands out is a function of the batch and the
+generator state and of nothing else: `fisher_yates` (spec) exchanges
+entry `k - 1` with entry `c[k - 1]` and recurses on the first `k - 1`,
+and `draws(n, st)` is the sequence of choices the loop's `xorshift`
+outputs make from state `st` (entry `i` is the `(n - i)`-th output
+modulo `i + 1`). `xorshift` ensures it computes `xorshift_spec`, the
+three shift-and-xor steps. Fisher-Yates is a bijection from valid draws
+(`valid_draws`: draw `i` in `0..=i`) to orders of a batch with no
+duplicates: two draw sequences giving the same order agree at every draw
+(`theorem_shuffle_order_injective`), and every order of the batch
+(`permutes`) is reached by some valid draws, built back to front
+(`theorem_shuffle_order_reach`). So no order is out of the shuffle's
+range and no two draw sequences collide: what an attacker can predict
+about the order is exactly what it can predict about the draws.
+`theorem_xorshift_nonzero` shows a non-zero state never becomes zero
+(each of the three steps maps only zero to zero; bit-vector proofs), and
+`Heap::rng`, which `Heap::claim` calls before every randomized refill,
+ensures the state it hands out is non-zero. A zero state would be stuck:
+every draw 0 and every batch the same order.
+
+**Proof.** The loop names its iterator (`for i in it: (1..len).rev()`)
+so the invariant can say how many entries remain, `k = n - it.index()`:
+`fisher_yates(out@, c, k) == fisher_yates(old(out)@, c, n)` for
+`c = draws(n, old(rng))`, and the remaining draws from the current state
+are `c`'s first `k`. One step unfolds `draws` and `fisher_yates` once:
+the draw from the current state is `c[i]` and `swap(i, j)` is
+`swap_at(out@, i, c[i])`. At the end one entry or none remains, where
+`fisher_yates` is the identity. The injective direction uses
+`lemma_fisher_yates_frame` (a pass over `k` entries leaves entries `k..`
+alone and keeps no duplicates): entry `k - 1` ends as `s[c[k - 1]]`, so
+the first differing draw puts different entries there.
+
 **Premises beyond the common ones.** None. The proof uses only the
 `assume_specification` of `<[T]>::swap` (`vspec/slice.rs`;
-discharged by Kani, ledger `verus/ledger/src/vspec/slice.rs.md`) and vstd's multiset lemmas.
+discharged by Kani, ledger `verus/ledger/src/vspec/slice.rs.md`), vstd's
+`Rev` and range iterator specs, and vstd's multiset lemmas.
 
 **Scope.**
 - Randomness is out of scope: nothing is claimed about the distribution
   of the permutation, the quality of `xorshift`, or the seed from
   `Heap::rng` (`heap/flush.rs`; `seed` is a `getrandom` read, or a
-  clock read when that fails, and claims nothing about the value). The theorem holds for every `rng` value, including a stuck or
-  adversarial one.
+  clock read when that fails, and claims nothing about the value). The
+  permutation statement holds for every `rng` value, including a stuck
+  or adversarial one. The order statement says the draws are the only
+  input; which draw sequences xorshift's 2^64 - 1 non-zero states
+  produce is not characterized. Since 21! exceeds 2^64, a batch of 21
+  slots or more has orders no state reaches, and an attacker who learns
+  the state predicts every later order: `slot_randomize` is a
+  heap-layout obstacle, not a secret (the `xorshift` doc comment). It is
+  off by default because it works against compaction
+  (`docs/hardening.md` (2)), not because of these limits.
+- The state reaching the shuffle has passed through the start-word draws
+  of `claim_with`'s picks. `xorshift` keeps it non-zero
+  (`theorem_xorshift_nonzero`), but `claim_with` and `finish` do not
+  carry that in their `ensures` (they take the state as an
+  `Option<&mut u64>`), so the non-zero fact is stated at `Heap::rng`, not
+  at the shuffle's entry
+  ([#749](https://github.com/chainguard-project-theseus/challoc/issues/749)).
 - The random start word of each pick that scans the bitmap in `finish`
   (not a `Fresh` or `Purged` prefix; `(xorshift(r) as usize) % words`)
   changes which free slots are claimed; the claim contract (slot tokens,
   `is_slot`, theorem 5's token protocol) is proved for every start word.
+  Stating the start word as a function of the state is
+  [#749](https://github.com/chainguard-project-theseus/challoc/issues/749).
 
 **Where the statement is weaker than the code.**
 - `permutes` is stated on `shuffle_zero`'s argument and, inside
