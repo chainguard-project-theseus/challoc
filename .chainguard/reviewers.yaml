@@ -3,12 +3,13 @@
 # merges. The reviewer named here is the `bot:challoc` owner of every path
 # in .github/codeowners.yaml (CONTRIBUTING.md, "Code review").
 
-# challoc: the `bot:challoc` owner sits on a gated entry: with
-# `approve: true`, Checks submits an approving review as chainguard[bot]
-# when the verdict at a head is approve. Paths the reviewers read as their
-# own definitions still need a person.
-# challoc's CONTRIBUTING.md has no "Code review" section; review-prompt.md
-# holds the rules.
+# .github/codeowners.yaml reserves some paths for the maintainers alone
+# (its entries after the first), so the reviewer's approval counts for
+# every other path except the files the reviewer reads as its own
+# definitions (this file, the prompt file, codeowners.yaml, AGENTS.md,
+# CLAUDE.md), which always need a person's approval (codeowners.yaml's
+# header). challoc's CONTRIBUTING.md has no "Code review" section;
+# review-prompt.md holds the rules.
 version: 1
 # Checks submits the approving review once every changed path has its
 # approval (root file only).

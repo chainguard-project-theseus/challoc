@@ -161,6 +161,14 @@ a `SKIP` line; it never passes silently.
 
 - Keep a pull request to one logical change, with a description of what
   it changes and why, and the evidence the rules above ask for.
+- A bug challoc tracks in an upstream project (a kernel, glibc, Verus,
+  Kani, a consumer) gets an issue labelled "upstream issue". A pull
+  request that works around it or records it says `Refs #n`, not
+  `Fixes #n`: the issue stays open until upstream fixes the bug. The
+  reviewer cannot read issue labels, so a pull request that closes an
+  issue (`Fixes`, `Closes`, `Resolves`) says so in its body with the line
+  `Closes no upstream issue.`; without it the reviewer asks for the line
+  or for `Refs` (`.chainguard/review-prompt.md`, "Upstream issues").
 - Sign off every commit under the
   [Developer Certificate of Origin](https://developercertificate.org/):
   `git commit -s` adds the `Signed-off-by:` line, which certifies that
