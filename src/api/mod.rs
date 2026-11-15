@@ -110,7 +110,7 @@ mod restated;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arena::Arena;
 use crate::config;
@@ -121,7 +121,7 @@ use crate::lock::{Lock, LockHeld, LockOrder};
 use crate::lock::{RawLock, rank_arena_stats, rank_class, rank_sets, rank_state, rank_table};
 use crate::purge;
 use crate::purge::background::{State, StateHold};
-use crate::sync::patomic::PAtomicU32;
+use crate::sync::patomic::{PAtomicU8, PAtomicU32};
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 #[cfg(verus_keep_ghost)]
@@ -172,7 +172,7 @@ pub const READY: u32 = 2;
 #[repr(C)]
 struct InitWords {
     word: PAtomicU32,
-    line: AtomicU8,
+    line: PAtomicU8,
     inv: Tracked<AtomicInvariant<(), StateVal, StatePred>>,
 }
 
@@ -371,7 +371,7 @@ pub axiom fn axiom_ready(tracked p: &'static Published)
 /// rests on the other place a `BytePerm` is minted, [`axiom_start`]'s
 /// slot-state bytes ([`Statics::slots`]): their permissions have the
 /// identities `heap::slotstate::slot_byte_id` names, and that none of
-/// them is the identity of an atomic `vspec::byte::new` made, as the line
+/// them is the identity of an atomic `PAtomicU8::new` made, as the line
 /// word is, is a premise its contract does not state (Verus can prove
 /// neither that one is [`line_word_id`] nor that none is). The
 /// slot-state invariant ([`Published::slots`]) holds those permissions,
@@ -528,13 +528,14 @@ impl Statics {
 /// it (the arrays are fresh anonymous mappings, zero-filled, never
 /// unmapped, and `step` is the only code that writes them, through
 /// `vspec::byte`'s wrappers), and no other permission to a slot-state
-/// byte exists (the bytes are not made by `vspec::byte::new`); the
+/// byte exists (the bytes are not made by vstd's `PAtomicU8::new`, the
+/// only other mint of a `PermissionU8`); the
 /// permissions of addresses that are no slot-state byte are never used
 /// (`step` opens the invariant that holds them only for a byte it
 /// computed). A `static`'s initialiser runs once, at compile time; the test
 /// `access_init_once_words_written_by_their_protocol`
 /// (tests/loom/tests/access.rs) checks that it is the one call.
-axiom fn axiom_start(word: &PAtomicU32, line: &AtomicU8) -> (tracked s: Start)
+axiom fn axiom_start(word: &PAtomicU32, line: &PAtomicU8) -> (tracked s: Start)
     ensures
         crate::vspec::count::count_id(word) == state_word_id(),
         crate::vspec::byte::byte_id(line) == line_word_id(),
@@ -703,7 +704,7 @@ fn state() -> (r: (&'static PAtomicU32, Tracked<&'static AtomicInvariant<(), Sta
 
 /// The feature line's word, with its identity.
 #[inline(always)]
-fn line_word() -> (r: &'static AtomicU8)
+fn line_word() -> (r: &'static PAtomicU8)
     ensures
         crate::vspec::byte::byte_id(r) == line_word_id(),
     opens_invariants none
@@ -829,7 +830,7 @@ fn load_state_marked(Tracked(seen): Tracked<&mut Seen>, Tracked(mark): Tracked<&
     s
 }
 
-/// An acquire load of the feature line's word, with the line's frozen
+/// A `SeqCst` load of the feature line's word, with the line's frozen
 /// permissions when it reads `LINE_READY` ([`LinePred`]).
 #[inline(always)]
 fn load_line(Tracked(inv): Tracked<&'static LineInv>, Tracked(seen): Tracked<&mut LineSeen>) -> (s: u8)
@@ -842,7 +843,7 @@ fn load_line(Tracked(inv): Tracked<&'static LineInv>, Tracked(seen): Tracked<&mu
     let w = line_word();
     let s;
     vstd::open_atomic_invariant!(inv => v => {
-        s = crate::vspec::byte::load(w, Ordering::Acquire, Tracked(&v.perm));
+        s = crate::vspec::byte::load(w, Tracked(&v.perm));
         proof {
             if s == LINE_READY {
                 seen.frozen = v.frozen;
@@ -867,7 +868,7 @@ fn claim_line(Tracked(inv): Tracked<&'static LineInv>) -> (r: (Result<u8, u8>, T
     let tracked mut cell = None;
     let won;
     vstd::open_atomic_invariant!(inv => v => {
-        won = crate::vspec::byte::compare_exchange(w, LINE_UNBUILT, LINE_BUILDING, Ordering::Acquire, Ordering::Acquire, Tracked(&mut v.perm));
+        won = crate::vspec::byte::compare_exchange(w, LINE_UNBUILT, LINE_BUILDING, Tracked(&mut v.perm));
         proof {
             if won is Ok {
                 cell = Some(v.cell.tracked_take());
@@ -877,7 +878,7 @@ fn claim_line(Tracked(inv): Tracked<&'static LineInv>) -> (r: (Result<u8, u8>, T
     (won, Tracked(cell))
 }
 
-/// The `LINE_READY` store, `Release`, with the built line's permissions
+/// The `LINE_READY` store, `SeqCst`, with the built line's permissions
 /// frozen into the invariant for every reader ([`LinePred`]); the frozen
 /// permissions.
 #[inline(always)]
@@ -892,7 +893,7 @@ fn publish_line(Tracked(inv): Tracked<&'static LineInv>, Tracked(cell): Tracked<
     let w = line_word();
     let tracked frozen = vstd::modes::tracked_static_ref(cell);
     vstd::open_atomic_invariant!(inv => v => {
-        crate::vspec::byte::store(w, LINE_READY, Ordering::Release, Tracked(&mut v.perm));
+        crate::vspec::byte::store(w, LINE_READY, Tracked(&mut v.perm));
         proof {
             v.frozen = Some(frozen);
         }
@@ -2912,7 +2913,7 @@ fn feature_line_fork_child(Tracked(published): Tracked<&'static Published>)
     let tracked inv = published.line;
     vstd::open_atomic_invariant!(inv => v => {
         let ghost before = v.perm;
-        let _reset = crate::vspec::byte::compare_exchange(w, LINE_BUILDING, LINE_UNBUILT, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.perm));
+        let _reset = crate::vspec::byte::compare_exchange(w, LINE_BUILDING, LINE_UNBUILT, Tracked(&mut v.perm));
         proof {
             if _reset is Ok {
                 v.cell = Some(axiom_line_orphaned(before, &v.perm, &v.cell));

@@ -28,12 +28,13 @@
 //! paths only; the limit walk is repeated at most once per
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
+use crate::sync::patomic::PAtomicU8;
 use crate::vspec::byte::BytePerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::byte::byte_id;
 use core::fmt;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use vstd::cell::CellId;
 use vstd::cell::pcell::{PCell, PointsTo as PCellPerm};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
@@ -1478,15 +1479,17 @@ impl fmt::Display for Cgroup {
 /// same as a host without cgroup2.
 ///
 /// One thread discovers (a compare-exchange from `PENDING`) into the
-/// cell and publishes it with a release store of `DONE`; readers see the
-/// cell only after an acquire load of `DONE` (the discoverer, after its
-/// own write), so the record's plain fields are never read while they
-/// are written. The phase's invariant
+/// cell and publishes it with a store of `DONE`; readers see the cell
+/// only after a load of `DONE` (the discoverer, after its own write).
+/// Every access to the phase is a vstd `SeqCst` operation
+/// (`vspec::byte`), so the store releases and the load acquires, and the
+/// record's plain fields are never read while they are written. The
+/// phase's invariant
 /// ([`PhasePred`]) carries that protocol: it holds the cell's permission
 /// while the phase is `PENDING`, hands it to the exchange's winner, and
 /// holds it frozen from the `DONE` store on, for every reader.
 pub struct Deferred {
-    phase: AtomicU8,
+    phase: PAtomicU8,
     /// Coarse-clock time of init.
     born: u64,
     /// Initialised once `phase` is `DONE`.
@@ -1668,10 +1671,13 @@ impl Deferred {
     }
 
     /// Whether discovery is still to come and `now` is at least
-    /// [`DEFER_NS`] after init.
+    /// [`DEFER_NS`] after init. The phase is loaded through its invariant
+    /// ([`Deferred::load_phase`]), which a vstd atomic requires; the
+    /// frozen permission it may hand back is not used.
     #[inline]
     pub fn due(&self, now: u64) -> bool {
-        self.phase.load(Ordering::Relaxed) == PHASE_PENDING
+        let tracked mut seen = CellSeen { frozen: None };
+        self.load_phase(Tracked(&mut seen)) == PHASE_PENDING
             && now.saturating_sub(self.born) >= DEFER_NS
     }
 
@@ -1769,7 +1775,7 @@ impl Deferred {
         }
         vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
             let ghost before = v.0;
-            let _reset = crate::vspec::byte::compare_exchange(&self.phase, PHASE_RUNNING, PHASE_PENDING, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut v.0));
+            let _reset = crate::vspec::byte::compare_exchange(&self.phase, PHASE_RUNNING, PHASE_PENDING, Tracked(&mut v.0));
             proof {
                 if _reset is Ok {
                     v.1 = Some(axiom_cell_orphaned(self, before, &v.0));
@@ -1778,7 +1784,7 @@ impl Deferred {
         });
     }
 
-    /// An acquire load of the phase, with the cell's frozen permission
+    /// A `SeqCst` load of the phase, with the cell's frozen permission
     /// when it reads `DONE` ([`PhasePred`]).
     #[inline(always)]
     fn load_phase(&self, Tracked(seen): Tracked<&mut CellSeen>) -> (r: u8)
@@ -1790,7 +1796,7 @@ impl Deferred {
         }
         let r;
         vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
-            r = crate::vspec::byte::load(&self.phase, Ordering::Acquire, Tracked(&v.0));
+            r = crate::vspec::byte::load(&self.phase, Tracked(&v.0));
             proof {
                 if r == PHASE_DONE {
                     seen.frozen = v.2;
@@ -1813,7 +1819,7 @@ impl Deferred {
         }
         let won;
         vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
-            won = crate::vspec::byte::compare_exchange(&self.phase, PHASE_PENDING, PHASE_RUNNING, Ordering::Acquire, Ordering::Relaxed, Tracked(&mut v.0));
+            won = crate::vspec::byte::compare_exchange(&self.phase, PHASE_PENDING, PHASE_RUNNING, Tracked(&mut v.0));
             proof {
                 if won is Ok {
                     claimed.cell = Some(v.1.tracked_take());
@@ -1823,7 +1829,7 @@ impl Deferred {
         won
     }
 
-    /// The phase's `DONE` store, `Release`, with the cell's permission
+    /// The phase's `DONE` store, `SeqCst`, with the cell's permission
     /// frozen into the invariant for every reader ([`PhasePred`]); the
     /// frozen permission is handed back to the publisher too.
     #[inline(always)]
@@ -1838,7 +1844,7 @@ impl Deferred {
         }
         let tracked frozen = vstd::modes::tracked_static_ref(cell);
         vstd::open_atomic_invariant!(self.phase_inv.borrow() => v => {
-            crate::vspec::byte::store(&self.phase, PHASE_DONE, Ordering::Release, Tracked(&mut v.0));
+            crate::vspec::byte::store(&self.phase, PHASE_DONE, Tracked(&mut v.0));
             proof {
                 v.2 = Some(frozen);
             }

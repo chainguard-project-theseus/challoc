@@ -141,6 +141,20 @@ pub(crate) mod patomic {
                 self.ato.load(Ordering::SeqCst)
             }
 
+            pub(crate) fn store(&self, _perm: Tracked<&mut PermissionU8>, v: u8) {
+                self.ato.store(v, Ordering::SeqCst)
+            }
+
+            pub(crate) fn compare_exchange(
+                &self,
+                _perm: Tracked<&mut PermissionU8>,
+                current: u8,
+                new: u8,
+            ) -> Result<u8, u8> {
+                self.ato
+                    .compare_exchange(current, new, Ordering::SeqCst, Ordering::SeqCst)
+            }
+
             pub(crate) fn fetch_or(&self, _perm: Tracked<&mut PermissionU8>, v: u8) -> u8 {
                 self.ato.fetch_or(v, Ordering::SeqCst)
             }

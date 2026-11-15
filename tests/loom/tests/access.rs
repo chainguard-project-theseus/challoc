@@ -878,20 +878,18 @@ fn access_desc_fields_control() {
     );
 }
 
-// One permission per atomic (the watermark and phase wrappers' seams; the
-// route byte's, the counters' and the table entries' permissions are
-// vstd's, which only `PAtomicU8::new`, `PAtomicU32::new` and
-// `PAtomicPtr::new` mint): each file builds its permission type only in
+// One permission per atomic (the watermark wrappers' seams; the route
+// byte's, the state bytes', the counters' and the table entries'
+// permissions are vstd's, which only `PAtomicU8::new`, `PAtomicU32::new`
+// and `PAtomicPtr::new` mint, besides `api::axiom_start`'s slot-state
+// bytes): each file builds its permission type only in
 // its minting fn, with one literal, and names the type only in the struct
 // and impl lines and in type position (no `Self`, derive, trait impl or
 // child module); and no `const` item calls a minting fn, vstd's included,
 // directly or through a wrapper (each use of such a const would be a fresh
 // atomic with a copy of its permission).
 
-const PERMS: &[(&str, &str, &str)] = &[
-    ("src/vspec/atom.rs", "UsizePerm", "new_usize"),
-    ("src/vspec/byte.rs", "BytePerm", "new"),
-];
+const PERMS: &[(&str, &str, &str)] = &[("src/vspec/atom.rs", "UsizePerm", "new_usize")];
 
 const MINTERS: &[&str] = &[
     "PAtomicU8::new",
@@ -971,12 +969,12 @@ fn access_one_permission_per_atomic() {
 #[test]
 fn access_one_permission_per_atomic_control() {
     let t = tree();
-    let anchor = "(b, Tracked(BytePerm { id: byte_id(&b), value: v }))";
+    let anchor = "(a, Tracked(UsizePerm { id: usize_id(&a), value: v }))";
     let t2 = with(
         &t,
-        "src/vspec/byte.rs",
+        "src/vspec/atom.rs",
         anchor,
-        "(b, Tracked(BytePerm { id: byte_id(&b), value: v }))",
+        "(a, Tracked(UsizePerm { id: usize_id(&a), value: v }))",
     );
     assert!(!check_perms(&t2).is_empty());
     let anchor = "use crate::vspec::flags::RouteByte;";
@@ -1145,7 +1143,7 @@ fn access_init_once_words_control() {
         &t,
         "src/api/mod.rs",
         anchor,
-        "fn f() -> u8 { STATE.line.load(Ordering::Relaxed) }",
+        "fn f() -> u8 { STATE.line.load(Tracked(p)) }",
     );
     assert!(!check_once(&t2).is_empty());
     let t2 = with(
@@ -1292,8 +1290,10 @@ fn access_fork_slot_control() {
     }
 }
 
-// The deferred cgroup record's phase (`vspec/byte.rs`'s seams): non-test
-// sys/cgroup.rs writes no `.phase` by a method, and no file but it,
+// The deferred cgroup record's phase (`vspec/byte.rs`, a vstd
+// `PAtomicU8`, whose every operation takes the permission the phase's
+// invariant holds; this guard keeps the writes where the invariant is):
+// non-test sys/cgroup.rs writes no `.phase` by a method, and no file but it,
 // heap/slotstate.rs (the slot-state bytes' `step`) and api/mod.rs (the
 // feature line's word, `check_once`) calls `vspec::byte`.
 
@@ -1341,7 +1341,7 @@ fn access_deferred_phase_control() {
         &t,
         "src/sys/cgroup.rs",
         anchor,
-        "fn f(d: &D) { d.phase.store(0, Ordering::Relaxed); }",
+        "fn f(d: &D) { d.phase.store(Tracked(p), 0); }",
     );
     assert!(!check_phase(&t2).is_empty());
     let anchor = "use crate::vspec::flags::RouteByte;";
@@ -1417,7 +1417,7 @@ fn access_slot_bytes_control() {
         &t,
         "src/heap/slotstate.rs",
         "use crate::vspec::byte::BytePerm;",
-        "fn f() -> &'static AtomicU8 { unsafe { byte_at(0) } }",
+        "fn f() -> &'static PAtomicU8 { unsafe { byte_at(0) } }",
     );
     assert!(!check_slot_bytes(&t2).is_empty());
 }

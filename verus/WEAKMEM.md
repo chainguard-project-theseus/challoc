@@ -698,17 +698,19 @@ shows the check can fail.
   which `lemma_state_inv_unpublishes_exited` reads from it).
 - The once-cells, `oncecell.rs`. The feature line (copies of
   `line_ready`, `feature_line_fork_child` and their `vspec/byte.rs`
-  calls on `STATE.line`, `load`, `compare_exchange` and `store`): the line is
-  built once, and every reader that sees `LINE_READY` reads it
-  race-free. The deferred cgroup record (`vspec/byte.rs`'s wrappers as
-  they are, driven by copies of `Deferred::get`, `discover` and
-  `fork_child`): one discovery runs, and every reader that sees `DONE`
-  reads the record race-free. Controls: a `Relaxed` `LINE_READY` (or
-  `DONE`) store lets a reader see it without the write. The fork-child
-  resets run on one thread, as in the child: the next request builds
-  (discovers) rather than waits. Verus proves the hand-off of the cells'
-  permissions (`api::LinePred`, `sys::cgroup::PhasePred`); the models
-  check that the release/acquire pairs give the edges it relies on.
+  calls on `STATE.line`, `load`, `compare_exchange` and `store`, vstd's
+  `SeqCst` operations): the line is built once, and every reader that
+  sees `LINE_READY` reads it race-free. The deferred cgroup record
+  (`vspec/byte.rs`'s verified wrappers as they are, over the `cfg(loom)`
+  stand-in for vstd's `PAtomicU8`, driven by copies of `Deferred::get`,
+  `discover` and `fork_child`): one discovery runs, and every reader
+  that sees `DONE` reads the record race-free. Controls: a `Relaxed`
+  `LINE_READY` store, and a `DONE` store before the discovery's write,
+  let a reader see it without the write. The fork-child resets run on
+  one thread, as in the child: the next request builds (discovers)
+  rather than waits. Verus proves the hand-off of the cells' permissions
+  (`api::LinePred`, `sys::cgroup::PhasePred`); the models check that
+  the `SeqCst` stores and loads give the edges it relies on.
 - The free path's dispatch byte, `flags.rs` (`vspec/flags.rs`'s
   `RouteByte` and its verified wrappers as they are, over the `cfg(loom)`
   stand-in for vstd's `PAtomicU8`, driven by copies of `init`'s
@@ -721,7 +723,8 @@ shows the check can fail.
   `ROUTE` fails the assertions.
 - The double-free state byte, `slotstate.rs` (a copy of
   `slotstate::free`'s compare-and-exchange from `LIVE`, through
-  `vspec::byte::compare_exchange` as it is): two
+  `vspec::byte::compare_exchange` as it is, over the `cfg(loom)`
+  `PAtomicU8` stand-in): two
   simultaneous frees of one live slot. In every interleaving exactly one
   finds the slot `LIVE` and moves it; the other sees what the first
   stored and aborts by name. Control: the load-then-store form lets both
@@ -744,7 +747,7 @@ atomics with the
 permissions erased: evidence for the callers' hand-offs under the models
 named, which moves no status (the "status" column marks a copy).
 
-26 seams cite loom, and every one is partly checked
+23 seams cite loom, and every one is partly checked
 (`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
 (`lock.rs.md`, tool loom/GenMC) stays trusted: its contract is
 termination, and the lock models show deadlock freedom only. Drepper's
@@ -770,9 +773,6 @@ another thread's exchange as often as other threads retake the lock.
 | `vspec/atom.rs.md` | `store_usize_at` | partly checked (Kani, loom, GenMC) |
 | `vspec/atom.rs.md` | `load_usize_seen` | partly checked (loom, GenMC) |
 | `vspec/atom.rs.md` | `load_u16_at` | partly checked (Kani, loom, GenMC) |
-| `vspec/byte.rs.md` | `load` | partly checked (Kani, loom) |
-| `vspec/byte.rs.md` | `store` | partly checked (Kani, loom) |
-| `vspec/byte.rs.md` | `compare_exchange` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `WordPerm` | partly checked (loom) |
 | `vspec/word.rs.md` | `fetch_or` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
@@ -787,10 +787,10 @@ The arguments, by group (the overrides comments give each in full):
   last value in its modification order, so the permission carries it;
   at most one success follows from `STATE`'s invariant, which `STATE`'s
   verified initialiser builds once (`axiom_start`, assumed, is the token
-  it takes). The loads and stores on `STATE.word` (`vspec/count.rs`,
-  vstd's `SeqCst`) and `STATE.line` (`vspec/byte.rs`) give the
+  it takes). The loads and stores on `STATE.word` (`vspec/count.rs`)
+  and `STATE.line` (`vspec/byte.rs`), vstd's `SeqCst`, give the
   release/acquire pairs the init and once-cell models check on copies
-  of the steps (`byte.rs.overrides`).
+  of the steps.
 - `background::main` (exit models): it returns after a final
   `request(false)`, given each pass returns and the exit takes the state
   lock.
@@ -825,8 +825,9 @@ The arguments, by group (the overrides comments give each in full):
   outcome). `store_owner` is the owner word's only write (Verus's
   markers) and records the value (`u16_value`) inside the word's
   invariant (`table::OwnerPred`). Watermark, free and bitmap models.
-- The byte wrappers (`vspec/byte.rs`): the once-cell model checks their
-  release/acquire pairs.
+- The byte wrappers (`vspec/byte.rs`) are not in the table either:
+  they are verified over vstd's `PAtomicU8`. The once-cell and
+  slot-state models still check the callers' protocols around them.
 - The slab descriptor accessors (`slab.rs`): every access through a
   permission is made holding the lock whose value holds it (the commit
   lock's, then the class lock's), so successive holders are ordered by

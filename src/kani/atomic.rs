@@ -9,8 +9,8 @@
 //! return any value, the contracts' "any pointer", is what lets other
 //! threads in, and no harness constrains it.
 //!
-//! Then the trusted atomic wrappers of `vspec/byte.rs`,
-//! `vspec/word.rs` and `vspec/atom.rs`
+//! Then the trusted atomic wrappers of `vspec/word.rs` and
+//! `vspec/atom.rs`
 //! (all but its `load_usize_seen`, whose persistent set is ghost, and
 //! `usize_ptr`, checked in its own file), each run on a real `core`
 //! atomic. Their contracts state values through a ghost permission, which
@@ -29,11 +29,9 @@
 //! its harness leaves out. Each module's `*_bad_orders` harness shows that
 //! the orderings a `requires` excludes are the ones `core` panics on.
 
-use crate::vspec::{atom, byte, word};
+use crate::vspec::{atom, word};
 use core::cell::Cell;
-use core::sync::atomic::{
-    AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
-};
+use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use vstd::prelude::Tracked;
 
 /// Every `Ordering`.
@@ -190,85 +188,6 @@ fn bad_store_order() -> Ordering {
     let o = any_order();
     kani::assume(matches!(o, Ordering::Acquire | Ordering::AcqRel));
     o
-}
-
-/// `vspec::byte::load`: under `!(ordering is Release) && !(ordering is
-/// AcqRel)`, `r == perm.value()`, and the byte is unchanged.
-#[kani::proof]
-fn byte_load() {
-    let v0: u8 = kani::any();
-    let b = AtomicU8::new(v0);
-    assert_eq!(byte::load(&b, load_order(), Tracked::assume_new()), v0);
-    assert_eq!(b.load(Ordering::Relaxed), v0);
-}
-
-/// `vspec::byte::store`: under `!(ordering is Acquire) && !(ordering is
-/// AcqRel)`, `final(perm).value() == v`.
-#[kani::proof]
-fn byte_store() {
-    let b = AtomicU8::new(kani::any());
-    let v: u8 = kani::any();
-    byte::store(&b, v, store_order(), Tracked::assume_new());
-    assert_eq!(b.load(Ordering::Relaxed), v);
-}
-
-/// `vspec::byte::compare_exchange`: under `!(failure is Release) &&
-/// !(failure is AcqRel)` and any success ordering, `Ok(prev)` means
-/// `prev == current`, the byte held `current` and now holds `new`;
-/// `Err(prev)` means `prev` is the old value, not `current`, and the
-/// byte still holds it. A `kani::cover!` marks each side (Kani reports
-/// whether it is reached, and does not fail when it is not).
-#[kani::proof]
-fn byte_compare_exchange() {
-    let v0: u8 = kani::any();
-    let current: u8 = kani::any();
-    let new: u8 = kani::any();
-    let b = AtomicU8::new(v0);
-    let r = byte::compare_exchange(
-        &b,
-        current,
-        new,
-        any_order(),
-        load_order(),
-        Tracked::assume_new(),
-    );
-    let now = b.load(Ordering::Relaxed);
-    match r {
-        Ok(prev) => {
-            kani::cover!(true, "byte compare_exchange Ok");
-            assert!(prev == current && v0 == current && now == new);
-        }
-        Err(prev) => {
-            kani::cover!(true, "byte compare_exchange Err");
-            assert!(prev == v0 && prev != current && now == prev);
-        }
-    }
-}
-
-/// The orderings `vspec::byte`'s `requires` exclude panic: a store with
-/// `Acquire` or `AcqRel`, a load with `Release` or `AcqRel`, a
-/// compare-and-swap with a `Release` or `AcqRel` failure ordering. Not
-/// part of a contract.
-#[kani::proof]
-#[kani::should_panic]
-fn byte_bad_orders() {
-    let b = AtomicU8::new(kani::any());
-    let pick: u8 = kani::any();
-    if pick == 0 {
-        byte::store(&b, kani::any(), bad_store_order(), Tracked::assume_new());
-    } else if pick == 1 {
-        byte::load(&b, bad_load_order(), Tracked::assume_new());
-    } else {
-        let _ = byte::compare_exchange(
-            &b,
-            kani::any(),
-            kani::any(),
-            any_order(),
-            bad_load_order(),
-            Tracked::assume_new(),
-        );
-    }
-    super::must_not_return();
 }
 
 /// `vspec::word::fetch_or`: `prev == old(perm).value()` and

@@ -168,7 +168,7 @@ add.
   The feature line (written not by `init` but at its first request)
   has its own once-cell invariant (`api::LinePred`,
   ONCECELL): `init` makes it with `STATE.line`'s permission (a
-  `vspec::byte::BytePerm`, which `STATE`'s initialiser mints and
+  `vspec::byte::BytePerm`, vstd's `PermissionU8`, which `STATE`'s initialiser mints and
   `claim_init` hands its winner, through `vspec/byte.rs`'s `load`,
   `compare_exchange` and `store`) and the
   permissions to `FEATURES` and `FEATURE_LINE`, and publishes it with
@@ -177,7 +177,7 @@ add.
   `Shared::wf`. `api::line_ready` (verified) hands the permissions to
   the winner of `STATE.line`'s exchange from `LINE_UNBUILT`, which
   builds the line through them (`api::build_line`, verified) and
-  freezes them into the invariant at its release store of
+  freezes them into the invariant at its (`SeqCst`) store of
   `LINE_READY`; a request that loads `LINE_READY` gets the frozen
   permissions and reads the line through them (`api::published_line`,
   verified). The deferred cgroup record (`sys::cgroup::Deferred`) has
@@ -273,8 +273,9 @@ add.
   runs once (so the token is taken once: the source test
   `access_init_once_words_written_by_their_protocol` in
   `tests/loom/tests/access.rs` checks that `axiom_start` has that one
-  call), and the wrappers (`vspec/byte.rs`, trusted; `vspec/count.rs`,
-  verified over vstd's `PAtomicU32`, whose operations vstd trusts; the
+  call), and the wrappers (`vspec/byte.rs` and `vspec/count.rs`,
+  verified over vstd's `PAtomicU8` and `PAtomicU32`, whose operations
+  vstd trusts; the
   loom models of `tests/loom/src/init.rs` and `oncecell.rs` check
   copies of the steps that call them), with `STATE.word`'s and
   `STATE.line`'s writes only theirs (the same test checks that the
@@ -6403,8 +6404,8 @@ bounds, and `Sink::write_str` (verified) keeps it.
   projections, `shared_base` and `shared_deref`, `STATE.word`'s
   wrappers (`vspec::count::load`, `compare_exchange`, `store`: one vstd
   `PAtomicU32` operation each, `SeqCst`), and `STATE.line`'s and the deferred record's
-  phase's wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one bare
-  atomic operation each), `class_entry`,
+  phase's wrappers (`vspec::byte::load`, `compare_exchange`, `store`: one vstd
+  `PAtomicU8` operation each, `SeqCst`), `class_entry`,
   the watermark's load `vspec::atom::load_usize` (the registry is read
   through `Arenas::get_existing` and the verified `arena_ref`),
   `Config::get` and `KEYS`, `vspec::ptr::ref_ptr`
@@ -6459,9 +6460,8 @@ bounds, and `Sink::write_str` (verified) keeps it.
   proving it unreachable (above: the word has no honest invariant that
   excludes it). The seven `stats.cgroup.*` reads reach no check: that the
   record is published after a waiting discovery is proved from the
-  phase's invariant (`sys::cgroup::PhasePred`), over the trusted
-  `vspec::byte` wrappers (partly checked by Kani and loom,
-  `verus/ledger/src/vspec/byte.rs.md`) and the fork
+  phase's invariant (`sys::cgroup::PhasePred`), over the
+  `vspec::byte` wrappers (verified over vstd's `PAtomicU8`) and the fork
   child's `axiom_cell_orphaned`. Its residue (a fork from a signal
   handler on the discovering thread) is outside the theorem: run one
   after the other, the two discoveries rewrite a published record
@@ -9861,7 +9861,7 @@ pub proof fn adopt(tracked m: Map<usize, BytePerm>) -> (tracked r: Slots)
     requires fresh(m),
 
 // api/mod.rs: the permissions come with the process-start token, once
-axiom fn axiom_start(word: &AtomicU32, line: &AtomicU8) -> (tracked s: Start)
+axiom fn axiom_start(word: &PAtomicU32, line: &PAtomicU8) -> (tracked s: Start)
     ensures ...
         s.statics.storage_fresh(),
         forall|a: usize| s.statics.slots.dom().contains(a) && s.statics.slots[a].id() == crate::heap::slotstate::slot_byte_id(a) && s.statics.slots[a].value() == crate::heap::slotstate::FREE,
@@ -9870,8 +9870,8 @@ impl Statics {
 }
 
 // heap/slotstate.rs: the byte at `at` is the one Slots holds under slot_byte_id(at)
-unsafe fn byte_at(at: usize) -> (r: &'static AtomicU8)
-    ensures byte_id(r) == slot_byte_id(at),
+unsafe fn byte_at(at: usize) -> (r: &'static PAtomicU8)
+    ensures byte_id(r) == slot_byte_id(at),     // byte_id(r) is vstd's r.id()
 
 // heap/slotstate.rs, at the end of free, claim, pop, release
 assert(obs@.0 == LIVE && obs@.1 == to);      // free: to is CACHED or FREE
@@ -9932,21 +9932,22 @@ from `NONE`, which no byte holds).
   (rustc), and `access_slot_bytes_cast_and_opened_once`
   (`tests/loom/tests/access.rs`) checks that the text `.slots.inv`
   occurs once, in `step`; a read spelled another way is caught only by
-  review. The slot-state bytes are not made by
-  `vspec::byte::new`; `axiom_start` is the only other source of a
-  `BytePerm` (`vspec/byte.rs`'s trust list names it).
-- The byte's identity: `byte_at` returns the byte whose identity is
-  `slot_byte_id(at)` (its trusted `ensures`, for any `at`; `byte` is its
-  one caller, which `access_slot_bytes_cast_and_opened_once` counts).
+  review. The slot-state bytes are not made by vstd's
+  `PAtomicU8::new`; `axiom_start` is the only other source of a
+  `BytePerm` (vstd's `PermissionU8`; `vspec/byte.rs`'s doc names it).
+- The byte's identity: `byte_at` returns the vstd `PAtomicU8` whose
+  identity is `slot_byte_id(at)` (its trusted `ensures`, for any `at`;
+  `byte` is its one caller, which
+  `access_slot_bytes_cast_and_opened_once` counts; a const assertion
+  holds `PAtomicU8`, vstd's struct of one `AtomicU8`, to one byte).
   Assumed, not checked:
   distinct addresses have distinct identities, none of them that of an
-  atomic `vspec::byte::new` made.
-- The memory model: "finds what the last one left" holds in
-  `vspec::byte`'s sequentially consistent model; that the `Relaxed`
-  operations suffice is not proved (`vspec/byte.rs`'s trust list).
-- The operation: `vspec::byte::compare_exchange` (`core`'s strong
-  compare-and-exchange, partly checked by Kani in
-  `src/kani/atomic.rs`); it returns the operation's result, so no proof
+  atomic `PAtomicU8::new` made.
+- The memory model: "finds what the last one left" holds in vstd's
+  sequentially consistent model, and vstd's operations are `SeqCst`.
+- The operation: `vspec::byte::compare_exchange`, verified over vstd's
+  `PAtomicU8::compare_exchange` (vstd's trusted strong
+  compare-and-exchange); it returns the operation's result, so no proof
   can supply one. That the byte at the address `byte` computes is that
   slot's is `byte_at`'s trusted contract.
 

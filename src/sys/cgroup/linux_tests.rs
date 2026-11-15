@@ -44,7 +44,7 @@ fn deferred_discovery_waits_then_runs_once() {
         "a finished discovery stays"
     );
     let e = Deferred::later(born);
-    e.phase.store(PHASE_RUNNING, Ordering::Relaxed);
+    e.phase.store(Tracked::assume_new(), PHASE_RUNNING);
     assert!(
         !e.discover(false, |_| (), Tracked::assume_new()),
         "another thread's discovery under way"

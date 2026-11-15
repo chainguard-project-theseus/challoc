@@ -12,7 +12,7 @@ file.
 
 ## `NO_ARRAYS`
 
-src/heap/slotstate.rs:117. Kind: external_body const. Category: core library.
+src/heap/slotstate.rs:120. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (Kani: heap::slotstate::kani_arrays::no_arrays_are_zero).
 
 > [`ARRAYS`]'s initial value: every entry unclaimed, all zero.
@@ -30,15 +30,15 @@ const NO_ARRAYS: [Arrays; MAX_SHARED] = [const {
 
 ## `byte_at`
 
-src/heap/slotstate.rs:728. Kind: external_body. Category: raw pointer (internal).
+src/heap/slotstate.rs:733. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: heap::slotstate::kani_byte_at::byte_at_is_the_byte; not checked: the `# Safety` contract, that `at` is a byte of a slot-state array that `commit` made writable and that the arrays live for the process, which is the protocol of `init`, `commit` and the watermark: the harness passes a byte of its own array; and the ghost identity its `ensures` names, `slot_byte_id(at)`).
 
-> The `AtomicU8` at address `at`.
+> The `PAtomicU8` at address `at`.
 
-Hashes: contract 5560191, body 4214957818.
+Hashes: contract 1236057054, body 1964768841.
 
 ```rust
-unsafe fn byte_at(at: usize) -> (r: &'static AtomicU8)
+unsafe fn byte_at(at: usize) -> (r: &'static PAtomicU8)
     ensures
         byte_id(r) == slot_byte_id(at),
 ```

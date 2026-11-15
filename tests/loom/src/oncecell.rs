@@ -4,36 +4,35 @@
 //! `const` context, which loom cannot construct) and the deferred cgroup
 //! record (`src/sys/cgroup.rs`, `Deferred`, `PENDING` to `RUNNING` to
 //! `DONE`, through `vspec/byte.rs`'s wrappers, which run here as they
-//! are, over loom's `AtomicU8`: `crate::vspec`). Each step names the code
-//! it mirrors:
+//! are, over the `cfg(loom)` stand-in of vstd's `PAtomicU8`, `SeqCst` on
+//! loom's `AtomicU8`: `crate::vspec`, `crate::sync::patomic`). Each step
+//! names the code it mirrors:
 //!
 //! - [`Line::line_load`], [`Line::line_compare_exchange`] and
 //!   [`Line::line_store`] are the line's `vspec::byte` calls on
-//!   `STATE.line` (`load`, `compare_exchange` and `store`), here bare loom
-//!   calls on the copy's state byte;
-//! - [`Line::line_ready`] is `api::line_ready`: an `Acquire` load
-//!   (`load_line`), `LINE_READY` returns; else the exchange from
-//!   `LINE_UNBUILT` to `LINE_BUILDING`, `Acquire` both ways
-//!   (`claim_line`), whose winner builds (`build_line`: completes the
-//!   features, writes the line) and stores `LINE_READY` `Release`
-//!   (`publish_line`); a loser spins on an `Acquire` load with
-//!   `spin_loop` until `LINE_READY`; every caller then reads the line
-//!   (`published_line`);
+//!   `STATE.line` (`load`, `compare_exchange` and `store`, vstd's
+//!   `SeqCst` operations), here bare loom calls on the copy's state
+//!   byte;
+//! - [`Line::line_ready`] is `api::line_ready`: a load (`load_line`),
+//!   `LINE_READY` returns; else the exchange from `LINE_UNBUILT` to
+//!   `LINE_BUILDING` (`claim_line`), whose winner builds (`build_line`:
+//!   completes the features, writes the line) and stores `LINE_READY`
+//!   (`publish_line`); a loser spins on a load with `spin_loop` until
+//!   `LINE_READY`; every caller then reads the line (`published_line`);
 //! - [`Line::fork_child`] is `api::feature_line_fork_child`: the
-//!   `Relaxed` exchange from `LINE_BUILDING` back to `LINE_UNBUILT`;
-//! - [`Deferred::get`] is `Deferred::get` (`load_phase`, an `Acquire`
+//!   exchange from `LINE_BUILDING` back to `LINE_UNBUILT`;
+//! - [`Deferred::get`] is `Deferred::get` (`load_phase`, a
 //!   `vspec::byte::load`, then `cell_ref` on `DONE`);
 //!   [`Deferred::discover`] is `Deferred::discover`: the exchange from
-//!   `PENDING` to `RUNNING`, `Acquire` on success and `Relaxed` on
-//!   failure (`claim`, `vspec::byte::compare_exchange`), whose winner
-//!   builds the record in the cell (`cell_discover`), calls `found` and
-//!   stores `DONE` `Release` (`publish`, `vspec::byte::store`); a loser
+//!   `PENDING` to `RUNNING` (`claim`, `vspec::byte::compare_exchange`),
+//!   whose winner builds the record in the cell (`cell_discover`), calls
+//!   `found` and stores `DONE` (`publish`, `vspec::byte::store`); a loser
 //!   that waits spins on `load_phase` until `DONE`; [`Deferred::published`] is
 //!   `Deferred::published`, the cell read through the permission a
 //!   waiting `discover` hands back (`Shared::cgroup_now`), with no second
 //!   load; [`Deferred::fork_child`] is
-//!   `Deferred::fork_child`: the `Relaxed` exchange from `RUNNING` back
-//!   to `PENDING`.
+//!   `Deferred::fork_child`: the exchange from `RUNNING` back to
+//!   `PENDING`.
 //!
 //! Checked: the build (the discovery) runs once; every caller that reads
 //! the line (the record) reads the value the winner wrote, with no race
@@ -50,11 +49,12 @@
 //! Also left out: what the build and the discovery compute (the probe, the
 //! formatting, the files; verified, and they touch neither state byte),
 //! here one plain write of a fixed value per cell; `found`'s policy
-//! update (a `Relaxed` store elsewhere); `Deferred::due`'s `Relaxed`
-//! load, whose result only decides whether to try the exchange; the
-//! fork itself (the reset models run in one thread, as the child has
+//! update (a `Relaxed` store elsewhere); `Deferred::due`'s load (through
+//! `load_phase`), whose result only decides whether to try the exchange;
+//! the fork itself (the reset models run in one thread, as the child has
 //! one).
 
+use crate::sync::patomic::PAtomicU8;
 use crate::vspec::byte;
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
@@ -85,7 +85,7 @@ struct Line {
     features: UnsafeCell<u64>,
     /// `api::FEATURE_LINE`.
     line: UnsafeCell<u64>,
-    /// The ordering of the `LINE_READY` store (`Release` as shipped).
+    /// The ordering of the `LINE_READY` store (`SeqCst` as shipped).
     publish: Ordering,
     /// How many builds ran (model bookkeeping, not in the source).
     builds: AtomicU32,
@@ -107,22 +107,18 @@ impl Line {
     }
 
     /// `vspec::byte::load` on `api::STATE.line`.
-    fn line_load(&self, ordering: Ordering) -> u8 {
-        self.state.load(ordering)
+    fn line_load(&self) -> u8 {
+        self.state.load(Ordering::SeqCst)
     }
 
     /// `vspec::byte::compare_exchange` on `api::STATE.line`.
-    fn line_compare_exchange(
-        &self,
-        current: u8,
-        new: u8,
-        success: Ordering,
-        failure: Ordering,
-    ) -> Result<u8, u8> {
-        self.state.compare_exchange(current, new, success, failure)
+    fn line_compare_exchange(&self, current: u8, new: u8) -> Result<u8, u8> {
+        self.state
+            .compare_exchange(current, new, Ordering::SeqCst, Ordering::SeqCst)
     }
 
-    /// `vspec::byte::store` on `api::STATE.line`.
+    /// `vspec::byte::store` on `api::STATE.line`, at `ordering` (`SeqCst`
+    /// as shipped; the control weakens it).
     fn line_store(&self, v: u8, ordering: Ordering) {
         self.state.store(v, ordering)
     }
@@ -138,28 +134,23 @@ impl Line {
 
     /// `api::published_line`: the plain read of the line.
     fn published_line(&self) -> u64 {
-        // SAFETY: `LINE_READY` observed by an `Acquire` load on this
+        // SAFETY: `LINE_READY` observed by a `SeqCst` load on this
         // thread, or published by it (loom reports a race if not).
         self.line.with(|p| unsafe { *p })
     }
 
     /// `api::line_ready`, then `published_line`.
     fn line_ready(&self) -> u64 {
-        if self.line_load(Ordering::Acquire) == LINE_READY {
+        if self.line_load() == LINE_READY {
             return self.published_line();
         }
-        let won = self.line_compare_exchange(
-            LINE_UNBUILT,
-            LINE_BUILDING,
-            Ordering::Acquire,
-            Ordering::Acquire,
-        );
+        let won = self.line_compare_exchange(LINE_UNBUILT, LINE_BUILDING);
         if won.is_ok() {
             self.build_line();
             self.line_store(LINE_READY, self.publish);
             return self.published_line();
         }
-        while self.line_load(Ordering::Acquire) != LINE_READY {
+        while self.line_load() != LINE_READY {
             loom::hint::spin_loop();
         }
         self.published_line()
@@ -167,12 +158,7 @@ impl Line {
 
     /// `api::feature_line_fork_child`.
     fn fork_child(&self) {
-        let _ = self.line_compare_exchange(
-            LINE_BUILDING,
-            LINE_UNBUILT,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+        let _ = self.line_compare_exchange(LINE_BUILDING, LINE_UNBUILT);
     }
 }
 
@@ -184,7 +170,7 @@ fn run_line(publish: Ordering) {
         let hs: Vec<_> = (0..2)
             .map(|_| thread::spawn(move || l.line_ready()))
             .collect();
-        if l.line_load(Ordering::Acquire) == LINE_READY {
+        if l.line_load() == LINE_READY {
             assert_eq!(l.published_line(), BUILT, "a ready reader saw another line");
         }
         for h in hs {
@@ -209,7 +195,7 @@ fn run_line(publish: Ordering) {
 /// `api::publish_line`.
 #[test]
 fn loom_oncecell_line_two_requests() {
-    run_line(Ordering::Release);
+    run_line(Ordering::SeqCst);
 }
 
 /// The publication check has teeth: a `Relaxed` `LINE_READY` store lets a
@@ -230,11 +216,11 @@ fn loom_oncecell_line_relaxed_publish_is_a_race() {
 #[test]
 fn loom_oncecell_line_fork_child_rebuilds() {
     model(|| {
-        let l = leak(Line::new(Ordering::Release));
+        let l = leak(Line::new(Ordering::SeqCst));
         l.state.store(LINE_BUILDING, Ordering::Relaxed);
         l.fork_child();
         assert_eq!(
-            l.line_load(Ordering::Acquire),
+            l.line_load(),
             LINE_UNBUILT,
             "the reset left the build pending"
         );
@@ -244,11 +230,7 @@ fn loom_oncecell_line_fork_child_rebuilds() {
             "the child's request did not build the line"
         );
         l.fork_child();
-        assert_eq!(
-            l.line_load(Ordering::Acquire),
-            LINE_READY,
-            "the reset undid a ready line"
-        );
+        assert_eq!(l.line_load(), LINE_READY, "the reset undid a ready line");
         assert_eq!(l.line_ready(), BUILT);
         assert_eq!(
             l.builds.load(Ordering::Relaxed),
@@ -261,11 +243,12 @@ fn loom_oncecell_line_fork_child_rebuilds() {
 /// The deferred cgroup record.
 struct Deferred {
     /// `Deferred::phase`.
-    phase: AtomicU8,
+    phase: PAtomicU8,
     /// `Deferred::cell`.
     cell: UnsafeCell<u64>,
-    /// The ordering of the `DONE` store (`Release` as shipped).
-    publish: Ordering,
+    /// The control: the winner stores `DONE` before it writes the cell
+    /// (`false` as shipped).
+    early: bool,
     /// How many discoveries ran (model bookkeeping, not in the source).
     discoveries: AtomicU32,
 }
@@ -276,19 +259,19 @@ unsafe impl Sync for Deferred {}
 
 impl Deferred {
     /// `Deferred::later`.
-    fn later(publish: Ordering) -> Deferred {
+    fn later(early: bool) -> Deferred {
         Deferred {
-            phase: AtomicU8::new(PHASE_PENDING),
+            phase: PAtomicU8::new(PHASE_PENDING).0,
             cell: UnsafeCell::new(0),
-            publish,
+            early,
             discoveries: AtomicU32::new(0),
         }
     }
 
     /// `Deferred::get`: `load_phase`, then `cell_ref` on `DONE`.
     fn get(&self) -> Option<u64> {
-        if byte::load(&self.phase, Ordering::Acquire, Tracked::assume_new()) == PHASE_DONE {
-            // SAFETY: `DONE` observed by an `Acquire` load on this thread
+        if byte::load(&self.phase, Tracked::assume_new()) == PHASE_DONE {
+            // SAFETY: `DONE` observed by a `SeqCst` load on this thread
             // (loom reports a race if not).
             Some(self.cell.with(|p| unsafe { *p }))
         } else {
@@ -302,23 +285,23 @@ impl Deferred {
             &self.phase,
             PHASE_PENDING,
             PHASE_RUNNING,
-            Ordering::Acquire,
-            Ordering::Relaxed,
             Tracked::assume_new(),
         ) {
             Ok(_) => {
                 self.discoveries.fetch_add(1, Ordering::Relaxed);
+                if self.early {
+                    byte::store(&self.phase, PHASE_DONE, Tracked::assume_new());
+                }
                 // SAFETY: only the exchange's winner writes, before `DONE`
                 // (loom reports a race if not).
                 self.cell.with_mut(|p| unsafe { *p = RECORD });
-                byte::store(&self.phase, PHASE_DONE, self.publish, Tracked::assume_new());
+                if !self.early {
+                    byte::store(&self.phase, PHASE_DONE, Tracked::assume_new());
+                }
                 true
             }
             Err(_) => {
-                while wait
-                    && byte::load(&self.phase, Ordering::Acquire, Tracked::assume_new())
-                        != PHASE_DONE
-                {
+                while wait && byte::load(&self.phase, Tracked::assume_new()) != PHASE_DONE {
                     loom::hint::spin_loop();
                 }
                 false
@@ -329,7 +312,7 @@ impl Deferred {
     /// `Deferred::published`: after a waiting `discover`, the cell read
     /// with no second load of the phase (`Shared::cgroup_now`).
     fn published(&self) -> u64 {
-        // SAFETY: `DONE` observed by this thread's `Acquire` load in
+        // SAFETY: `DONE` observed by this thread's `SeqCst` load in
         // `discover`, or written by it (loom reports a race if not).
         self.cell.with(|p| unsafe { *p })
     }
@@ -340,8 +323,6 @@ impl Deferred {
             &self.phase,
             PHASE_RUNNING,
             PHASE_PENDING,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
             Tracked::assume_new(),
         );
     }
@@ -349,9 +330,9 @@ impl Deferred {
 
 /// A tick discovers without waiting while a reader of the figures
 /// discovers and waits, and the main thread samples (`get`).
-fn run_deferred(publish: Ordering) {
+fn run_deferred(early: bool) {
     model(move || {
-        let d = leak(Deferred::later(publish));
+        let d = leak(Deferred::later(early));
         let tick = thread::spawn(move || d.discover(false));
         let reader = thread::spawn(move || {
             let ran = d.discover(true);
@@ -390,15 +371,15 @@ fn run_deferred(publish: Ordering) {
 /// `vspec::byte::compare_exchange`.
 #[test]
 fn loom_oncecell_deferred_discover_races_get() {
-    run_deferred(Ordering::Release);
+    run_deferred(false);
 }
 
-/// The publication check has teeth: a `Relaxed` `DONE` store lets a
-/// reader see `DONE` without the discovery's write.
+/// The publication check has teeth: a `DONE` store before the
+/// discovery's write lets a reader see `DONE` without that write.
 #[test]
 #[should_panic(expected = "Causality violation")]
-fn loom_oncecell_deferred_relaxed_publish_is_a_race() {
-    run_deferred(Ordering::Relaxed);
+fn loom_oncecell_deferred_early_publish_is_a_race() {
+    run_deferred(true);
 }
 
 /// The child of a fork whose other thread was discovering (the phase left
@@ -410,8 +391,8 @@ fn loom_oncecell_deferred_relaxed_publish_is_a_race() {
 #[test]
 fn loom_oncecell_deferred_fork_child_restarts() {
     model(|| {
-        let d = leak(Deferred::later(Ordering::Release));
-        d.phase.store(PHASE_RUNNING, Ordering::Relaxed);
+        let d = leak(Deferred::later(false));
+        byte::store(&d.phase, PHASE_RUNNING, Tracked::assume_new());
         d.fork_child();
         assert_eq!(d.get(), None);
         assert!(d.discover(true), "the child's discovery did not run");

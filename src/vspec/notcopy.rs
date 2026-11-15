@@ -6,7 +6,7 @@
 //! a value of a `Copy` type; ruling out `Clone` too, which `Copy`
 //! requires, also rules out an explicit duplicate. Without either, code
 //! that holds one token cannot make a second, the premise of facts such
-//! as "`vspec::byte::new` makes the only [`BytePerm`] of its byte" and of each
+//! as "`vspec::atom::new_usize` makes the only [`UsizePerm`] of its atomic" and of each
 //! axiom or lemma that uses up a token it takes by value.
 //!
 //! Each check is a top-level `const _: () = assert!(..)` under a `//`

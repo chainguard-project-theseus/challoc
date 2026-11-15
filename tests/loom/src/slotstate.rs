@@ -1,6 +1,7 @@
 //! `double_free_scan`'s state byte (`heap::slotstate`): `free`'s one
 //! compare-and-exchange from `LIVE` (`slotstate::step` as `slotstate::free`
-//! calls it, through the real `vspec::byte::compare_exchange`), run by two
+//! calls it, through the real `vspec::byte::compare_exchange` over the
+//! `cfg(loom)` stand-in of vstd's `PAtomicU8`, `SeqCst`), run by two
 //! threads on one slot's byte, as two simultaneous frees of one live slot
 //! make it (one onto a cache, `CACHED`; the other straight to the slab,
 //! `FREE`; any pair of targets is the same race).
@@ -14,9 +15,9 @@
 //! atomics but the watermark's `Acquire` load, `watermark.rs`'s), and the
 //! other transitions, the same compare-and-exchange from another state.
 
+use crate::sync::patomic::PAtomicU8;
 use crate::vspec::byte;
 use crate::{leak, model};
-use loom::sync::atomic::{AtomicU8, Ordering};
 use loom::thread;
 use vstd::prelude::Tracked;
 
@@ -29,31 +30,23 @@ const LIVE: u8 = 2;
 
 /// `slotstate::free`'s step: `true` when it moved the byte (the free
 /// passes), `false` when it found anything but `LIVE` (the abort).
-fn free(b: &AtomicU8, to: u8) -> bool {
-    byte::compare_exchange(
-        b,
-        LIVE,
-        to,
-        Ordering::Relaxed,
-        Ordering::Relaxed,
-        Tracked::assume_new(),
-    )
-    .is_ok()
+fn free(b: &PAtomicU8, to: u8) -> bool {
+    byte::compare_exchange(b, LIVE, to, Tracked::assume_new()).is_ok()
 }
 
 /// The control: a load, then a store.
-fn free_load_store(b: &AtomicU8, to: u8) -> bool {
-    if b.load(Ordering::Relaxed) == LIVE {
-        b.store(to, Ordering::Relaxed);
+fn free_load_store(b: &PAtomicU8, to: u8) -> bool {
+    if byte::load(b, Tracked::assume_new()) == LIVE {
+        byte::store(b, to, Tracked::assume_new());
         true
     } else {
         false
     }
 }
 
-fn two_frees(step: fn(&AtomicU8, u8) -> bool) {
+fn two_frees(step: fn(&PAtomicU8, u8) -> bool) {
     model(move || {
-        let b = leak(AtomicU8::new(LIVE));
+        let b = leak(PAtomicU8::new(LIVE).0);
         let t = thread::spawn(move || step(b, CACHED));
         let here = step(b, FREE);
         let there = t.join().unwrap();
@@ -61,7 +54,7 @@ fn two_frees(step: fn(&AtomicU8, u8) -> bool) {
             here != there,
             "two simultaneous frees of one slot: both passed or both aborted"
         );
-        let v = b.load(Ordering::Relaxed);
+        let v = byte::load(b, Tracked::assume_new());
         assert!(
             v == if here { FREE } else { CACHED },
             "the byte is the passing free's target"

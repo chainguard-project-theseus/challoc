@@ -9,8 +9,9 @@ axiom_ready	allocator invariant	none (assumption)
 # never unmapped, and written only by heap::slotstate::step). init builds
 # Slots' invariant from them, which then carries each byte's value from one
 # step to the next. No verified invariant ties the bytes to the caches or
-# the bitmap (#397); the operations are vspec::byte's wrappers; the free's
-# race is tests/loom/src/slotstate.rs.
+# the bitmap (#397); the operations are vspec::byte's wrappers, verified
+# over vstd's PAtomicU8, and the permissions are vstd's PermissionU8s; the
+# free's race is tests/loom/src/slotstate.rs.
 axiom_start	allocator invariant	none (assumption)
 # Passes function pointers, which Verus does not support. Kani runs the
 # body with glibc's pthread_atfork replaced by a recording stand-in; what

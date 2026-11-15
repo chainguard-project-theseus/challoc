@@ -32,8 +32,10 @@
 //! so a free that passes the watermark compare reads committed memory and
 //! a pointer past the watermark is rejected without a read.
 //!
-//! The bytes are `AtomicU8`s, `Relaxed`: a byte is a memory location of
-//! its own, so a neighbouring slot's store never loses this one's. Every
+//! The bytes are vstd `PAtomicU8`s, whose operations are `SeqCst` (no
+//! other byte or memory is published through them, so `Relaxed` would
+//! do): a byte is a memory location of its own, so a neighbouring slot's
+//! store never loses this one's. Every
 //! transition is one compare-and-exchange ([`step`]), so of two frees of
 //! one slot on two threads at the same instant exactly one finds it
 //! `LIVE`, and no step lands between another's test and its store.
@@ -51,10 +53,10 @@
 //! in one invariant, [`Slots`] (the one `api::init` published, which
 //! [`step`] reaches through `api::axiom_published`; that it is the one is
 //! that axiom's premise), which [`step`] opens around its one operation
-//! on the byte (`core`'s compare-and-exchange through `vspec::byte`'s
-//! wrapper), so in `vspec::byte`'s sequentially consistent model each
-//! step finds the value the last step on that byte left (that `Relaxed`
-//! suffices is not proved). The invariant also keeps each byte's history,
+//! on the byte (vstd's compare-and-exchange through `vspec::byte`'s
+//! wrapper), so in vstd's sequentially consistent model each step finds
+//! the value the last step on that byte left. The invariant also keeps
+//! each byte's history,
 //! the `(from, to)` of every step on it, and holds the byte's value to
 //! [`run`] of that history from `FREE`: a step appends its pair in the
 //! opening that tests and moves the byte, so a step that tested in one
@@ -76,10 +78,11 @@
 //! corrupt); none changes what the verified paths do with the bitmap or
 //! the caches.
 
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::Shared;
 use crate::layout::{CLASSES, Class, NCLASSES, Regions};
+use crate::sync::patomic::PAtomicU8;
 use crate::vspec::byte::BytePerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::byte::byte_id;
@@ -254,7 +257,7 @@ pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
 /// [`byte_at`] returns is the byte with it, and [`Slots`] holds the
 /// permission to it. Premise, not checked: distinct addresses have
 /// distinct identities, and none is the identity of an atomic
-/// `vspec::byte::new` made (`byte_at` is given only slot-state bytes).
+/// `PAtomicU8::new` made (`byte_at` is given only slot-state bytes).
 pub uninterp spec fn slot_byte_id(at: usize) -> int;
 
 /// What [`Slots`]' invariant holds: a permission to the slot-state byte
@@ -485,7 +488,7 @@ fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, Tracked(obs
         let tracked mut perm = m.perms.tracked_remove(a);
         let ghost held = perm.value();
         let ghost log = m.logs[a];
-        match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {
+        match crate::vspec::byte::compare_exchange(b, from, to, Tracked(&mut perm)) {
             Ok(_) => {
                 r = MOVED;
             },
@@ -681,7 +684,7 @@ pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
 /// The state byte of slot start `p` of `class`, after the watermark
 /// compare: `None` for a slot of a slab no arena has been handed (whose
 /// byte may be uncommitted). Called by [`step`] only.
-fn byte(shared: &Shared, class: usize, p: *mut u8) -> (r: Option<&'static AtomicU8>)
+fn byte(shared: &Shared, class: usize, p: *mut u8) -> (r: Option<&'static PAtomicU8>)
     requires
         class < NCLASSES,
         crate::api::ready(),
@@ -712,7 +715,7 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> (r: Option<&'static Atomic
     Some(unsafe { byte_at(at) })
 }
 
-/// The `AtomicU8` at address `at`.
+/// The `PAtomicU8` at address `at`.
 ///
 /// # Safety
 /// `at` is a byte of a slot-state array that [`commit`] made writable;
@@ -722,19 +725,26 @@ fn byte(shared: &Shared, class: usize, p: *mut u8) -> (r: Option<&'static Atomic
 /// the contract above is the protocol of [`init`], [`commit`] and the
 /// watermark, not a verified fact. It claims only the byte's identity:
 /// the byte at `at`, whose permission [`Slots`] holds under
-/// [`slot_byte_id`]`(at)`; nothing about its value.
+/// [`slot_byte_id`]`(at)`; nothing about its value. A `PAtomicU8` is
+/// vstd's struct of one `AtomicU8`, and its size and alignment are one
+/// byte (the const assertion below), so the field is the byte at `at`.
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn byte_at(at: usize) -> (r: &'static AtomicU8)
+unsafe fn byte_at(at: usize) -> (r: &'static PAtomicU8)
     ensures
         byte_id(r) == slot_byte_id(at),
 {
-    // SAFETY: the caller's contract; an `AtomicU8` has no alignment
-    // requirement.
-    unsafe { &*(at as *const AtomicU8) }
+    // SAFETY: the caller's contract; a `PAtomicU8` is one `AtomicU8`
+    // (the const assertion below), which has no alignment requirement.
+    unsafe { &*(at as *const PAtomicU8) }
 }
 
 } // verus!
+
+// `byte_at`'s cast: a `PAtomicU8` is laid out as the one byte of its
+// `AtomicU8`.
+const _: () =
+    assert!(core::mem::size_of::<PAtomicU8>() == 1 && core::mem::align_of::<PAtomicU8>() == 1);
 
 /// The Kani harness of [`NO_ARRAYS`], next to the private type.
 #[cfg(kani)]
@@ -760,9 +770,10 @@ mod kani_arrays {
 /// The Kani harness of [`byte_at`], next to the private function.
 #[cfg(kani)]
 mod kani_byte_at {
-    use super::byte_at;
+    use super::{PAtomicU8, byte_at};
     use core::sync::atomic::AtomicU8;
     use core::sync::atomic::Ordering::Relaxed;
+    use vstd::prelude::Tracked;
 
     /// `byte_at`: its `ensures` names a ghost identity, which Kani does
     /// not see; with `at` a byte of the harness's own
@@ -770,8 +781,9 @@ mod kani_byte_at {
     /// array, its address cast to an integer as `byte` computes it, the
     /// call is defined, the reference is that byte (`core::ptr::eq`;
     /// `kani::mem::can_dereference`: non-null, in bounds, a valid
-    /// `AtomicU8`), and a store through it is the byte's. Not checked:
-    /// the `# Safety` contract itself.
+    /// `PAtomicU8`), and a store through it (vstd's `store`, the erased
+    /// permission) is the byte's. Not checked: the `# Safety` contract
+    /// itself.
     #[kani::proof]
     fn byte_at_is_the_byte() {
         let bytes: [AtomicU8; 4] = [const { AtomicU8::new(0) }; 4];
@@ -780,10 +792,13 @@ mod kani_byte_at {
         // SAFETY: `bytes[i]` is a byte of the harness's array, which
         // outlives every use of the reference.
         let b = unsafe { byte_at(bytes.as_ptr() as usize + i) };
-        assert!(core::ptr::eq(b, &bytes[i]));
-        assert!(kani::mem::can_dereference(b as *const AtomicU8));
+        assert!(core::ptr::eq(
+            b as *const PAtomicU8 as *const AtomicU8,
+            &bytes[i]
+        ));
+        assert!(kani::mem::can_dereference(b as *const PAtomicU8));
         let v: u8 = kani::any();
-        b.store(v, Relaxed);
+        b.store(Tracked::assume_new(), v);
         assert_eq!(bytes[i].load(Relaxed), v);
     }
 }
