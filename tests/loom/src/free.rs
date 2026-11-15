@@ -37,7 +37,7 @@
 //! changing. With a `Relaxed` hand-off the model records which outcomes
 //! appear, to document them.
 //!
-//! Left out: `Shared::free_flags` itself (a `Relaxed` byte read after the
+//! Left out: `Shared::free_flags` itself (a `SeqCst` byte read after the
 //! bit test, whose `FREE_ROUTE` bit, set once when a second arena is
 //! built, decides whether the owner word is read: `flags.rs`), the cache
 //! push after the checks, more than one word or group, and the class lock

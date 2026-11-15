@@ -399,18 +399,19 @@ the call does not return (theorem 3, which is not voided for it).
   gives, is `pac_mode()`.
 - The `free` fast path's dispatch byte (`vspec/flags.rs`;
   `Shared::free_flags`, verified over it with no precondition,
-  ensures `r & !FREE_ROUTE == self.route_fixed()`): a `RouteByte`, whose `AtomicU8` is private to `vspec/flags.rs`,
-  so the wrappers `new`, `load` and `fetch_or` (each `external_body`,
-  trusted and partly checked: Kani on one thread,
-  `kani_proofs::atomic::flags_route_byte`, and the loom models of
-  `tests/loom/src/flags.rs` on copies of the protocol;
-  `verus/ledger/src/vspec/flags.rs.md` lists what neither checks) are its only
-  operations; they keep the byte's bits other than `ROUTE`
-  (`FREE_ROUTE`) at the value `new` made (`flags::fixed`), which
-  `Shared::wf` ties to `push_flags`: `init` makes the byte from
-  `push_flags` (`put_flags`), and the only other write is
+  ensures `r & !FREE_ROUTE == self.route_fixed()`): a `RouteByte`, whose
+  vstd `PAtomicU8` and the atomic invariant over its permission
+  (namespace `flags_ns`) are private to `vspec/flags.rs`, so the wrappers
+  `new`, `load` and `fetch_or` are its only operations. Each is verified:
+  it opens the invariant around its one `SeqCst` operation, and the
+  invariant holds the byte's bits other than `ROUTE` (`FREE_ROUTE`) at
+  its constant, the value `new` made (`flags::fixed`); `fetch_or`'s proof
+  shows an or of bits within `ROUTE` keeps them. The loom models of
+  `tests/loom/src/flags.rs` run the wrappers on copies of the protocol.
+  `Shared::wf` ties `flags::fixed` to `push_flags`: `init` makes the
+  byte from `push_flags` (`put_flags`), and the only other write is
   `set_multi_arena`'s `fetch_or(FREE_ROUTE)`, whose `requires` Verus
-  checks. So one `Relaxed` load is `push_flags` up to the `FREE_ROUTE`
+  checks. So one load is `push_flags` up to the `FREE_ROUTE`
   bit (`r & !FREE_ROUTE == route_fixed()`, which `Shared::wf` makes
   `flags() & !FREE_ROUTE`), for a reader that
   happens after `init` (what the `api::ready()` in `Shared::wf` stands
@@ -637,18 +638,19 @@ about the pointer, for `env_var`'s walk of `environ`),
 specifications of `core`.
 
 **Memory model.** Sequential consistency. Atomic loads return any
-value (vstd), except the `free` path's dispatch byte (`vspec/flags.rs`,
-above), whose `load` covers every value the one `RouteByte`, the
-published `Shared`'s, holds for a reader that observed `READY`; the
+value (vstd), except where a permission or an invariant fixes it. The
+`free` path's dispatch byte (`vspec/flags.rs`, above) is a vstd
+`PAtomicU8` whose `load` and `fetch_or` are proved through its atomic
+invariant, under vstd's sequentially consistent model, not trusted. The
 three bitmap word writers
 (`vspec/word.rs`) are one atomic step each and ignore
 the ordering, as is the one word load that returns its value
-(`vspec::word::load`, theorem 7). Kani runs each `vspec` atomic
-wrapper on a real atomic, one thread (`src/kani/atomic.rs`), and the
-loom models in `tests/loom` check interleavings of the protocols on
-copies of the code, so the ledger lists the wrappers as partly checked:
-the shipped bodies' interleavings are not checked. See
-`verus/WEAKMEM.md`.
+(`vspec::word::load`, theorem 7). Kani runs each remaining trusted
+`vspec` atomic wrapper on a real atomic, one thread
+(`src/kani/atomic.rs`), and the loom models in `tests/loom` check
+interleavings of the protocols on copies of the code, so the ledger
+lists those wrappers as partly checked: the shipped bodies'
+interleavings are not checked. See `verus/WEAKMEM.md`.
 
 **Abort stand-in.** None: no site has Verus see another `-> !`
 call than the build's abort. The huge free's checks live in
@@ -1833,8 +1835,7 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   (`vspec::atom::load_usize` and `load_usize_seen`, atomic loads; the
   class line's watermark copy is read by the same `load_usize`, through
   the verified `class::load_mirror`), `vspec::word::load` (an atomic
-  load), `vspec::flags::load` (a `Relaxed` load, under the verified
-  `Shared::free_flags`), `layout::regions::entry_barrier` (an empty
+  load), `layout::regions::entry_barrier` (an empty
   `asm!`, x86_64), `addr_to_ptr`, `api::shared_ptr`, `api::shared_base`
   and `class::table::word_index` (each an empty `asm!` on aarch64 and
   verified on x86_64, `shared_base` over `api::shared_storage_ptr`, a
@@ -2027,8 +2028,9 @@ paths, verified unless marked trusted:
   (trusted, partly checked by Kani), `pop_top`, `CacheHeader::slots`.
 - **Push:** `free_fast_slot`, `free_fast_tail`, `Heap::push_fast`,
   `push_cache_flags`, `push_cache`; `free_sized_fast` has no mask.
-- **Free checks:** `Shared::push_flags`, `Shared::free_flags` (over the
-  trusted `vspec::flags::load`), `set_slot`, `home_owns`,
+- **Free checks:** `Shared::push_flags`, `Shared::free_flags` (over
+  `vspec::flags::load`, verified, which opens the byte's invariant in
+  `flags_ns`), `set_slot`, `home_owns`,
   `Heap::arena_volatile` (trusted, discharged by Kani,
   `arena_volatile_reads_arena`); the class line's `ClassLine::set_slab`,
   `slot_start`, `bit_fields` (aarch64), `owner` and `sized_ok`,
@@ -2052,7 +2054,8 @@ spell `Option`'s `?` as `let Some(..) = .. else { return None }`,
 `alloc_fast` matches `pop_fast`'s result instead of calling `map`, and
 the array reads go through `vspec::slice::array_get_unchecked`. The
 `free` dispatch reads the route from the `FREE_ROUTE` bit of the
-`free_flags` byte (`Shared::free_flags`, `opens_invariants none`), which
+`free_flags` byte (`Shared::free_flags`, `opens_invariants
+[flags_ns()]`), which
 it loads anyway. The class line's `set_slab` and `owner` are given the
 class's table for its word and owner permissions; the table is not
 loaded from, so the machine code is upstream's. `Shared::sized_slot`
@@ -2069,7 +2072,7 @@ no mask.
   - `tls::get` and `get_tp` (asm), `slot_heap_ref` (a cast),
     `home_ptr_at`.
   - `arena_volatile`, `vspec::atom::load_usize` (the watermark copy's
-    load), `vspec::flags::load` (one `Relaxed` load), `entry_barrier`
+    load), `entry_barrier`
     (x86_64, an empty `asm!`).
   - `pac::sign` and `auth` (asm; under `cfg(test)` a counter
     increment), `addr_to_ptr`.
@@ -9107,11 +9110,13 @@ library and fails unless every row's maxima equal its `budget` line in
   to address + size in the dynamic symbol table): no `lock` prefix, no
   `xchg`, `xadd` or `cmpxchg*`, no `mfence`/`lfence`/`sfence`, no
   `call`, no `syscall`/`sysenter`/`int N`, no indirect jump. The source
-  atomics on these paths are all `Relaxed` loads, which compile to plain
-  `mov`s: `free`'s watermark copy (`class::load_mirror`), bitmap word
-  (`SlabTable::is_set_unchecked`), `Shared::free_flags`
-  (`heap/shared.rs`) and, routed, the owner word
-  (`class::load_owner`, `class/table.rs`). `malloc`, `free_sized` and
+  atomics on these paths are all loads, which compile to plain `mov`s on
+  x86_64: `Relaxed` ones of `free`'s watermark copy
+  (`class::load_mirror`), bitmap word (`SlabTable::is_set_unchecked`)
+  and, routed, the owner word (`class::load_owner`, `class/table.rs`),
+  and vstd's `SeqCst` load of `Shared::free_flags` (`heap/shared.rs`,
+  through `vspec::flags::load`; on x86_64 a `SeqCst` load is also a
+  `mov`). `malloc`, `free_sized` and
   `sdallocx` read no atomic on x86_64: `push_flags` is a plain `u8`, and
   `malloc`'s `fast_flags` load is dead off aarch64 (`PUSH_PAC` is never
   set). Theorems 8 and 9 state the source-level half (no syscall

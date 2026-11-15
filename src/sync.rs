@@ -10,3 +10,50 @@ pub(crate) mod atomic {
     #[cfg(loom)]
     pub(crate) use loom::sync::atomic::*;
 }
+
+/// vstd's permissioned atomics, which the ported `vspec` wrappers hold:
+/// vstd's own types, or under `cfg(loom)` stand-ins with the same methods
+/// over loom's atomics, so the loom models run the wrappers' bodies. vstd's
+/// operations are `SeqCst`, and so are the stand-ins'. Loom builds are
+/// never verified, so the stand-ins carry no specifications; the ghost
+/// permission they take is erased.
+pub(crate) mod patomic {
+    #[cfg(not(loom))]
+    pub(crate) use vstd::atomic::{PAtomicU8, PermissionU8};
+
+    #[cfg(loom)]
+    pub(crate) use loom_patomic::*;
+
+    #[cfg(loom)]
+    mod loom_patomic {
+        use loom::sync::atomic::{AtomicU8, Ordering};
+        use vstd::prelude::Tracked;
+
+        /// The erased permission of a [`PAtomicU8`].
+        pub(crate) struct PermissionU8;
+
+        /// `vstd::atomic::PAtomicU8` over loom's `AtomicU8`.
+        pub(crate) struct PAtomicU8 {
+            ato: AtomicU8,
+        }
+
+        impl PAtomicU8 {
+            pub(crate) fn new(v: u8) -> (Self, Tracked<PermissionU8>) {
+                (
+                    PAtomicU8 {
+                        ato: AtomicU8::new(v),
+                    },
+                    Tracked::assume_new(),
+                )
+            }
+
+            pub(crate) fn load(&self, _perm: Tracked<&PermissionU8>) -> u8 {
+                self.ato.load(Ordering::SeqCst)
+            }
+
+            pub(crate) fn fetch_or(&self, _perm: Tracked<&mut PermissionU8>, v: u8) -> u8 {
+                self.ato.fetch_or(v, Ordering::SeqCst)
+            }
+        }
+    }
+}

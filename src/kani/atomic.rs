@@ -10,12 +10,11 @@
 //! threads in, and no harness constrains it.
 //!
 //! Then the trusted atomic wrappers of `vspec/byte.rs`, `vspec/count.rs`,
-//! `vspec/entry.rs`, `vspec/flags.rs`, `vspec/word.rs` and `vspec/atom.rs`
+//! `vspec/entry.rs`, `vspec/word.rs` and `vspec/atom.rs`
 //! (all but its `load_usize_seen`, whose persistent set is ghost, and
 //! `usize_ptr`, checked in its own file), each run on a real `core`
 //! atomic. Their contracts state values through a ghost permission, which
-//! Kani cannot see (the harnesses pass the erased one; `flags.rs`'s
-//! through `fixed`, the bits a `RouteByte` keeps). Each harness assumes
+//! Kani cannot see (the harnesses pass the erased one). Each harness assumes
 //! what the modules trust: that the permission's value is the atomic's,
 //! since every write goes through a trusted writer (these wrappers; for
 //! the u16 owner words, `class::table::store_owner`). So each harness starts
@@ -30,7 +29,7 @@
 //! its harness leaves out. Each module's `*_bad_orders` harness shows that
 //! the orderings a `requires` excludes are the ones `core` panics on.
 
-use crate::vspec::{atom, byte, count, entry, flags, word};
+use crate::vspec::{atom, byte, count, entry, word};
 use core::cell::Cell;
 use core::sync::atomic::{
     AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
@@ -575,42 +574,5 @@ fn atom_bad_orders() {
         // SAFETY: `h` is live.
         unsafe { atom::load_u16_at(&h, bad_load_order(), Tracked::assume_new()) };
     }
-    super::must_not_return();
-}
-
-/// `vspec::flags`: `new(v)` makes a byte whose bits other than `ROUTE`
-/// are `v`'s (`fixed(&r) == v & !ROUTE`); then, over any 3 operations,
-/// each a `load` under `!(ordering is Release) && !(ordering is AcqRel)`
-/// or a `fetch_or` of bits within `ROUTE` (`v & !ROUTE == 0`) under any
-/// ordering, every result shows those bits (`r & !ROUTE == fixed(b)`,
-/// `prev & !ROUTE == fixed(b)`). `fixed` is uninterpreted, so this is
-/// the sequential fact the three contracts stand for: the bits other than
-/// `ROUTE` are the made value's in every value the byte holds, and
-/// `fetch_or` sets only bits within `ROUTE`.
-#[kani::proof]
-#[kani::unwind(4)]
-fn flags_route_byte() {
-    let v: u8 = kani::any();
-    let b = flags::new(v);
-    let fixed = v & !flags::ROUTE;
-    for _ in 0..3 {
-        if kani::any() {
-            assert_eq!(flags::load(&b, load_order()) & !flags::ROUTE, fixed);
-        } else {
-            let w: u8 = kani::any();
-            kani::assume(w & !flags::ROUTE == 0);
-            assert_eq!(flags::fetch_or(&b, w, any_order()) & !flags::ROUTE, fixed);
-        }
-    }
-    assert_eq!(flags::load(&b, Ordering::Relaxed) & !flags::ROUTE, fixed);
-}
-
-/// `vspec::flags::load` with `Release` or `AcqRel`, the orderings its
-/// `requires` excludes, panics. Not part of a contract.
-#[kani::proof]
-#[kani::should_panic]
-fn flags_bad_orders() {
-    let b = flags::new(kani::any());
-    flags::load(&b, bad_load_order());
     super::must_not_return();
 }

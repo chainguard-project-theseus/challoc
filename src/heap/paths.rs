@@ -915,7 +915,7 @@ pub unsafe fn free_fast_slot(
         r matches Some(c) ==> old(blk).slot_block(p, c as int),
         final(tls).lent(*old(tls)),
         r is Some ==> *final(blk) == old(blk).without_slot(),
-    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns()]
+    opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns(), crate::vspec::flags::flags_ns()]
 {
     let Some((class, slab)) = shared.set_slot(p) else {
         return None;

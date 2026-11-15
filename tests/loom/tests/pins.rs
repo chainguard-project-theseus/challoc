@@ -333,10 +333,10 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/heap/shared.rs",
         &[
-            "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);",
+            "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE);",
             "ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);",
             "ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));",
-            "crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)",
+            "crate::vspec::flags::load(&self.free_flags)",
         ],
     ),
     // `double_free_scan`'s state values and `free`'s compare-and-exchange
@@ -655,8 +655,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "src/heap/shared.rs",
         &[
             (
-                "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);",
-                "Some((fetch_or(b, bits, Ordering::Relaxed), push))",
+                "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE);",
+                "Some((fetch_or(b, bits), push))",
             ),
             ("unsafe fn put_flags<'a>(", ""),
             (
@@ -669,8 +669,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
             ("pub fn free_flags(&self) -> (r: u8)", ""),
             (
-                "crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)",
-                "let r0 = load(b, Ordering::Relaxed);\nlet r1 = load(b, Ordering::Relaxed);",
+                "crate::vspec::flags::load(&self.free_flags)",
+                "let r0 = load(b);\nlet r1 = load(b);",
             ),
         ],
     ),

@@ -1,7 +1,8 @@
 //! The `free` fast path's dispatch byte (`heap::Shared::free_flags`):
 //! `vspec/flags.rs`'s `RouteByte` and its wrappers (`new`, `fetch_or`,
-//! `load`), which run here as they are, over loom's `AtomicU8`
-//! (`crate::vspec`), driven by copies of the steps that call them (the
+//! `load`), which run here as they are, over the `cfg(loom)` stand-in for
+//! vstd's `PAtomicU8` (`src/sync.rs`'s `patomic`, `SeqCst` on loom's
+//! `AtomicU8`), driven by copies of the steps that call them (the
 //! `Shared` they live in is a static whose storage starts uninitialised):
 //!
 //! - [`Model::init`] is `init`'s `Shared::put_flags`: plain writes of
@@ -11,12 +12,12 @@
 //! - [`Model::build`] is `Arenas::build`'s `Shared::set_multi_arena`,
 //!   which runs with the published `Shared` (`api::shared`'s `Acquire`
 //!   load of `STATE` saw `READY` earlier in the thread):
-//!   `flags::fetch_or(ROUTE, Relaxed)`;
+//!   `flags::fetch_or(ROUTE)` (`SeqCst`);
 //! - [`Model::free`] is the `free` fast path's `Shared::free_flags`,
 //!   reached through `api::shared_base` once the thread's heap proves
 //!   init complete (the heap is created after `api::shared`'s `Acquire`
 //!   load); the model stands in for that edge with
-//!   `api::shared_if_ready`'s `Acquire` load, then `flags::load(Relaxed)`,
+//!   `api::shared_if_ready`'s `Acquire` load, then `flags::load` (`SeqCst`),
 //!   twice.
 //!
 //! Checked: every value a load or the `fetch_or` returns is `push_flags`
@@ -92,7 +93,7 @@ impl Model {
         // SAFETY: after `READY`, nothing writes the storage.
         Some(self.shared.with(|p| {
             let (push, b) = unsafe { (*p).as_ref().expect("READY before init's writes") };
-            (fetch_or(b, bits, Ordering::Relaxed), *push)
+            (fetch_or(b, bits), *push)
         }))
     }
 
@@ -105,8 +106,8 @@ impl Model {
         // SAFETY: as in `build`.
         Some(self.shared.with(|p| {
             let (push, b) = unsafe { (*p).as_ref().expect("READY before init's writes") };
-            let r0 = load(b, Ordering::Relaxed);
-            let r1 = load(b, Ordering::Relaxed);
+            let r0 = load(b);
+            let r1 = load(b);
             (r0, r1, *push)
         }))
     }
@@ -151,7 +152,7 @@ fn run(publish: Ordering, builders: usize, bits: u8) {
         m.shared.with(|p| {
             // SAFETY: every thread is joined.
             let (push, b) = unsafe { (*p).as_ref().unwrap() };
-            let last = load(b, Ordering::Relaxed);
+            let last = load(b);
             let want = if any_build { *push | ROUTE } else { *push };
             assert_eq!(
                 last, want,

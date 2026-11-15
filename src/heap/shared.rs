@@ -6,7 +6,9 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
+#[cfg(test)]
+use core::sync::atomic::Ordering;
 
 #[cfg(verus_keep_ghost)]
 use crate::arena::published;
@@ -101,11 +103,13 @@ pub struct Shared {
     /// 0 and the `free` fast path skips the owner-word load; with
     /// `FREE_ROUTE` in the byte, the default configuration's test against
     /// zero sends `free` to the arena test, so a single-arena `free` pays
-    /// no separate load and branch for it. Relaxed: a slot of arena `a > 0`
-    /// can only be freed after it was allocated, which happened after `a`
-    /// was built and this bit stored, and the program itself orders that
-    /// allocation before the free; so any thread freeing such a slot
-    /// already sees the bit. The sized path and `malloc` read
+    /// no separate load and branch for it. The load is vstd's `SeqCst`
+    /// one (`vspec::flags::load`), but nothing needs more than `Relaxed`:
+    /// a slot of arena `a > 0` can only be freed after it was allocated,
+    /// which happened after `a` was built and this bit stored, and the
+    /// program itself orders that allocation before the free; so any
+    /// thread freeing such a slot already sees the bit. The sized path and
+    /// `malloc` read
     /// `push_flags`, which never changes after init.
     ///
     /// Right before `regions`, so it shares a cache line with the
@@ -440,7 +444,7 @@ impl Shared {
         proof {
             assert(8u8 & !8u8 == 0) by (bit_vector);
         }
-        crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);
+        crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE);
     }
 
     /// The decay period new arenas start with (`dirty_decay_ms`).
@@ -3769,9 +3773,9 @@ impl Shared {
     pub fn free_flags(&self) -> (r: u8)
         ensures
             r & !FREE_ROUTE == self.route_fixed(),
-        opens_invariants none
+        opens_invariants [crate::vspec::flags::flags_ns()]
     {
-        crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)
+        crate::vspec::flags::load(&self.free_flags)
     }
 
     /// What a `free_flags` byte `f` carries over from `push_flags`: its

@@ -2,38 +2,21 @@
 //! an atomic whose bits other than [`ROUTE`] never change once it is
 //! made.
 //!
-//! [`RouteByte`] wraps the `core` `AtomicU8`, `#[repr(transparent)]`, in
-//! a field private to this module, so the only operations on it are the
-//! wrappers below: [`new`] makes it (`Shared::put_flags`, from
-//! `push_flags`), [`fetch_or`] of bits within [`ROUTE`] is the only write
-//! after that (`Shared::set_multi_arena`), and the `free` fast path reads
-//! it with [`load`] (`Shared::free_flags`). So every value the byte holds
-//! is the made one, with or without [`ROUTE`]: an invariant of the
-//! writers, which no ghost permission needs to carry (the reader is the
-//! `free` fast path, which holds no ghost state for the byte). [`fixed`]
-//! names the bits it keeps; `Shared::built` ties them to `push_flags`
-//! (`Shared::lemma_route_flags` reads them back). Each
-//! wrapper is `#[inline(always)]` and passes the caller's ordering through
-//! unchanged, which leaves the machine code of the bare `core` call.
+//! [`RouteByte`] holds a vstd `PAtomicU8` and an atomic invariant over
+//! its permission: the byte's bits other than [`ROUTE`] are the
+//! invariant's constant, [`fixed`]. [`new`] makes it (`Shared::put_flags`,
+//! from `push_flags`), [`fetch_or`] of bits within [`ROUTE`] is the only
+//! write after that (`Shared::set_multi_arena`), and the `free` fast path
+//! reads it with [`load`] (`Shared::free_flags`). Each wrapper opens the
+//! invariant around its one atomic operation, so that every value the
+//! byte holds keeps [`fixed`] is proved, not trusted.
 //!
-//! Trusted, all of it:
-//! - each wrapped `core` operation is one atomic operation on the byte (a
-//!   load or a read-modify-write), and `AtomicU8::new(v)` makes a byte
-//!   holding `v`, as `core` documents;
-//! - [`fixed`] is a function of the value, fixed when [`new`] makes it,
-//!   kept when it is moved into place (`put_flags`' `ptr::write`), and not
-//!   changed by an operation through `&RouteByte`, which is what the
-//!   writers' invariant needs: every write of the byte after [`new`] is
-//!   [`fetch_or`] of bits within [`ROUTE`] (the field is private, the type
-//!   has no `Clone`, `Copy` or `Default`, and [`new`] is its only
-//!   constructor);
-//! - the proof model is sequentially consistent: the specifications ignore
-//!   `ordering`. That every load reads [`new`]'s write or a later
-//!   [`fetch_or`] (and not the zeroed storage before `init`) is C11
-//!   coherence once the reader happens after `init`, the premise of every
-//!   holder of a published `&Shared`.
+//! vstd's `PAtomicU8` operations are `SeqCst`; the trusted part is vstd's
+//! (each `PAtomicU8` operation is one atomic operation on the byte, under
+//! a sequentially consistent model).
 
-use crate::sync::atomic::{AtomicU8, Ordering};
+use crate::sync::patomic::{PAtomicU8, PermissionU8};
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 
 verus! {
@@ -42,59 +25,98 @@ verus! {
 /// asserts the two equal at compile time).
 pub const ROUTE: u8 = 8;
 
+/// The namespace of a [`RouteByte`]'s invariant.
+pub open spec fn flags_ns() -> int {
+    0x666c_6167
+}
+
+/// The invariant's predicate: the permission is the byte's, and its bits
+/// other than [`ROUTE`] are the constant.
+pub struct FixedPred;
+
+impl InvariantPredicate<(u8, int), PermissionU8> for FixedPred {
+    open spec fn inv(k: (u8, int), perm: PermissionU8) -> bool {
+        perm.view().patomic == k.1 && perm.view().value & !ROUTE == k.0
+    }
+}
+
 /// An atomic byte whose bits other than [`ROUTE`] are [`fixed`]: only
 /// [`new`] makes one, and only [`fetch_or`] within [`ROUTE`] writes it.
-#[repr(transparent)]
 pub struct RouteByte {
-    b: AtomicU8,
+    b: PAtomicU8,
+    // Ghost: read only by the proofs, so an ordinary build sees it unused.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    inv: Tracked<AtomicInvariant<(u8, int), PermissionU8, FixedPred>>,
+}
+
+impl RouteByte {
+    #[verifier::type_invariant]
+    spec fn wf(self) -> bool {
+        &&& self.inv@.constant().1 == self.b.id()
+        &&& self.inv@.namespace() == flags_ns()
+    }
 }
 
 /// The byte's bits other than [`ROUTE`]: the same in every value it
 /// holds.
-pub uninterp spec fn fixed(b: &RouteByte) -> u8;
+pub closed spec fn fixed(b: &RouteByte) -> u8 {
+    b.inv@.constant().0
+}
 
-/// `AtomicU8::new(v)`: a byte whose bits other than [`ROUTE`] are `v`'s
-/// from here on.
+/// A byte whose bits other than [`ROUTE`] are `v`'s from here on.
 #[inline(always)]
-#[verifier::external_body]
 pub fn new(v: u8) -> (r: RouteByte)
     ensures
         fixed(&r) == v & !ROUTE,
-    opens_invariants none
-    no_unwind
 {
-    RouteByte { b: AtomicU8::new(v) }
+    let (b, Tracked(perm)) = PAtomicU8::new(v);
+    let tracked inv = AtomicInvariant::new((v & !ROUTE, b.id()), perm, flags_ns());
+    RouteByte { b, inv: Tracked(inv) }
 }
 
-/// `b.load(ordering)` (it panics for a `Release` or `AcqRel` ordering):
-/// the made value, with or without [`ROUTE`].
+/// `b.load(SeqCst)`: the made value, with or without [`ROUTE`].
 #[inline(always)]
-#[verifier::external_body]
-pub fn load(b: &RouteByte, ordering: Ordering) -> (r: u8)
-    requires
-        !(ordering is Release),
-        !(ordering is AcqRel),
+pub fn load(b: &RouteByte) -> (r: u8)
     ensures
         r & !ROUTE == fixed(b),
-    opens_invariants none
+    opens_invariants [flags_ns()]
     no_unwind
 {
-    b.b.load(ordering)
+    proof {
+        use_type_invariant(b);
+    }
+    let r;
+    vstd::open_atomic_invariant!(b.inv.borrow() => perm => {
+        r = b.b.load(Tracked(&perm));
+    });
+    r
 }
 
-/// `b.fetch_or(v, ordering)`, for bits `v` within [`ROUTE`]: the previous
+/// `b.fetch_or(v, SeqCst)`, for bits `v` within [`ROUTE`]: the previous
 /// value, which is the made value with or without [`ROUTE`].
 #[inline(always)]
-#[verifier::external_body]
-pub fn fetch_or(b: &RouteByte, v: u8, ordering: Ordering) -> (prev: u8)
+pub fn fetch_or(b: &RouteByte, v: u8) -> (prev: u8)
     requires
         v & !ROUTE == 0,
     ensures
         prev & !ROUTE == fixed(b),
-    opens_invariants none
+    opens_invariants [flags_ns()]
     no_unwind
 {
-    b.b.fetch_or(v, ordering)
+    proof {
+        use_type_invariant(b);
+    }
+    let prev;
+    vstd::open_atomic_invariant!(b.inv.borrow() => perm => {
+        let ghost before = perm.view().value;
+        prev = b.b.fetch_or(Tracked(&mut perm), v);
+        let ghost after = perm.view().value;
+        assert(after & !8u8 == before & !8u8) by (bit_vector)
+            requires
+                after == before | v,
+                v & !8u8 == 0;
+    });
+    prev
 }
 
 } // verus!

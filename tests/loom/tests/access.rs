@@ -1412,11 +1412,12 @@ fn access_slot_bytes_control() {
     assert!(!check_slot_bytes(&t2).is_empty());
 }
 
-// The free path's route byte (`vspec/flags.rs`'s seams; its `AtomicU8` is
-// private to that file, so rustc confines every atomic operation on it to
-// the wrappers): outside vspec/flags.rs the wrappers are called once each,
-// in heap/shared.rs, on the lines below; the one write through the field's
-// offset (`S_FREE_FLAGS`) writes the byte `flags::new` made; and no line
+// The free path's route byte (`vspec/flags.rs`; its `PAtomicU8` and the
+// invariant over it are private to that file, so rustc confines every
+// atomic operation on it to the wrappers): outside vspec/flags.rs the
+// wrappers are called once each, in heap/shared.rs, on the lines below;
+// the one write through the field's offset (`S_FREE_FLAGS`) writes the
+// byte `flags::new` made; and no line
 // names `free_flags` or `RouteByte` with a raw pointer, transmute, zeroing,
 // `mem::swap`/`replace`/`take` or `ptr::write`/`replace`/`swap`/`read`,
 // assigns or `&mut`-borrows a `free_flags` field, calls a wrapper by a
@@ -1426,8 +1427,8 @@ const ROUTE_NEW: &str =
     "ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));";
 const ROUTE_CALLS: &[&str] = &[
     ROUTE_NEW,
-    "crate::vspec::flags::load(&self.free_flags, Ordering::Relaxed)",
-    "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE, Ordering::Relaxed);",
+    "crate::vspec::flags::load(&self.free_flags)",
+    "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE);",
 ];
 
 fn check_route(t: &Tree) -> Vec<String> {
@@ -1526,7 +1527,7 @@ fn access_route_byte_control() {
     let anchor = "use crate::vspec::flags::RouteByte;";
     for line in [
         "fn f(s: &mut Shared) { s.free_flags = crate::vspec::flags::new(0); }",
-        "fn f(s: &Shared) -> u8 { crate::vspec::flags::load(&s.free_flags, Ordering::Relaxed) }",
+        "fn f(s: &Shared) -> u8 { crate::vspec::flags::load(&s.free_flags) }",
         "fn f(s: &Shared) { unsafe { core::ptr::write(addr_of!(s.free_flags) as *mut u8, 0) } }",
         "use crate::vspec::flags::fetch_or;",
     ] {

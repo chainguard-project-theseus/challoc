@@ -19,7 +19,7 @@ and not run.
 
 ## Inventory
 
-408 lines of source carry an `Ordering::` (`grep` over `src/`,
+406 lines of source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
 `src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
 `cfg(challoc_tls_check)`), inline `#[cfg(test)]` and `#[cfg(kani)]`
@@ -53,7 +53,7 @@ a compiler barrier.
 | `class/pages.rs` | 8 | `hint_due`, `hint_armed`, `pages_due`, `Relaxed` |
 | `huge/mod.rs`, `huge/free.rs` | 7, 2 | `retain_max`, `purge_on_free`, `mixed_guards`, `Relaxed` |
 | `heap/tcaches.rs` | 6 | `[AtomicPtr<u8>; 1024]` |
-| `heap/shared.rs` | 4 | `free_flags`; the class lines' watermark copies, read through `class::load_mirror` |
+| `heap/shared.rs` | 2 | test code only: `parts`' watermark read and `set`'s `#[cfg(test)]` exchange (`free_flags` goes through `vspec::flags`, `SeqCst`, with no ordering argument) |
 | `sys/abort.rs`, `sys/pac.rs` | 2, 2 | test hooks only: `REAL_ABORT` and `TEST_OPS`, under `#[cfg(test)]` |
 
 ## Protocols that matter
@@ -193,13 +193,16 @@ a compiler barrier.
 
 ### P5. The free fast path's `Relaxed` reads
 
-- The free path reads the `FREE_ROUTE` bit of the `free_flags` byte
-  (`Shared::free_flags`, after the bit test), the class line's copy of
-  the watermark (`heap::ClassLine`, through `class::load_mirror`; the
-  slow path reads the table's watermark), the bitmap bit and the owner
-  word `Relaxed`, with no acquire. The argument (comments in
-  `class/table.rs` and `heap/shared.rs`) is that the program frees after
-  it allocates, so happens-before runs from the allocation.
+- The free path reads the class line's copy of the watermark
+  (`heap::ClassLine`, through `class::load_mirror`; the slow path reads
+  the table's watermark), the bitmap bit and the owner word `Relaxed`,
+  with no acquire. It reads the `FREE_ROUTE` bit of the `free_flags`
+  byte (`Shared::free_flags`, after the bit test) with vstd's `SeqCst`
+  load (`vspec::flags::load`; `ldarb` on aarch64), which its
+  correctness does not need: the same argument covers it. The argument
+  (comments in `class/table.rs` and `heap/shared.rs`) is that the
+  program frees after it allocates, so happens-before runs from the
+  allocation.
 - A pointer handed between threads through a non-synchronising channel
   (a `Relaxed` atomic) breaks that chain. A stale byte without
   `FREE_ROUTE` skips the arena check, and the slot goes to the wrong
@@ -696,7 +699,9 @@ shows the check can fail.
   permissions (`api::LinePred`, `sys::cgroup::PhasePred`); the models
   check that the release/acquire pairs give the edges it relies on.
 - The free path's dispatch byte, `flags.rs` (`vspec/flags.rs`'s
-  `RouteByte` and wrappers as they are, driven by copies of `init`'s `Shared::put_flags` and
+  `RouteByte` and its verified wrappers as they are, over the `cfg(loom)`
+  stand-in for vstd's `PAtomicU8`, driven by copies of `init`'s
+  `Shared::put_flags` and
   publication, `Arenas::build`'s `Shared::set_multi_arena`, and the free
   path's `Shared::free_flags` load): every value a load or the
   `fetch_or` returns is `push_flags` with or without `ROUTE`, with no
@@ -765,9 +770,6 @@ another thread's exchange as often as other threads retake the lock.
 | `vspec/count.rs.md` | `compare_exchange` | partly checked (Kani, loom, GenMC) |
 | `vspec/entry.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
 | `vspec/entry.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
-| `vspec/flags.rs.md` | `new` | partly checked (Kani, loom, GenMC) |
-| `vspec/flags.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
-| `vspec/flags.rs.md` | `fetch_or` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `WordPerm` | partly checked (loom) |
 | `vspec/word.rs.md` | `fetch_or` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
@@ -825,12 +827,6 @@ The arguments, by group (the overrides comments give each in full):
   invariant (`table::OwnerPred`). Watermark, free and bitmap models.
 - The entry and byte wrappers (`vspec/entry.rs`, `vspec/byte.rs`): the
   narenas and once-cell models check their release/acquire pairs.
-- The flag byte (`vspec/flags.rs`): every write is `new`'s or a
-  `fetch_or` within `ROUTE`, so every value in the modification order
-  keeps the fixed bits, for any ordering, for a reader that happens after
-  `init` (the premise of the trusted seams that hand out a well-formed
-  `&Shared`). The `RouteByte` type keeps its `AtomicU8` private to its
-  module, so its only operations are the wrappers. Flags models.
 - The slab descriptor accessors (`slab.rs`): every access through a
   permission is made holding the lock whose value holds it (the commit
   lock's, then the class lock's), so successive holders are ordered by

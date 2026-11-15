@@ -1,17 +1,16 @@
 // GenMC port of tests/loom/src/flags.rs (P5's dispatch byte): challoc's
 // `vspec/flags.rs` wrappers (`new`, `fetch_or`, `load`) run unchanged
-// over `core` atomics; the callers (`put_flags` + `READY` publish,
-// `set_multi_arena`, `free_flags`) are copies, as in the loom model.
+// over vstd's `PAtomicU8` (`SeqCst` on `core`'s `AtomicU8`); the
+// callers (`put_flags` + `READY` publish, `set_multi_arena`,
+// `free_flags`) are copies, as in the loom model.
 // The storage `init` writes is three plain bytes (GenMC rejects
 // mixed-size accesses, so no `Option<(u8, RouteByte)>` as in loom).
 //
-// The seam ledger cites this template's pass cases (verus/SEAMS.md,
-// "Status") for `flags::new`, `flags::load` and `flags::fetch_or`, whose
-// bodies run. The harness also copies `api::load_state`'s `STATE.word`
-// load and `api::publish_ready`'s `READY` store (`src/api/mod.rs`) onto
-// `core`'s atomic, pinned in `GENMC_PINS`. It is evidence only: the
-// permissions are erased (`Tracked::assume_new()`), so no case checks a
-// seam's contract.
+// The wrappers are verified (no seams); the pass cases check the callers'
+// publication protocol around them. The harness also copies
+// `api::load_state`'s `STATE.word` load and `api::publish_ready`'s
+// `READY` store (`src/api/mod.rs`) onto `core`'s atomic, pinned in
+// `GENMC_PINS`. The ghost invariant is erased in this build.
 
 use crate::vspec::flags::{ROUTE, RouteByte, fetch_or, load, new};
 use core::cell::UnsafeCell;
@@ -72,7 +71,7 @@ impl Model {
             return None;
         }
         let (push, b) = self.fields();
-        Some((fetch_or(b, bits, Ordering::Relaxed), push))
+        Some((fetch_or(b, bits), push))
     }
     /// The `free` fast path's `Shared::free_flags`, twice.
     fn free(&self) -> Option<(u8, u8, u8)> {
@@ -80,8 +79,8 @@ impl Model {
             return None;
         }
         let (push, b) = self.fields();
-        let r0 = load(b, Ordering::Relaxed);
-        let r1 = load(b, Ordering::Relaxed);
+        let r0 = load(b);
+        let r1 = load(b);
         Some((r0, r1, push))
     }
 }
@@ -135,7 +134,7 @@ fn harness() {
     }
     init.join().unwrap();
     let (push, b) = m.fields();
-    let last = load(b, Ordering::Relaxed);
+    let last = load(b);
     let want = if any_build { push | ROUTE } else { push };
     gassert!(
         last == want,
