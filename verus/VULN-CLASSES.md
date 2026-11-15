@@ -46,7 +46,7 @@ where some of the CVEs below lived, are not targets.
 | [CVE-2021-27419](https://nvd.nist.gov/vuln/detail/CVE-2021-27419) | 2021 | integer wrap-around in a size computation ("BadAlloc") | uClibc-ng `malloc-simple` | `api::libc::malloc` | 2: `fits(r, size, QUANTUM)` |
 | [CVE-2023-4911](https://nvd.nist.gov/vuln/detail/CVE-2023-4911) | 2023 | configuration read in a secure-execution process (malloc tunables through `GLIBC_TUNABLES`) | glibc `ld.so` tunables parser | `config::load`, `config::linux::env_var` | Secure-exec configuration (`config::linux::theorem_secure_conf`): no `env_var` call returns when `AT_SECURE` is set. Test `c_cve_2023_4911` |
 | [CVE-2023-21366](https://source.android.com/docs/security/bulletin/android-14) | 2023 | predictable allocation pattern | Android Scudo (design) | `class` refill and `shuffle_zero` under the opt-in `slot_randomize` key | Theorem 11 (order): the shuffle's order is `fisher_yates` of the batch over the generator's `draws`, a bijection from draws to orders (`theorem_shuffle_order_injective`, `theorem_shuffle_order_reach`), and the state is never zero (`theorem_xorshift_nonzero`, `Heap::rng`). Unpredictability itself is probabilistic and not claimed (#738, intentionally not pursued). The start-word draw and the non-zero state through `claim_with`/`finish`: [#749](https://github.com/chainguard-project-theseus/challoc/issues/749). The bulletin gives no technical detail; mapping to this class is from the CVE description |
-| [CVE-2023-21367](https://source.android.com/docs/security/bulletin/android-14) | 2023 | heap out-of-bounds read or write turned into an exploit (allocator design) | Android Scudo (design) | every allocation entry point | Partial: `heap::theorem_overflow_reach` (metadata and other regions), 7 Guard pages, 4. Gap for neighbours in the same region ([#737](https://github.com/chainguard-project-theseus/challoc/issues/737)). The bulletin gives no technical detail |
+| [CVE-2023-21367](https://source.android.com/docs/security/bulletin/android-14) | 2023 | heap out-of-bounds read or write turned into an exploit (allocator design) | Android Scudo (design) | every allocation entry point | Partial: `heap::theorem_overflow_reach` (metadata and other regions), 7 Guard pages, 4; inside the block's own region, `heap::theorem_guard_reach` (a stop within the class's guard interval, guards on) and `huge::RunToken::theorem_token_guards` ([#737](https://github.com/chainguard-project-theseus/challoc/issues/737)). Neighbours inside that bound are reachable. The bulletin gives no technical detail |
 | [CVE-2026-0861](https://nvd.nist.gov/vuln/detail/CVE-2026-0861), [GLIBC-SA-2026-0001](https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=advisories/GLIBC-SA-2026-0001) | 2026 | integer overflow in a size computation (`size` near `PTRDIFF_MAX` with alignment up to `1 << 63`) | glibc `memalign`, `posix_memalign`, `aligned_alloc` (2.30 to 2.42) | `api::libc::aligned_alloc_block`, `posix_memalign_block`, `alloc_aligned` | 2: `fits(r, size, align)` for every power-of-two `align`, `1 << 63` included; "Bad input": a non-power-of-two `align` (memalign's `[2^62 + 1, 2^63)`) is `EINVAL`. No CVE-named test (see "Reproducers") |
 | jemalloc 4.0.0 ChangeLog | 2015 | integer overflow in a size computation (size classes, profiling on) | jemalloc `malloc`, `posix_memalign`, `memalign`, `calloc`, `realloc` | the same entry points in `api::libc` | 2 (challoc has no heap profiler) |
 | jemalloc 4.1.0 ChangeLog ("Make *allocx() size class overflow behavior defined") | 2016 | integer overflow in a size computation | jemalloc `mallocx`, `rallocx`, `nallocx` | `api::jemalloc::mallocx`, `rallocx`, `nallocx` | 2 and 43: `fits` at the flags' alignment; `nallocx` ensures `r == nalloc_usable(..)`; `theorem_nallocx_zero_rejects` |
@@ -125,7 +125,15 @@ size written into a freed or live block never steers `malloc` or
 challoc's reservation before any metadata, the `Shared` static or
 another region (`heap::theorem_overflow_reach`), and no commit reopens
 a live guard (`theorem_slab_commit_avoids_guards`,
-`theorem_huge_commit_avoids_guards`).
+`theorem_huge_commit_avoids_guards`). Inside a class region, with
+guards on, a linear write off any byte of a block meets a guard slab's
+first byte or the region's edge within `m` page groups going up and
+`m + 1` going down, `m + 1` the class's guard interval
+(`heap::theorem_guard_reach`). For huge runs only page separation is
+proved: a run's guard pages are no other live run's usable page
+(`huge::RunToken::theorem_token_guards`). That the guard follows the
+usable pages and faults is read from `Huge::prepare`, and under
+`guards:false` the guard page is read-write.
 
 **Premises and limits.**
 - Theorem 46 covers verified code; trusted bodies are covered by reading
@@ -135,8 +143,14 @@ a live guard (`theorem_slab_commit_avoids_guards`,
   excluded; theorem 4 leaves TLS out too).
 - `theorem_overflow_reach` trusts that the reservations are mapped
   `PROT_NONE` and, without `mseal`, that nothing else remaps the slack.
-  It does not cover neighbours in the block's own region (#737),
-  allocator statics outside `Shared`, or a freed run's guard.
+  It does not cover allocator statics outside `Shared`, or a freed
+  run's guard.
+- `theorem_guard_reach` bounds the reach to the first stop, not to the
+  next block: neighbours in the same slab or page group, and the
+  committed slabs ahead of an arena's cursor, lie inside the bound. With
+  guards off (no `MADV_GUARD_INSTALL`, or `guard_slab_interval:0`) or
+  under `thp:always` with PMD chunks it gives no class-region stop but
+  the region's edges.
 - Theorem 4 is spatial only: it does not prove every allocator write
   stays in its object, nor the mapping permissions of returned bytes.
 
@@ -373,6 +387,10 @@ Open: C's view of a stale pointer past the test, and the huge half.
 > `layout::guard_geom`, `huge::Inner::theorem_run_guards`,
 > `Huge::alloc_run`. Note the PMD-chunk `thp:always` mode places no
 > guards and must stay outside the claim.
+
+Proved: `heap::theorem_guard_reach` (class regions, guards on) and
+`huge::RunToken::theorem_token_guards` (huge runs, any two tokens),
+THEOREMS.md "Same-region overflow reach".
 
 **[#738](https://github.com/chainguard-project-theseus/challoc/issues/738): predictable allocation order (CVE-2023-21366)**
 

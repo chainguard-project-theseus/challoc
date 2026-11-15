@@ -3273,6 +3273,7 @@ impl SlabTable {
             self.spec_nslabs() & sub(r, 1) == 0,
             r == 1usize << self.spec_slots().glg,
             self.spec_slots().glg <= 26,
+            mask_shape(self.spec_slots().gmask),
     {
         proof {
             use_type_invariant(self);

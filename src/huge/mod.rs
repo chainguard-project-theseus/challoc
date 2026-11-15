@@ -774,6 +774,36 @@ impl RunToken {
         }
     }
 
+    /// Guard pages are never another run's usable pages, for any two run
+    /// tokens, whoever holds them and outside the huge lock: the usable
+    /// pages of this token's run (the pages before its [`GUARD_PAGES`])
+    /// share no page with the guard pages of `other`'s. A run's own guard
+    /// is the last [`GUARD_PAGES`] of its extent (`npages` counts it).
+    /// This is page separation, not protection: whether that page faults
+    /// is up to `prepare` (a guard marker, `PROT_NONE` from
+    /// [`split_guard`], or read-write under `guards:false`).
+    /// `Inner::theorem_run_guards` states the same of the
+    /// descriptors in every value the huge lock admits; this is the
+    /// per-call form, over the tokens the allocation and free paths hand
+    /// around.
+    pub proof fn theorem_token_guards(tracked &mut self, tracked other: &RunToken)
+        requires
+            old(self).wf(),
+            other.wf(),
+        ensures
+            final(self).wf(),
+            final(self).start() == old(self).start(),
+            final(self).npages() == old(self).npages(),
+            crate::layout::disjoint(
+                final(self).start(),
+                final(self).npages() - GUARD_PAGES,
+                other.start() + other.npages() - GUARD_PAGES,
+                GUARD_PAGES as int,
+            ),
+    {
+        self.lemma_apart(other);
+    }
+
     /// Purge never discards live data, for huge runs: a byte
     /// [`free_page_byte`] admits for the set of the page authority `auth`
     /// is in no page, guard included, of the run whose token this is,

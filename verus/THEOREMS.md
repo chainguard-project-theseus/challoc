@@ -14,14 +14,15 @@ binary that a disassembly checker (`scripts/perf-budget.sh`, the
 `perf-budget` check) proves, not Verus. "Bad input" (the B column of the
 interface contract), the
 [theorems outside the numbered sections](#theorems-outside-the-numbered-sections),
-four of which have their own sections after section 46 (thread exit,
-explicit-cache destroy, exact sized frees and the double-free window),
+five of which have their own sections after section 46 (thread exit,
+explicit-cache destroy, exact sized frees, the double-free window and
+same-region overflow reach),
 and the interface contract are not numbered. The sections fall into the
 groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 
 | Group | Sections |
 | --- | --- |
-| Returned blocks and allocator metadata | 1, 2, 4, 5, 7, 24, 41; overflow reach and commits that avoid guards |
+| Returned blocks and allocator metadata | 1, 2, 4, 5, 7, 24, 41; overflow reach, same-region overflow reach and commits that avoid guards |
 | Free paths and bad input | 3, 25, 43, 44; Bad input; exact sized frees and the double-free window (opt-in keys) |
 | Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy |
 | Purge and decay | 18, 19, 30, 31, 38, 40 |
@@ -70,6 +71,9 @@ leave out (theorem 33). Remaining work is tracked in
   above or below it, lies a `MAX_SLAB` (4 MiB) run of challoc's own
   reservation outside every region (`Regions::slack_run`). Its scope and
   trusted facts are in [RESULTS.md](RESULTS.md#exploit-techniques).
+- **Same-region overflow reach** ([Same-region overflow reach](#same-region-overflow-reach-guards-on)):
+  `heap::theorem_guard_reach`, `heap/theorems.rs`, for a class region;
+  `huge::RunToken::theorem_token_guards`, `huge/mod.rs`, for huge runs.
 - **Commits avoid guards** (`class::table::theorem_slab_commit_avoids_guards`,
   `class/table.rs`; `huge::theorem_huge_commit_avoids_guards`,
   `huge/kernel.rs`): every `mprotect` read-write commit of a class region
@@ -9837,6 +9841,145 @@ the key off nothing here runs.
 | M13 | `release` hands the slot out (`CACHED` to `LIVE`) | `release`'s assertion |
 | M14 | `free` admits `to == LIVE` | `step`'s precondition |
 | M15 | `step`'s load is `core`'s, not `vspec::byte::load` | `step`'s postcondition |
+
+## Same-region overflow reach (guards on)
+
+A linear overflow or underflow off a class-region block that stays
+inside the block's own region meets a stop within a bound fixed by the
+class's guard geometry. For huge runs only the separation of a run's
+guard pages from other runs' usable pages is proved (below). `heap::theorem_overflow_reach` covers a write that
+leaves the region; this section covers the bytes before it does.
+
+**Statement** (`heap/theorems.rs`): from any byte `a` of a non-null
+block that `fits`, in class `c`'s region, with guards on for the class
+(its guard mask `m = guard_geom(c).1` is not all ones), a write going
+up meets a stop within `m * guard_group(c)` bytes, and one going down
+within `(m + 1) * guard_group(c)`. `guard_group(c)` is the bytes of one
+page group (`1 << glg` slabs) and `m + 1` the guard interval in page
+groups. The default `guard_slab_interval` is 8, and
+`guard_interval_for` scales it for small page groups, so the figures
+depend on the group size (with `unit` 64 KiB, or the page if larger):
+a class whose page group is at least `unit` (one slab of 64 KiB or more
+per group) reaches 7 groups up and 8 down, up to 28 MiB and 32 MiB for
+a 4 MiB slab; a class whose page group is under `unit` gets an interval
+of `8 * unit / group` groups, so it reaches `8 * unit - guard_group(c)`
+bytes up and `8 * unit` down (127 slabs up and 128 down for a 4 KiB
+slab on a 4 KiB page kernel, just under 512 KiB and 512 KiB). Each
+holds for every block and every byte of it.
+
+```rust
+// heap/theorems.rs
+pub open spec fn guard_group(c: int) -> int {
+    ((1usize << guard_geom(c).0) as int) * ((1usize << class_table()[c].lg_slab) as int)
+}
+pub open spec fn guard_stop_above(c: int, x: int) -> bool {
+    let r = process_regions();
+    ||| exists|g: int| 0 <= g < r.spec_nslabs(c) && guard_slab(c, g) && x == #[trigger] r.slab_span(c, g).0
+    ||| x == r.class_base[c] + (1usize << r.lg_region)
+}
+pub open spec fn guard_stop_below(c: int, x: int) -> bool {
+    let r = process_regions();
+    ||| exists|g: int| 0 <= g < r.spec_nslabs(c) && guard_slab(c, g) && x == #[trigger] r.slab_span(c, g).0
+    ||| x == r.class_base[c] - 1
+}
+pub proof fn theorem_guard_reach(p: *mut u8, size: int, align: int, a: int, c: int)
+    requires
+        fits(p, size, align), p@.addr != 0, size >= 0, crate::api::ready(),
+        p@.addr <= a < p@.addr + (if size < 1 { 1 } else { size }),
+        0 <= c < NCLASSES,
+        process_regions().in_class(c, a),
+        guard_geom(c).1 != u32::MAX,
+    ensures
+        exists|x: int| a < x <= a + (guard_geom(c).1 as int) * guard_group(c) && #[trigger] guard_stop_above(c, x),
+        exists|x: int| a - (guard_geom(c).1 as int + 1) * guard_group(c) < x < a && #[trigger] guard_stop_below(c, x),
+
+// huge/mod.rs: any two run tokens, whoever holds them
+pub proof fn theorem_token_guards(tracked &mut self, tracked other: &RunToken)   // RunToken
+    requires old(self).wf(), other.wf(),
+    ensures
+        disjoint(final(self).start(), final(self).npages() - GUARD_PAGES,
+                 other.start() + other.npages() - GUARD_PAGES, GUARD_PAGES as int),
+```
+
+A stop is the first byte of a guard slab, which is the first page of a
+guard page group, or the slack byte just past the region's end or just
+below its base. The guard slab's first page faults by
+`class::table::theorem_slab_commit_avoids_guards` (no commit makes it
+read-write without its `MADV_GUARD_INSTALL` marker); the slack past the
+region is `theorem_overflow_reach`'s. For huge runs the proved fact is
+token separation, not protection: `theorem_token_guards` says the last
+`GUARD_PAGES` of one token's extent share no page with the usable pages
+of another token's, the per-call form of
+`huge::Inner::theorem_run_guards` (which holds of the descriptors at the
+huge lock invariant), over the tokens the paths hand around. That the
+guard follows the run's usable pages, so a write off the end of a huge
+block reaches it before the next run, is read from the run layout, not
+proved. How the guard is protected depends on the mode, read from
+`Huge::prepare`: with `MADV_GUARD_INSTALL` the guard page is committed
+and carries a guard marker, and `split_guard` makes it `PROT_NONE` only
+when the marker is refused; in fallback mode (no marker) `split_guard`
+makes it `PROT_NONE`; under `guards:false` it is neither, and the page
+counted as the guard is read-write. Once a run is placed,
+`theorem_huge_commit_avoids_guards` proves no commit or marker removal
+covers a live run's guard page. Nothing is stated for a write going
+down off a huge block.
+
+**Proof.** `layout::lemma_guard_near` is the group arithmetic: for a
+slab `s` that is not a guard slab, in page group `pg`, under a mask of
+the shape `2^k - 1` (`class::mask_shape`), page group `pg | m` is the
+next guard group, at most `m` groups up, and `(pg & !m) - 1` the one
+below, at most `m` groups down (`s + 1` at most `(m + 1)` groups past
+its first slab), or, when `pg & !m` is 0, `pg < m` and the region's base
+is the stop. Bit-vector assertions carry the mask facts; nonlinear
+arithmetic converts groups to slabs and slabs to bytes.
+`Regions::lemma_slab_of` puts `a` in a slab of the region and the
+region's end at slab `spec_nslabs(c)`; a next guard group past the end
+gives the region's end as the stop, inside the same bound. `a`'s slab
+is no guard slab because no byte of a block lies in one
+(`Regions::lemma_user_block_not_guard`). The guard geometry's facts
+(the mask's shape, `glg <= 26`) come from the published `Shared`
+(`heap::shared::lemma_process_guard_geom`, over `ClassLine::wf`, into
+which `ClassLine::of` carries the mask's shape from
+`SlabTable::slabs_per_page`'s `ensures`). `theorem_token_guards` is `RunToken::lemma_apart`: two tokens'
+page sets are disjoint.
+
+**Seams.** None added or removed.
+
+| Fact used | Where | Status |
+|---|---|---|
+| The published `Shared` is the one `init` built | `api::axiom_published` | existing trusted axiom (common premises) |
+| The guard slab's first page is never read-write | `theorem_slab_commit_avoids_guards` | proved; rests on the `mprotect` and `madvise` contracts it names |
+| The slack past each region is `PROT_NONE` | `theorem_overflow_reach` | proved over the reservation contract it names |
+| Tokens of distinct runs hold disjoint pages | `RunToken::lemma_apart` | proved (ghost set authority) |
+
+**Not covered.** With guards off (`guard_slab_interval:0`, or no
+`MADV_GUARD_INSTALL`, before kernel 6.13) the mask is all ones and the
+theorem has no class-region statement; only the region's ends stop a
+write (`theorem_overflow_reach`). Under `thp:always` with PMD chunks no
+marker is installed, so the guard slabs' first pages are not stops; the
+commit theorem excludes that mode. The bound is to the first stop, not
+to the next block: the committed, never-handed-out slabs ahead of an
+arena's cursor (docs/hardening.md, "Guard slabs and the run ahead of the
+cursor") and neighbouring live blocks of the same slab or page group lie
+inside it. A freed huge run's guard is made read-write again by design.
+For huge runs: under `guards:false` (`Huge::new` clears
+`guard_install`, and `prepare` skips `split_guard`) a run's guard page
+is read-write, so a write off the end of a huge block crosses it into
+the next run's first usable page; the token theorem still holds there,
+since it states page separation only. In the other modes, that
+`prepare` protects the guard when the run is placed is read from the
+code, not proved; and no bound is proved for a write going down off a
+huge block.
+
+**Mutations** (each rejected by `cargo verus focus`, fresh target dir):
+
+| id | change | rejected by |
+|---|---|---|
+| R1 | the upward bound `m * guard_group(c)` becomes `(m - 1) * guard_group(c)` | `theorem_guard_reach`'s first postcondition |
+| R2 | the downward bound `(m + 1) * guard_group(c)` becomes `m * guard_group(c)` | `theorem_guard_reach`'s second postcondition |
+| R3 | `theorem_guard_reach` without `guard_geom(c).1 != u32::MAX` | `lemma_guard_near`'s precondition |
+| R4 | `ClassLine::wf` without `mask_shape` | `lemma_process_guard_geom`'s postcondition |
+| R5 | `lemma_guard_near`'s upward bound `m * gs` becomes `(m - 1) * gs` | its postcondition |
 
 ## Interface contract
 

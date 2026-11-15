@@ -228,6 +228,28 @@ pub proof fn lemma_process_padded()
     reveal(crate::layout::Regions::fenced);
 }
 
+/// Once the allocator is published, the process's guard geometry of each
+/// class ([`guard_geom`](crate::layout::guard_geom)) is its table's:
+/// a page-group shift of at most 26, a guard mask of the shape
+/// `2^k - 1` ([`mask_shape`](crate::class::mask_shape)), and a region
+/// of at most `0x400_0000` slabs.
+pub proof fn lemma_process_guard_geom(c: int)
+    requires
+        crate::api::ready(),
+        0 <= c < NCLASSES,
+    ensures
+        crate::layout::guard_geom(c).0 <= 26,
+        crate::class::mask_shape(crate::layout::guard_geom(c).1),
+        crate::layout::process_regions().spec_nslabs(c) <= 0x400_0000,
+{
+    let tracked published = crate::api::axiom_published();
+    lemma_process_shared();
+    let s = published.shared.value();
+    assert(s.built());
+    assert(s.lines[c].wf(s.tables[c], s.regions, c));
+    assert(s.tables[c].is_process());
+}
+
 impl Shared {
     /// [`shared_storage`], for modules outside `heap`.
     pub open spec fn storage() -> *mut Shared {
@@ -512,7 +534,8 @@ impl ClassLine {
     /// after `adopt_page_geometry`) with its 64-bit inverse, the table's
     /// bitmap and owner bases, hand-out group and guard geometry (a guard
     /// mask that is the table's or 0, which makes the sized check accept
-    /// nothing; [`Shared::built`] says which), zero padding, and the
+    /// nothing; [`Shared::built`] says which; the table's mask has the
+    /// shape `2^k - 1`), zero padding, and the
     /// watermark copy's invariant over the table's slab count, the
     /// region's.
     pub(super) closed spec fn wf(&self, t: SlabTable, regions: Regions, c: int) -> bool {
@@ -532,6 +555,7 @@ impl ClassLine {
         &&& self.lg_slab == cls.lg_slab
         &&& (self.guard_mask == t.spec_slots().gmask || self.guard_mask == 0)
         &&& t.spec_slots().glg <= 26
+        &&& crate::class::mask_shape(t.spec_slots().gmask)
         &&& self.lg_guard == cls.lg_slab + t.spec_slots().glg
         &&& self._pad[0] == 0 && self._pad[1] == 0
         &&& self.committed_inv@.constant().0 == usize_id(&self.committed)

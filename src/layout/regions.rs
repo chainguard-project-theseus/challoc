@@ -197,6 +197,130 @@ pub open spec fn guard_slab(c: int, slab: int) -> bool {
     guard_of(guard_geom(c).0, guard_geom(c).1, slab as usize)
 }
 
+/// The guard slabs nearest slab `s`, which is not one, with guards on: a
+/// mask of the shape `2^k - 1` (`class::mask_shape`) that is not all
+/// ones, and `gs = 1 << lg` slabs per page group. Above `s`, the first
+/// slab of page group `pg | mask` (`pg` is `s`'s group) is a guard slab,
+/// at most `mask * gs` slabs up. Below it, when `pg & !mask` is not 0, the
+/// first slab of page group `(pg & !mask) - 1` is one, with `s + 1` at most
+/// `(mask + 1) * gs` slabs past it; otherwise `s + 1` is at most
+/// `mask * gs` (no guard slab lies below the region's first guard group).
+pub proof fn lemma_guard_near(lg: u8, mask: u32, s: usize)
+    requires
+        lg <= 26,
+        mask & (mask >> 1u32) == mask >> 1u32,
+        mask != u32::MAX,
+        s < 0x400_0000,
+        !guard_of(lg, mask, s),
+    ensures
+        ({
+            let gs = (1usize << lg) as int;
+            let pg = (s >> lg) as u32;
+            let up = ((pg | mask) as int) * gs;
+            let lo = (((pg & !mask) as int) - 1) * gs;
+            &&& gs >= 1
+            &&& 0 <= up <= usize::MAX
+            &&& guard_of(lg, mask, up as usize)
+            &&& s < up <= s + (mask as int) * gs
+            &&& pg & !mask != 0 ==> 0 <= lo < s && guard_of(lg, mask, lo as usize) && s + 1 <= lo + (mask as int + 1) * gs
+            &&& pg & !mask == 0 ==> s + 1 <= (mask as int) * gs
+        }),
+{
+    reveal(guard_of);
+    let m = mask;
+    let l = lg as usize;
+    vstd::bits::lemma_usize_pow2_no_overflow(l as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, l);
+    vstd::bits::lemma_usize_shr_is_div(s, l);
+    assert((1usize << lg) == (1usize << l) && (s >> lg) == (s >> l)) by (bit_vector)
+        requires l == lg as usize;
+    let gs = (1usize << lg) as int;
+    assert(gs == pow2(l as nat));
+    assert((1usize << lg) <= 0x400_0000) by (bit_vector)
+        requires lg <= 26;
+    vstd::arithmetic::power2::lemma_pow2_pos(l as nat);
+    let pg = (s >> lg) as u32;
+    assert(s >> l < 0x400_0000) by (bit_vector)
+        requires s < 0x400_0000;
+    assert(pg as int == (s as int) / gs);
+    // `s` lies in page group `pg`.
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(s as int, gs);
+    assert(pg as int * gs <= s < (pg as int + 1) * gs) by (nonlinear_arith)
+        requires
+            s as int == gs * (s as int / gs) + (s as int) % gs,
+            0 <= (s as int) % gs < gs,
+            pg as int == (s as int) / gs,
+    ;
+    // The group arithmetic: `pg` is not a guard group, so its low bits
+    // under the mask are not all set.
+    assert(pg != u32::MAX);
+    assert(add(pg, 1u32) & m != 0);
+    let hi = pg | m;
+    assert(pg < hi && hi - pg <= m && hi != u32::MAX && add(hi, 1u32) & m == 0) by (bit_vector)
+        requires
+            m & (m >> 1u32) == m >> 1u32,
+            m != u32::MAX,
+            pg < 0x400_0000u32,
+            add(pg, 1u32) & m != 0,
+            hi == pg | m,
+    ;
+    let up = (hi as int) * gs;
+    assert(0 <= up <= usize::MAX && (pg as int + 1) * gs <= up && up <= pg as int * gs + (m as int) * gs) by (nonlinear_arith)
+        requires
+            pg < hi,
+            hi as int - pg as int <= m as int,
+            hi <= u32::MAX,
+            1 <= gs <= 0x400_0000,
+            up == (hi as int) * gs,
+    ;
+    // The first slab of group `hi` is in group `hi`.
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(hi as int, gs);
+    let upu = up as usize;
+    vstd::bits::lemma_usize_shr_is_div(upu, l);
+    assert((upu >> lg) == (upu >> l)) by (bit_vector)
+        requires l == lg as usize;
+    assert((upu >> lg) as u32 == hi);
+    let low = pg & !m;
+    if low != 0 {
+        let q = (low - 1) as u32;
+        assert(q < pg && pg - q <= m && q != u32::MAX && add(q, 1u32) & m == 0) by (bit_vector)
+            requires
+                m & (m >> 1u32) == m >> 1u32,
+                m != u32::MAX,
+                pg < 0x400_0000u32,
+                add(pg, 1u32) & m != 0,
+                low == pg & !m,
+                low != 0,
+                q == sub(low, 1u32),
+        ;
+        let lo = (q as int) * gs;
+        assert(lo == ((low as int) - 1) * gs);
+        assert(0 <= lo && lo + gs <= pg as int * gs && (pg as int + 1) * gs <= lo + (m as int + 1) * gs) by (nonlinear_arith)
+            requires
+                q < pg,
+                pg as int - q as int <= m as int,
+                1 <= gs,
+                lo == (q as int) * gs,
+        ;
+        vstd::arithmetic::div_mod::lemma_div_multiples_vanish(q as int, gs);
+        let lou = lo as usize;
+        vstd::bits::lemma_usize_shr_is_div(lou, l);
+        assert((lou >> lg) == (lou >> l)) by (bit_vector)
+            requires l == lg as usize;
+        assert((lou >> lg) as u32 == q);
+    } else {
+        assert(pg < m) by (bit_vector)
+            requires
+                m & (m >> 1u32) == m >> 1u32,
+                add(pg, 1u32) & m != 0,
+                pg & !m == 0,
+                pg < 0x400_0000u32,
+        ;
+        assert((pg as int + 1) * gs <= (m as int) * gs) by (nonlinear_arith)
+            requires pg < m, 1 <= gs;
+    }
+}
+
 /// Entries `lo..hi` of `s` are slot starts of class `c` in the process's
 /// regions.
 pub open spec fn slots_in(s: Seq<*mut u8>, c: int, lo: int, hi: int) -> bool {
@@ -530,6 +654,61 @@ impl Regions {
         assert(LG_REGION_PREFERRED == 38 && super::LG_MIN_SLAB == 12);
         assert((1usize << lr) >> ls <= 0x400_0000) by (bit_vector)
             requires lr <= 38, 12 <= ls;
+    }
+
+    /// The slabs of class `c`'s region tile it: the region ends where slab
+    /// `spec_nslabs(c)` would start, and byte `x` of the region lies in
+    /// slab `slab_index(c, x)`, one of the region's.
+    pub proof fn lemma_slab_of(self, c: int, x: int)
+        requires
+            self.wf(),
+            0 <= c < NCLASSES,
+            self.in_class(c, x),
+        ensures
+            x == x as usize,
+            ({
+                let (s, slab) = (self.slab_index(c, x as usize), (1usize << class_table()[c].lg_slab) as int);
+                &&& slab >= 1
+                &&& self.slab_span(c, self.spec_nslabs(c)).0 == self.class_base[c] + (1usize << self.lg_region)
+                &&& 0 <= s < self.spec_nslabs(c)
+                &&& self.slab_span(c, s).0 <= x < self.slab_span(c, s).0 + slab
+                &&& self.slab_span(c, s).1 == slab
+            }),
+    {
+        reveal(Regions::slab_index);
+        crate::vspec::class::lemma_class_table_wf(c);
+        let (lr, ls) = (self.lg_region, class_table()[c].lg_slab);
+        let lsu = ls as usize;
+        let rl = 1usize << lr;
+        vstd::bits::lemma_usize_pow2_no_overflow(lsu as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lsu);
+        vstd::arithmetic::power2::lemma_pow2_pos(lsu as nat);
+        assert((1usize << ls) == (1usize << lsu) && (rl >> ls) == (rl >> lsu)) by (bit_vector)
+            requires lsu == ls as usize;
+        let slab = (1usize << ls) as int;
+        let n = rl >> lsu;
+        assert((n << lsu) == rl) by (bit_vector)
+            requires
+                rl == 1usize << lr,
+                lr < 64,
+                lsu <= lr as usize,
+                n == rl >> lsu,
+        ;
+        assert(n <= usize::MAX >> lsu) by (bit_vector)
+            requires n == rl >> lsu;
+        vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lsu, usize::MAX);
+        vstd::bits::lemma_usize_shl_is_mul(n, lsu);
+        assert(n * slab == rl as int);
+        let d = x - self.class_base[c];
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(d, slab);
+        let s = d / slab;
+        assert(0 <= s < n && s * slab <= d < s * slab + slab) by (nonlinear_arith)
+            requires
+                d == slab * s + d % slab,
+                0 <= d % slab < slab,
+                0 <= d < n * slab,
+                slab >= 1,
+        ;
     }
 
     /// `p` is a page start in the huge region with `len > 0` bytes of the

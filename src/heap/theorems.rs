@@ -146,6 +146,157 @@ pub proof fn theorem_overflow_reach(p: *mut u8, size: int, align: int, a: int, b
     r.lemma_overflow_reach(a, b);
 }
 
+/// The bytes of one page group of class `c`'s region: `1 << glg` slabs
+/// of the class ([`guard_geom`](crate::layout::guard_geom)).
+pub open spec fn guard_group(c: int) -> int {
+    ((1usize << crate::layout::guard_geom(c).0) as int) * ((1usize << class_table()[c].lg_slab) as int)
+}
+
+/// Byte `x` stops a linear write going up through class `c`'s region: the
+/// first byte of one of the region's guard slabs (its first page, which
+/// no commit makes read-write without its guard marker,
+/// `theorem_slab_commit_avoids_guards`), or the first byte past the
+/// region, in the slack above it ([`theorem_overflow_reach`]).
+pub open spec fn guard_stop_above(c: int, x: int) -> bool {
+    let r = process_regions();
+    ||| exists|g: int| 0 <= g < r.spec_nslabs(c) && crate::layout::guard_slab(c, g) && x == #[trigger] r.slab_span(c, g).0
+    ||| x == r.class_base[c] + (1usize << r.lg_region)
+}
+
+/// Byte `x` stops a linear write going down through class `c`'s region:
+/// the first byte of one of the region's guard slabs (as in
+/// [`guard_stop_above`]), or the last byte below the region, in the slack
+/// under it.
+pub open spec fn guard_stop_below(c: int, x: int) -> bool {
+    let r = process_regions();
+    ||| exists|g: int| 0 <= g < r.spec_nslabs(c) && crate::layout::guard_slab(c, g) && x == #[trigger] r.slab_span(c, g).0
+    ||| x == r.class_base[c] - 1
+}
+
+/// Same-region overflow reach: from any byte `a` of a non-null block an
+/// allocation returned ([`fits`]) in class `c`'s region, with guards on
+/// for the class (a guard mask that is not all ones: `guard_slab_interval`
+/// nonzero and `MADV_GUARD_INSTALL` available), a linear write going up
+/// meets a stop ([`guard_stop_above`]: a guard slab's first byte or the
+/// region's end) within `mask * guard_group(c)` bytes, and one going down
+/// meets one ([`guard_stop_below`]) within `(mask + 1) * guard_group(c)`
+/// bytes, where `mask + 1` is the class's guard interval in page groups.
+/// With the default interval of 8 and one 64 KiB slab per page group,
+/// that is 7 slabs up and 8 down; for page groups under 64 KiB
+/// `guard_interval_for` scales the interval, so the reach is about
+/// 512 KiB each way. The bound holds for every block and
+/// every byte of it: the guard slabs are every `mask + 1`-th page group
+/// (`layout::lemma_guard_near`) and no byte of a block lies in one
+/// (`Regions::lemma_user_block_not_guard`).
+///
+/// That a guard slab's first byte faults is not stated here: it is
+/// `theorem_slab_commit_avoids_guards` (no commit outside `thp:always`'s
+/// PMD-chunk mode makes it read-write without its guard marker); under
+/// `thp:always` with PMD chunks no marker is installed, so the stops are
+/// only the region's ends. The slack past the region's ends is
+/// [`theorem_overflow_reach`]'s.
+pub proof fn theorem_guard_reach(p: *mut u8, size: int, align: int, a: int, c: int)
+    requires
+        fits(p, size, align),
+        p@.addr != 0,
+        size >= 0,
+        crate::api::ready(),
+        p@.addr <= a < p@.addr + (if size < 1 { 1 } else { size }),
+        0 <= c < NCLASSES,
+        process_regions().in_class(c, a),
+        crate::layout::guard_geom(c).1 != u32::MAX,
+    ensures
+        exists|x: int|
+            a < x <= a + (crate::layout::guard_geom(c).1 as int) * guard_group(c) && #[trigger] guard_stop_above(c, x),
+        exists|x: int|
+            a - (crate::layout::guard_geom(c).1 as int + 1) * guard_group(c) < x < a && #[trigger] guard_stop_below(c, x),
+{
+    let r = process_regions();
+    shared::lemma_process_padded();
+    shared::lemma_process_guard_geom(c);
+    r.lemma_slab_of(c, a);
+    let (lg, m) = crate::layout::guard_geom(c);
+    let base = r.class_base[c] as int;
+    let slab = (1usize << class_table()[c].lg_slab) as int;
+    let n = r.spec_nslabs(c);
+    let s = r.slab_index(c, a as usize);
+    // `a`'s slab is no guard slab: the block shares no byte with one.
+    if crate::layout::guard_slab(c, s) {
+        r.lemma_user_block_not_guard(p@.addr, size, c, s);
+        assert(false);
+    }
+    crate::layout::lemma_guard_near(lg, m, s as usize);
+    let gs = (1usize << lg) as int;
+    let pg = ((s as usize) >> lg) as u32;
+    assert(guard_group(c) == gs * slab);
+    let reach = (m as int) * gs;
+    // Up: the first slab of page group `pg | m`, or the region's end when
+    // that slab is past it.
+    let up = ((pg | m) as int) * gs;
+    assert((up - s) * slab <= reach * slab && reach * slab == (m as int) * guard_group(c)) by (nonlinear_arith)
+        requires
+            up - s <= reach,
+            slab >= 1,
+            reach == (m as int) * gs,
+            guard_group(c) == gs * slab,
+    ;
+    if up < n {
+        let x = r.slab_span(c, up).0;
+        assert(base + s * slab <= a < base + s * slab + slab);
+        assert(a < x && x - a <= (up - s) * slab) by (nonlinear_arith)
+            requires
+                x == base + up * slab,
+                base + s * slab <= a < base + s * slab + slab,
+                s < up,
+                slab >= 1,
+        ;
+        assert(guard_stop_above(c, x));
+    } else {
+        let x = r.slab_span(c, n).0;
+        assert(a < x && x - a <= (up - s) * slab) by (nonlinear_arith)
+            requires
+                x == base + n * slab,
+                base + s * slab <= a < base + n * slab,
+                n <= up,
+                slab >= 1,
+        ;
+        assert(guard_stop_above(c, x));
+    }
+    // Down: the first slab of page group `(pg & !m) - 1`, or the slack
+    // under the region when `pg` is in the region's first guard interval.
+    let below = (m as int + 1) * gs;
+    assert(below * slab == (m as int + 1) * guard_group(c) && below == reach + gs) by (nonlinear_arith)
+        requires
+            below == (m as int + 1) * gs,
+            reach == (m as int) * gs,
+            guard_group(c) == gs * slab,
+    ;
+    if pg & !m != 0 {
+        let lo = (((pg & !m) as int) - 1) * gs;
+        let x = r.slab_span(c, lo).0;
+        assert(x < a && a - x < below * slab) by (nonlinear_arith)
+            requires
+                x == base + lo * slab,
+                base + s * slab <= a < base + s * slab + slab,
+                0 <= lo < s,
+                s + 1 <= lo + below,
+                slab >= 1,
+        ;
+        assert(guard_stop_below(c, x));
+    } else {
+        let x = base - 1;
+        assert(s * slab + slab <= reach * slab && reach * slab < below * slab) by (nonlinear_arith)
+            requires
+                s + 1 <= reach,
+                below == reach + gs,
+                gs >= 1,
+                slab >= 1,
+        ;
+        assert(x < a && a - x <= reach * slab);
+        assert(guard_stop_below(c, x));
+    }
+}
+
 /// Metadata integrity: a non-null block an allocation returned
 /// ([`fits`]) shares no byte with the metadata the allocator keeps in
 /// the metadata region

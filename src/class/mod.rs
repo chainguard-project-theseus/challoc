@@ -136,7 +136,7 @@ use table::{
     slab_owner, words_of,
 };
 #[cfg(verus_keep_ghost)]
-pub use table::{committed_ns, mark_loc, owner_mark, owner_ns, slot_loc, slot_owner};
+pub use table::{committed_ns, mark_loc, mask_shape, owner_mark, owner_ns, slot_loc, slot_owner};
 use verify::{fresh_with_live, release_into_fresh};
 #[cfg(verus_keep_ghost)]
 use vstd::set::Set as VSet;

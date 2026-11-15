@@ -12,7 +12,7 @@ file.
 
 ## `axiom_fresh_anon_zero`
 
-src/huge/mod.rs:1816. Kind: axiom. Category: platform/kernel fact.
+src/huge/mod.rs:1846. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > `mmap(2)`: a private anonymous mapping reads as zero until it is first written.
@@ -31,7 +31,7 @@ pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Ze
 
 ## `axiom_discarded_zero`
 
-src/huge/mod.rs:1841. Kind: axiom. Category: platform/kernel fact.
+src/huge/mod.rs:1871. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted (requires, checked at its one caller, zero_run, from Huge::take: some MADV_DONTNEED of exactly these bytes succeeded, `sys::madvise_ok`, at that call site Huge::rediscard's; not checked: that nothing has written them since take's rediscard call).
 
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
