@@ -158,9 +158,12 @@ nothing.
 - "Does not return" is proved, not "reaches `SIGABRT`": lock waits are
   not proved to terminate, so a hang is not ruled out ("Bad input",
   "weaker").
-- An interior page start of a huge run is excluded by the C contract
-  for frees. For the queries it is proved not to return over any live
-  run's token: `api::libc::usable_size` ensures `!run_interior(t, p)`
+- An interior page start of a huge run: for frees, the check is proved
+  at the huge lock (THEOREMS.md "Bad input", *(lock)*:
+  `Huge::live_run_checks` returns only if no live run has the page as
+  a later page), and that a free of a pointer C holds no token for
+  reaches it is the C contract (*(C)*). For the queries it is proved not
+  to return over any live run's token: `api::libc::usable_size` ensures `!run_interior(t, p)`
   for the run token its ghost `blk` holds, which the code never reads
   (THEOREMS.md "Bad input", *(ghost token)*; #736).
 - Holds only in a run with no earlier non-live free (the C contract).
@@ -173,6 +176,16 @@ nothing.
 or double free of a slot start or huge page start is excluded by the C
 contract (`axiom_c_claim`), not proved to abort (theorem 3, "Bad input"
 rows marked *(C)*, interface *(live)* cells). What is proved:
+- In every configuration, the huge free's checks
+  (`Huge::live_run_lookup` and `Huge::live_run_checks`, which
+  `Huge::free_run` calls; THEOREMS.md
+  "Bad input", *(lock)*): a free returns past them only if a live run
+  starts at the page at the huge lock, so a double free of a huge run
+  whose start no later allocation has reused, or a free of a live run's
+  interior page or guard, does not pass. Once another run starts at that
+  page, a stale pointer to it is that run's start and passes (ABA,
+  undetectable by any allocator). A fact about the lock's state, not
+  C's view.
 - With the opt-in `double_free_scan` key,
   `heap::slotstate::theorem_double_free_window`: after a free of a slot
   returns, every later free of it aborts until the slot is handed out
@@ -190,7 +203,9 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   was free at that load does not pass. `bit_word_held`'s contract ties
   that set to the loaded value; `check_live`'s states it is the set of
   some value of the word (`word_tokens`). A fact about the load, not C's
-  view; the huge half is not covered.
+  view. The huge half: the huge free's checks (THEOREMS.md "Bad
+  input", *(lock)*) return only for a page where a live run starts at
+  the lock.
 
 **What the code does (read, not proved; `docs/hardening.md` (1)).** An
 unsized free of a slot whose bitmap bit is clear aborts at the call
@@ -342,8 +357,10 @@ is the only reader of the environment is a source test.
 > (`already_free`, `not_a_run`), `Huge::usable_size`.
 
 Partly proved: the slab bit test at its load (`check_live`,
-`check_located`: `slot_free_at`, THEOREMS.md "Bad input" *(load)*).
-Open: C's view of a stale pointer past the test, and the huge half.
+`check_located`: `slot_free_at`, THEOREMS.md "Bad input" *(load)*),
+and the huge free's checks at the lock (`Huge::live_run_checks`,
+THEOREMS.md "Bad input" *(lock)*). Open: C's view of a stale pointer
+past the checks.
 
 **[#735](https://github.com/chainguard-project-theseus/challoc/issues/735): integer overflow in pvalloc's page rounding (CVE-2013-4332, CVE-2021-3420)**
 

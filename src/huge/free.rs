@@ -1133,7 +1133,117 @@ proof fn lemma_retain_cap(
     }
 }
 
+/// The facts the huge free's checks read from `g`, the huge lock's
+/// value: `lemma_free_start`'s, the run authorities' and the `Active`
+/// descriptors', and, when the run authority holds an extent starting
+/// at `page`, that its descriptor is keyed there in the table.
+proof fn lemma_live_keyed(g: Inner, page: usize)
+    requires
+        g.wf(),
+    ensures
+        g.lookups_live(),
+        g.table.lookup(page) matches Some(d) ==> is_key(g.descs@[d].value(), page as int),
+        forall|x: *mut HugeDesc| #[trigger] g.descs@.contains_key(x) ==> keyed(g.table, g.descs@[x].value(), x),
+        (exists|n: int| g.runs@@.contains((page as int, n))) ==> exists|x: *mut HugeDesc|
+            #![trigger g.descs@.contains_key(x)]
+            g.descs@.contains_key(x) && run_at(g.descs@[x].value(), (page as int, g.descs@[x].value().pages as int))
+                && g.descs@[x].value().state == RunState::Active as u8 && keyed(g.table, g.descs@[x].value(), x),
+{
+    hide(Inner::wf);
+    lemma_free_start(g, page);
+    lemma_run_auths(g);
+    lemma_active(g.descs@);
+    if exists|n: int| g.runs@@.contains((page as int, n)) {
+        let n = choose|n: int| g.runs@@.contains((page as int, n));
+        let x = choose|x: *mut HugeDesc|
+            #![trigger g.descs@.contains_key(x)]
+            #![trigger run_at(g.descs@[x].value(), (page as int, n))]
+            g.descs@.contains_key(x) && run_at(g.descs@[x].value(), (page as int, n));
+        assert(keyed(g.table, g.descs@[x].value(), x));
+    }
+}
+
 impl Huge {
+    /// The huge free's first check: `d`, the table's entry for `page` in
+    /// `g` (the huge lock's value), is a descriptor. Aborts with
+    /// `not_a_run` when the table maps nothing to `page`.
+    ///
+    /// It and [`Huge::live_run_checks`] take no run token, so their
+    /// `ensures` hold for every caller. They take the values `free_run`
+    /// read, in its order (lookup, null check, field reads, state and
+    /// start checks), so `free_run` compiles as with the checks written
+    /// in its body.
+    #[inline(always)]
+    fn live_run_lookup(&self, Ghost(g): Ghost<Inner>, page: usize, d: *mut HugeDesc)
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && exists|n: int| g.runs@@.contains((page as int, n))),
+            g.wf(),
+            page <= self.npages,
+            g.table.lookup(page) matches Some(p) ==> d == p,
+            g.table.lookup(page) is None ==> d@.addr == 0,
+        ensures
+            g.descs@.contains_key(d),
+            g.table.lookup(page) == Some(d),
+    {
+        hide(Inner::wf);
+        proof {
+            lemma_live_keyed(g, page);
+        }
+        if d.is_null() {
+            not_a_run(self.addr(page));
+        }
+    }
+
+    /// The huge free's other checks, on the fields of `d` (the table's
+    /// descriptor for `page`) that `free_run` read: aborts with
+    /// `already_free` when it is not `Active`, and with `not_a_run` when
+    /// it starts elsewhere.
+    ///
+    /// A call that returns found the run live at the lock: the run
+    /// authority holds an extent starting at `page`, and no live extent
+    /// has `page` as a later page. A free of a huge run that is not live
+    /// (a double or stale free, unless a later run starts at the same
+    /// page), or of a live run's interior page or guard, does not get
+    /// past it with [`Huge::live_run_lookup`].
+    #[inline(always)]
+    fn live_run_checks(&self, Ghost(g): Ghost<Inner>, page: usize, Ghost(d): Ghost<*mut HugeDesc>, state: RunState, start: usize)
+        requires
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && exists|n: int| g.runs@@.contains((page as int, n))),
+            g.wf(),
+            page <= self.npages,
+            g.descs@.contains_key(d),
+            g.table.lookup(page) == Some(d),
+            state == state_of(g.descs@[d].value().state),
+            start == g.descs@[d].value().spec_start(),
+        ensures
+            g.descs@[d].value().start == page,
+            g.descs@[d].value().state == RunState::Active as u8,
+            g.runs@@.contains((page as int, g.descs@[d].value().pages as int)),
+            // No live run has `page` as a later page (an interior page or
+            // its guard).
+            forall|e: (int, int)| #[trigger] g.runs@@.contains(e) && e.0 <= page < e.0 + e.1 ==> e.0 == page,
+    {
+        hide(Inner::wf);
+        proof {
+            lemma_live_keyed(g, page);
+            lemma_run_auths(g);
+            lemma_active(g.descs@);
+        }
+        if state != RunState::Active {
+            already_free(self.addr(page));
+        }
+        if start != page {
+            not_a_run(self.addr(page));
+        }
+        proof {
+            let v = g.descs@[d].value();
+            assert(run_at(v, (page as int, v.pages as int)));
+            assert forall|e: (int, int)| #[trigger] g.runs@@.contains(e) && e.0 <= page < e.0 + e.1 implies e.0 == page by {
+                lemma_token_extent(g, d, e.0, e.1);
+            }
+        }
+    }
+
     /// Free the run starting at `page` (from `Regions::classify`). Aborts
     /// unless it is the start of a live run. Returns the run as it was
     /// (`start`, `pages` with the guard, `usable`, `arena`), for the
@@ -1186,12 +1296,10 @@ impl Huge {
         proof {
             lemma_free_start(g0, page);
         }
-        let d = g.table.get(page);
         let _gi: &Inner = &g;
         proof {
-            // The token's run is the `Active` descriptor the table maps
-            // `page` to (as in `lookup`): none of the three checks below
-            // can fail.
+            // The token's run is live: its extent is in the run authority
+            // (as in `lookup`), and its pages lie in the region.
             let tracked t = &tok;
             self.lemma_process_runs();
             self.lemma_run_ids(g@);
@@ -1202,19 +1310,13 @@ impl Huge {
                 #![trigger g@.descs@.contains_key(x)]
                 #![trigger run_at(g@.descs@[x].value(), (t.start(), t.npages()))]
                 g@.descs@.contains_key(x) && run_at(g@.descs@[x].value(), (t.start(), t.npages()));
-            assert(keyed(g@.table, g@.descs@[x].value(), x));
-            assert(d == x);
-            assert(state_of(g@.descs@[x].value().state) == RunState::Active);
+            assert(desc_ok(g@.descs@[x].value(), g0.next_page));
+            assert(g@.runs@@.contains((page as int, t.npages())));
         }
-        if d.is_null() {
-            proof {
-                // The table maps `page` to the token's run. (Unreachable,
-                // so the address `self.addr(page)` of an unvalidated page is
-                // never computed.)
-                assert(false);
-            }
-            not_a_run(self.addr(page));
-        }
+        // The checks: the table's descriptor at `page` is an `Active` run
+        // starting there.
+        let d = g.table.get(page);
+        self.live_run_lookup(Ghost(g@), page, d);
         let ghost vd = d0[d].value();
         proof {
             assert(d0.contains_key(d));
@@ -1225,18 +1327,7 @@ impl Huge {
         // Table entries are live descriptors.
         let (start, n, state, usable, arena) =
             (g.desc(d).start(), g.desc(d).pages(), g.desc(d).state(), g.desc(d).usable, g.desc(d).arena());
-        if state != RunState::Active {
-            proof {
-                assert(false);
-            }
-            already_free(self.addr(page));
-        }
-        if start != page {
-            proof {
-                assert(false);
-            }
-            not_a_run(self.addr(page));
-        }
+        self.live_run_checks(Ghost(g@), page, Ghost(d), state, start);
         // The run's token: its extent is this run's (one `Active` extent
         // starts at `page`), and it leaves the run authorities.
         let ghost tpages = tok.pages@;

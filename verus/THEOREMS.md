@@ -647,10 +647,13 @@ the shipped bodies' interleavings are not checked. See
 `verus/WEAKMEM.md`.
 
 **Abort stand-in.** None: no site has Verus see another `-> !`
-call than the build's abort. At `Huge::free_run`'s table lookup, where
-the build calls `not_a_run(self.addr(page))`, the run token names the
-run the table maps the page to (theorem 44), so the site is unreachable
-and Verus checks the build's statement there itself. Every
+call than the build's abort. The huge free's checks live in
+`Huge::live_run_lookup` and `Huge::live_run_checks`, which take no run
+token: at the null table entry the build calls
+`not_a_run(self.addr(page))`, and Verus checks that statement itself. Without a token the checks are proved to fire for a
+page that starts no live run (*(lock)*, theorem 3's "Bad input");
+`Huge::free_run` calls them holding the run's token (theorem 44), so for
+that caller under `valid_aborts()` they do not fire. Every
 abort helper verifies in place and ends in `sys::abort_fmt`, which
 writes the message and raises `SIGABRT` (`sys/abort.rs`). The panic
 handler (`lib.rs`) aborts. An abort satisfies every postcondition.
@@ -923,15 +926,23 @@ class, `Shared::free_huge` a page index from
   live, C has no token, and the boundary's `axiom_c_claim` (the `free`
   contract, common premises) makes the context inconsistent instead of
   proving the abort.
-- The run-time guarantee for non-live block starts, read from the code
-  and not proved: an unsized free, `realloc`, `malloc_usable_size`,
-  `sallocx` or `challoc_free_usable` of a slot whose bitmap bit is clear
-  at the load (`SlabTable::is_set_unchecked`, `class/table.rs`)
-  aborts; a sized free pushes without a bit test, and the cache flush catches it
+- The run-time guarantee for non-live block starts. The checks
+  themselves are proved, without a token: the slab bit test
+  (`SlabTable::check_live`, `check_located`, `class/table.rs`) returns
+  only for a slot that was not free at its bitmap load (*(load)* in
+  theorem 3's "Bad input"), and the huge free's checks
+  (`Huge::live_run_lookup`, `Huge::live_run_checks`, `huge/free.rs`)
+  return only for a page
+  where a live run starts at the lock (*(lock)*, the same place). That
+  an unsized free, `realloc`, `malloc_usable_size`, `sallocx` or
+  `challoc_free_usable` of a pointer C holds no token for reaches them
+  rests on the C-boundary assumption, and the plain free's fast-path
+  routing to the slab test is read from the code. A sized free pushes
+  without a bit test, and the cache flush catches it
   unless a `malloc` pops the slot first (a pop tests no bit), except
   under the opt-in `exact_sized_free` key, which sends it through plain
-  `free`'s test ([below](#sized-frees-run-plain-frees-check-under-exact_sized_free-rests-on-the-c-boundary-assumption)); a non-live
-  huge page start aborts in `Huge::free_run`. The residue: a free of a
+  `free`'s test ([below](#sized-frees-run-plain-frees-check-under-exact_sized_free-rests-on-the-c-boundary-assumption)).
+  The residue: a free of a
   slot whose first copy is still in a cache, a thread's or an explicit
   tcache (its bit is still set; caught, if at all, by a later flush;
   with the opt-in `double_free_scan` key, every free route checks the
@@ -3518,7 +3529,7 @@ and for an error-result row, that a returning call returns that result:
 | Pointer outside every class region and the huge region, in a gap, in the metadata, in a guard slab | every free, the `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | abort | yes: `free_target` (theorem 3, theorem 7's `theorem_guard_free`) |
 | Misaligned pointer (not a multiple of the quantum) | as above | abort | yes: `free_target` and `theorem_free_target_aligned` |
 | Interior pointer of a slot, or of a huge run off a page boundary | as above | abort | yes: `free_target` and `Live::theorem_interior` (`lemma_slot_interior`, `lemma_run_interior`) |
-| Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | no: excluded by the C contract, *(C)* below |
+| Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | at the check, *(lock)*: `Huge::live_run_checks` returns only if no live run has `page` as a later page; the rest is *(C)* |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`Huge::usable_size`: `not_a_run`) | yes, for every live run: `api::libc::usable_size`, which the three call, ensures `!run_interior(t, p)` for any run token `t` its ghost `blk` holds (`Huge::usable_size`: `t.start() <= page < t.start() + t.npages() ==> t.start() == page`), and the code never reads `blk` *(ghost token)* |
 | Slot freed with the size of another class, or a huge size | `free_sized`, `free_aligned_sized`, `sdallocx`, sized `delete`s | abort (`hint_mismatch`) | yes for a live slot: `hint_ok`; for a non-live one, *(C)* |
 | Non-power-of-two alignment to `free_aligned_sized` or the sized aligned `delete` | as above | abort on a slot | as above: `hint_ok(p, None)`, so no slot start returns |
@@ -3535,7 +3546,7 @@ and for an error-result row, that a returning call returns that result:
 | The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`); with the opt-in `exact_sized_free` key, at the call (`check_live`) | no: excluded by the C contract, *(C)*; under the key, that the free reaches the test is `theorem_exact_sized_free` |
 | Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort at the call: the slot's state byte (`heap::slotstate`) is not `LIVE`; else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |
 | The same, through `realloc` and the queries | `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | with `double_free_scan`, abort after the bit test (`Shared::check_not_cached`); without it no abort at the call: the slot bit is still set, so `check_live` passes. `realloc(p, 1000)` after `p = malloc(16); free(p)` copies from `p` and frees it again, which pushes a second copy; a kept block is returned as is | no: excluded by the C contract, *(C)*; the queries take no token |
-| Double free of a huge run | every free | abort (`Huge::free_run`: `already_free`, or `not_a_run` once the freed run has been merged or left the table) | no: excluded by the C contract, *(C)* |
+| Double free of a huge run | every free | abort (`Huge::free_run`: `already_free`, or `not_a_run` once the freed run has been merged or left the table) | at the check, *(lock)*: `Huge::live_run_lookup` returns only for a table entry, and `Huge::live_run_checks` only if the run authority holds a live extent starting at `page` at the lock; the rest is *(C)* |
 | Free of a block that was freed and reallocated (ABA) | every free | frees the new block | undetectable by any allocator |
 
 *(C)*: a pointer that is a slot start or a huge page start but not a live
@@ -3552,6 +3563,70 @@ the slot is back in its bitmap, but that fact holds only inside the
 atomic invariant at the instant of the load, and the free cores'
 `ensures` (`blk.block(p)`) come from the token, not from the test. Those
 B cells stay `p`.
+
+*(lock)*: the huge free's checks are proved, with or without a token
+(`huge/free.rs`). `Huge::free_run` runs them in `Huge::live_run_lookup`
+(the table entry for `page` is a descriptor) and `Huge::live_run_checks`
+(that descriptor is `Active` and starts at `page`), which take no run
+token and state their facts over `g`, the huge lock's value. They take
+the values `free_run` read (the table entry, then the descriptor's
+state and start) in its order, so `free_run`'s machine code is the same
+as with the checks written in its body. A pair of calls that returns
+found the table's descriptor at `page` `Active` and starting there, so
+the run authority (`Inner::runs`, the extents of the live runs) holds
+an extent starting at `page`, and no live extent has `page` as a later
+page. A free of a huge run that was not live at the lock (a double
+free, a free after the run merged into a free extent) or of a live
+run's interior page or guard does not return. That is current
+liveness, not the pointer's history: once a later allocation starts a
+run at the same page, a stale pointer to the freed run is that run's
+start and passes (ABA, the "Free of a block that was freed and
+reallocated" row).
+
+```rust
+// huge/free.rs
+fn live_run_lookup(&self, Ghost(g): Ghost<Inner>, page: usize, d: *mut HugeDesc)
+    requires
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && exists|n: int| g.runs@@.contains((page as int, n))),
+        g.wf(),
+        page <= self.npages,
+        g.table.lookup(page) matches Some(p) ==> d == p,
+        g.table.lookup(page) is None ==> d@.addr == 0,
+    ensures
+        g.descs@.contains_key(d),
+        g.table.lookup(page) == Some(d),
+fn live_run_checks(&self, Ghost(g): Ghost<Inner>, page: usize, Ghost(d): Ghost<*mut HugeDesc>, state: RunState, start: usize)
+    requires
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && exists|n: int| g.runs@@.contains((page as int, n))),
+        g.wf(),
+        page <= self.npages,
+        g.descs@.contains_key(d),
+        g.table.lookup(page) == Some(d),
+        state == state_of(g.descs@[d].value().state),
+        start == g.descs@[d].value().spec_start(),
+    ensures
+        g.descs@[d].value().start == page,
+        g.descs@[d].value().state == RunState::Active as u8,
+        g.runs@@.contains((page as int, g.descs@[d].value().pages as int)),
+        forall|e: (int, int)| #[trigger] g.runs@@.contains(e) && e.0 <= page < e.0 + e.1 ==> e.0 == page,
+```
+
+What it does not say. It is a fact about the lock's state, not C's
+view: `free_run`'s later steps take C's token for the run (*(C)*). The
+`ensures` hold under either disjunct of the `requires`. Under
+`may_abort()` nothing about the run is assumed, so the one machine code
+of the checks is what establishes them; under `valid_aborts()` the
+caller first shows the run live (`free_run`, from its token) and the
+checks cannot fire. The sized frees' huge hint check
+(`huge_hint_mismatch`) still rests on *(C)* for a non-live run.
+
+Mutations (`cargo verus focus`, module `huge::free`, fresh target dir
+each): `live_run_checks` without its `already_free` check fails (the
+descriptor is not shown `Active`); `live_run_lookup` without its null
+check fails its postcondition. Without the `start != page` check it
+still verifies: an `Active` descriptor's only table key is its start
+(`is_key`), so the table lookup at `page` already gives a descriptor
+starting at `page`; the check stays as defence in depth.
 
 *(ghost token)*: `api::libc::usable_size` takes a `Tracked<&Live>` that
 its executable code never reads, and is verified for every value of it.
@@ -3574,9 +3649,9 @@ and hands its caller the slot tokens the invariant held at that load:
 its contract states `obs` is `addrs(s, free_bits(s, j, x))` for the
 value `x` it returns, which is the token set `bitmap::WordPred::inv`
 ties to that value (the tokens of exactly its clear bits).
-`is_set_unchecked` returns exactly whether the slot's token was not in
-`obs`. `is_set_unchecked`, `check_live` and `check_located` ensure
-`!slot_free_at(obs, c, slab, slot)` and `word_tokens(slab, slot, obs)`:
+`is_set_unchecked` ensures `r == !slot_free_at(obs, c, slab, slot)`.
+`check_live` and `check_located` ensure `!slot_free_at(obs, c, slab, slot)`,
+and all three ensure `word_tokens(slab, slot, obs)`:
 `obs` is a token set the word's invariant admits, for some value of the
 word. A call that returns found the slot claimed (by a refill, a cache
 or the program) at its load, so a free, `realloc` or query of a slot
@@ -3622,18 +3697,16 @@ the load. The plain free's fast path (`ClassLine::set_slab`, through
 which runs `check_located`; that routing is read from the code. A
 double free while the first copy is cached passes (the bit is still
 set), and a sized free defers the test to a flush unless
-`exact_sized_free` is set (rows above). The huge half (`Huge::free_run`'s
-`already_free` and `not_a_run` for a page with no `Active` run) is not
-covered: `free_run` takes the run's token, so its checks are proved
-unreachable rather than proved to fire. #734 stays open for those parts.
+`exact_sized_free` is set (rows above). The huge half is *(lock)*
+above.
 
 Mutations (`cargo verus focus`, module `class::table`, fresh target dir
 each): `check_live` without its `not_live` abort fails its
 `slot_free_at` postcondition; `bit_word_held` handing back an empty set
 instead of the invariant's tokens fails its postcondition; so does
 `bit_word_held` handing back `{}` when the bit is set and the slot's
-token alone when it is clear (the review's mutant, which met the bit
-postcondition alone): it fails the `addrs(s, free_bits(s, j, x))`
+token alone when it is clear (which meets the bit postcondition
+alone): it fails the `addrs(s, free_bits(s, j, x))`
 postcondition.
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
@@ -8730,17 +8803,21 @@ allow, these cannot fire:
   `heap/mod.rs`): `try_rehome` (`heap/mod.rs`) re-keys the
   home headers after the home flush emptied them and the `FOREIGN`
   flush kept them.
-- **Not a run, already free** (`Huge::free_run`, `huge/free.rs`, two
-  `not_a_run` and `already_free`; `Huge::usable_size`, which
+- **Not a run, already free** (`Huge::live_run_lookup` and
+  `Huge::live_run_checks`, which `Huge::free_run` calls, `huge/free.rs`,
+  two `not_a_run` and
+  `already_free`; `Huge::usable_size`, which
   `zero_on_free`'s `Shared::zero_huge`, `heap/shared.rs`, and the
   lookups reach): the run token's extent is in the lock's run
   authority, which names the `Active` descriptor that starts at `page`,
   keyed there in the table (as `Huge::lookup` shows it, theorem 43).
-  `free_run` always holds the token, so its three checks fail for no
-  caller (`assert(false)`, as theorem 29's `Inner::extent_at`);
-  `usable_size` holds it when its caller does (`holds_run`,
-  `huge/mod.rs`). The site of `not_a_run(self.addr(page))` is unreachable, and Verus
-  checks the build's call there itself.
+  Both require `may_abort()`, or `valid_aborts()` with a
+  live extent starting at `page` in the run authority; `free_run`
+  always holds the run's token, which shows that extent, so under
+  `valid_aborts()` none of the three checks fires. `usable_size` holds
+  the token when its caller does (`holds_run`, `huge/mod.rs`). Without
+  a token the checks are proved to fire (*(lock)*, theorem 3's "Bad
+  input").
 - **A run state byte that is no state** (`HugeDesc::state` in
   `Inner::free_before`, `free_after`, `retire`, `huge/mod.rs`, `bad_run_state_byte`): every live descriptor's byte
   is a state (`desc_ok`; `states_ok`).
