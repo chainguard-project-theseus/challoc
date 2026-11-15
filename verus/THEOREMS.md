@@ -9782,9 +9782,12 @@ transition starts from and left the one it ends in (an assertion at
 each one's end), and the sequence lemma over the code's transitions,
 which no code calls. That each step finds the value the last step on
 that slot left is the slot-state invariant (`Slots`): it holds every
-byte's permission, and `step` opens it around each operation on the
-byte and puts the permission back. The byte operations are
-`vspec::byte`'s wrappers (`load`, `store`, `compare_exchange`). The
+byte's permission, and `step` opens it around its one operation on the
+byte and puts the permission back. That operation is
+`vspec::byte::compare_exchange`, and the invariant keeps each byte's
+history of steps with its value equal to `run` of that history from
+`FREE`, so each step's test and store take effect together (checked:
+a step that tests and stores in two openings breaks the invariant). The
 permissions, each `FREE`, come with the process-start token
 (`api::axiom_start`'s `Statics::slots`), which `claim_init` hands out
 once; `api::init` uses them up building the invariant (`adopt`) and
@@ -9817,20 +9820,32 @@ pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
 
 // heap/slotstate.rs (every transition; requires transition(from, to));
 // obs is the value the byte held and the one it holds after
-fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool,
+fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8,
         Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)
     ensures
         r != PAST ==> is_state(final(obs)@.0) && r == seen(final(obs)@.0, from)
             && final(obs)@.1 == after(final(obs)@.0, from, to),
 
-// heap/slotstate.rs: every byte's permission, in one invariant, which
-// step opens around each vspec::byte::{load, store, compare_exchange}
-impl InvariantPredicate<(), Map<usize, BytePerm>> for SlotPred {
-    open spec fn inv(k: (), m: Map<usize, BytePerm>) -> bool {
-        forall|a: usize| m.dom().contains(a) && m[a].id() == slot_byte_id(a) && is_state(m[a].value())
+// heap/slotstate.rs: every byte's permission and history, in one
+// invariant, which step opens around its one vspec::byte::compare_exchange
+// and its append of (from, to) to that byte's history
+pub tracked struct SlotState {
+    pub tracked perms: Map<usize, BytePerm>,
+    pub ghost logs: Map<usize, Seq<(u8, u8)>>,
+}
+impl InvariantPredicate<(), SlotState> for SlotPred {
+    open spec fn inv(k: (), s: SlotState) -> bool {
+        forall|a: usize| {
+            &&& s.perms.dom().contains(a)
+            &&& s.perms[a].id() == slot_byte_id(a)
+            &&& s.logs.dom().contains(a)
+            &&& s.perms[a].value() == run(FREE, s.logs[a])
+            &&& is_state(s.perms[a].value())
+            &&& forall|i: int| 0 <= i < s.logs[a].len() ==> transition(s.logs[a][i].0, s.logs[a][i].1)
+        }
     }
 }
-pub tracked struct Slots { tracked inv: AtomicInvariant<(), Map<usize, BytePerm>, SlotPred> }
+pub tracked struct Slots { tracked inv: AtomicInvariant<(), SlotState, SlotPred> }
 pub open spec fn fresh(m: Map<usize, BytePerm>) -> bool {
     forall|a: usize| m.dom().contains(a) && m[a].id() == slot_byte_id(a) && m[a].value() == FREE
 }
@@ -9874,8 +9889,10 @@ reaches a cache or its slab) and the direct free (`free_direct`,
 **Proof.** `step` follows from the `vspec::byte` wrappers' contracts on
 the permission it takes out of `Slots` (the one `SlotPred` keys by the
 address `byte_at`'s identity names), and from putting it back with a
-state: a compare-and-exchange or store moves a byte that held `from` to
-`to`, a state, since a byte never holds `NONE`. Each entry point's
+state and the history extended by `(from, to)`: a compare-and-exchange
+moves a byte that held `from` to `to`, a state, since a byte never holds
+`NONE`, and leaves any other value alone, which is `after` of the old
+value, so `run` of the extended history. Each entry point's
 assertion follows from `step`'s `ensures` and the byte holding a
 state, since `seen` returns
 `MOVED` only for a byte that held `from` (a state is never `MOVED`).
@@ -9919,19 +9936,24 @@ from `NONE`, which no byte holds).
 - The memory model: "finds what the last one left" holds in
   `vspec::byte`'s sequentially consistent model; that the `Relaxed`
   operations suffice is not proved (`vspec/byte.rs`'s trust list).
-- The operations: `vspec::byte::load`, `store` and `compare_exchange`
-  (`core`'s load, store and strong compare-and-exchange, partly checked
-  by Kani in `src/kani/atomic.rs`); each returns the operation's result,
-  so no proof can supply one. That the byte at the address `byte`
-  computes is that slot's is `byte_at`'s trusted contract.
-- Atomicity: the free's compare-and-exchange makes two simultaneous
-  frees of one slot find `LIVE` once (`tests/loom/src/slotstate.rs`
-  models the race); the claims, pops and releases load and store, in
-  two openings of `Slots`, and only the thread that holds the slot makes
-  them, so no other step changes the byte between the two (a racing
-  free's compare-and-exchange moves only a `LIVE` byte). That a
-  load-then-store step takes effect as one is this premise, not
-  verified.
+- The operation: `vspec::byte::compare_exchange` (`core`'s strong
+  compare-and-exchange, partly checked by Kani in
+  `src/kani/atomic.rs`); it returns the operation's result, so no proof
+  can supply one. That the byte at the address `byte` computes is that
+  slot's is `byte_at`'s trusted contract.
+
+Atomicity is verified, not a premise: every step (a claim, pop, free or
+release, and `check_not_cached`'s read) is one compare-and-exchange in
+one opening of `Slots`, and in that opening it appends its `(from, to)`
+to the byte's history, whose `run` from `FREE` the invariant holds equal
+to the byte's value. So each byte's real sequence of steps is a sequence
+of `transition`s, each testing and moving the byte at one operation, as
+each step of `theorem_double_free_window`'s sequence is. A step that
+tests in one opening and stores in another (the load-then-store shape,
+mutant M6) cannot keep the invariant: at the store's opening the byte
+may no longer hold what the test saw. Two simultaneous frees of one slot
+find `LIVE` once (`tests/loom/src/slotstate.rs` models the race against
+the real `vspec::byte::compare_exchange`).
 
 **Not covered.** A free after the slot is handed out again passes: the
 slot is the program's, and nothing tells the two frees apart. A free of
@@ -9951,7 +9973,7 @@ the key off nothing here runs.
 | M3 | `transition` admits `CACHED` to `NONE` | the theorem's postcondition |
 | M4 | the theorem's `requires to == CACHED \|\| to == FREE` becomes `to == CACHED \|\| to == LIVE` | the theorem's postconditions |
 | M5 | `step` returns `MOVED` on a failed compare-and-exchange | `step`'s postcondition |
-| M6 | `step`'s load path returns `MOVED` without the store | `step`'s postcondition |
+| M6 | `step` tests with `vspec::byte::load` in one opening of `Slots` and, when the load saw `from`, stores `to` and appends `(from, to)` in a second (the load-then-store step) | `Slots`' invariant at the second opening (the byte's value is not `run` of its history) and `step`'s postcondition |
 | M7 | `SlotPred` without "the byte holds a state" | `step`'s postcondition (`is_state`) |
 | M8 | `free` without its abort on `FREE` (the last `else if`) | `free`'s assertion |
 | M9 | `free` steps from `CACHED` instead of `LIVE` | `step`'s precondition and `free`'s assertion |
@@ -9960,7 +9982,6 @@ the key off nothing here runs.
 | M12 | `pop` steps from `FREE` instead of `CACHED` | `pop`'s assertion |
 | M13 | `release` hands the slot out (`CACHED` to `LIVE`) | `release`'s assertion |
 | M14 | `free` admits `to == LIVE` | `step`'s precondition |
-| M15 | `step`'s load is `core`'s, not `vspec::byte::load` | `step`'s postcondition |
 
 ## Same-region overflow reach (guards on)
 

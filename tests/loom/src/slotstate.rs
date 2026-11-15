@@ -12,7 +12,7 @@
 //! compare-and-exchange closes), so it fails the assertion. Left out: the
 //! address arithmetic and the watermark compare before the byte (no
 //! atomics but the watermark's `Acquire` load, `watermark.rs`'s), and the
-//! other transitions, plain stores by the thread that holds the slot.
+//! other transitions, the same compare-and-exchange from another state.
 
 use crate::vspec::byte;
 use crate::{leak, model};

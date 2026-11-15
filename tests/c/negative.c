@@ -10,6 +10,11 @@
  *                                 in between: caught by the slot bit on free
  *   negative double_free_cached   free(p) twice back to back: caught when the
  *                                 cache flushes the duplicates to the slab
+ *   negative fastbin_dup          how2heap's fastbin_dup: free(a), free(b),
+ *                                 free(a), the copy of a still cached under
+ *                                 b; caught when the duplicates reach the
+ *                                 slab, or at the third free with
+ *                                 double_free_scan
  *   negative sized_double_free    sdallocx(p, size, 0) twice back to back: the
  *                                 sized path skips the slot bit, so the call
  *                                 returns and the flush catches the duplicate
@@ -331,6 +336,17 @@ int main(int argc, char **argv)
         free(bad);
         free(bad); /* both copies now sit in the thread cache */
         drain();   /* the flush releases them to the slab */
+    } else if (strcmp(mode, "fastbin_dup") == 0) {
+        void *a = victim(64);
+        void *b = malloc(64);
+        REQUIRE(b != NULL, "malloc(64) failed");
+        bad = a;
+        free(bad);
+        free(b);
+        free(bad); /* a's first copy is cached under b's */
+        printf("fastbin_dup third free of %p returned\n", bad);
+        fflush(stdout);
+        drain(); /* the flush releases the duplicates to the slab */
     } else if (strcmp(mode, "sized_double_free") == 0) {
         REQUIRE(sdallocx != NULL, "sdallocx not exported");
         void *p = victim(64);

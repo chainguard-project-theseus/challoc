@@ -547,6 +547,21 @@ ctests! {
         negative!("double_free_cached", SIGABRT, &["double free of 0x", "already in a thread cache"],
             conf: Some("double_free_scan:true")),
     ];
+    /// how2heap's `fastbin_dup` (`free(a); free(b); free(a)`): with
+    /// `double_free_scan` the third free aborts at the call, with `a`'s
+    /// first copy still cached under `b`'s.
+    c_negative_fastbin_dup_with_scan => [
+        negative!("fastbin_dup", SIGABRT, &["double free of 0x", "already in a thread cache"],
+            conf: Some("double_free_scan:true"),
+            stdout_lacks: &["returned"]),
+    ];
+    /// The same `fastbin_dup` in the default configuration: the third free
+    /// returns (the cached copy has its bit set), and the flush that
+    /// releases the duplicates aborts.
+    c_negative_fastbin_dup => [
+        negative!("fastbin_dup", SIGABRT, &["double free of 0x"],
+            stdout_has: &["returned"]),
+    ];
     c_negative_sized_double_free_with_scan => [
         negative!("sized_double_free", SIGABRT, &["double free of 0x", "already in a thread cache"],
             conf: Some("double_free_scan:true"),

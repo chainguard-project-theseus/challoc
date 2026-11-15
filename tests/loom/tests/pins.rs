@@ -460,18 +460,6 @@ const PINS: &[(&str, &[&str])] = &[
 /// `(file, enclosing fn, line, reason)`.
 const WAIVED: &[(&str, &str, &str, &str)] = &[
     (
-        "src/heap/slotstate.rs",
-        "step",
-        "v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(perm));",
-        "step without exchange: the claims, pops and releases, made only by the thread that holds the slot; slotstate.rs models the free's compare-and-exchange, the one racing step",
-    ),
-    (
-        "src/heap/slotstate.rs",
-        "step",
-        "crate::vspec::byte::store(b, to, Ordering::Relaxed, Tracked(&mut perm));",
-        "step without exchange, as above",
-    ),
-    (
         "src/arena.rs",
         "get_existing_published",
         "p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));",
@@ -939,10 +927,9 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("pub const CACHED: u8 = 1;", "const CACHED: u8 = 1;"),
             ("pub const LIVE: u8 = 2;", "const LIVE: u8 = 2;"),
             (
-                "fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool, Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)",
+                "fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)",
                 "",
             ),
-            ("if exchange {", ""),
             (
                 "match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {",
                 "byte::compare_exchange(\nb,\nLIVE,\nto,\nOrdering::Relaxed,\nOrdering::Relaxed,\nTracked::assume_new(),\n)",
@@ -952,7 +939,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "let r = step(shared, class, p, LIVE, to, true, Tracked(&mut obs));",
+                "let r = step(shared, class, p, LIVE, to, Tracked(&mut obs));",
                 "fn free(b: &AtomicU8, to: u8) -> bool {",
             ),
         ],

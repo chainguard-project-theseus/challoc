@@ -45,7 +45,7 @@ use crate::api::{Start, StateVal, Statics};
 use crate::arena::{ArenaParts, ArenasParts, Held, Homed, RegVal, SparePerm};
 use crate::bitmap::FullSeen;
 use crate::class::SlotToks;
-use crate::heap::slotstate::Slots;
+use crate::heap::slotstate::{SlotState, Slots};
 use crate::heap::{Built, CachePerms, FreshHeap, HeapPerm, HeapUse, Live, NodeHead};
 use crate::heap::{SharedParts, TableVal, TableWrite, TcachesParts};
 use crate::huge::RunToken;
@@ -118,6 +118,10 @@ const _: () = assert!(<Statics as NotCopy<_>>::HOLDS && <Statics as NotClone<_>>
 
 // `Slots` is neither Copy nor Clone: the slot-state bytes' invariant.
 const _: () = assert!(<Slots as NotCopy<_>>::HOLDS && <Slots as NotClone<_>>::HOLDS);
+
+// `SlotState` is neither Copy nor Clone: the slot-state bytes'
+// permissions and histories, the value of `Slots`' invariant.
+const _: () = assert!(<SlotState as NotCopy<_>>::HOLDS && <SlotState as NotClone<_>>::HOLDS);
 
 // `ForkHeld` is neither Copy nor Clone: the hold of the fork lock list.
 const _: () = assert!(<ForkHeld as NotCopy<_>>::HOLDS && <ForkHeld as NotClone<_>>::HOLDS);

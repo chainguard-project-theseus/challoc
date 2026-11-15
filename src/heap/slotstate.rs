@@ -33,14 +33,14 @@
 //! a pointer past the watermark is rejected without a read.
 //!
 //! The bytes are `AtomicU8`s, `Relaxed`: a byte is a memory location of
-//! its own, so a neighbouring slot's store never loses this one's. A free
-//! moves `LIVE` on with one compare-and-exchange, so of two frees of one
-//! slot on two threads at the same instant exactly one finds it `LIVE`.
-//! `tests/loom/src/slotstate.rs` models that race, with the
-//! load-then-store form as its control. The other transitions are plain
-//! stores by the thread that holds the slot in its cache (or claims it
-//! from the slab). A free racing a claim into a cache or a release sees
-//! the value before or after, and neither is `LIVE`. A free racing a pop
+//! its own, so a neighbouring slot's store never loses this one's. Every
+//! transition is one compare-and-exchange ([`step`]), so of two frees of
+//! one slot on two threads at the same instant exactly one finds it
+//! `LIVE`, and no step lands between another's test and its store.
+//! `tests/loom/src/slotstate.rs` models the free's race, with the
+//! load-then-store form as its control. A free racing a claim into a
+//! cache or a release sees the value before or after, and neither is
+//! `LIVE`. A free racing a pop
 //! (`CACHED -> LIVE`) or `alloc_direct`'s claim (`FREE -> LIVE`) can see
 //! `LIVE` and pass, which is right: the slot is the program's by then.
 //!
@@ -50,11 +50,16 @@
 //! `meta::align_up` within proved bounds. Every byte's permission lives
 //! in one invariant, [`Slots`] (the one `api::init` published, which
 //! [`step`] reaches through `api::axiom_published`; that it is the one is
-//! that axiom's premise), which [`step`] opens around each of its
-//! operations on the byte (`core`'s atomics through `vspec::byte`'s
-//! wrappers), so in `vspec::byte`'s sequentially consistent model each
+//! that axiom's premise), which [`step`] opens around its one operation
+//! on the byte (`core`'s compare-and-exchange through `vspec::byte`'s
+//! wrapper), so in `vspec::byte`'s sequentially consistent model each
 //! step finds the value the last step on that byte left (that `Relaxed`
-//! suffices is not proved); the permissions start `FREE`, the arrays'
+//! suffices is not proved). The invariant also keeps each byte's history,
+//! the `(from, to)` of every step on it, and holds the byte's value to
+//! [`run`] of that history from `FREE`: a step appends its pair in the
+//! opening that tests and moves the byte, so a step that tested in one
+//! opening and stored in another would not verify. The permissions start
+//! `FREE`, the arrays'
 //! zero fill (premise, `api::axiom_start`'s [`fresh`], handed out once
 //! with the other statics' permissions and published by `api::init`).
 //! [`free`], [`claim`], [`pop`] and [`release`] return only when the
@@ -62,10 +67,8 @@
 //! it ends in; and
 //! [`theorem_double_free_window`] proves, over the code's transitions on
 //! one byte, that a free left `CACHED` or `FREE` stays so until a
-//! hand-out. Not verified: that a load-then-store step's store follows
-//! its load with no other change to the byte (the slot's holder makes
-//! it; the free's race is modelled in `tests/loom/src/slotstate.rs`);
-//! that a computed address is a committed byte (trusted, [`byte_at`]);
+//! hand-out. Not verified: that a computed address is a committed byte
+//! (trusted, [`byte_at`]);
 //! and that [`commit`]'s range lies in [`init`]'s reservation (`mprotect`
 //! is checked only for its call).
 //! Every check here only adds an abort ([`crate::sys::abort_pending`]: it
@@ -86,6 +89,7 @@ use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
 use vstd::prelude::{Ghost, Tracked};
+use vstd::seq::Seq;
 
 verus! {
 
@@ -212,13 +216,10 @@ pub open spec fn hands_out(s: u8, ops: Seq<(u8, u8)>) -> bool {
 ///
 /// The steps are those of one slot's byte in the order they take effect.
 /// That each finds what the last step on that slot left is [`Slots`]'
-/// invariant, which [`step`] opens around each operation on the byte;
-/// that the first finds `FREE` is `api::axiom_start`'s premise
-/// ([`fresh`]); and
-/// that a load-then-store step (a claim, pop or release) takes effect as
-/// one operation, no other step changing the byte between its load and
-/// its store, is a premise, not verified here (the slot's holder makes
-/// it; a racing free's compare-and-exchange moves only a `LIVE` byte).
+/// invariant, which [`step`] opens around its one operation on the byte
+/// (a compare-and-exchange, so the step's test and store take effect
+/// together); and that the first finds `FREE` is `api::axiom_start`'s
+/// premise ([`fresh`]).
 pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
     requires
         to == CACHED || to == FREE,
@@ -257,14 +258,36 @@ pub proof fn theorem_double_free_window(to: u8, ops: Seq<(u8, u8)>)
 pub uninterp spec fn slot_byte_id(at: usize) -> int;
 
 /// What [`Slots`]' invariant holds: a permission to the slot-state byte
-/// at every address ([`slot_byte_id`]), whose value is a state.
+/// at every address ([`slot_byte_id`]), and each byte's history, the
+/// `(from, to)` of every [`step`] on it in the order they took effect.
+// Ghost: built and read only by proof code.
+#[allow(dead_code)]
+pub tracked struct SlotState {
+    pub tracked perms: Map<usize, BytePerm>,
+    pub ghost logs: Map<usize, Seq<(u8, u8)>>,
+}
+
+/// [`Slots`]' invariant: every byte's value is [`run`] of its history
+/// from `FREE`, and every entry of the history is a [`transition`]. A
+/// step appends its pair in the same opening as its one operation on the
+/// byte, so the value it tested and the one it left are the byte's at
+/// that operation: a step that tests in one opening and stores in
+/// another cannot keep this.
 // Ghost: named only by proof code.
 #[allow(dead_code)]
 struct SlotPred;
 
-impl InvariantPredicate<(), Map<usize, BytePerm>> for SlotPred {
-    open spec fn inv(k: (), m: Map<usize, BytePerm>) -> bool {
-        forall|a: usize| #![trigger m.dom().contains(a)] #![trigger m[a]] m.dom().contains(a) && m[a].id() == slot_byte_id(a) && is_state(m[a].value())
+impl InvariantPredicate<(), SlotState> for SlotPred {
+    open spec fn inv(k: (), s: SlotState) -> bool {
+        forall|a: usize| #![trigger s.perms.dom().contains(a)] #![trigger s.perms[a]]
+            {
+                &&& s.perms.dom().contains(a)
+                &&& s.perms[a].id() == slot_byte_id(a)
+                &&& s.logs.dom().contains(a)
+                &&& s.perms[a].value() == run(FREE, s.logs[a])
+                &&& is_state(s.perms[a].value())
+                &&& forall|i: int| 0 <= i < s.logs[a].len() ==> transition(#[trigger] s.logs[a][i].0, s.logs[a][i].1)
+            }
     }
 }
 
@@ -292,7 +315,7 @@ pub open spec fn fresh(m: Map<usize, BytePerm>) -> bool {
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct Slots {
-    tracked inv: AtomicInvariant<(), Map<usize, BytePerm>, SlotPred>,
+    tracked inv: AtomicInvariant<(), SlotState, SlotPred>,
 }
 
 /// [`Slots`]' invariant over the process's slot-state bytes, each
@@ -302,7 +325,11 @@ pub proof fn adopt(tracked m: Map<usize, BytePerm>) -> (tracked r: Slots)
     requires
         fresh(m),
 {
-    Slots { inv: AtomicInvariant::new((), m, slots_ns()) }
+    let tracked s = SlotState { perms: m, logs: Map::new(m.dom(), |a: usize| Seq::empty()) };
+    assert forall|a: usize| #![trigger s.logs[a]] s.logs.dom().contains(a) && run(FREE, s.logs[a]) == FREE by {
+        assert(s.logs[a].len() == 0);
+    }
+    Slots { inv: AtomicInvariant::new((), s, slots_ns()) }
 }
 
 /// Reserve one `PROT_NONE` byte array per class, `nslabs * slab_bits`
@@ -431,14 +458,17 @@ pub const NONE: u8 = 0xfd;
 
 /// The one transition every state change is: when the byte of slot start
 /// `p` of `class` holds `from`, store `to` and return [`MOVED`]; else
-/// return what it holds (or [`PAST`]). With `exchange` the test and the
-/// store are one compare-and-exchange (a free: two frees of one slot on
-/// two threads cannot both find it `LIVE`); without, a load and a store
-/// (the claims, pops and releases, which only the thread that holds the
-/// slot makes). Short of `PAST`, `obs` is the value the byte held and the
-/// one it holds after: the step returns [`seen`] and leaves [`after`] of
-/// the first.
-fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: bool, Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)
+/// return what it holds (or [`PAST`]). The test and the store are one
+/// compare-and-exchange, so each step takes effect as one operation on
+/// the byte: of two frees of one slot on two threads at most one finds it
+/// `LIVE`, and no step changes the byte between another step's test and
+/// its store. Short of `PAST`, `obs` is the value the byte held and the
+/// one it holds after, both at that one operation: the step returns
+/// [`seen`] and leaves [`after`] of the first. It appends `(from, to)` to
+/// the byte's history in [`Slots`] in the same opening, which the
+/// invariant's `value == run(FREE, history)` admits only for a test and a
+/// store that take effect together.
+fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, Tracked(obs): Tracked<&mut Ghost<(u8, u8)>>) -> (r: u8)
     requires
         class < NCLASSES,
         transition(from, to),
@@ -450,54 +480,41 @@ fn step(shared: &Shared, class: usize, p: *mut u8, from: u8, to: u8, exchange: b
     let ghost a = choose|a: usize| byte_id(b) == slot_byte_id(a);
     // The published invariant ([`Slots`]): a ghost read, no code.
     let tracked inv = &crate::api::axiom_published().slots.inv;
-    let ghost mut held: u8 = 0;
-    if exchange {
-        let r;
-        vstd::open_atomic_invariant!(inv => m => {
-            let tracked mut perm = m.tracked_remove(a);
-            proof {
-                held = perm.value();
-            }
-            match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {
-                Ok(_) => {
-                    r = MOVED;
-                },
-                Err(v) => {
-                    r = v;
-                },
-            }
-            proof {
-                *obs = Ghost((held, perm.value()));
-                m.tracked_insert(a, perm);
-            }
-        });
-        r
-    } else {
-        let v;
-        vstd::open_atomic_invariant!(inv => m => {
-            let tracked perm = m.tracked_borrow(a);
-            proof {
-                held = perm.value();
-            }
-            v = crate::vspec::byte::load(b, Ordering::Relaxed, Tracked(perm));
-        });
-        if v == from {
-            vstd::open_atomic_invariant!(inv => m => {
-                let tracked mut perm = m.tracked_remove(a);
-                crate::vspec::byte::store(b, to, Ordering::Relaxed, Tracked(&mut perm));
-                proof {
-                    *obs = Ghost((held, perm.value()));
-                    m.tracked_insert(a, perm);
-                }
-            });
-            MOVED
-        } else {
-            proof {
-                *obs = Ghost((held, held));
-            }
-            v
+    let r;
+    vstd::open_atomic_invariant!(inv => m => {
+        let tracked mut perm = m.perms.tracked_remove(a);
+        let ghost held = perm.value();
+        let ghost log = m.logs[a];
+        match crate::vspec::byte::compare_exchange(b, from, to, Ordering::Relaxed, Ordering::Relaxed, Tracked(&mut perm)) {
+            Ok(_) => {
+                r = MOVED;
+            },
+            Err(v) => {
+                r = v;
+            },
         }
-    }
+        proof {
+            *obs = Ghost((held, perm.value()));
+            // The pair joins the byte's history in this opening, with the
+            // one operation that tested and moved it.
+            let log2 = log.push((from, to));
+            assert(log2.drop_last() =~= log);
+            assert forall|i: int| 0 <= i < log2.len() implies transition(#[trigger] log2[i].0, log2[i].1) by {
+                if i < log.len() {
+                    assert(log2[i] == log[i]);
+                }
+            }
+            assert(held == run(FREE, log));
+            assert(run(FREE, log2) == after(run(FREE, log), from, to));
+            assert(perm.value() == run(FREE, log2));
+            let ghost pre = m;
+            m.logs = m.logs.insert(a, log2);
+            m.perms.tracked_insert(a, perm);
+            // Every other byte's permission and history are as they were.
+            assert forall|x: usize| #![trigger m.perms.dom().contains(x)] #![trigger m.perms[x]] #![trigger m.logs[x]] x != a implies m.perms[x] == pre.perms[x] && m.logs[x] == pre.logs[x] && m.perms.dom().contains(x) == pre.perms.dom().contains(x) by {}
+        }
+    });
+    r
 }
 
 /// A free of slot start `p` of `class`, on every route (the cached
@@ -519,7 +536,7 @@ pub(super) fn free(shared: &Shared, class: usize, p: *mut u8, to: u8)
         crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
-    let r = step(shared, class, p, LIVE, to, true, Tracked(&mut obs));
+    let r = step(shared, class, p, LIVE, to, Tracked(&mut obs));
     if r == PAST {
         crate::sys::abort_pending(format_args!("invalid free of {:#x}: class {}: its slab was never allocated", p as usize, class))
     } else if r == CACHED {
@@ -546,7 +563,7 @@ pub(super) fn claim(shared: &Shared, class: usize, p: *mut u8, to: u8)
         crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
-    if step(shared, class, p, FREE, to, false, Tracked(&mut obs)) != MOVED {
+    if step(shared, class, p, FREE, to, Tracked(&mut obs)) != MOVED {
         crate::sys::abort_pending(format_args!("slot state of {:#x} (class {}) is not free at its claim", p as usize, class))
     }
     proof {
@@ -566,7 +583,7 @@ pub(super) fn pop(shared: &Shared, class: usize, p: *mut u8)
         crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
-    if step(shared, class, p, CACHED, LIVE, false, Tracked(&mut obs)) != MOVED {
+    if step(shared, class, p, CACHED, LIVE, Tracked(&mut obs)) != MOVED {
         crate::sys::abort_pending(format_args!("double free of {:#x}: a cached copy of a slot that is not cached", p as usize))
     }
     proof {
@@ -586,7 +603,7 @@ pub(super) fn release(shared: &Shared, class: usize, p: *mut u8)
         crate::api::ready(),
 {
     let tracked mut obs = Ghost((0u8, 0u8));
-    if step(shared, class, p, CACHED, FREE, false, Tracked(&mut obs)) != MOVED {
+    if step(shared, class, p, CACHED, FREE, Tracked(&mut obs)) != MOVED {
         crate::sys::abort_pending(format_args!("double free of {:#x}: a cached copy released while the slot is not cached", p as usize))
     }
     proof {
@@ -656,7 +673,7 @@ pub(super) fn check_not_cached(shared: &Shared, class: usize, p: *mut u8)
 {
     let tracked mut obs = Ghost((0u8, 0u8));
     // A step from a value no byte holds stores nothing: a read.
-    if step(shared, class, p, NONE, NONE, false, Tracked(&mut obs)) == CACHED {
+    if step(shared, class, p, NONE, NONE, Tracked(&mut obs)) == CACHED {
         crate::sys::abort_pending(format_args!("use of {:#x} after free: the slot is in a thread cache", p as usize))
     }
 }
