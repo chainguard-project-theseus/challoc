@@ -120,7 +120,7 @@ pub(crate) fn zero_info() -> (r: MallInfo2)
 /// compute). The reads come from arenas of ascending registry IDs
 /// ([`stats::ids_ascending`]). This contract leaves out
 /// `ordblks` and `keepcost`: their figure arithmetic (`stats::fig_add`,
-/// `fig_mul`) is exact only when it fits and wraps in the shipped library.
+/// `fig_mul`) is exact only when it fits and wraps otherwise.
 /// The sum and each arena's figures (about 7 KiB each with their bins)
 /// are collected into a [`stats::Scratch`]'s two records, not onto the
 /// caller's stack; with no object for them every figure is 0 and `rd`'s
@@ -171,8 +171,8 @@ pub fn mallinfo2(Tracked(rd): Tracked<&mut Reads>, Tracked(ord): Tracked<&mut Lo
     let arena = all.resident.saturating_sub(all.large_allocated);
     let uordblks = all.small_allocated;
     // The free slots of every class, summed with an index loop and the
-    // figure arithmetic (`stats::fig_add`, `fig_mul`): `+` and `*` as the
-    // build computes them.
+    // figure arithmetic (`stats::fig_add`, `fig_mul`): `+` and `*` that
+    // wrap on overflow.
     let mut free_slots: usize = 0;
     for j in 0..NCLASSES {
         let b = &all.bins[j];

@@ -2739,7 +2739,7 @@ fn arena_figure(m: &[usize], fig: Fig, Tracked(mark): Tracked<&'static ReadyMark
             let bin = if j < NBINS && j < NCLASSES { Some(&a.bins[j]) } else { None };
             match fig {
                 Fig::SmallAllocated => Ok(Size(a.small_allocated)),
-                // `+` as the build computes it ([`stats::fig_add`]).
+                // `+` that wraps on overflow ([`stats::fig_add`]).
                 Fig::SmallResident => Ok(Size(stats::fig_add(a.small_active, a.small_dirty))),
                 Fig::LargeAllocated => Ok(Size(a.large_allocated)),
                 Fig::Pactive => Ok(Size(a.pactive)),

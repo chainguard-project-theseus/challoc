@@ -6112,12 +6112,12 @@ bounds, and `Sink::write_str` (verified) keeps it.
   memory verify over `vspec::cbuf` and the `core` specs of
   `vspec::ptr`), the kernel fact `axiom_read_count` (`sys::read`'s
   count bound, which keeps the cgroup reader's slice in bounds),
-  `fig_add`, `fig_mul` and `fig_add64` (`policy::empty_bytes`' sums),
-  and the `core` functions vstd and `vspec` specify.
-- The shipped release profile: overflow checks and debug assertions
-  off. With them on (the dev profile the tests use), the `+` of
-  `fig_add` and `fig_add64` (`empty_bytes`' sums among them) and the
-  `debug_assert!`s on these paths can panic.
+  and the `core` functions vstd and `vspec` specify. The figure sums
+  (`fig_add`, `fig_mul` and `fig_add64`, `policy::empty_bytes`' among
+  them) are verified and wrap in every build.
+- The shipped release profile: debug assertions off. With them on (the
+  dev profile the tests use), the `debug_assert!`s on these paths can
+  panic.
 - The integrity checks above hold: a failed one means corrupt allocator
   state, not a bad argument.
 
@@ -8721,8 +8721,7 @@ listed above.
   `external_body` function whose text shows an abort, a panic macro or
   an `unwrap` requires `may_abort()`, or its listed compound clause; it
   does not see an index panic or an abort through a callee.
-- The shipped release profile (overflow checks and debug assertions off),
-  as in theorem 32.
+- The shipped release profile (debug assertions off), as in theorem 32.
 
 **What it does not cover (paths that can still abort for a valid
 program).**

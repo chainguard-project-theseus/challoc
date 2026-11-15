@@ -547,42 +547,40 @@ impl Totals {
     }
 }
 
-/// `a + b` for a statistics figure, as the build computes it: a panic on
-/// overflow where overflow checks are on (the tests), wrapping where they
-/// are off (the shipped library). The figures are counters the slow paths
-/// keep in atomics and lock-protected words that no verified invariant
-/// bounds, so their sums cannot be proved to fit; the sum is exact
-/// whenever it does. Trusted: the spec is `+`'s.
-#[verifier::external_body]
+/// `a + b` for a statistics figure, wrapping on overflow in every build.
+/// The figures are counters the slow paths keep in atomics and
+/// lock-protected words that no verified invariant bounds, so their sums
+/// cannot be proved to fit; the sum is exact whenever it does, and one
+/// that does not fit wraps instead of panicking (challoc's panics abort).
 #[inline(always)]
-#[track_caller]
 pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
     ensures
         a + b <= usize::MAX ==> r == a + b,
 {
-    a + b
+    a.wrapping_add(b)
 }
 
 /// `a * b` for a statistics figure; see [`fig_add`].
-#[verifier::external_body]
 #[inline(always)]
-#[track_caller]
 pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
     ensures
         a * b <= usize::MAX ==> r == a * b,
 {
-    a * b
+    proof {
+        if a * b <= usize::MAX {
+            vstd::arithmetic::div_mod::lemma_small_mod((a * b) as nat, usize::MAX as nat + 1);
+        }
+    }
+    a.wrapping_mul(b)
 }
 
 /// `a + b` for a statistics counter; see [`fig_add`].
-#[verifier::external_body]
 #[inline(always)]
-#[track_caller]
 pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
     ensures
         a + b <= u64::MAX ==> r == a + b,
 {
-    a + b
+    a.wrapping_add(b)
 }
 
 /// The usable pages of an arena's `runs` live huge runs in `pages` pages,
@@ -3108,5 +3106,23 @@ mod tests {
         );
         assert_eq!(ArenaStats::empty(7).index, 7);
         assert_eq!(ArenaStats::empty(7).bins[0], BinStats::EMPTY);
+    }
+
+    // The sums are exact when they fit and wrap, not panic, when they do
+    // not, in the test build too.
+    #[test]
+    fn figure_sums_are_exact_and_wrap() {
+        let mut state = 0x5eed_0f16_u64;
+        for _ in 0..1000 {
+            let a = xorshift(&mut state) as usize >> 1;
+            let b = xorshift(&mut state) as usize >> 1;
+            assert_eq!(fig_add(a, b), a + b);
+            assert_eq!(fig_add64(a as u64, b as u64), a as u64 + b as u64);
+            let (s, t) = (a >> 32, b >> 32);
+            assert_eq!(fig_mul(s, t), s * t);
+        }
+        assert_eq!(fig_add(usize::MAX, 2), 1);
+        assert_eq!(fig_add64(u64::MAX, u64::MAX), u64::MAX - 1);
+        assert_eq!(fig_mul(usize::MAX, 3), usize::MAX - 2);
     }
 }

@@ -1,9 +1,7 @@
-//! The statistics sums the proofs take on trust: `stats::fig_add`,
-//! `fig_mul` and `fig_add64` (`verus/ledger/src/stats.rs.md`). Kani
-//! builds with overflow checks on, as the tests do: there an overflowing
-//! sum panics (and challoc's panics abort), and the shipped library, built
-//! without them, wraps. The contracts claim the exact result only when it
-//! fits, which is what the harnesses check, for every pair of inputs.
+//! The statistics sums `stats::fig_add`, `fig_mul` and `fig_add64`, which
+//! Verus verifies and which wrap in every build. The contracts claim the
+//! exact result only when it fits; these harnesses check that again for
+//! every pair of inputs, against `u128` arithmetic.
 
 use crate::stats::{fig_add, fig_add64, fig_mul};
 

@@ -1287,8 +1287,8 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 /// completed, which `shared` stands for here). `mallinfo2` (verified
 /// under `may_abort`, for its `shared()`) through the calls of its body
 /// that carry a contract (`stats::collect_all` and the page size); its
-/// figure arithmetic (`stats::fig_add`, `stats::fig_mul`) wraps in the
-/// shipped library and panics on overflow only with overflow checks on.
+/// figure arithmetic (`stats::fig_add`, `stats::fig_mul`) wraps on
+/// overflow in every build.
 /// [`mallctl::utilization`], the reading behind
 /// `experimental.utilization`, is called whole; the read-only keys of
 /// `mallctl` and `mallctlbymib` other than `thread.*`'s are covered by

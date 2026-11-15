@@ -4,8 +4,10 @@
 library, function pointer, panic/abort and termination, made during
 [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
-*This file lists the 116 of those seams that the ledger at `26f535a9`
-still lists. The others are verified at `26f535a9` or no longer exist
+*This file lists the 113 of those seams that the ledger still lists:
+the 116 the ledger at `26f535a9` listed, less the three statistics
+figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`), which are
+verified since. The others are verified at `26f535a9` or no longer exist
 (among them `parse_from` and the `Display` spec of `sys::cgroup::Cgroup`,
 now verified), so their rows are left out; seams of this scope that the
 audit did not cover are not listed. Each row names the seam by its item
@@ -27,8 +29,8 @@ false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 116 seams listed: 111 sound and 5 fixed; at `26f535a9`,
-84 discharged, 9 partly checked and 23 trusted. The category column is
+Totals for the 113 seams listed: 108 sound and 5 fixed; 81 discharged,
+9 partly checked and 23 trusted. The category column is
 the ledger's; a few seams of this audit sit in another category there.
 
 | seam | ledger file | category | status | verdict | reason |
@@ -78,9 +80,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `word` | `layout/regions.rs` | core library | discharged | sound | Requires `i < NCLASSES + 3`, no `ensures`. |
 | `RawLock::lock_slow` | `lock.rs` | termination | trusted | sound | Termination only (waits for the holder's release); body verified. |
 | `main` | `purge/background.rs` | termination | trusted (partly checked) | sound | Termination only (the background thread's loop); body verified. |
-| `fig_add` | `stats.rs` | core library | discharged | sound | Exact result only when the sum fits (debug panics, release wraps). |
-| `fig_mul` | `stats.rs` | core library | discharged | sound | As `fig_add`, for the product. |
-| `fig_add64` | `stats.rs` | core library | discharged | sound | As `fig_add`, for `u64`. |
 | `scan_lines` | `sys/cgroup.rs` | termination | trusted | sound | Termination only (reads until `read` returns `None`/0 or `on_line` stops); body verified. |
 | `getrandom_exact` | `sys/mod.rs` | termination | trusted | sound | Termination only (retries short reads and `EINTR`); body verified. |
 | `read_full` | `sys/mod.rs` | termination | trusted | sound | Termination only (retries `EINTR`); body verified. |

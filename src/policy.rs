@@ -976,7 +976,7 @@ impl Policy {
 ///
 /// The arenas are those [`Arenas::get_existing`](crate::arena::Arenas::get_existing)
 /// finds below `arenas.count()`. The sums are [`fig_add64`], which wraps
-/// as `+` does in the shipped build (overflow checks are off in release);
+/// on overflow in every build;
 /// callers rely on nothing but the type. The locks may wait in the
 /// kernel. Lock order: it takes class locks, then the huge lock, one at a
 /// time.

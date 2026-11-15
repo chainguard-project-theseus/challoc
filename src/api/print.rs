@@ -875,7 +875,7 @@ fn text_arena<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats, bin
         "  small:               {:>14} {:>12} {:>12} {:>12}",
         s.small_allocated, s.small_active, s.small_dirty, s.small_retained
     )?;
-    // `fig_add` is `+` as the build computes it (the figures have no
+    // `fig_add` is `+` that wraps on overflow (the figures have no
     // proved bound).
     writeln!(
         out,
