@@ -3231,7 +3231,8 @@ impl Shared {
                         blk.lemma_block_slot_addr(p, class as int);
                     }
                 }
-                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+                let tracked mut obs = Ghost(Set::<int>::empty());
+                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
                 proof {
                     // `check_located` returned: not a guard slab.
                     self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);

@@ -3440,8 +3440,8 @@ and for an error-result row, that a returning call returns that result:
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
 | `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
-| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | no: excluded by the C contract, *(C)* |
-| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | no: the queries take no token, and nothing states it |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | at the check, *(load)*: `check_live` and `check_located` return only if the slot was not free at their bitmap load; the rest is *(C)* |
+| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | at the check, *(load)*, as above |
 | The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`); with the opt-in `exact_sized_free` key, at the call (`check_live`) | no: excluded by the C contract, *(C)*; under the key, that the free reaches the test is `theorem_exact_sized_free` |
 | Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort at the call: the slot's state byte (`heap::slotstate`) is not `LIVE`; else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |
 | The same, through `realloc` and the queries | `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | with `double_free_scan`, abort after the bit test (`Shared::check_not_cached`); without it no abort at the call: the slot bit is still set, so `check_live` passes. `realloc(p, 1000)` after `p = malloc(16); free(p)` copies from `p` and frees it again, which pushes a second copy; a kept block is returned as is | no: excluded by the C contract, *(C)*; the queries take no token |
@@ -3477,6 +3477,74 @@ invariant: the table maps a page only to a live descriptor's key, two
 live extents share no page (`lemma_token_extent`), so the only
 `Active` descriptor `Huge::usable_size` can accept at a page of the
 token's run is the run's own, which starts at the token's first page.
+
+*(load)*: the check itself is proved, with or without a token
+(`class/table.rs`). `bit_word_held` loads the word inside its invariant
+and hands its caller the slot tokens the invariant held at that load:
+its contract states `obs` is `addrs(s, free_bits(s, j, x))` for the
+value `x` it returns, which is the token set `bitmap::WordPred::inv`
+ties to that value (the tokens of exactly its clear bits).
+`is_set_unchecked` returns exactly whether the slot's token was not in
+`obs`. `is_set_unchecked`, `check_live` and `check_located` ensure
+`!slot_free_at(obs, c, slab, slot)` and `word_tokens(slab, slot, obs)`:
+`obs` is a token set the word's invariant admits, for some value of the
+word. A call that returns found the slot claimed (by a refill, a cache
+or the program) at its load, so a free, `realloc` or query of a slot
+that was back in its bitmap at that load does not return.
+
+```rust
+// class/table.rs
+pub open spec fn slot_free_at(toks: Set<int>, c: int, slab: int, slot: int) -> bool {
+    toks.contains(process_regions().slot_at(c, slab, slot))
+}
+pub open spec fn word_tokens(&self, slab: int, slot: int, toks: Set<int>) -> bool {
+    let s = self.spec_slots();
+    let j = (slab * class_table()[self.spec_class() as int].slab_bits + slot) / 64;
+    exists|v: u64| toks == #[trigger] crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, v))
+}
+pub fn check_live(&self, slab, slot, p, Tracked(held), Tracked(obs): Tracked<&mut Ghost<Set<int>>>)
+    ensures
+        !slot_free_at(final(obs)@, self.spec_class() as int, slab as int, slot as int),
+        self.word_tokens(slab as int, slot as int, final(obs)@), /* ... */
+unsafe fn bit_word_held(..., Tracked(obs): Tracked<&mut Ghost<Set<int>>>) -> (x: u64)
+    ensures
+        ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs)@, c, slab, slot),
+        final(obs)@ == crate::bitmap::addrs(self.spec_slots(), crate::bitmap::free_bits(self.spec_slots(), bit as int / 64, x)), /* ... */
+```
+
+Where the snapshot identity is stated. `bit_word_held`'s contract ties
+`obs` to the value it returns; that the value is the one the word held
+(an atomic load through the invariant's permission, inside its opening)
+is the body's, as for every load. Past `bit_word_held` the loaded value
+is not returned, so `is_set_unchecked`, `check_live` and
+`check_located` state only that `obs` is the invariant's token set for
+some value of the word (`word_tokens`), with the slot's token absent.
+That some value is the loaded one is stated only at `bit_word_held`: a
+set that is the token set of another value of the word (the slot's
+token alone, say, while other bits were clear at the load) meets
+`word_tokens` but not `bit_word_held`'s postcondition.
+
+What it does not say. It is a fact about one load, not about C's view:
+it does not say the free cores' later steps hold for such a pointer
+(they take C's token, *(C)*), nor that the slot is still claimed after
+the load. The plain free's fast path (`ClassLine::set_slab`, through
+`bit_word`) tests the same bit and sends a clear one to the slow path,
+which runs `check_located`; that routing is read from the code. A
+double free while the first copy is cached passes (the bit is still
+set), and a sized free defers the test to a flush unless
+`exact_sized_free` is set (rows above). The huge half (`Huge::free_run`'s
+`already_free` and `not_a_run` for a page with no `Active` run) is not
+covered: `free_run` takes the run's token, so its checks are proved
+unreachable rather than proved to fire. #734 stays open for those parts.
+
+Mutations (`cargo verus focus`, module `class::table`, fresh target dir
+each): `check_live` without its `not_live` abort fails its
+`slot_free_at` postcondition; `bit_word_held` handing back an empty set
+instead of the invariant's tokens fails its postcondition; so does
+`bit_word_held` handing back `{}` when the bit is set and the slot's
+token alone when it is clear (the review's mutant, which met the bit
+postcondition alone): it fails the `addrs(s, free_bits(s, j, x))`
+postcondition.
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
 a pointer that is no slot start and no huge page start claims nothing,

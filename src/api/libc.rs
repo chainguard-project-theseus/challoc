@@ -1132,7 +1132,8 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tr
                     blk.lemma_block_slot_addr(p, class as int);
                 }
             }
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+            let tracked mut obs = Ghost(Set::<int>::empty());
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
             shared.check_not_cached(class, p);
             proof {
                 // `check_live` returned: not a guard slab.
@@ -1528,7 +1529,8 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                     blk.lemma_block_slot_addr(p, class as int);
                 }
             }
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+            let tracked mut obs = Ghost(Set::<int>::empty());
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
             shared.check_not_cached(class, p);
             proof {
                 // `check_live` returned: not a guard slab.
@@ -2411,7 +2413,8 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                     blk.lemma_block_slot_addr(p, class as int);
                 }
             }
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()));
+            let tracked mut obs = Ghost(Set::<int>::empty());
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
             shared.check_not_cached(class, p);
             proof {
                 // `check_live` returned: not a guard slab.

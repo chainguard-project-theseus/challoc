@@ -183,6 +183,14 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   `heap::paths::theorem_exact_sized_free`: a sized free reaches plain
   `free`'s bit test; that the test aborts on a clear bit is read from
   the code.
+- In every configuration, the bit test itself
+  (`SlabTable::check_live`, `check_located`; THEOREMS.md "Bad input",
+  *(load)*): a call returns only if the slot's token was not in the
+  token set its bitmap word's invariant held at the load, so a slot that
+  was free at that load does not pass. `bit_word_held`'s contract ties
+  that set to the loaded value; `check_live`'s states it is the set of
+  some value of the word (`word_tokens`). A fact about the load, not C's
+  view; the huge half is not covered.
 
 **What the code does (read, not proved; `docs/hardening.md` (1)).** An
 unsized free of a slot whose bitmap bit is clear aborts at the call
@@ -330,6 +338,10 @@ is the only reader of the environment is a source test.
 > fact out of the load so the abort is a theorem. Targets:
 > `SlabTable::check_live`, `Shared::classify_free`, `Huge::free_run`
 > (`already_free`, `not_a_run`), `Huge::usable_size`.
+
+Partly proved: the slab bit test at its load (`check_live`,
+`check_located`: `slot_free_at`, THEOREMS.md "Bad input" *(load)*).
+Open: C's view of a stale pointer past the test, and the huge half.
 
 **[#735](https://github.com/chainguard-project-theseus/challoc/issues/735): integer overflow in pvalloc's page rounding (CVE-2013-4332, CVE-2021-3420)**
 

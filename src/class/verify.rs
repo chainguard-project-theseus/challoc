@@ -28,7 +28,13 @@ impl SlabTable {
     #[cfg(test)]
     pub fn check(&self, p: *mut u8) -> u16 {
         let (slab, slot) = self.locate(p);
-        self.check_located(slab, slot, p as usize, Tracked::assume_new())
+        self.check_located(
+            slab,
+            slot,
+            p as usize,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
     }
 }
 
