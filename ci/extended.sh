@@ -1,8 +1,9 @@
 #!/bin/bash
-# ci/extended.sh [TASK]: one task of the on-request extended checks
-# (.chainguard/ci/extended.yaml), a Makefile target run through ci/make.sh
-# with the log in .ci/TASK.log. TASK defaults to $TASK. The dev image
-# (Dockerfile.dev's `test` stage, `consumers` for the consumer builds) is
+# ci/extended.sh [TASK]: one task of the on-request extended and consumers
+# checks (.chainguard/ci/extended.yaml, consumers.yaml), a Makefile target
+# run through ci/make.sh with the log in .ci/TASK.log. TASK defaults to
+# $TASK. The dev image (Dockerfile.dev's `test` stage, `consumers` for the
+# consumers) is
 # built first unless IMAGE names one already.
 #
 #   fuzz            make fuzz, 50M operations, a random seed (printed)
@@ -13,13 +14,15 @@
 #   oscillate       make test-cgroup-oscillate OSC_SECS=600 CONTROL=1
 #   check-needed    make check-needed (DT_NEEDED names the allocator)
 #   valkey | ruby   the consumer builds and their suites, STAGE=all
+#   cpython | git   make preload CASE=<task>: the program's own tests with
+#                   libchalloc.so preloaded, against a run without it
 set -euo pipefail
 task=${1:-${TASK:?usage: ci/extended.sh TASK}}
 log=.ci/$task.log
 fuzz=(FUZZ_OPS=50000000 FUZZ_SEED=random)
 if [ -z "${IMAGE:-}" ]; then
   stage="test"
-  case $task in valkey|ruby) stage="consumers" ;; esac
+  case $task in valkey|ruby|cpython|git) stage="consumers" ;; esac
   plan=$(bash ci/image-build.sh "$stage")
   IMAGE=$(sed -n 's/^image=//p' <<<"$plan")
   export IMAGE
@@ -50,6 +53,7 @@ case $task in
   # so update-gems is told to trust the bundle too.
   ruby)          bash ci/make.sh "$log" ruby STAGE=all \
                    RUBY_GEMS_CA=/etc/ssl/certs/ca-certificates.crt || status=$? ;;
+  cpython|git)   bash ci/make.sh "$log" preload CASE="$task" || status=$? ;;
   *) echo "unknown task $task" >&2; exit 2 ;;
 esac
 # A failed fuzz run is reproduced from its seed.

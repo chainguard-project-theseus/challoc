@@ -71,14 +71,20 @@ On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
 repository (`extended.yaml`'s header says why it does not yet):
 
 - `extended.yaml`: `fuzz` (50M operations: default, hardened, sized, q8),
-  `oscillate` (the 600 s soak), `check-needed`, `consumers` (the Valkey and
-  Ruby builds), each on both arches.
+  `oscillate` (the 600 s soak), `check-needed`, each on both arches.
+- `consumers.yaml`: `consumers`, the Valkey and Ruby builds with their
+  suites, and Wolfi's python3 and git running their own tests with
+  `libchalloc.so` preloaded against a run without it
+  (`tests/consumers/README.md`), each on both arches.
 - `weakmem.yaml`: `weakmem-stress`, the three weak-memory stress tests
   (`verus/WEAKMEM.md`, "Hardware stress tests"), 60 s each, on aarch64
   only.
 
 `chainctl checks run` plans a commit without a pull request; name the
-checks to run with `--check`. The floor checks run only on main, where
+checks to run with `--check`, which runs that check (and what it needs)
+even when it runs only on request. `--request <check>` works too: it
+satisfies the on-request gate, as the label does, and plans every other
+check of the commit alongside it. The floor checks run only on main, where
 their identity is released.
 
 `identities.yaml` holds the trust policy (which pull requests get which

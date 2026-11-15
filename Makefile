@@ -94,7 +94,7 @@ env_flags = $(foreach v,$(1),$(if $($(v)),-e $(v)="$($(v))"))
 # expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey redis ruby check-needed clean-volumes help print-docker-run test-all verus isla emptyasm melange
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey redis ruby preload check-needed clean-volumes help print-docker-run test-all verus isla emptyasm melange
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -252,6 +252,11 @@ RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY OPE
 ruby: DOCKER_FLAGS = $(call env_flags,$(RUBY_VARS))
 ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemalloc against it and run test-all (tests/consumers/ruby-build.sh; STAGE=build|test|all, ALLOC=glibc for the baseline build, TESTS, JOBS)
 	$(DOCKER_RUN) sh tests/consumers/ruby-build.sh
+
+PRELOAD_VARS = CASE QUANTUM JOBS CPYTHON_TESTS GIT_TESTS GIT_PROBE
+preload: DOCKER_FLAGS = $(call env_flags,$(PRELOAD_VARS))
+preload: image ## an unmodified Wolfi program's own tests with libchalloc.so preloaded, against a run without it (tests/consumers/preload.sh; CASE=cpython|git)
+	$(DOCKER_RUN) sh tests/consumers/preload.sh
 
 # DT_NEEDED must name the allocator library (design 13.6); Wolfi's --as-needed drops it from a consumer that
 # references no symbol of it.

@@ -7,7 +7,8 @@
 #
 #   base       the Rust toolchain and the C compiler
 #   test       what `make test` and scripts/codegen-diff.sh need
-#   consumers  the Valkey and Ruby builds (tests/consumers/)
+#   consumers  the Valkey and Ruby builds and the LD_PRELOAD cases
+#              (tests/consumers/)
 #   bench      the stock allocators and the benchmark runtimes (bench/)
 #
 # The last stage is the default, so a plain `docker build` (`make image`)
@@ -61,6 +62,11 @@ RUN apk add --no-cache 'tcl~9.0' openssl-dev memtier-benchmark \
 # RUBY_ALTERNATIVE_MALLOC_HEADER); tzdata is for `make test-all`
 # (test/ruby/test_time_tz.rb needs zone files).
 RUN apk add --no-cache autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata
+
+# The LD_PRELOAD cases (tests/consumers/preload.sh): curl, GNU tar and xz
+# for the CPython and git source tarballs (Lib/test and t/), python-3.13
+# (from `test`) and git (from `base`) as the programs under test.
+RUN apk add --no-cache curl gnutar xz
 
 FROM consumers AS bench
 
