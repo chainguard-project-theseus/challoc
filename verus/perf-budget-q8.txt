@@ -1,6 +1,6 @@
 # Fast-path cost table for verus/THEOREMS.md theorem 45, checked by
 # scripts/perf-budget.sh (scripts/perf-budget.rs documents the format).
-# Pinned build: rustc 1.98.1 (rust-1.98), x86_64, `--no-default-features --features quantum8`,
+# Pinned build: rustc 1.99.1 (rust-1.99), x86_64, `--no-default-features --features quantum8`,
 # `cargo build --release --locked`.
 
 # Layout premises (theorem 45, P4). The TLS slot holds the heap pointer;

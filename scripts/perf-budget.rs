@@ -145,7 +145,7 @@ fn demangle(s: &str) -> String {
     parts.join("::")
 }
 
-/// Rust v0 mangling (rustc 1.98.1 emits it for this crate; 1.95.0 the
+/// Rust v0 mangling (rustc 1.98.1 and 1.99.1 emit it for this crate; 1.95.0 the
 /// legacy form above), nested paths and crate roots only (`N` namespace
 /// path ident, `C` [disambiguator] ident); returns the path and the rest.
 /// Anything else (impls, generics, backrefs) is None, and the caller

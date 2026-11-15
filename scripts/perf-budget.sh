@@ -11,8 +11,8 @@
 # (five mutations of the disassembly and three of the table, each of
 # which the checker must reject) and checks the library against
 # verus/perf-budget.txt (q16, the default) or verus/perf-budget-q8.txt.
-# The tables are pinned to rustc 1.98.1 (the rust-1.98 stream
-# .chainguard/ci/perf-budget.yaml pins, not Dockerfile.dev's); another compiler
+# The tables are pinned to rustc 1.99.1 (the rust-1.99 stream of
+# Dockerfile.dev and .chainguard/ci/perf-budget.yaml); another compiler
 # may lay the fast paths out differently, and the check then fails with
 # the measured counts. On a deliberate change, `--print` gives the new
 # table lines:

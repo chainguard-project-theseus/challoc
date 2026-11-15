@@ -8844,7 +8844,7 @@ library and fails unless every row's maxima equal its `budget` line in
   (`small_entry_ok`, `layout/mod.rs`, proved).
 
 **Measured table** (the `budget` lines of `verus/perf-budget.txt`;
-rustc 1.98.1, `quantum16`, `cargo build --release --locked`). `-` is every
+rustc 1.99.1, `quantum16`, `cargo build --release --locked`). `-` is every
 configuration (no cell fixed); `free_flags=8` is `FREE_ROUTE` alone (a
 second arena exists, no push option), the routed free of theorem 26.
 
@@ -8904,7 +8904,7 @@ move (`free_flags` at `SHARED + 0xe00`, 56 class lines).
   `align-load` lines of the table). An indexed load from a static is
   attributed to the static its constant part lies in (the tables are
   indexed from their start).
-- **Toolchain.** rustc 1.98.1 (the `rust-1.98~1.98.1` package of
+- **Toolchain.** rustc 1.99.1 (the `rust-1.99~1.99.1` package of
   `.chainguard/ci/perf-budget.yaml`), `quantum16` (default features),
   `cargo build --release --locked` with the crate's release profile (fat LTO, one
   codegen unit, `panic = "abort"`), x86_64, disassembled by GNU objdump.

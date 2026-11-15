@@ -5,14 +5,15 @@
 # verus/perf-budget-q8.txt (q8) pin. A change that moves a hot export's
 # machine code updates those tables in the same pull request (`--print`
 # gives the lines; the script's header says how). The tables are pinned to
-# rustc 1.98.1, so the stream is pinned here too; bump the pin and the
-# tables together. The checker reads x86_64 code only, so there is no
+# rustc 1.99.1, the stream the package build compiles with (Dockerfile.dev
+# and lint.yaml's too), so the stream is pinned here too; bump the pin and
+# the tables together. The checker reads x86_64 code only, so there is no
 # arm64 check.
 version: 1
 
 environment:
   packages:
-    - rust-1.98~1.98.1 # the tables' compiler, not Dockerfile.dev's rust-1.99, until #718
+    - rust-1.99~1.99.1 # the tables' compiler
     - build-base       # cc and g++ for build.rs
     - binutils         # objdump
     - busybox

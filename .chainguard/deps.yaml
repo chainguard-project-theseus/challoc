@@ -19,7 +19,7 @@
 # - vstd's exact version in Cargo.toml: it must be the one the verus~
 #   package of .chainguard/ci/verus.yaml names, so it moves with Verus.
 # - the rust-1.99 stream (the one the verus and kani pins bring; it moves
-#   with them, and perf-budget.yaml's rust-1.98~1.98.1 with its tables),
+#   with them, and perf-budget.yaml's rust-1.99~1.99.1 with its tables),
 #   Cargo.toml's rust-version, the tests/loom and
 #   tests/genmc workspaces, and bench/Dockerfile.cb: Dependabot never
 #   moved them either.
