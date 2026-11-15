@@ -76,7 +76,7 @@ The Chainguard packages carry the whole toolchain:
 | `isla-snapshots` | isla-snapshots d8b31014: `armv8p5.ir`, `armv9p4.ir.gz` in `/usr/share/isla-snapshots` |
 | `sail`, `isla-sail` | Sail 0.20.3 and Isla's `isla-sail` plugin (`/usr/lib/isla-sail/plugin.cmxs`), for the x86 model |
 | `z3` | the solver `isla-check` calls |
-| `rust-1.98`, `build-base` | the library build and `isla-check` |
+| `rust-1.99`, `build-base` | the library build and `isla-check` |
 | `llvm-21` | `llvm-objdump` and `llvm-ar` |
 
 Things that cost time on the first install, and that run.sh handles:

@@ -261,7 +261,7 @@ runs it, with the `isla`, `isla-snapshots`, `sail`, `isla-sail`, `z3` and
 hints whose `asm!` template is empty (`verus/emptyasm/blocks.txt`): it
 checks that the release build's assembly and object code hold no
 instruction for them on the host's architecture, and that a `nop` added
-to each template fails the check. It needs `rust-1.98`, `build-base`, `llvm-21` and git.
+to each template fails the check. It needs `rust-1.99`, `build-base`, `llvm-21` and git.
 A core-library block in the build (today the empty one rustc emits for
 `core::hint::black_box`) passes only as `verus/emptyasm/core.txt` names it.
 That discharges `word_index`; the other three stay trusted, partly

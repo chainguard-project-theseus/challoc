@@ -361,7 +361,7 @@ isla: ## Isla over the inline-assembly seams verus/isla/seams.md lists (verus/IS
 	ISLA_CARGO_FLAGS='$(FEATURES)' sh verus/isla/run.sh
 
 # emptyasm runs where it is invoked, not in the dev container: it needs
-# cargo and rustc (rust-1.98), a C++ compiler for build.rs (build-base),
+# cargo and rustc (rust-1.99), a C++ compiler for build.rs (build-base),
 # llvm-objdump (llvm-21), and git for the negative test's copy of the
 # tree. It checks the host's architecture (EMPTYASM_TARGETS; a target other
 # than the host's needs its rust standard library) at QUANTUM, then runs
