@@ -94,7 +94,7 @@ env_flags = $(foreach v,$(1),$(if $($(v)),-e $(v)="$($(v))"))
 # expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey redis ruby check-needed clean-volumes help print-docker-run test-all verus isla emptyasm
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey redis ruby check-needed clean-volumes help print-docker-run test-all verus isla emptyasm melange
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -257,6 +257,12 @@ ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemallo
 # references no symbol of it.
 check-needed: image ## DT_NEEDED must name the allocator library (tests/as-needed.sh, scripts/check-needed.sh)
 	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) && sh tests/as-needed.sh'
+
+# melange needs bubblewrap and user namespaces, which the dev container does
+# not give, so this runs on the host: a development session (apk add melange
+# bubblewrap) or the privileged container contrib/wolfi/README.md describes.
+melange: ## build and test the Wolfi packages of contrib/wolfi/challoc.yaml with melange, then check provides and depends (ci/melange.sh; Linux with melange and bubblewrap)
+	sh ci/melange.sh
 
 # verus, kani and their kin are the kit's targets (proved-port.mk, from the
 # theseus-proved-port package, which installs it under PROVED_PORT_HOME

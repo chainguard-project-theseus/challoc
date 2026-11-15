@@ -63,6 +63,13 @@ uses Wolfi's own `melange` and `bubblewrap` apks in a privileged
 `test/tw/*` and `test/pkgconf` steps, which live in wolfi-dev/os, not in
 melange.
 
+`ci/melange.sh` runs the same build and test for `challoc.yaml`, then
+checks each APK's provides and depends. The on-request `melange` check
+(label `ci/run:melange`, `.chainguard/ci/melange.yaml`) runs it on x86_64
+and aarch64, and `make melange` runs it on any Linux host with melange
+and bubblewrap, a development session included (`apk add melange
+bubblewrap`).
+
 ```sh
 # on the VM: ~/challoc is the synced tree (rsync or scripts/devvm.sh), ~/melange-out the output
 sudo docker run --rm --privileged -v ~/challoc:/work -v ~/melange-out:/out -w /work \

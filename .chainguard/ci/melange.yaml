@@ -1,0 +1,40 @@
+# GRADUATION: stays on-request permanently. Run on a change to
+# contrib/wolfi/challoc.yaml, build.rs, the soname or the jemalloc-compat
+# staging, and before a wolfi-dev/os pull request.
+#
+# The Wolfi package definition (contrib/wolfi/README.md), on request only
+# (label a pull request ci/run:melange, or `chainctl checks run . --check
+# melange` on a pushed commit): ci/melange.sh builds the four packages of
+# contrib/wolfi/challoc.yaml from this tree with melange and bubblewrap,
+# runs the definition's test pipelines, and checks the APKs' provides and
+# depends. `make melange` runs the same script in a development session.
+version: 1
+
+checks:
+  melange:
+    when: {requested: true}
+    description: >-
+      melange build and melange test of contrib/wolfi/challoc.yaml from
+      this tree (challoc, challoc-dev, challoc-jemalloc-compat and
+      challoc-jemalloc-compat-dev: the SONAMEs, an LD_PRELOAD run,
+      pkg-config links and DT_NEEDED), then the APKs' provides and depends
+      (ci/melange.sh), on x86_64 and aarch64.
+    foreach:
+      - {name: amd64, resources: large-amd64}
+      - {name: arm64, resources: large-arm64}
+    timeout: 40m
+    environment:
+      packages: [busybox, git, melange, bubblewrap, ca-certificates-bundle]
+    network:
+      egress:
+        # wolfi-dev/os's pipelines/ (the test/tw and test/pkgconf steps).
+        - github.com
+        # The build and test environments' packages.
+        - packages.wolfi.dev
+        - apk.cgr.dev
+        - cgr.dev
+        - 9236a389bd48b984df91adc1bc924620.r2.cloudflarestorage.com
+        # cargo, inside the build.
+        - index.crates.io
+        - static.crates.io
+    cmd: [sh, ci/melange.sh]
