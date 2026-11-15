@@ -573,7 +573,9 @@ fn access_counts_control() {
     );
 }
 
-// The entry tables (`vspec/entry.rs`'s seams): arena.rs and heap/tcaches.rs
+// The entry tables (`vspec/entry.rs`, vstd `PAtomicPtr`s, whose every
+// operation takes the permission the table's invariant holds; this guard
+// keeps the writes where the invariants are): arena.rs and heap/tcaches.rs
 // each write an entry of their table only through the wrapper calls
 // `ENTRY_TABLES` lists, each in the functions it names (an
 // `elem_at(table, ..)` argument of one), or their `put_entry`'s write of
@@ -665,14 +667,14 @@ fn access_entry_tables_control() {
         &t,
         "src/arena.rs",
         anchor,
-        "self.table[0].store(p, Ordering::Relaxed);",
+        "self.table[0].store(Tracked(e), p);",
     );
     assert!(!check_entries(&t2).is_empty());
     let t2 = with(
         &t,
         "src/arena.rs",
         anchor,
-        "crate::vspec::entry::swap(&self.table[0], p, Ordering::AcqRel, Tracked(e));",
+        "crate::vspec::entry::swap(&self.table[0], p, Tracked(e));",
     );
     assert!(!check_entries(&t2).is_empty());
     let anchor = "let g = self.lock.lock(Tracked(ord), Tracked(&mut under));";
@@ -687,21 +689,21 @@ fn access_entry_tables_control() {
         &t,
         "src/heap/tcaches.rs",
         anchor,
-        "self.table[0].swap(ptr::null_mut(), Ordering::AcqRel);",
+        "self.table[0].swap(Tracked(e), ptr::null_mut());",
     );
     assert!(!check_entries(&t2).is_empty());
     let t2 = with(
         &t,
         "src/heap/tcaches.rs",
         anchor,
-        "crate::vspec::entry::swap(&self.table[0], ptr::null_mut(), Ordering::AcqRel, Tracked(e));",
+        "crate::vspec::entry::swap(&self.table[0], ptr::null_mut(), Tracked(e));",
     );
     assert!(!check_entries(&t2).is_empty());
     let t2 = with(
         &t,
         "src/heap/shared.rs",
         "use crate::vspec::flags::RouteByte;",
-        "fn f(a: &A) { crate::vspec::entry::swap(a, p, R, Tracked(e)); }",
+        "fn f(a: &A) { crate::vspec::entry::swap(a, p, Tracked(e)); }",
     );
     assert!(!check_entries(&t2).is_empty());
 }
@@ -876,26 +878,30 @@ fn access_desc_fields_control() {
     );
 }
 
-// One permission per atomic (the watermark, phase and entry wrappers'
-// seams; the counters' permissions are vstd's, which only
-// `PAtomicU32::new` mints): each file builds its permission type only in
+// One permission per atomic (the watermark and phase wrappers' seams; the
+// route byte's, the counters' and the table entries' permissions are
+// vstd's, which only `PAtomicU8::new`, `PAtomicU32::new` and
+// `PAtomicPtr::new` mint): each file builds its permission type only in
 // its minting fn, with one literal, and names the type only in the struct
 // and impl lines and in type position (no `Self`, derive, trait impl or
-// child module); and no `const` item copies a minted atomic, the
-// counters' included (each use of such a const would be a fresh atomic
-// with a copy of its permission).
+// child module); and no `const` item calls a minting fn, vstd's included,
+// directly or through a wrapper (each use of such a const would be a fresh
+// atomic with a copy of its permission).
 
 const PERMS: &[(&str, &str, &str)] = &[
     ("src/vspec/atom.rs", "UsizePerm", "new_usize"),
     ("src/vspec/byte.rs", "BytePerm", "new"),
-    ("src/vspec/entry.rs", "EntryPerm", "new"),
 ];
 
 const MINTERS: &[&str] = &[
+    "PAtomicU8::new",
+    "PAtomicU32::new",
+    "PAtomicPtr::new",
     "count::new",
     "new_usize",
     "Policy::new",
     "byte::new",
+    "flags::new",
     "entry::new",
     "Deferred::now",
     "Deferred::later",
@@ -907,14 +913,8 @@ fn check_perms(t: &Tree) -> Vec<String> {
         let mut literals = 0;
         for l in shipped(&t[*file]) {
             let c = &l.code;
-            // The type's own lines. `Send` is a marker trait, which copies
-            // nothing (`EntryPerm` has it for the arena and tcache tables' invariants).
-            if *c == format!("pub tracked struct {ty} {{")
-                || *c == format!("pub tracked struct {ty}<T> {{")
-                || *c == format!("impl {ty} {{")
-                || *c == format!("impl<T> {ty}<T> {{")
-                || *c == format!("unsafe impl<T> Send for {ty}<T> {{")
-            {
+            // The type's own lines.
+            if *c == format!("pub tracked struct {ty} {{") || *c == format!("impl {ty} {{") {
                 continue;
             }
             if !occurs(c, "Self", &[':']).is_empty()
@@ -987,6 +987,13 @@ fn access_one_permission_per_atomic_control() {
         "const C: (PAtomicU32, Tracked<CountPerm>) = crate::vspec::count::new(0);",
     );
     assert!(!check_perms(&t2).is_empty());
+    for c in [
+        "const C: (PAtomicU8, Tracked<PermissionU8>) = PAtomicU8::new(0);",
+        "const C: (PAtomicU32, Tracked<PermissionU32>) = PAtomicU32::new(0);",
+        "const C: (PAtomicPtr<u8>, Tracked<PermissionPtr<u8>>) = PAtomicPtr::new(ptr::null_mut());",
+    ] {
+        assert!(!check_perms(&with(&t, "src/heap/shared.rs", anchor, c)).is_empty());
+    }
 }
 
 // The init-once words (`api::STATE`'s `word` and `line`): shipped code

@@ -26,8 +26,9 @@
 //! `try_bind_idle` wins only on an arena with no ticket out, so two
 //! racing for one idle arena never both win, and of two racing alone
 //! for an idle arena exactly one wins. Left out: the arena table's
-//! `Relaxed` pointer loads in `assign` (here a fixed built/unbuilt
-//! pattern), building an arena, and the `u32` wrap (2^32 tickets).
+//! pointer loads in `assign` (`load_entry`, a `SeqCst` load inside
+//! `NarenasPred`; here a fixed built/unbuilt pattern), building an
+//! arena, and the `u32` wrap (2^32 tickets).
 
 use crate::lock::RawLock;
 use crate::sync::patomic::PAtomicU32;

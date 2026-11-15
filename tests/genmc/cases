@@ -46,9 +46,9 @@ count_split_cas_rival | count | rc11 imm | const MODE: u32 = 1; const SPLIT: boo
 # narenas.rs (vspec::count, vspec::entry): the arena count and table.
 # RC11 only: under IMM and ARMv8 GenMC 0.20 stops on an internal check
 # (`it != allocInfoMap_.end()`, in `ExecutionState::onFree`).
-narenas | narenas | rc11 | const EARLY: bool = false; const ENTRY: Ordering = Ordering::Release; | pass
-narenas_early_store | narenas | rc11 | const EARLY: bool = true; const ENTRY: Ordering = Ordering::Release; | fail | is not built
-narenas_relaxed_entry | narenas | rc11 | const EARLY: bool = false; const ENTRY: Ordering = Ordering::Relaxed; | fail | Non-atomic race
+narenas | narenas | rc11 | const EARLY: bool = false; const EARLY_ENTRY: bool = false; | pass
+narenas_early_store | narenas | rc11 | const EARLY: bool = true; const EARLY_ENTRY: bool = false; | fail | is not built
+narenas_early_entry | narenas | rc11 | const EARLY: bool = false; const EARLY_ENTRY: bool = true; | fail | Non-atomic race
 
 # slotstate.rs (vspec::byte): the slot state byte's free step.
 slotstate | slotstate | rc11 imm | const LOAD_STORE: bool = false; | pass

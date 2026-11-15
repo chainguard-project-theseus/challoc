@@ -291,11 +291,11 @@ const PINS: &[(&str, &[&str])] = &[
             "if prev == 0 {",
             "unbind_unbound(index);",
             "pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)",
-            "p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));",
+            "p = crate::vspec::entry::load(&self.table[i], Tracked(v.entries.tracked_borrow(i as int)));",
             "pub fn get_existing_published(&self, index: u16) -> (r: Option<(&Arena, Tracked<&'static Published>)>)",
             "let g = self.lock.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));",
             "let mut best_key = (u32::MAX, true);",
-            "let key = (self.load_bound(i), self.table[i].load(Ordering::Relaxed).is_null());",
+            "let key = (self.load_bound(i), self.load_entry(i).is_null());",
             "if key_less(key, best_key) {",
             "if key == (0, false) {",
             "let t = self.count_in(best);",
@@ -307,7 +307,7 @@ const PINS: &[(&str, &[&str])] = &[
             "self.bind_if_idle(i)",
             "r = crate::vspec::count::compare_exchange(&self.bound[i], 0, 1, Tracked(&mut perm));",
             "shared.set_multi_arena();",
-            "crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));",
+            "crate::vspec::entry::store(&self.table[index as usize], p, Tracked(v.entries.tracked_borrow_mut(index as int)));",
             "let mut g = self.lock.lock(Tracked(ord), Tracked(&mut under));",
             "let index = g.n;",
             "if index as usize >= MAX_ARENAS {",
@@ -459,12 +459,6 @@ const PINS: &[(&str, &[&str])] = &[
 /// futex call and are deliberately not pinned:
 /// `(file, enclosing fn, line, reason)`.
 const WAIVED: &[(&str, &str, &str, &str)] = &[
-    (
-        "src/arena.rs",
-        "get_existing_published",
-        "p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));",
-        "get_existing_published's entry load, the same operation as get_existing's pinned one (narenas.rs: Arenas::entry)",
-    ),
     (
         "src/bitmap.rs",
         "init",
@@ -621,8 +615,8 @@ fn copied_lines_in_place() {
 /// takes another way). Each source line must be in the same `fn` as the
 /// one before it unless it is a `fn` line itself, so a short line such as
 /// `return None;` cannot match the same line of a later function. An
-/// ordering the harness takes from a case constant (`PUBLISH`, `ENTRY`)
-/// is pinned in `GENMC_SHIPPED`.
+/// ordering the harness takes from a case constant (`PUBLISH`) is pinned
+/// in `GENMC_SHIPPED`.
 const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
     // `READY`'s publication and load (`api::publish_ready`, `load_state`).
     (
@@ -800,7 +794,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "let mut best_key = (u32::MAX, true);",
             ),
             (
-                "let key = (self.load_bound(i), self.table[i].load(Ordering::Relaxed).is_null());",
+                "let key = (self.load_bound(i), self.load_entry(i).is_null());",
                 "let key = (self.load_bound(i), !built);",
             ),
             ("if key_less(key, best_key) {", "if key < best_key {"),
@@ -855,8 +849,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "src/arena.rs",
         &[
             (
-                "p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));",
-                "entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new())",
+                "p = crate::vspec::entry::load(&self.table[i], Tracked(v.entries.tracked_borrow(i as int)));",
+                "entry::load(&self.table[i], Tracked::assume_new())",
             ),
             (
                 "pub fn count(&self) -> (r: u32)",
@@ -868,8 +862,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
             ("fn build<'a>(", ""),
             (
-                "crate::vspec::entry::store(&self.table[index as usize], p, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(index as int)));",
-                "entry::store(\n&self.table[i],\nptr::dangling_mut(),\nENTRY,\nTracked::assume_new(),\n);",
+                "crate::vspec::entry::store(&self.table[index as usize], p, Tracked(v.entries.tracked_borrow_mut(index as int)));",
+                "entry::store(&self.table[i], ptr::dangling_mut(), Tracked::assume_new());",
             ),
             (
                 "pub fn create(&self, shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)",
@@ -1526,7 +1520,7 @@ const GENMC_SHIPPED: &[(&str, &[&str])] = &[
         "narenas.rs",
         &[
             "const EARLY: bool = false;",
-            "const ENTRY: Ordering = Ordering::Release;",
+            "const EARLY_ENTRY: bool = false;",
         ],
     ),
     ("slotstate.rs", &["const LOAD_STORE: bool = false;"]),

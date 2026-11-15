@@ -1,22 +1,21 @@
 //! The arena registry's arena count and table (`src/arena.rs`,
 //! `Arenas::count`, `Arenas::table`), a copy of the `Arenas` steps that
 //! touch them through `vspec/count.rs`'s wrappers (`store`, `load`, over
-//! the count, a `PAtomicU32`: here the `cfg(loom)` stand-in of
-//! `src/sync.rs`'s `patomic`, `SeqCst` on loom's `AtomicU32`) and
-//! `vspec/entry.rs`'s (`store`, `load`, over the `AtomicPtr` entries),
-//! which run here as they are, over loom's atomics (`crate::vspec`), with
-//! the steps' orderings:
+//! the count, a `PAtomicU32`) and `vspec/entry.rs`'s (`store`, `load`,
+//! over the entries, `PAtomicPtr`s): here the `cfg(loom)` stand-ins of
+//! `src/sync.rs`'s `patomic`, `SeqCst` on loom's atomics. The wrappers run
+//! here as they are (`crate::vspec`), with the steps' orderings, all
+//! `SeqCst`:
 //!
 //! - [`Arenas::create`] is `Arenas::create`: under the creation lock (the
 //!   copy of `RawLock`; the lock's value, the next index `n`, a loom
 //!   `UnsafeCell` beside it), `None` at `index >= MAX_ARENAS`, then
 //!   `build` (the arena's fields, here a loom `UnsafeCell`, then the
-//!   table entry stored `Release` with `entry::store`), the lock's value
-//!   set to `index + 1`, and `count::store(index + 1)` (`SeqCst`), still
-//!   under the lock;
-//! - [`Arenas::count`] is `Arenas::count`: `count::load` (`SeqCst`);
-//! - [`Arenas::entry`] is `Arenas::get_existing`'s `entry::load(Acquire)`
-//!   (and `get`'s and `get_frozen`'s, the same operation);
+//!   table entry stored with `entry::store`), the lock's value set to
+//!   `index + 1`, and `count::store(index + 1)`, still under the lock;
+//! - [`Arenas::count`] is `Arenas::count`: `count::load`;
+//! - [`Arenas::entry`] is `Arenas::get_existing`'s `entry::load` (and
+//!   `get`'s, `get_frozen`'s and `load_entry`'s, the same operation);
 //! - [`Arenas::scan`] is the walk the shipped code spells out with an
 //!   index (`policy::empty_bytes`, `Shared::set_decay_ms`: every index
 //!   below `count()`, through `get_existing`, a null entry skipped), and
@@ -33,18 +32,17 @@
 //! count is the lock's value. Left out: a failed `build` (`create`
 //! returns before it moves the count), `build`'s spare storage
 //! (`Arenas::spare`, swapped and stored only under the creation lock, so
-//! ordered by it), `build`'s `set_multi_arena` (a `Relaxed` flag, before
-//! the entry's store: `flags.rs`), the automatic arenas' lazy build (here
-//! arena 0 is built at the start, the only automatic one), and
-//! `Arenas::init`'s count, written before the registry is published.
+//! ordered by it), `build`'s `set_multi_arena` (before the entry's store:
+//! `flags.rs`), the automatic arenas' lazy build (here arena 0 is built
+//! at the start, the only automatic one), and `Arenas::init`'s count,
+//! written before the registry is published.
 
 use crate::lock::RawLock;
-use crate::sync::patomic::PAtomicU32;
+use crate::sync::patomic::{PAtomicPtr, PAtomicU32};
 use crate::vspec::{count, entry};
 use crate::{leak, model};
 use core::ptr;
 use loom::cell::UnsafeCell;
-use loom::sync::atomic::{AtomicPtr, Ordering};
 use loom::thread;
 use vstd::prelude::Tracked;
 
@@ -53,6 +51,18 @@ const MAX_ARENAS: u32 = 3;
 
 /// The automatic arenas (`Arenas::auto`).
 const AUTO: u32 = 1;
+
+/// Where `build` stores the entry, against its write of the arena's
+/// fields and the count's store.
+#[derive(Clone, Copy)]
+enum Publish {
+    /// As shipped: the fields, the entry, then the count.
+    Shipped,
+    /// The control: the count stored before `build`.
+    EarlyCount,
+    /// The control: the entry stored before the fields are written.
+    EarlyEntry,
+}
 
 struct Arenas {
     /// The creation lock (`Arenas::lock`, a `Lock<Created>`).
@@ -63,14 +73,11 @@ struct Arenas {
     count: PAtomicU32,
     /// `Arenas::table` (a dangling non-null pointer stands for a built
     /// arena).
-    table: [AtomicPtr<u64>; MAX_ARENAS as usize],
+    table: [PAtomicPtr<u64>; MAX_ARENAS as usize],
     /// Each arena's fields, written by `build` before its entry.
     fields: [UnsafeCell<u64>; MAX_ARENAS as usize],
-    /// The count stored before `build` rather than after it (`false` as
-    /// shipped), for the control.
-    publish_early: bool,
-    /// The ordering of the entry's store (`Release` as shipped).
-    entry_order: Ordering,
+    /// The order of `build`'s steps.
+    publish: Publish,
 }
 
 // SAFETY: `next` is touched only under `lock` and `fields[i]` before
@@ -80,27 +87,25 @@ unsafe impl Sync for Arenas {}
 impl Arenas {
     /// After `Arenas::init`: arena 0 built and published, the count and
     /// the lock's value `AUTO`.
-    fn new(publish_early: bool, entry_order: Ordering) -> Arenas {
+    fn new(publish: Publish) -> Arenas {
         Arenas {
             lock: RawLock::new(),
             next: UnsafeCell::new(AUTO),
             count: PAtomicU32::new(AUTO).0,
             table: [
-                AtomicPtr::new(ptr::dangling_mut()),
-                AtomicPtr::new(ptr::null_mut()),
-                AtomicPtr::new(ptr::null_mut()),
+                PAtomicPtr::new(ptr::dangling_mut()).0,
+                PAtomicPtr::new(ptr::null_mut()).0,
+                PAtomicPtr::new(ptr::null_mut()).0,
             ],
             fields: [UnsafeCell::new(1), UnsafeCell::new(0), UnsafeCell::new(0)],
-            publish_early,
-            entry_order,
+            publish,
         }
     }
 
-    /// Entry `i`, loaded `Acquire` (`Arenas::get_existing`, `get` and
-    /// `get_frozen`, and `iter`, test code; `assign`'s load is `Relaxed` and
-    /// only feeds its key: `count.rs`).
+    /// Entry `i` (`Arenas::get_existing`, `get`, `get_frozen` and
+    /// `load_entry`, and `iter`, test code).
     fn entry(&self, i: usize) -> *mut u64 {
-        entry::load(&self.table[i], Ordering::Acquire, Tracked::assume_new())
+        entry::load(&self.table[i], Tracked::assume_new())
     }
 
     /// `Arenas::count`.
@@ -134,20 +139,20 @@ impl Arenas {
         }
         // `build`: `Arena::init`, then the entry.
         let i = index as usize;
-        if self.publish_early {
+        if matches!(self.publish, Publish::EarlyCount) {
             count::store(&self.count, index + 1, Tracked::assume_new());
+        }
+        if matches!(self.publish, Publish::EarlyEntry) {
+            entry::store(&self.table[i], ptr::dangling_mut(), Tracked::assume_new());
         }
         // SAFETY: entry `i` is not published yet.
         self.fields[i].with_mut(|p| unsafe { *p = u64::from(index) + 1 });
-        entry::store(
-            &self.table[i],
-            ptr::dangling_mut(),
-            self.entry_order,
-            Tracked::assume_new(),
-        );
+        if !matches!(self.publish, Publish::EarlyEntry) {
+            entry::store(&self.table[i], ptr::dangling_mut(), Tracked::assume_new());
+        }
         // SAFETY: under the lock.
         self.next.with_mut(|p| unsafe { *p = index + 1 });
-        if !self.publish_early {
+        if !matches!(self.publish, Publish::EarlyCount) {
             count::store(&self.count, index + 1, Tracked::assume_new());
         }
         self.lock.unlock();
@@ -155,10 +160,9 @@ impl Arenas {
     }
 
     /// `Arenas::get` for an index known without the count (a
-    /// `MALLOCX_ARENA` or `mallctl` index): every non-null entry, loaded
-    /// `Acquire`, is an arena whose fields read with no race (the entry's
-    /// `Release` store orders `build`'s writes before them, with no help
-    /// from the count).
+    /// `MALLOCX_ARENA` or `mallctl` index): every non-null entry is an
+    /// arena whose fields read with no race (the entry's store orders
+    /// `build`'s writes before them, with no help from the count).
     fn probe(&self) {
         for i in 0..MAX_ARENAS as usize {
             if !self.entry(i).is_null() {
@@ -195,9 +199,9 @@ impl Arenas {
 
 /// Two threads each create an arena while the main thread probes and
 /// scans the registry; then a third creation finds the table full.
-fn run(publish_early: bool, entry_order: Ordering) {
+fn run(publish: Publish) {
     model(move || {
-        let a = leak(Arenas::new(publish_early, entry_order));
+        let a = leak(Arenas::new(publish));
         let x = thread::spawn(move || a.create());
         let y = thread::spawn(move || a.create());
         a.probe();
@@ -212,13 +216,13 @@ fn run(publish_early: bool, entry_order: Ordering) {
     });
 }
 
-/// The shipped orderings.
+/// The shipped order.
 ///
 /// Runs `vspec::count::store`, `vspec::count::load`,
 /// `vspec::entry::store` and `vspec::entry::load`.
 #[test]
 fn loom_narenas_create_publishes() {
-    run(false, Ordering::Release);
+    run(Publish::Shipped);
 }
 
 /// The scan's check has teeth: with the count stored before `build`
@@ -227,14 +231,14 @@ fn loom_narenas_create_publishes() {
 #[test]
 #[should_panic(expected = "is not built")]
 fn loom_narenas_early_store_is_unpublished() {
-    run(true, Ordering::Release);
+    run(Publish::EarlyCount);
 }
 
-/// The probe's check has teeth: with the entry stored `Relaxed`, a reader
-/// that finds the entry without the count reads the arena's fields racing
-/// with `build`'s writes, which loom reports.
+/// The probe's check has teeth: with the entry stored before `build`
+/// writes the arena's fields, a reader that finds the entry reads the
+/// fields racing with that write, which loom reports.
 #[test]
 #[should_panic(expected = "Causality violation")]
-fn loom_narenas_relaxed_entry_races() {
-    run(false, Ordering::Relaxed);
+fn loom_narenas_early_entry_races() {
+    run(Publish::EarlyEntry);
 }

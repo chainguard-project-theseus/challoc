@@ -7,7 +7,6 @@
 //! this to land allocations in the fullest slabs).
 
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::arena::{Held, elem_at, field_at, fits};
 #[cfg(verus_keep_ghost)]
@@ -18,6 +17,7 @@ use crate::arena::{
 use crate::lock::{Lock, LockOrder};
 #[cfg(verus_keep_ghost)]
 use crate::lock::{rank_class, rank_tcaches};
+use crate::sync::patomic::PAtomicPtr;
 use crate::vspec::entry::EntryPerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::entry::entry_id;
@@ -55,7 +55,7 @@ pub struct Tcaches {
     /// which holds this table, and Verus rejects a type that contains
     /// itself through a pointer's type parameter. The casts at the load
     /// and store sites are no-ops.
-    table: [AtomicPtr<u8>; MAX_TCACHES],
+    table: [PAtomicPtr<u8>; MAX_TCACHES],
     lock: Lock<()>,
     /// Ghost (no bytes): the table's invariant ([`TablePred`]), which
     /// holds each entry's permission.
@@ -231,9 +231,9 @@ const T_INV: usize = core::mem::offset_of!(Tcaches, inv);
 /// conditions with `fits`.
 axiom fn axiom_tcaches_layout()
     ensures
-        field_fits::<Tcaches, [AtomicPtr<u8>; MAX_TCACHES]>(T_TABLE, T_LOCK as int),
-        0 < size_of::<AtomicPtr<u8>>(),
-        MAX_TCACHES * size_of::<AtomicPtr<u8>>() <= isize::MAX,
+        field_fits::<Tcaches, [PAtomicPtr<u8>; MAX_TCACHES]>(T_TABLE, T_LOCK as int),
+        0 < size_of::<PAtomicPtr<u8>>(),
+        MAX_TCACHES * size_of::<PAtomicPtr<u8>>() <= isize::MAX,
         // Over several lines, as in `arena::axiom_arena_layout`.
         field_fits::<
             Tcaches,
@@ -249,9 +249,9 @@ axiom fn axiom_tcaches_layout()
 // fields in declaration order (the table, `lock`, then the zero-sized
 // ghost), so this holds on every compiler.
 const _: () = assert!(
-    fits::<Tcaches, [AtomicPtr<u8>; MAX_TCACHES]>(T_TABLE, T_LOCK)
-        && core::mem::size_of::<AtomicPtr<u8>>() > 0
-        && MAX_TCACHES as u128 * core::mem::size_of::<AtomicPtr<u8>>() as u128
+    fits::<Tcaches, [PAtomicPtr<u8>; MAX_TCACHES]>(T_TABLE, T_LOCK)
+        && core::mem::size_of::<PAtomicPtr<u8>>() > 0
+        && MAX_TCACHES as u128 * core::mem::size_of::<PAtomicPtr<u8>>() as u128
             <= isize::MAX as u128
         && fits::<Tcaches, Lock<()>>(T_LOCK, T_INV)
         && fits::<Tcaches, Tracked<TableInv>>(T_INV, core::mem::size_of::<Tcaches>())
@@ -260,10 +260,10 @@ const _: () = assert!(
 
 // `arena::axiom_array_layout` at `Tcaches::split`'s instance, checked.
 const _: () = assert!(
-    core::mem::size_of::<[AtomicPtr<u8>; MAX_TCACHES]>()
-        == MAX_TCACHES * core::mem::size_of::<AtomicPtr<u8>>()
-        && core::mem::align_of::<[AtomicPtr<u8>; MAX_TCACHES]>()
-            == core::mem::align_of::<AtomicPtr<u8>>()
+    core::mem::size_of::<[PAtomicPtr<u8>; MAX_TCACHES]>()
+        == MAX_TCACHES * core::mem::size_of::<PAtomicPtr<u8>>()
+        && core::mem::align_of::<[PAtomicPtr<u8>; MAX_TCACHES]>()
+            == core::mem::align_of::<PAtomicPtr<u8>>()
 );
 
 verus! {
@@ -285,14 +285,14 @@ impl TcachesParts {
         &&& storage_ok(p)
         &&& self.lock.ptr() == field_ptr::<Tcaches, Lock<()>>(p, T_LOCK)
         &&& self.inv.ptr() == field_ptr::<Tcaches, Tracked<TableInv>>(p, T_INV)
-        &&& in_alloc(field_ptr::<Tcaches, AtomicPtr<u8>>(p, T_TABLE), MAX_TCACHES as int * size_of::<AtomicPtr<u8>>())
-        &&& MAX_TCACHES * size_of::<AtomicPtr<u8>>() <= isize::MAX
+        &&& in_alloc(field_ptr::<Tcaches, PAtomicPtr<u8>>(p, T_TABLE), MAX_TCACHES as int * size_of::<PAtomicPtr<u8>>())
+        &&& MAX_TCACHES * size_of::<PAtomicPtr<u8>>() <= isize::MAX
     }
 }
 
 /// The table entry permissions of the `Tcaches` at `p`, entry by entry.
-spec fn table_at(m: Map<int, PointsTo<AtomicPtr<u8>>>, p: *mut Tcaches) -> bool {
-    elems_at(m, field_ptr::<Tcaches, AtomicPtr<u8>>(p, T_TABLE), 0, MAX_TCACHES as int)
+spec fn table_at(m: Map<int, PointsTo<PAtomicPtr<u8>>>, p: *mut Tcaches) -> bool {
+    elems_at(m, field_ptr::<Tcaches, PAtomicPtr<u8>>(p, T_TABLE), 0, MAX_TCACHES as int)
 }
 
 /// Byte `x` is in the field of type `T` at offset `off` of the `Tcaches`
@@ -307,7 +307,7 @@ spec fn in_tcaches_field<T>(x: int, p: *mut Tcaches, off: usize) -> bool {
 spec fn tcaches_pad_covers(pad: PointsToRaw, p: *mut Tcaches) -> bool {
     forall|x: int|
         p@.addr <= x < p@.addr + size_of::<Tcaches>() ==> #[trigger] pad.dom().contains(x)
-            || in_tcaches_field::<[AtomicPtr<u8>; MAX_TCACHES]>(x, p, T_TABLE)
+            || in_tcaches_field::<[PAtomicPtr<u8>; MAX_TCACHES]>(x, p, T_TABLE)
             || in_tcaches_field::<Lock<()>>(x, p, T_LOCK)
             || in_tcaches_field::<Tracked<TableInv>>(x, p, T_INV)
 }
@@ -319,7 +319,7 @@ impl Tcaches {
     /// `arena::split_array`; and the bytes left over, the padding.
     proof fn split(tracked perm: PointsTo<Tcaches>) -> (tracked r: (
         TcachesParts,
-        Map<int, PointsTo<AtomicPtr<u8>>>,
+        Map<int, PointsTo<PAtomicPtr<u8>>>,
         PointsToRaw,
     ))
         requires
@@ -337,22 +337,22 @@ impl Tcaches {
         broadcast use vstd::raw_ptr::group_raw_ptr_axioms, vstd::layout::layout_of_primitives;
 
         axiom_tcaches_layout();
-        axiom_array_layout::<AtomicPtr<u8>, MAX_TCACHES>();
-        assert(0 < MAX_TCACHES * size_of::<AtomicPtr<u8>>()) by (nonlinear_arith)
+        axiom_array_layout::<PAtomicPtr<u8>, MAX_TCACHES>();
+        assert(0 < MAX_TCACHES * size_of::<PAtomicPtr<u8>>()) by (nonlinear_arith)
             requires
                 0 < MAX_TCACHES,
-                0 < size_of::<AtomicPtr<u8>>(),
+                0 < size_of::<PAtomicPtr<u8>>(),
         ;
         let p = perm.ptr();
         perm.is_nonnull();
         perm.is_aligned();
         let tracked raw = perm.into_raw();
         axiom_raw_readable(&raw, p as *mut u8, size_of::<Tcaches>() as int);
-        let tracked (table, raw) = take_field::<Tcaches, [AtomicPtr<u8>; MAX_TCACHES]>(raw, p, T_TABLE, T_LOCK as int);
+        let tracked (table, raw) = take_field::<Tcaches, [PAtomicPtr<u8>; MAX_TCACHES]>(raw, p, T_TABLE, T_LOCK as int);
         let tracked (lock, raw) = take_field::<Tcaches, Lock<()>>(raw, p, T_LOCK, T_INV as int);
         let tracked (inv, pad) = take_field::<Tcaches, Tracked<TableInv>>(raw, p, T_INV, size_of::<Tcaches>() as int);
         let tracked table = split_array(table);
-        lemma_field_cast::<Tcaches, [AtomicPtr<u8>; MAX_TCACHES], AtomicPtr<u8>>(p, T_TABLE);
+        lemma_field_cast::<Tcaches, [PAtomicPtr<u8>; MAX_TCACHES], PAtomicPtr<u8>>(p, T_TABLE);
         (TcachesParts { lock, inv }, table, pad)
     }
 }
@@ -371,7 +371,7 @@ impl Tcaches {
 /// pins the call).
 axiom fn axiom_tcaches_assemble(
     tracked parts: TcachesParts,
-    tracked table: Map<int, PointsTo<AtomicPtr<u8>>>,
+    tracked table: Map<int, PointsTo<PAtomicPtr<u8>>>,
     tracked pad: PointsToRaw,
     p: *mut Tcaches,
 ) -> (tracked t: PointsTo<Tcaches>)
@@ -441,7 +441,7 @@ impl Tcaches {
                         assert(t0.contains_key(j));
                     }
                     assert forall|j: int| 0 <= j < MAX_TCACHES implies (#[trigger] table[j]).ptr()
-                        == ptr_add(field_ptr::<Tcaches, AtomicPtr<u8>>(this, T_TABLE), j as usize) by {
+                        == ptr_add(field_ptr::<Tcaches, PAtomicPtr<u8>>(this, T_TABLE), j as usize) by {
                         assert(t0.contains_key(j));
                     }
                     assert forall|j: int| 0 <= j < i + 1 implies (#[trigger] table[j]).is_init() by {
@@ -507,13 +507,13 @@ impl Tcaches {
     /// # Safety
     /// `this` is `init`'s storage and `i < MAX_TCACHES`.
     #[inline(always)]
-    unsafe fn put_entry(this: *mut Tcaches, i: usize, Tracked(t): Tracked<&mut PointsTo<AtomicPtr<u8>>>) -> (r: Tracked<EntryPerm<u8>>)
+    unsafe fn put_entry(this: *mut Tcaches, i: usize, Tracked(t): Tracked<&mut PointsTo<PAtomicPtr<u8>>>) -> (r: Tracked<EntryPerm<u8>>)
         requires
             storage_ok(this),
             i < MAX_TCACHES,
-            old(t).ptr() == ptr_add(field_ptr::<Tcaches, AtomicPtr<u8>>(this, T_TABLE), i),
-            in_alloc(field_ptr::<Tcaches, AtomicPtr<u8>>(this, T_TABLE), MAX_TCACHES as int * size_of::<AtomicPtr<u8>>()),
-            MAX_TCACHES * size_of::<AtomicPtr<u8>>() <= isize::MAX,
+            old(t).ptr() == ptr_add(field_ptr::<Tcaches, PAtomicPtr<u8>>(this, T_TABLE), i),
+            in_alloc(field_ptr::<Tcaches, PAtomicPtr<u8>>(this, T_TABLE), MAX_TCACHES as int * size_of::<PAtomicPtr<u8>>()),
+            MAX_TCACHES * size_of::<PAtomicPtr<u8>>() <= isize::MAX,
         ensures
             final(t).ptr() == old(t).ptr(),
             final(t).is_init(),
@@ -525,7 +525,7 @@ impl Tcaches {
         }
         // SAFETY: element `i` of the field, through its permission.
         unsafe {
-            let table: *mut AtomicPtr<u8> = field_at(this, T_TABLE);
+            let table: *mut PAtomicPtr<u8> = field_at(this, T_TABLE);
             let (e, Tracked(eperm)) = crate::vspec::entry::new(ptr::null_mut());
             ptr_mut_write(elem_at(table, i, MAX_TCACHES), Tracked(t), e);
             Tracked(eperm)
@@ -832,7 +832,7 @@ impl Tcaches {
     /// that publishes the cache moves its entry to an odd generation
     /// ([`TableVal`]): the next odd generation, which skips one when the
     /// table's invariant held a non-null pointer there (the search reads
-    /// the table outside it).
+    /// each entry in an opening of its own).
     // Not isolated: the search returns while the guard borrows `ord`.
     #[verifier::loop_isolation(false)]
     pub fn create(&self, shared: &Shared, arena: u16, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)
@@ -852,7 +852,7 @@ impl Tcaches {
         let g = self.lock.lock(Tracked(ord), Tracked(&mut under));
         // The first null entry, lowest index first.
         let mut slot = 0;
-        while !self.table[slot].load(Ordering::Relaxed).is_null()
+        while !self.load_entry(slot).is_null()
             invariant
                 slot < MAX_TCACHES,
             decreases MAX_TCACHES - slot,
@@ -881,7 +881,7 @@ impl Tcaches {
             let ghost v0 = v;
             let ghost was = v.entries[slot as int].value()@.addr;
             let ghost g = v.gens[slot as int];
-            crate::vspec::entry::store(&self.table[slot], hp, Ordering::Release, Tracked(v.entries.tracked_borrow_mut(slot as int)));
+            crate::vspec::entry::store(&self.table[slot], hp, Tracked(v.entries.tracked_borrow_mut(slot as int)));
             proof {
                 v.gens = v.gens.insert(slot as int, if was == 0 { g + 1 } else { g + 2 });
                 assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
@@ -956,7 +956,7 @@ impl Tcaches {
                     assert(bound_ok(self.inv@.constant(), v, u.watch->Some_0@));
                 }
             }
-            p = crate::vspec::entry::load(&self.table[i], Ordering::Acquire, Tracked(v.entries.tracked_borrow(i as int)));
+            p = crate::vspec::entry::load(&self.table[i], Tracked(v.entries.tracked_borrow(i as int)));
             proof {
                 g = v.gens[i as int];
             }
@@ -1019,11 +1019,31 @@ impl Tcaches {
             invariant
                 n <= i,
         {
-            if !self.table[i].load(Ordering::Relaxed).is_null() {
+            if !self.load_entry(i).is_null() {
                 n += 1;
             }
         }
         n
+    }
+
+    /// Entry `i`, loaded inside the table's invariant ([`TablePred`]):
+    /// null when it holds no cache.
+    #[inline(always)]
+    fn load_entry(&self, i: usize) -> *mut u8
+        requires
+            i < MAX_TCACHES,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let p;
+        vstd::open_atomic_invariant!(self.inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.inv@.constant(), v, i as int));
+            }
+            p = crate::vspec::entry::load(&self.table[i], Tracked(v.entries.tracked_borrow(i as int)));
+        });
+        p
     }
 }
 
@@ -1078,7 +1098,7 @@ impl Tcaches {
             }
             let ghost v0 = v;
             let ghost was = v.gens[i as int];
-            p = crate::vspec::entry::swap(&self.table[i], null, Ordering::AcqRel, Tracked(v.entries.tracked_borrow_mut(i as int)));
+            p = crate::vspec::entry::swap(&self.table[i], null, Tracked(v.entries.tracked_borrow_mut(i as int)));
             proof {
                 g = if p@.addr == 0 { was } else { was + 1 };
                 v.gens = v.gens.insert(i as int, g);
@@ -1149,13 +1169,13 @@ impl Tcaches {
 /// [`Tcaches::create`]'s, at the id it returns (`vspec::entry`'s list of
 /// writes).
 ///
-/// The proof model is sequentially consistent (`vspec::entry`): both
-/// records come from the table's invariant, so neither the orderings of
-/// the accesses nor a history of the table's writes are premises here.
-/// Using an explicit cache concurrently with its `tcache.destroy` stays
-/// the caller's bug, as in jemalloc ([`Tcaches::get`]). Trusted:
-/// `vspec::entry`'s wrapped atomic operations and its identity rules, and
-/// the layout ([`axiom_tcaches_layout`]) and assembly
+/// The proof model is sequentially consistent (vstd's `PAtomicPtr`,
+/// through `vspec::entry`): both records come from the table's
+/// invariant, so neither the orderings of the accesses nor a history of
+/// the table's writes are premises here. Using an explicit cache
+/// concurrently with its `tcache.destroy` stays the caller's bug, as in
+/// jemalloc ([`Tcaches::get`]). Trusted: vstd's `PAtomicPtr` operations
+/// and identities, and the layout ([`axiom_tcaches_layout`]) and assembly
 /// ([`axiom_tcaches_assemble`]) [`Tcaches::init`] builds the table's
 /// invariant with.
 pub proof fn theorem_tcache_destroyed_none(id: u16, tracked w: &TableWrite, tracked u: &HeapUse, found: bool)
@@ -1242,7 +1262,7 @@ impl Tcaches {
     /// The pointer entry `id` holds (null for no cache), as
     /// [`Tcaches::get`] loads it and hands it to [`heap_at`].
     pub(crate) fn entry(&self, id: u16) -> *mut Heap {
-        self.table[id as usize].load(Ordering::Acquire) as *mut Heap
+        self.load_entry(id as usize) as *mut Heap
     }
 }
 
@@ -1280,8 +1300,8 @@ mod tests {
 mod kani_assemble {
     use super::{MAX_TCACHES, T_INV, T_LOCK, T_TABLE, Tcaches};
     use crate::lock::Lock;
+    use crate::sync::patomic::PAtomicPtr;
     use core::mem::{MaybeUninit, size_of, transmute};
-    use core::sync::atomic::{AtomicPtr, Ordering};
     use vstd::prelude::{Ghost, Tracked};
 
     /// The table lock, named once, as in `arena::kani_put_stats`.
@@ -1317,7 +1337,7 @@ mod kani_assemble {
     #[kani::unwind(1025)]
     fn init_writes_every_field() {
         assert_eq!(T_TABLE, 0);
-        assert_eq!(T_LOCK, MAX_TCACHES * size_of::<AtomicPtr<u8>>());
+        assert_eq!(T_LOCK, MAX_TCACHES * size_of::<PAtomicPtr<u8>>());
         assert_eq!(T_INV, T_LOCK + size_of::<TableLock>());
         let mut slot = MaybeUninit::<Tcaches>::uninit();
         let p = slot.as_mut_ptr();
@@ -1346,13 +1366,13 @@ mod kani_assemble {
         }
         // SAFETY: `p` is inside the slot and aligned (`can_dereference`,
         // checked above), and every byte of the slot is initialised. The
-        // table's `AtomicPtr`s and the lock's `u32` hold a value of their
+        // table's `PAtomicPtr`s and the lock's `u32` hold a value of their
         // type at any bytes, and the rest of a `Tcaches` has no bytes but
         // the padding, so the bytes are a `Tcaches`.
         let t = unsafe { &*p };
         let c: usize = kani::any();
         kani::assume(c < MAX_TCACHES);
-        assert!(t.table[c].load(Ordering::Relaxed).is_null());
+        assert!(t.load_entry(c).is_null());
     }
 }
 

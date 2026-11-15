@@ -19,15 +19,48 @@ pub(crate) mod atomic {
 /// permission they take is erased.
 pub(crate) mod patomic {
     #[cfg(not(loom))]
-    pub(crate) use vstd::atomic::{PAtomicU8, PAtomicU32, PermissionU8, PermissionU32};
+    pub(crate) use vstd::atomic::{
+        PAtomicPtr, PAtomicU8, PAtomicU32, PermissionPtr, PermissionU8, PermissionU32,
+    };
 
     #[cfg(loom)]
     pub(crate) use loom_patomic::*;
 
     #[cfg(loom)]
     mod loom_patomic {
-        use loom::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+        use loom::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
         use vstd::prelude::Tracked;
+
+        /// The erased permission of a [`PAtomicPtr`].
+        pub(crate) struct PermissionPtr<T>(core::marker::PhantomData<*mut T>);
+
+        /// `vstd::atomic::PAtomicPtr` over loom's `AtomicPtr`.
+        pub(crate) struct PAtomicPtr<T> {
+            ato: AtomicPtr<T>,
+        }
+
+        impl<T> PAtomicPtr<T> {
+            pub(crate) fn new(v: *mut T) -> (Self, Tracked<PermissionPtr<T>>) {
+                (
+                    PAtomicPtr {
+                        ato: AtomicPtr::new(v),
+                    },
+                    Tracked::assume_new(),
+                )
+            }
+
+            pub(crate) fn load(&self, _perm: Tracked<&PermissionPtr<T>>) -> *mut T {
+                self.ato.load(Ordering::SeqCst)
+            }
+
+            pub(crate) fn store(&self, _perm: Tracked<&mut PermissionPtr<T>>, v: *mut T) {
+                self.ato.store(v, Ordering::SeqCst)
+            }
+
+            pub(crate) fn swap(&self, _perm: Tracked<&mut PermissionPtr<T>>, v: *mut T) -> *mut T {
+                self.ato.swap(v, Ordering::SeqCst)
+            }
+        }
 
         /// The erased permission of a [`PAtomicU32`].
         pub(crate) struct PermissionU32;

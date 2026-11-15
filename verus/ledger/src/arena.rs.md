@@ -373,14 +373,14 @@ Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena
 
 > `Arenas`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`) by the size, and neither array's element empty (as for `Arena`'s class states).
 
-Hashes: contract 1622318370, body none.
+Hashes: contract 3336027594, body none.
 
 ```rust
 axiom fn axiom_arenas_layout()
     ensures
-        field_fits::<Arenas, [AtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND as int),
-        0 < size_of::<AtomicPtr<Arena>>(),
-        MAX_ARENAS * size_of::<AtomicPtr<Arena>>() <= isize::MAX,
+        field_fits::<Arenas, [PAtomicPtr<Arena>; MAX_ARENAS]>(AR_TABLE, AR_BOUND as int),
+        0 < size_of::<PAtomicPtr<Arena>>(),
+        MAX_ARENAS * size_of::<PAtomicPtr<Arena>>() <= isize::MAX,
         field_fits::<Arenas, [PAtomicU32; MAX_ARENAS]>(AR_BOUND, AR_LOCK as int),
         0 < size_of::<PAtomicU32>(),
         MAX_ARENAS * size_of::<PAtomicU32>() <= isize::MAX,
@@ -406,12 +406,12 @@ Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
 
-Hashes: contract 1089354647, body none.
+Hashes: contract 1034589893, body none.
 
 ```rust
 axiom fn axiom_arenas_assemble(
     tracked parts: ArenasParts,
-    tracked tables: Map<int, PointsTo<AtomicPtr<Arena>>>,
+    tracked tables: Map<int, PointsTo<PAtomicPtr<Arena>>>,
     tracked bounds: Map<int, PointsTo<PAtomicU32>>,
     tracked pad: PointsToRaw,
     p: *mut Arenas,

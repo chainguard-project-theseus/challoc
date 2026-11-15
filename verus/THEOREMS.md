@@ -7291,7 +7291,7 @@ below `MAX_ARENAS`. `mallinfo2` (`api/glibc.rs`, verified) ensures
   loads the entry inside the registry's invariant (`vspec::entry::load`)
   and reads the arena through its frozen permission (`arena_ref`).
 - The ledger's `materialise` and `new_arena` steps abstract
-  `Arenas::build`'s release store of the entry and `Arenas::create`'s
+  `Arenas::build`'s store of the entry and `Arenas::create`'s
   `count` store (read from the code, as theorem 22's other steps).
 
 **Scope and where the statement is weaker than the code.**
@@ -9640,12 +9640,14 @@ pub proof fn theorem_tcache_destroyed_none(id: u16, tracked w: &TableWrite, trac
   table is written only by `Tcaches::init`'s `put_entry` and through
   `vspec::entry::store` in `create` and `vspec::entry::swap` in
   `destroy`.
-- `vspec::entry`'s wrapped atomic operations (`store`, `load`, `swap`,
-  `vspec/entry.rs`) and its identity rules. The proof model is
-  sequentially consistent: both records come from the table's
+- vstd's `PAtomicPtr`, which `vspec::entry`'s verified wrappers
+  (`store`, `load`, `swap`, `vspec/entry.rs`) call: each operation is
+  one atomic operation on the entry, `PAtomicPtr::new` mints the one
+  permission to the atomic it makes, and atomics have distinct
+  identities. The proof model is sequentially consistent, and vstd's
+  operations are `SeqCst`: both records come from the table's
   invariant, so neither the orderings of the accesses nor a history of
-  the table's writes are premises, and the chosen orderings are not
-  proved sufficient.
+  the table's writes are premises.
 - `axiom_tcaches_assemble`, with which `Tcaches::init` builds the
   invariant over the entries `vspec::entry::new` made, and
   `axiom_tcaches_layout`, discharged by a const assertion.

@@ -10,7 +10,7 @@
 //! threads in, and no harness constrains it.
 //!
 //! Then the trusted atomic wrappers of `vspec/byte.rs`,
-//! `vspec/entry.rs`, `vspec/word.rs` and `vspec/atom.rs`
+//! `vspec/word.rs` and `vspec/atom.rs`
 //! (all but its `load_usize_seen`, whose persistent set is ghost, and
 //! `usize_ptr`, checked in its own file), each run on a real `core`
 //! atomic. Their contracts state values through a ghost permission, which
@@ -29,7 +29,7 @@
 //! its harness leaves out. Each module's `*_bad_orders` harness shows that
 //! the orderings a `requires` excludes are the ones `core` panics on.
 
-use crate::vspec::{atom, byte, entry, word};
+use crate::vspec::{atom, byte, word};
 use core::cell::Cell;
 use core::sync::atomic::{
     AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
@@ -326,66 +326,6 @@ fn word_bad_orders() {
         word::store(&w, kani::any(), bad_store_order(), Tracked::assume_new());
     } else {
         word::load(&w, bad_load_order(), Tracked::assume_new());
-    }
-    super::must_not_return();
-}
-
-/// `vspec::entry::store`: under `!(ordering is Acquire) && !(ordering is
-/// AcqRel)`, `final(perm).value() == v`, for any two pointers (to a
-/// local, or from any address), compared by address (a pointer's
-/// provenance is not checked). Checked at `T = u64`, not challoc's
-/// `T = Arena`: `AtomicPtr` never reads through the pointer.
-#[kani::proof]
-fn entry_store() {
-    let mut x: u64 = kani::any();
-    let mut y: u64 = kani::any();
-    let a = AtomicPtr::new(any_ptr(&mut x));
-    let v = any_ptr(&mut y);
-    entry::store(&a, v, store_order(), Tracked::assume_new());
-    assert_eq!(a.load(Ordering::Relaxed), v);
-}
-
-/// `vspec::entry::load`: under `!(ordering is Release) && !(ordering is
-/// AcqRel)`, `r == perm.value()`, and the atomic is unchanged; at
-/// `T = u64`, as `entry_store`.
-#[kani::proof]
-fn entry_load() {
-    let mut x: u64 = kani::any();
-    let p = any_ptr(&mut x);
-    let a = AtomicPtr::new(p);
-    assert_eq!(entry::load(&a, load_order(), Tracked::assume_new()), p);
-    assert_eq!(a.load(Ordering::Relaxed), p);
-}
-
-/// `vspec::entry::swap`: `r == old(perm).value()` and
-/// `final(perm).value() == v`, under every ordering; at `T = u64`, as
-/// `entry_store`.
-#[kani::proof]
-fn entry_swap() {
-    let mut x: u64 = kani::any();
-    let mut y: u64 = kani::any();
-    let p = any_ptr(&mut x);
-    let a = AtomicPtr::new(p);
-    let v = any_ptr(&mut y);
-    assert_eq!(entry::swap(&a, v, any_order(), Tracked::assume_new()), p);
-    assert_eq!(a.load(Ordering::Relaxed), v);
-}
-
-/// The orderings `vspec::entry`'s `requires` exclude panic, as
-/// `word_bad_orders`. Not part of a contract.
-#[kani::proof]
-#[kani::should_panic]
-fn entry_bad_orders() {
-    let a = AtomicPtr::new(core::ptr::null_mut::<u64>());
-    if kani::any() {
-        entry::store(
-            &a,
-            core::ptr::null_mut(),
-            bad_store_order(),
-            Tracked::assume_new(),
-        );
-    } else {
-        entry::load(&a, bad_load_order(), Tracked::assume_new());
     }
     super::must_not_return();
 }

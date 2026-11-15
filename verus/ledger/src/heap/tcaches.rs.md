@@ -55,14 +55,14 @@ Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap
 
 > `Tcaches`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `inv`) by the size, and a table entry not empty.
 
-Hashes: contract 121335155, body none.
+Hashes: contract 623019862, body none.
 
 ```rust
 axiom fn axiom_tcaches_layout()
     ensures
-        field_fits::<Tcaches, [AtomicPtr<u8>; MAX_TCACHES]>(T_TABLE, T_LOCK as int),
-        0 < size_of::<AtomicPtr<u8>>(),
-        MAX_TCACHES * size_of::<AtomicPtr<u8>>() <= isize::MAX,
+        field_fits::<Tcaches, [PAtomicPtr<u8>; MAX_TCACHES]>(T_TABLE, T_LOCK as int),
+        0 < size_of::<PAtomicPtr<u8>>(),
+        MAX_TCACHES * size_of::<PAtomicPtr<u8>>() <= isize::MAX,
         // Over several lines, as in `arena::axiom_arena_layout`.
         field_fits::<
             Tcaches,
@@ -80,12 +80,12 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_assemble:
 
 > The written fields of the `Tcaches` at `p` (`Tcaches::split`'s parts and table entries, every one initialised), as the `Tcaches`: the value of each field is what its permission holds.
 
-Hashes: contract 2409023419, body none.
+Hashes: contract 2226354314, body none.
 
 ```rust
 axiom fn axiom_tcaches_assemble(
     tracked parts: TcachesParts,
-    tracked table: Map<int, PointsTo<AtomicPtr<u8>>>,
+    tracked table: Map<int, PointsTo<PAtomicPtr<u8>>>,
     tracked pad: PointsToRaw,
     p: *mut Tcaches,
 ) -> (tracked t: PointsTo<Tcaches>)

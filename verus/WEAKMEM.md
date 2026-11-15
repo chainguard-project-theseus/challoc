@@ -19,13 +19,14 @@ and not run.
 
 ## Inventory
 
-392 lines of source carry an `Ordering::` (`grep` over `src/`,
+376 lines of source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
 `src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
 `cfg(challoc_tls_check)`), `src/sync.rs`'s `cfg(loom)` stand-ins for
 vstd's atomics (built only by the loom crate), inline `#[cfg(test)]`
 and `#[cfg(kani)]` modules, and comment lines). The counters behind
-`vspec/count.rs` and the route byte behind `vspec/flags.rs` are vstd
+`vspec/count.rs`, the route byte behind `vspec/flags.rs` and the
+arena and explicit-cache table entries behind `vspec/entry.rs` are vstd
 atomics, whose operations are `SeqCst` with no ordering argument. The count keeps lines in `#[cfg(test)]`
 functions and statements outside those modules: `sys/abort.rs` and
 `sys/pac.rs` have only such lines (test hooks), and several other rows
@@ -46,7 +47,7 @@ a compiler barrier.
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 24 | `SlabDesc`: state, arena, `live`, dirty, `closed`, `shadow`, `stamp` |
-| `arena.rs` | 23 | registry `AtomicPtr`s, statistics |
+| `arena.rs` | 13 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
 | `api/mod.rs` | 23 | `STATE.line`, `INIT_TID`, `SEALED` |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 16 | watermark; bitmap and owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
@@ -55,7 +56,6 @@ a compiler barrier.
 | `bitmap.rs` | 10 | `&[AtomicU64]` words |
 | `class/pages.rs` | 8 | `hint_due`, `hint_armed`, `pages_due`, `Relaxed` |
 | `huge/mod.rs`, `huge/free.rs` | 7, 2 | `retain_max`, `purge_on_free`, `mixed_guards`, `Relaxed` |
-| `heap/tcaches.rs` | 6 | `[AtomicPtr<u8>; 1024]` |
 | `heap/shared.rs` | 2 | test code only: `parts`' watermark read and `set`'s `#[cfg(test)]` exchange (`free_flags` goes through `vspec::flags`, `SeqCst`, with no ordering argument) |
 | `sys/abort.rs`, `sys/pac.rs` | 2, 2 | test hooks only: `REAL_ABORT` and `TEST_OPS`, under `#[cfg(test)]` |
 
@@ -219,14 +219,15 @@ a compiler barrier.
 
 ### P6. Explicit caches and the arena registry
 
-- `Tcaches::create` (`heap/tcaches.rs`) stores `Release` under the
-  table lock; `get` loads `Acquire` without it; `destroy` swaps
-  `AcqRel`, then frees. Concurrent use of one explicit cache, or use
-  after `destroy`, is the caller's bug, as in jemalloc.
-- Arena entries (`arena.rs`) are stored `Release` and loaded `Acquire`
-  (through `vspec/entry.rs`); `Arenas::count` is stored and loaded
-  `SeqCst` (vstd's `PAtomicU32`, through `vspec/count.rs`), which
-  includes release and acquire.
+- The explicit-cache and arena table entries are vstd `PAtomicPtr`s
+  (through `vspec/entry.rs`), every operation `SeqCst`, which includes
+  release and acquire. `Tcaches::create` (`heap/tcaches.rs`) stores
+  under the table lock; `get` loads without it; `destroy` swaps, then
+  frees. Concurrent use of one explicit cache, or use after `destroy`,
+  is the caller's bug, as in jemalloc.
+- Arena entries (`arena.rs`) are stored by `build` and loaded by the
+  readers; `Arenas::count` is stored and loaded `SeqCst` (vstd's
+  `PAtomicU32`, through `vspec/count.rs`).
 - Thread heaps are touched only by their own thread; no code walks
   another thread's heap.
 
@@ -653,8 +654,9 @@ shows the check can fail.
   and `api::arena_held` prove for the fork handlers in the SC model; and
   the count ends at the lock's value. Controls: the count stored before
   `build` stores the entry lets a scan see a count before its arena (the
-  count's store is vstd's `SeqCst`, which takes no weaker ordering); a
-  `Relaxed` entry store races.
+  count's store is vstd's `SeqCst`, which takes no weaker ordering); the
+  entry stored before `build` writes the arena's fields races (the
+  entry's store is vstd's `SeqCst` too).
 - Policy position, `position.rs` (`Policy::scaled16`, one more than the
   position; copies of `apply`'s swap and `position`): two concurrent
   appliers and a reader. Every load is a stored value, at most
@@ -742,7 +744,7 @@ atomics with the
 permissions erased: evidence for the callers' hand-offs under the models
 named, which moves no status (the "status" column marks a copy).
 
-37 seams cite loom, and every one is partly checked
+26 seams cite loom, and every one is partly checked
 (`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
 (`lock.rs.md`, tool loom/GenMC) stays trusted: its contract is
 termination, and the lock models show deadlock freedom only. Drepper's
@@ -771,8 +773,6 @@ another thread's exchange as often as other threads retake the lock.
 | `vspec/byte.rs.md` | `load` | partly checked (Kani, loom) |
 | `vspec/byte.rs.md` | `store` | partly checked (Kani, loom) |
 | `vspec/byte.rs.md` | `compare_exchange` | partly checked (Kani, loom, GenMC) |
-| `vspec/entry.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
-| `vspec/entry.rs.md` | `load` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `WordPerm` | partly checked (loom) |
 | `vspec/word.rs.md` | `fetch_or` | partly checked (Kani, loom, GenMC) |
 | `vspec/word.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
@@ -825,8 +825,8 @@ The arguments, by group (the overrides comments give each in full):
   outcome). `store_owner` is the owner word's only write (Verus's
   markers) and records the value (`u16_value`) inside the word's
   invariant (`table::OwnerPred`). Watermark, free and bitmap models.
-- The entry and byte wrappers (`vspec/entry.rs`, `vspec/byte.rs`): the
-  narenas and once-cell models check their release/acquire pairs.
+- The byte wrappers (`vspec/byte.rs`): the once-cell model checks their
+  release/acquire pairs.
 - The slab descriptor accessors (`slab.rs`): every access through a
   permission is made holding the lock whose value holds it (the commit
   lock's, then the class lock's), so successive holders are ordered by
