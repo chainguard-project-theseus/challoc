@@ -261,6 +261,44 @@ pub open spec fn draws_state(k: nat, st: u64) -> u64
     }
 }
 
+/// The state after `k` [`xorshift`] steps from `st`.
+pub open spec fn xorshift_iter(k: nat, st: u64) -> u64
+    decreases k,
+{
+    if k == 0 {
+        st
+    } else {
+        xorshift_spec(xorshift_iter((k - 1) as nat, st))
+    }
+}
+
+/// `b` steps then `a` steps are `a + b` steps.
+pub(crate) proof fn lemma_xorshift_iter_add(a: nat, b: nat, st: u64)
+    ensures
+        xorshift_iter(a, xorshift_iter(b, st)) == xorshift_iter(a + b, st),
+    decreases a,
+{
+    if a > 0 {
+        lemma_xorshift_iter_add((a - 1) as nat, b, st);
+        assert((a - 1) as nat + b == (a + b - 1) as nat);
+    }
+}
+
+/// A pass from a non-zero state leaves a non-zero state: each draw is one
+/// [`xorshift`] step ([`theorem_xorshift_nonzero`]).
+pub(crate) proof fn lemma_draws_state_nonzero(k: nat, st: u64)
+    requires
+        st != 0,
+    ensures
+        draws_state(k, st) != 0,
+    decreases k,
+{
+    if k > 1 {
+        theorem_xorshift_nonzero(st);
+        lemma_draws_state_nonzero((k - 1) as nat, xorshift_spec(st));
+    }
+}
+
 /// Draw `i` picks one of the entries `0..=i`, for each of `k` entries:
 /// the choices of a Fisher-Yates pass.
 pub open spec fn valid_draws(c: Seq<int>, k: nat) -> bool {
@@ -1390,6 +1428,14 @@ spec fn picks_sum(p: Seq<Pick>, k: int) -> int
     decreases k,
 {
     if k <= 0 { 0 } else { picks_sum(p, k - 1) + p[k - 1].n }
+}
+
+/// How many of the first `k` picks scan their slab's bitmap (not a zero
+/// pick): with `slot_randomize`, `finish` draws one start word for each.
+spec fn scans(p: Seq<Pick>, k: int) -> nat
+    decreases k,
+{
+    if k <= 0 { 0 } else { scans(p, k - 1) + if p[k - 1].zero { 0nat } else { 1nat } }
 }
 
 /// The first `np` picks name slabs below `nslabs` and reserve at most a
@@ -3196,7 +3242,9 @@ impl ClassState {
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
             meta.is_process(),
+            *old(rng) != 0,
         ensures
+            *final(rng) != 0,
             *final(ord) == *old(ord),
             r.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -3281,7 +3329,9 @@ impl ClassState {
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
             meta.is_process(),
+            *old(rng) != 0,
         ensures
+            *final(rng) != 0,
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -3291,7 +3341,11 @@ impl ClassState {
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
         let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
-        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks), Tracked(&mut ex), pubw, Tracked(ord));
+        let (c, Tracked(z)) = self.claim_with(meta, out, Some(&mut *rng), Tracked(toks), Tracked(&mut ex), pubw, Tracked(ord));
+        // The shuffle starts from a non-zero state: the start-word draws
+        // in `finish` keep it so.
+        assert(*rng != 0);
+        let ghost st = *rng;
         let tracked mut z = z;
         let ghost mid = out@;
         let ghost size = class_table()[self.spec_class() as int].size as int;
@@ -3311,6 +3365,7 @@ impl ClassState {
         let ghost o0 = *old(toks);
         shuffle_zero(&mut out[..c.n], rng, Ghost(c.zeroed), Ghost(size), Tracked(&mut z), Ghost(Some(self.spec_table().spec_slots().loc)), Tracked(&mut toks.toks));
         proof {
+            lemma_draws_state_nonzero(c.n as nat, st);
             assert(out@.subrange(0, c.n as int) == out@[..c.n as int]);
             // The batch handed out is the batch `claim_with` wrote, reordered.
             assert(permutes(out@.subrange(0, c.n as int), mid.subrange(0, c.n as int)));
@@ -3375,7 +3430,10 @@ impl ClassState {
             old(ord).allows(rank_class(0, 0)),
             self.published_by(*pubw@),
             meta.is_process(),
+            rng matches Some(g) ==> *g != 0,
         ensures
+            rng matches Some(g) ==> *final(g) != 0,
+            rng matches Some(g) ==> exists|k: nat| *final(g) == #[trigger] xorshift_iter(k, *g),
             *final(ord) == *old(ord),
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
@@ -3401,10 +3459,14 @@ impl ClassState {
         let mut zeroed = true;
         let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
         let ghost mut dry = false;
+        let ghost rng0 = rng;
+        let ghost mut nd: nat = 0;
         while got < out.len()
             invariant_except_break
                 !dry,
             invariant
+                rng0 matches Some(g0) ==> (rng matches Some(g) && *g != 0 && *g == xorshift_iter(nd, *g0) && *final(g) == *final(g0)),
+                rng0 is None ==> rng is None,
                 crate::sys::may_abort(),
                 crate::sys::may_syscall(),
                 self.published_by(*pubw@),
@@ -3451,8 +3513,24 @@ impl ClassState {
                 assert(picks_toks(t, picks@.subrange(0, np as int), 0, np as int, ptoks));
                 assert(picks_marks(t, picks@.subrange(0, np as int), 0, np as int, pm));
             }
-            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut(), Tracked(ptoks), Tracked(pz), Tracked(pm), Tracked(&mut *toks), Tracked(&mut z), Ghost(got as int));
+            // `rng.as_deref_mut()`, spelled out: `as_mut` carries the
+            // state's final value back to `rng` (vstd specifies it). A
+            // `match` rather than `map`, so the reborrow is in Verus's
+            // view, not inside a closure.
+            #[allow(clippy::manual_map)]
+            let lent = match rng.as_mut() {
+                Some(r) => Some(&mut **r),
+                None => None,
+            };
+            let ghost sc = scans(picks@.subrange(0, np as int), np as int);
+            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, lent, Tracked(ptoks), Tracked(pz), Tracked(pm), Tracked(&mut *toks), Tracked(&mut z), Ghost(got as int));
             proof {
+                // `finish` drew one start word per scanning pick.
+                match rng0 {
+                    Some(q0) => lemma_xorshift_iter_add(sc, nd, *q0),
+                    None => {},
+                }
+                nd = sc + nd;
                 assert forall|i: int| 0 <= i < g0 implies #[trigger] out@[i] == o0[i] by {}
                 assert forall|i: int| 0 <= i < got implies toks.entry(t, #[trigger] out@[i], 0 + i) by {
                     if i < g0 {
@@ -3528,7 +3606,11 @@ impl ClassState {
             picks_zero(self.spec_table(), picks@, 0, picks@.len() as int, pz),
             picks_toks(self.spec_table(), picks@, 0, picks@.len() as int, ptoks),
             picks_marks(self.spec_table(), picks@, 0, picks@.len() as int, pm),
+            rng matches Some(g) ==> *g != 0,
         ensures
+            rng matches Some(g) ==> *final(g) != 0,
+            // One draw per scanning pick, and nothing else touches the state.
+            rng matches Some(g) ==> *final(g) == xorshift_iter(scans(picks@, picks@.len() as int), *g),
             r == picks_sum(picks@, picks@.len() as int),
             *final(zeroed) ==> *old(zeroed),
             *final(zeroed) ==> zero_keys(*final(zt), final(out)@, base, 0, r as int, class_table()[self.spec_class() as int].size as int),
@@ -3554,6 +3636,7 @@ impl ClassState {
             assert(out@.len() == out.len());
             _t0.lemma_slots_wf();
         }
+        let ghost rng0 = rng;
         let check_zero = purge::check_zero();
         let mut got: usize = 0;
         // `for pick in picks`, spelled out: Verus rejects `continue` in a
@@ -3563,6 +3646,8 @@ impl ClassState {
         let ghost mut i: int = 0;
         loop
             invariant
+                rng0 matches Some(g0) ==> (rng matches Some(g) && *g != 0 && *g == xorshift_iter(scans(picks@, i), *g0) && *final(g) == *final(g0)),
+                rng0 is None ==> rng is None,
                 self.is_process(),
                 crate::sys::may_abort(),
                 check_zero ==> crate::vspec::user::may_read_user(),
@@ -3596,6 +3681,7 @@ impl ClassState {
                 otoks.holds(*_t0, out@, base, 0, got as int),
                 otoks.frame(*old(otoks), base, base + got),
             ensures
+                rng0 matches Some(g0) ==> (rng matches Some(g) && *g != 0 && *g == xorshift_iter(scans(picks@, picks@.len() as int), *g0) && *final(g) == *final(g0)),
                 got == picks_sum(picks@, picks@.len() as int),
                 out@.len() == old(out)@.len(),
                 bit_slots_in(out@, self.spec_class() as int, 0, got as int),
@@ -3679,9 +3765,15 @@ impl ClassState {
             let want = pick.n as usize;
             let ghost f = slab * s.sb;
             if pick.zero {
+                proof {
+                    // A zero pick draws nothing.
+                    assert(scans(picks@, i) == scans(picks@, pi));
+                }
                 // Bits `0..want` were claimed under the lock (`claim_prefix`).
                 for k in 0..want
                     invariant
+                        rng0 matches Some(g0) ==> (rng matches Some(g) && *g != 0 && *g == xorshift_iter(scans(picks@, i), *g0) && *final(g) == *final(g0)),
+                        rng0 is None ==> rng is None,
                         self.is_process(),
                         got + want <= out@.len(),
                         out@.len() <= usize::MAX,
@@ -3804,12 +3896,24 @@ impl ClassState {
             let pages = t.pages(slab);
             let geometry = t.page_view();
             let mut k: usize = 0;
-            let mut word = match rng.as_deref_mut() {
-                Some(r) => (xorshift(r) as usize) % words,
+            let mut word = match rng.as_mut() {
+                Some(r) => {
+                    proof {
+                        theorem_xorshift_nonzero(**r);
+                    }
+                    (xorshift(r) as usize) % words
+                },
                 None => 0,
             };
             let mut empty_passes = 0u32;
             proof {
+                // This pick scans: one draw more, and its start word is
+                // that draw's output modulo the bitmap's words.
+                assert(scans(picks@, i) == scans(picks@, pi) + 1);
+                match rng0 {
+                    Some(q0) => assert(word == (xorshift_iter(scans(picks@, i), *q0) as usize) % words),
+                    None => assert(word == 0),
+                }
                 assert(picks_marks(*_t0, picks@, i, picks@.len() as int, pm));
                 // The pick's slab's witness marker covers its bits.
                 assert(pm0.contains_key(seen_key(pi)));
@@ -3817,6 +3921,8 @@ impl ClassState {
             }
             while k < want
                 invariant
+                    rng0 matches Some(g0) ==> (rng matches Some(g) && *g != 0 && *g == xorshift_iter(scans(picks@, i), *g0) && *final(g) == *final(g0)),
+                    rng0 is None ==> rng is None,
                     crate::sys::may_abort(),
                     k <= want,
                     word < words,
@@ -3936,6 +4042,8 @@ impl ClassState {
                 }
                 while m != 0
                     invariant
+                        rng0 matches Some(g0) ==> (rng matches Some(g) && *g != 0 && *g == xorshift_iter(scans(picks@, i), *g0) && *final(g) == *final(g0)),
+                        rng0 is None ==> rng is None,
                         k + popcount(m) == k0 + popcount(bits),
                         k0 + popcount(bits) <= want,
                         subset(m, slab_mask_of(sb)),

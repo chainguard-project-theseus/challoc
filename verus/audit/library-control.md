@@ -4,10 +4,11 @@
 library, function pointer, panic/abort and termination, made during
 [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
-*This file lists the 113 of those seams that the ledger still lists:
+*This file lists the 112 of those seams that the ledger still lists:
 the 116 the ledger at `26f535a9` listed, less the three statistics
 figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`), which are
-verified since. The others are verified at `26f535a9` or no longer exist
+verified since, and `Option::as_deref_mut`, which no code calls and
+whose seam is gone. The others are verified at `26f535a9` or no longer exist
 (among them `parse_from` and the `Display` spec of `sys::cgroup::Cgroup`,
 now verified), so their rows are left out; seams of this scope that the
 audit did not cover are not listed. Each row names the seam by its item
@@ -29,7 +30,7 @@ false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 113 seams listed: 108 sound and 5 fixed; 81 discharged,
+Totals for the 112 seams listed: 107 sound and 5 fixed; 80 discharged,
 9 partly checked and 23 trusted. The category column is
 the ledger's; a few seams of this audit sit in another category there.
 
@@ -119,7 +120,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `PartialEqSpecImpl for huge::RunState` | `vspec/misc.rs` | core library | discharged | sound | As `PartialEqSpecImpl for config::Thp`. |
 | `Option::<T>::map_or` | `vspec/sys.rs` | core library | discharged | sound | `default` for `None`, `f`'s result for `Some`. |
 | `str::as_ptr` | `vspec/misc.rs` | core library | discharged | sound | No `ensures`. |
-| `Option::<T>::as_deref_mut` | `vspec/misc.rs` | core library | discharged | sound | No `ensures`, and `final(o)` is left unconstrained (weaker than the truth). |
 | `<u64>::div_ceil` | `vspec/mod.rs` | core library | trusted | sound | As `usize::div_ceil`, for `u64`. |
 | `base_slab_sizes` | `vspec/print.rs` | function pointer | discharged | sound | Requires `hi < NCLASSES`, no `ensures`. |
 | `PartialEqSpecImpl for config::PercpuArena` | `vspec/print.rs` | core library | discharged | sound | As `PartialEqSpecImpl for config::Thp`. |

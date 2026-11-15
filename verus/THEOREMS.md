@@ -2398,6 +2398,26 @@ pub(super) fn rng(&mut self) -> (r: &mut u64)   // heap/flush.rs
     ensures
         // ... only `rng` changes ...
         *r != 0,
+
+// The start-word draws between `Heap::rng` and the shuffle (#749).
+pub open spec fn xorshift_iter(k: nat, st: u64) -> u64   // k xorshift steps
+fn finish(&self, picks: &[Pick], .., rng: Option<&mut u64>, ..) -> (r: usize)   // ClassState
+    requires
+        rng matches Some(g) ==> *g != 0,
+    ensures
+        rng matches Some(g) ==> *final(g) != 0,
+        rng matches Some(g) ==> *final(g) == xorshift_iter(scans(picks@, picks@.len() as int), *g),
+fn claim_with(&self, .., rng: Option<&mut u64>, ..) -> (r: (Claim, ..))   // ClassState
+    requires
+        rng matches Some(g) ==> *g != 0,
+    ensures
+        rng matches Some(g) ==> *final(g) != 0,
+        rng matches Some(g) ==> exists|k: nat| *final(g) == xorshift_iter(k, *g),
+pub fn claim_random_zero(&self, .., rng: &mut u64, ..) -> (r: (Claim, ..))   // ClassState
+    requires
+        *old(rng) != 0,
+    ensures
+        *final(rng) != 0,
 ```
 
 The order a shuffle hands out is a function of the batch and the
@@ -2418,7 +2438,19 @@ about the order is exactly what it can predict about the draws.
 (each of the three steps maps only zero to zero; bit-vector proofs), and
 `Heap::rng`, which `Heap::claim` calls before every randomized refill,
 ensures the state it hands out is non-zero. A zero state would be stuck:
-every draw 0 and every batch the same order.
+every draw 0 and every batch the same order. Between `Heap::rng` and the
+shuffle the state passes through `claim_with` and `finish`, which draw
+one start word for each pick that scans its slab's bitmap (`scans`
+counts them; a `Fresh` or `Purged` prefix draws nothing). `finish`
+ensures the state it returns is exactly that many `xorshift` steps from
+the one it took and asserts the `j`-th scan starts at word
+`xorshift_iter(j, st) % words`; `claim_with` ensures its result is some
+number of steps from its input; and `claim_random_zero` requires a
+non-zero state and ensures one, so the shuffle starts from a non-zero
+state (through the draws, the non-zero conjunct of `claim_with`'s and
+`finish`'s loop invariants, kept by `theorem_xorshift_nonzero` at each
+draw; through the shuffle, `lemma_draws_state_nonzero`). Nothing else touches
+the state.
 
 **Proof.** The loop names its iterator (`for i in it: (1..len).rev()`)
 so the invariant can say how many entries remain, `k = n - it.index()`:
@@ -2435,7 +2467,26 @@ the first differing draw puts different entries there.
 **Premises beyond the common ones.** None. The proof uses only the
 `assume_specification` of `<[T]>::swap` (`vspec/slice.rs`;
 discharged by Kani, ledger `verus/ledger/src/vspec/slice.rs.md`), vstd's
-`Rev` and range iterator specs, and vstd's multiset lemmas.
+`Rev` and range iterator specs, vstd's multiset lemmas, and vstd's
+`Option::as_mut` specification (the reborrow `claim_with` and `finish`
+lend the state through; it carries the state's final value back to the
+lender).
+
+| Fact used | Where | Status |
+|---|---|---|
+| A reborrow through `Option::as_mut` returns its final value to the option | vstd `std_specs/option.rs` | vstd's specification |
+| `xorshift` computes `xorshift_spec` | `class::xorshift` | proved |
+| A non-zero state stays non-zero | `theorem_xorshift_nonzero`, `lemma_draws_state_nonzero` | proved (bit-vector, induction) |
+| `Heap::rng` hands out a non-zero state | `heap/flush.rs` | proved |
+
+**Mutations** (each `cargo verus focus --verify-only-module class`):
+
+| id | change | result |
+|---|---|---|
+| N1 | `finish` draws twice per scanning pick | rejected: the start-word assertion and the scan loop's invariant |
+| N2 | an empty pass sets the state to 0 | rejected: the scan loop's invariant (`*g != 0`) at the `continue` |
+| N3 | `claim_random_zero` drops `*old(rng) != 0` | rejected: `claim_with`'s precondition |
+| N4 | `claim_random_zero` passes `None` to `claim_with` (no random start words) | accepted: the contracts say how many draws a randomized claim makes, not that `claim_random_zero` asks for one; the start word changes which slots are claimed, which no contract states |
 
 **Scope.**
 - Randomness is out of scope: nothing is claimed about the distribution
@@ -2451,19 +2502,12 @@ discharged by Kani, ledger `verus/ledger/src/vspec/slice.rs.md`), vstd's
   heap-layout obstacle, not a secret (the `xorshift` doc comment). It is
   off by default because it works against compaction
   (`docs/hardening.md` (2)), not because of these limits.
-- The state reaching the shuffle has passed through the start-word draws
-  of `claim_with`'s picks. `xorshift` keeps it non-zero
-  (`theorem_xorshift_nonzero`), but `claim_with` and `finish` do not
-  carry that in their `ensures` (they take the state as an
-  `Option<&mut u64>`), so the non-zero fact is stated at `Heap::rng`, not
-  at the shuffle's entry
-  ([#749](https://github.com/chainguard-project-theseus/challoc/issues/749)).
 - The random start word of each pick that scans the bitmap in `finish`
-  (not a `Fresh` or `Purged` prefix; `(xorshift(r) as usize) % words`)
-  changes which free slots are claimed; the claim contract (slot tokens,
+  (not a `Fresh` or `Purged` prefix) changes which free slots are
+  claimed, not the batch's order; the claim contract (slot tokens,
   `is_slot`, theorem 5's token protocol) is proved for every start word.
-  Stating the start word as a function of the state is
-  [#749](https://github.com/chainguard-project-theseus/challoc/issues/749).
+  Which free slots that start word finds also depends on concurrent
+  claims and frees, so the batch is not a function of the state alone.
 
 **Where the statement is weaker than the code.**
 - `permutes` is stated on `shuffle_zero`'s argument and, inside

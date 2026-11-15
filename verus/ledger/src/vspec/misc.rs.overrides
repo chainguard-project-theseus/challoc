@@ -8,7 +8,6 @@ PartialEqSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proof
 PartialEqSpecImpl for thp::Mode	core library	Kani	discharged (Kani: kani_proofs::eq::eq_thp_mode)	contract 133759271, body none
 core::sync::atomic::fence	core library	Kani	discharged (Kani: kani_proofs::atomic::fence)	contract 4116312669, body none
 core::hint::assert_unchecked	core library	Kani	discharged (Kani: kani_proofs::misc::hint_assert_unchecked)	contract 661612994, body none
-Option::<T>::as_deref_mut	core library	Kani	discharged (Kani: kani_proofs::misc::option_as_deref_mut)	contract 1129125566, body none
 str::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::str_as_ptr)	contract 520286978, body none
 Option::<T>::or_else	core library	Kani	discharged (Kani: kani_proofs::misc::option_or_else)	contract 3760740912, body none
 core::hint::black_box	core library	Kani	discharged (Kani: kani_proofs::misc::hint_black_box)	contract 2369696214, body none

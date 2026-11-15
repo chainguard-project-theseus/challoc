@@ -45,7 +45,7 @@ where some of the CVEs below lived, are not targets.
 | [CVE-2021-26461](https://nvd.nist.gov/vuln/detail/CVE-2021-26461) | 2021 | integer wrap-around in a size computation ("BadAlloc") | Apache NuttX `malloc`, `realloc`, `memalign` | `api::libc::malloc`, `realloc` (`realloc_block`), `alloc_aligned` | 2: `fits` on each, a kept `realloc` block included (`kept`, theorem 1) |
 | [CVE-2021-27419](https://nvd.nist.gov/vuln/detail/CVE-2021-27419) | 2021 | integer wrap-around in a size computation ("BadAlloc") | uClibc-ng `malloc-simple` | `api::libc::malloc` | 2: `fits(r, size, QUANTUM)` |
 | [CVE-2023-4911](https://nvd.nist.gov/vuln/detail/CVE-2023-4911) | 2023 | configuration read in a secure-execution process (malloc tunables through `GLIBC_TUNABLES`) | glibc `ld.so` tunables parser | `config::load`, `config::linux::env_var` | Secure-exec configuration (`config::linux::theorem_secure_conf`): no `env_var` call returns when `AT_SECURE` is set. Test `c_cve_2023_4911` |
-| [CVE-2023-21366](https://source.android.com/docs/security/bulletin/android-14) | 2023 | predictable allocation pattern | Android Scudo (design) | `class` refill and `shuffle_zero` under the opt-in `slot_randomize` key | Theorem 11 (order): the shuffle's order is `fisher_yates` of the batch over the generator's `draws`, a bijection from draws to orders (`theorem_shuffle_order_injective`, `theorem_shuffle_order_reach`), and the state is never zero (`theorem_xorshift_nonzero`, `Heap::rng`). Unpredictability itself is probabilistic and not claimed (#738, intentionally not pursued). The start-word draw and the non-zero state through `claim_with`/`finish`: [#749](https://github.com/chainguard-project-theseus/challoc/issues/749). The bulletin gives no technical detail; mapping to this class is from the CVE description |
+| [CVE-2023-21366](https://source.android.com/docs/security/bulletin/android-14) | 2023 | predictable allocation pattern | Android Scudo (design) | `class` refill and `shuffle_zero` under the opt-in `slot_randomize` key | Theorem 11 (order): the shuffle's order is `fisher_yates` of the batch over the generator's `draws`, a bijection from draws to orders (`theorem_shuffle_order_injective`, `theorem_shuffle_order_reach`), and the state is never zero (`theorem_xorshift_nonzero`, `Heap::rng`). Unpredictability itself is probabilistic and not claimed (#738, intentionally not pursued). The start-word draw and the non-zero state through `claim_with`/`finish` (#749): `finish` ensures one `xorshift` step per scanning pick (`xorshift_iter`), and `claim_random_zero` carries a non-zero state to the shuffle's entry. The bulletin gives no technical detail; mapping to this class is from the CVE description |
 | [CVE-2023-21367](https://source.android.com/docs/security/bulletin/android-14) | 2023 | heap out-of-bounds read or write turned into an exploit (allocator design) | Android Scudo (design) | every allocation entry point | Partial: `heap::theorem_overflow_reach` (metadata and other regions), 7 Guard pages, 4; inside the block's own region, `heap::theorem_guard_reach` (a stop within the class's guard interval, guards on) and `huge::RunToken::theorem_token_guards` ([#737](https://github.com/chainguard-project-theseus/challoc/issues/737)). Neighbours inside that bound are reachable. The bulletin gives no technical detail |
 | [CVE-2026-0861](https://nvd.nist.gov/vuln/detail/CVE-2026-0861), [GLIBC-SA-2026-0001](https://sourceware.org/git/?p=glibc.git;a=blob_plain;f=advisories/GLIBC-SA-2026-0001) | 2026 | integer overflow in a size computation (`size` near `PTRDIFF_MAX` with alignment up to `1 << 63`) | glibc `memalign`, `posix_memalign`, `aligned_alloc` (2.30 to 2.42) | `api::libc::aligned_alloc_block`, `posix_memalign_block`, `alloc_aligned` | 2: `fits(r, size, align)` for every power-of-two `align`, `1 << 63` included; "Bad input": a non-power-of-two `align` (memalign's `[2^62 + 1, 2^63)`) is `EINVAL`. No CVE-named test (see "Reproducers") |
 | jemalloc 4.0.0 ChangeLog | 2015 | integer overflow in a size computation (size classes, profiling on) | jemalloc `malloc`, `posix_memalign`, `memalign`, `calloc`, `realloc` | the same entry points in `api::libc` | 2 (challoc has no heap profiler) |
@@ -420,11 +420,14 @@ THEOREMS.md "Same-region overflow reach".
 > shuffle: `shuffle_zero` ensures its result is `fisher_yates` over
 > `draws(n, rng)`, Fisher-Yates is a bijection from valid draws to
 > orders, and `Heap::rng` hands out only non-zero states, which
-> `xorshift` keeps non-zero (THEOREMS.md 11). Tracked in
+> `xorshift` keeps non-zero (THEOREMS.md 11). Done in
 > [#749](https://github.com/chainguard-project-theseus/challoc/issues/749):
-> the start word's draw (it changes which free slots are claimed, not
-> the batch's order) and carrying the non-zero state through
-> `claim_with`/`finish` to the shuffle's entry. Intentionally not
+> `finish` ensures the state it returns is `xorshift_iter` of the state
+> it took, one step per scanning pick, and asserts that the `j`-th
+> scanning pick starts at word `xorshift_iter(j, st) % words`;
+> `claim_with` ensures the state it returns is an iterate of the
+> one it took; and `claim_random_zero` requires and ensures a non-zero
+> state, which reaches the shuffle's entry non-zero. Intentionally not
 > pursued: the distribution of the draws (probabilistic, outside what
 > Verus states).
 

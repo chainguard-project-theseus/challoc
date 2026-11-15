@@ -3,9 +3,8 @@
 //! `huge::RunState`, `slab::State` (`class::ClassState::take`) and
 //! `thp::Mode` (`class::table::SlabTable::commit_slab` and
 //! `commit_page_group`); and of
-//! `fence`, `core::hint::assert_unchecked`, `core::hint::black_box`,
-//! `AtomicU32::as_ptr` and
-//! `Option::as_deref_mut`; and the type `PhantomPinned` (a field of
+//! `fence`, `core::hint::assert_unchecked`, `core::hint::black_box` and
+//! `AtomicU32::as_ptr`; and the type `PhantomPinned` (a field of
 //! `heap::Heap`).
 
 use vstd::prelude::*;
@@ -116,12 +115,6 @@ pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::
 } // verus!
 
 verus! {
-
-/// `Option::as_deref_mut`: a reborrow of the contents. Nothing is claimed
-/// about the result; its callers (`ClassState::claim_with` and
-/// `ClassState::finish`) only pass the reference on, to `finish` and to
-/// `xorshift`.
-pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
 
 /// `Option::or_else`: `option` itself when it is `Some`, else `f()`. Its
 /// caller is `heap::mallocx::alloc`'s arena choice.

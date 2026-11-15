@@ -126,27 +126,6 @@ fn option_copied() {
     }
 }
 
-/// `Option::<T>::as_deref_mut`: no `ensures`; it returns without a panic
-/// (here: `None` for `None`, else a reborrow of the contents, through
-/// which a write lands in the option).
-#[kani::proof]
-fn option_as_deref_mut() {
-    let mut x: [u64; 1] = kani::any();
-    let v: u64 = kani::any();
-    let some: bool = kani::any();
-    let mut o: Option<&mut [u64; 1]> = if some { Some(&mut x) } else { None };
-    match o.as_deref_mut() {
-        Some(r) => {
-            assert!(some);
-            r[0] = v;
-        }
-        None => assert!(!some),
-    }
-    if some {
-        assert_eq!(x[0], v);
-    }
-}
-
 /// `vspec::layout::layout_ok` of a layout, reading `layout_size` and
 /// `layout_align` as `Layout::size` and `Layout::align`: the alignment is
 /// `pow2(k)` for a `k < 64`, and `size + align - 1 <= isize::MAX` in
