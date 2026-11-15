@@ -1509,16 +1509,18 @@ proof fn theorem_run_counted(tracked g: &Inner, tracked t: &RunToken)
 }
 
 /// The extent `(s, n)` of a run token, which the extents' authority
-/// holds, is that of the `Active` descriptor `d` that starts at `s`: no
-/// other extent has page `s`.
+/// holds, is that of the `Active` descriptor `d` that starts on one of
+/// its pages: no other extent has a page in `s..s + n`, so `d` starts at
+/// `s`, never on an interior page or the guard.
 proof fn lemma_token_extent(g0: Inner, d: *mut HugeDesc, s: int, n: int)
     requires
         g0.wf(),
         g0.runs@@.contains((s, n)),
         g0.descs@.contains_key(d),
         g0.descs@[d].value().state == RunState::Active as u8,
-        g0.descs@[d].value().start == s,
+        s <= g0.descs@[d].value().start < s + n,
     ensures
+        g0.descs@[d].value().start == s,
         n == g0.descs@[d].value().pages,
 {
     lemma_active(g0.descs@);

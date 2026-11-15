@@ -48,7 +48,7 @@ use crate::vspec::cbuf::{CCall, COut};
 use crate::vspec::errno::{ThreadErrno, set_errno};
 use crate::vspec::usable::Stored;
 #[cfg(verus_keep_ghost)]
-use crate::vspec::usable::{usable_is, usable_of};
+use crate::vspec::usable::{run_interior, usable_is, usable_of};
 use crate::vspec::zero::Zeroed;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::covers_usable;
@@ -1093,7 +1093,10 @@ fn free_before_init(p: *mut u8) -> !
 /// slot from the dense arrays, `check_live` tests the bit, and the size is
 /// the class's. A huge run's is what its descriptor records
 /// ([`crate::huge::Huge::usable_size`]). With a token that claims `p`
-/// ([`Live::claims`]), the result is the block's usable bytes.
+/// ([`Live::claims`]), the result is the block's usable bytes. With the
+/// token of a live run, `p` is not one of the run's later pages
+/// ([`run_interior`]): a query of an interior page or the guard does
+/// not return.
 #[inline(always)]
 pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
     requires
@@ -1107,6 +1110,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tr
         crate::layout::process_regions().is_huge_block(p as usize, 1) ==> shared.huge_run_usable(p as usize, r),
         usable_of(p, r as int),
         blk.claims(p) ==> blk.block(p) && r == blk.len(),
+        blk.run_opt() is Some ==> !run_interior(blk.run_opt().unwrap(), p as usize),
         // No block at address 0: NULL aborts, and the size is positive.
         p@.addr != 0,
         0 < r,
@@ -1135,6 +1139,8 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tr
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
                 crate::vspec::usable::lemma_usable_of_pos(p, class_table()[class as int].size as int);
+                // A slot is no page of the huge region.
+                crate::vspec::zero::lemma_slot_not_huge(class as int, p@.addr);
                 if blk.claims(p) {
                     blk.lemma_claims_slot(p, class as int);
                     blk.lemma_claimed_block(p);

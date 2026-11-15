@@ -3429,7 +3429,7 @@ and for an error-result row, that a returning call returns that result:
 | Misaligned pointer (not a multiple of the quantum) | as above | abort | yes: `free_target` and `theorem_free_target_aligned` |
 | Interior pointer of a slot, or of a huge run off a page boundary | as above | abort | yes: `free_target` and `Live::theorem_interior` (`lemma_slot_interior`, `lemma_run_interior`) |
 | Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | no: excluded by the C contract, *(C)* below |
-| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`Huge::usable_size`: `not_a_run`) | no: the queries take no token, and nothing states it |
+| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`Huge::usable_size`: `not_a_run`) | yes, for every live run: `api::libc::usable_size`, which the three call, ensures `!run_interior(t, p)` for any run token `t` its ghost `blk` holds (`Huge::usable_size`: `t.start() <= page < t.start() + t.npages() ==> t.start() == page`), and the code never reads `blk` *(ghost token)* |
 | Slot freed with the size of another class, or a huge size | `free_sized`, `free_aligned_sized`, `sdallocx`, sized `delete`s | abort (`hint_mismatch`) | yes for a live slot: `hint_ok`; for a non-live one, *(C)* |
 | Non-power-of-two alignment to `free_aligned_sized` or the sized aligned `delete` | as above | abort on a slot | as above: `hint_ok(p, None)`, so no slot start returns |
 | Huge run freed with a size that does not round up to its pages | sized frees | abort (`huge_hint_mismatch`) | yes for a live run: `huge_hint_ok` over C's token for it; for a non-live one, *(C)* |
@@ -3462,6 +3462,21 @@ the slot is back in its bitmap, but that fact holds only inside the
 atomic invariant at the instant of the load, and the free cores'
 `ensures` (`blk.block(p)`) come from the token, not from the test. Those
 B cells stay `p`.
+
+*(ghost token)*: `api::libc::usable_size` takes a `Tracked<&Live>` that
+its executable code never reads, and is verified for every value of it.
+Its `ensures` `blk.run_opt() is Some ==> !vspec::usable::run_interior(
+blk.run_opt().unwrap(), p)` therefore holds of the one machine code for
+the token of every live run: whoever holds a run's token (C, through
+the block it was handed), a query of one of the run's later pages
+(an interior page or its guard) does not return. No C contract is
+needed: the queries pass an empty token, and the statement quantifies
+over the tokens the allocator's run authority admits (`RunToken::wf`),
+of which each live run has exactly one. The proof is the huge lock's
+invariant: the table maps a page only to a live descriptor's key, two
+live extents share no page (`lemma_token_extent`), so the only
+`Active` descriptor `Huge::usable_size` can accept at a page of the
+token's run is the run's own, which starts at the token's first page.
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
 a pointer that is no slot start and no huge page start claims nothing,
@@ -3560,7 +3575,8 @@ contract.
   a later flush, or at the call with `double_free_scan` (its checks'
   steps are verified, the state bytes' values a premise,
   `heap/slotstate.rs`); an ABA free is undetectable. The queries'
-  stale-slot and interior-page aborts are not stated.
+  stale-slot abort is not stated; their interior-page abort is, over a
+  run token *(ghost token)*.
 - Every "abort" is proved as "does not return normally". The abort
   helpers verify and end in `sys::abort_fmt`, but a call may wait on a
   lock before it reaches one, and lock waits are not proved to
@@ -10373,8 +10389,14 @@ What each partial or missing cell leaves out, and what it rests on:
 - **U** (rows 9, 18, 19): the huge half of a query. `usable_size` with
   the block's run token gives exactly its usable bytes, but the queries
   take no token (giving them one would add an `axiom_c_claim` site for a
-  call that frees nothing), so for a huge run they state only the
-  descriptor's shape (`run_bytes`). A stored or returned 0 means NULL
+  call that frees nothing), so for a huge run their own `ensures` state
+  only the descriptor's shape (`run_bytes`). `usable_size`, which they
+  call, reads no token in its code, so its `blk.claims(p) ==> r ==
+  blk.len()` and `!run_interior` hold for every live run's token
+  ("Bad input", *(ghost token)*): a query returns exactly the run's
+  usable bytes at its first page and does not return at its later
+  pages. The cells stay `p` because the entry points' `ensures` do not
+  carry it. A stored or returned 0 means NULL
   exactly (`theorem_stored_zero_iff_null`; the queries' `p != 0 ==>
   0 < r`).
 - **I4, huge runs**: `Inner::theorem_run_guards` is stated of the huge

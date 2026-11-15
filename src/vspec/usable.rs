@@ -47,6 +47,20 @@ pub open spec fn run_bytes(p: usize, n: int) -> bool {
     &&& page * pg + n + crate::huge::GUARD_PAGES * pg <= ((r.huge_len >> r.lg_page) as int) * pg
 }
 
+/// The index of the huge region's page that `p` lies in.
+pub open spec fn huge_page(p: usize) -> int {
+    let r = process_regions();
+    (((p - r.huge_base) as usize) >> r.lg_page) as int
+}
+
+/// `p` is a page of the live run whose token is `t` but not its first:
+/// an interior page or the guard.
+pub open spec fn run_interior(t: crate::huge::RunToken, p: usize) -> bool {
+    &&& t.wf()
+    &&& process_regions().is_huge_block(p, 1)
+    &&& t.start() < huge_page(p) < t.start() + t.npages()
+}
+
 /// The usable size of a slot of class `c` is the class's size, whatever
 /// the request.
 pub proof fn lemma_usable_slot(p: *mut u8, c: int, size: int)

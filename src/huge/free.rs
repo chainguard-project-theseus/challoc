@@ -1700,6 +1700,9 @@ impl Huge {
             page < self.spec_npages(),
             self.spec_run_usable(page, r),
             tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page ==> r == (tok.unwrap().npages() - GUARD_PAGES) * self.spec_page(),
+            // A live run's interior page or guard is no run start: the
+            // query returns only at a run's first page.
+            tok is Some && tok.unwrap().wf() && tok.unwrap().start() <= page < tok.unwrap().start() + tok.unwrap().npages() ==> tok.unwrap().start() == page,
     {
         proof {
             use_type_invariant(self);
@@ -1749,11 +1752,13 @@ impl Huge {
             assert(v.start == page && g@.next_page <= g@.np@);
             // An `Active` descriptor's usable pages and guard are its pages.
             assert(run_ok(v, g@.lg@));
-            // A token of this run has its extent ([`lemma_token_extent`]).
-            if tok is Some && tok.unwrap().wf() && tok.unwrap().start() == page {
+            // A token's run with `page` among its pages starts at `page`:
+            // the `Active` descriptor `d` starts there, and no other
+            // extent shares a page with the token's.
+            if tok is Some && tok.unwrap().wf() && tok.unwrap().start() <= page < tok.unwrap().start() + tok.unwrap().npages() {
                 let tracked t = tok.tracked_borrow();
                 t.ext.agree(_gi.runs.borrow());
-                lemma_token_extent(g@, d, page as int, t.npages());
+                lemma_token_extent(g@, d, t.start(), t.npages());
             }
             let p = self.spec_page();
             assert(v.usable >= p && (v.usable as int) % p == 0) by {

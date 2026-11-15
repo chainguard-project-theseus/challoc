@@ -159,8 +159,10 @@ nothing.
   not proved to terminate, so a hang is not ruled out ("Bad input",
   "weaker").
 - An interior page start of a huge run is excluded by the C contract
-  for frees, and is not stated at all for the queries, which take no
-  token (#736).
+  for frees. For the queries it is proved not to return over any live
+  run's token: `api::libc::usable_size` ensures `!run_interior(t, p)`
+  for the run token its ghost `blk` holds, which the code never reads
+  (THEOREMS.md "Bad input", *(ghost token)*; #736).
 - Holds only in a run with no earlier non-live free (the C contract).
 - A thread's first `free` of a bad pointer may create its heap before
   the abort.
@@ -268,9 +270,12 @@ usable bytes and writes only the new one's (interface row 3, C cell).
 
 **Limits.** The C cell is `p`: for a huge `p`, `old` is exact only
 through the caller's token (the C contract). The queries take no token,
-so for a huge run they state only the descriptor's shape (`run_bytes`:
-whole pages, at least one, guard inside the region), not that the value
-is this run's usable size (#736).
+so their own `ensures` state only the descriptor's shape for a huge run
+(`run_bytes`: whole pages, at least one, guard inside the region).
+`usable_size`, which they call, ensures `r == blk.len()` for a token
+that claims `p` and reads no token in its code, so the value is the
+run's usable size for every live run (THEOREMS.md U note, *(ghost
+token)*; #736).
 
 ### J. Use after free by the program
 
@@ -340,9 +345,9 @@ is the only reader of the environment is a source test.
 > Property: for all pointers, `malloc_usable_size`, `sallocx` and
 > `xallocx` of a huge page start return the run's usable bytes
 > (`blk.len()` of its live token) or do not return, and an interior page
-> start of a live run does not return. Today they state only
-> `run_bytes`, the descriptor's shape, and the interior-page abort is
-> unstated. Targets: `api::libc::usable_size`, `malloc_usable_size`,
+> start of a live run does not return. Done: `Huge::usable_size` and
+> `api::libc::usable_size` state both over any live run's token, and the
+> token is ghost (THEOREMS.md *(ghost token)*). Targets: `api::libc::usable_size`, `malloc_usable_size`,
 > `api::jemalloc::sallocx`, `xallocx`, `Huge::usable_size`.
 
 **[#737](https://github.com/chainguard-project-theseus/challoc/issues/737): linear overflow into a neighbour in the same region (CVE-2023-21367)**
