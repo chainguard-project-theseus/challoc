@@ -182,28 +182,16 @@ pub(super) fn malloc_write(s: &[u8], Tracked(ord): Tracked<&LockOrder>)
         None => crate::sys::write_all(crate::sys::STDERR_FILENO, s),
         Some(cb) => {
             let mut buf = [0u8; 512];
-            // `for chunk in s.chunks(buf.len() - 1)`, with an index:
-            // Verus does not specify `chunks`. Each chunk is the next
-            // `buf.len() - 1` bytes, or the rest when fewer remain.
-            let mut at = 0;
-            while at < s.len()
+            for chunk in it: s.chunks(buf.len() - 1)
                 invariant
                     crate::sys::may_syscall(),
                     ord.top() == 0,
-                    at <= s@.len(),
-                decreases s@.len() - at,
+                    forall|i: int| 0 <= i < it.seq().len() ==> #[trigger] it.seq()[i]@.len() <= 511,
             {
-                let n = if s.len() - at < buf.len() - 1 {
-                    s.len() - at
-                } else {
-                    buf.len() - 1
-                };
-                let chunk = &s[at..at + n];
                 buf[..chunk.len()].copy_from_slice(chunk);
                 buf[chunk.len()] = 0;
-                assert(buf@[n as int] == 0);
+                assert(buf@[chunk@.len() as int] == 0);
                 call_hook_nocancel(cb, &buf, Tracked(ord));
-                at += n;
             }
         }
     }

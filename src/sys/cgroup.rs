@@ -89,8 +89,8 @@ pub const LEVELS: usize = 16;
 //
 // The scans are `while` loops over indices, and the comparisons are with
 // `bytes_is` against byte arrays: Verus does not specify the slice
-// iterators and adapters (`split`, `position`, `windows`, `find_map`),
-// nor take byte-string literals or patterns.
+// adapters the scans would use (`split`, `position`, `windows`,
+// `find_map`), nor take byte-string literals or patterns.
 // ---------------------------------------------------------------------------
 
 verus! {

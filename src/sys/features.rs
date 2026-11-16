@@ -128,7 +128,7 @@ impl fmt::Display for Value {
 /// line and of each part that prints on its own (`Thp`).
 pub fn write_words(f: &mut fmt::Formatter<'_>, words: &[(&'static str, Value)]) -> fmt::Result {
     // `for (i, (key, value)) in words.iter().enumerate()`, with an index:
-    // Verus does not specify a slice's iterator.
+    // Verus does not specify `Enumerate`.
     let mut i = 0;
     while i < words.len()
         invariant

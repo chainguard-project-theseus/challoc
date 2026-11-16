@@ -74,7 +74,8 @@ impl Heap {
     /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop). `blk`
     /// gets the popped slot's token.
     #[inline(always)]
-    // The `match` stands for `Option::map`, which Verus does not specify.
+    // The `match` stands for `Option::map`, whose vstd specification has
+    // the default invariant mask, which `opens_invariants none` rules out.
     #[allow(clippy::manual_map)]
     pub fn alloc_fast(
         &mut self,

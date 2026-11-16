@@ -1324,7 +1324,8 @@ mod linux {
             1 <= r <= 8192,
     {
         let mut mask = [0u64; 128];
-        // `size_of_val(&mask)`, which Verus does not specify.
+        // `size_of_val(&mask)`: vstd specifies it, but its layout axioms
+        // give no array's size.
         let len = 128 * 8;
         // SAFETY: `mask` is writable for `len` bytes and outlives the call.
         let r = unsafe { raw::syscall3(nr::SCHED_GETAFFINITY, 0, len, mask.as_mut_ptr() as usize) };
@@ -1391,7 +1392,8 @@ mod linux {
         requires
             crate::sys::may_syscall(),
     {
-        // `size_of::<CpuSet>()`, which Verus does not specify.
+        // `size_of::<CpuSet>()`: vstd specifies it, but its layout axioms
+        // give no struct's size.
         let len = 16 * 8;
         // SAFETY: `set` is writable for `len` bytes and outlives the call.
         decode(unsafe {

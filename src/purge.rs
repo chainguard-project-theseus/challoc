@@ -1532,9 +1532,9 @@ impl Batch {
                 LAZY_EVER.store(true, Ordering::Relaxed);
             }
             let mut bytes = 0u64;
-            // The ranges by index and each range's pieces by address
-            // (`for` over a slice and a `step_by` range, spelled out:
-            // Verus does not specify those iterators).
+            // The first `self.n` ranges by index and each range's pieces
+            // by address (a `step_by` range, spelled out: Verus does not
+            // specify `StepBy`).
             let mut i = 0;
             while i < self.n
                 invariant

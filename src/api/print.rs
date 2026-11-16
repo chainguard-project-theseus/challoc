@@ -562,9 +562,6 @@ fn text_general<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot
 
 /// The general section's banner, options, features (the feature line,
 /// `features`) and totals.
-// The indexed loops stand for `for key in KEYS`: Verus does not specify a
-// slice's `IntoIterator`.
-#[allow(clippy::needless_range_loop)]
 // Out of line: the report's sections' formatting frames do not add up
 // in one (design 13.8).
 #[inline(never)]
@@ -588,11 +585,7 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
     writeln!(out, "  config.stats: true")?;
     writeln!(out, "  config.quantum: {QUANTUM}")?;
     writeln!(out, "Run-time option settings")?;
-    // `for key in KEYS`, with an index: Verus does not specify a slice's
-    // `IntoIterator`.
-    let keys = KEYS;
-    for k in 0..keys.len() {
-        let key = &keys[k];
+    for key in KEYS.iter() {
         let note = if bytes_is(key.as_bytes(), b"thp") && shared.policy.thp_forced() {
             " (accepted, no effect; forced to never by a cgroup limit under 1 GiB)"
         } else if bytes_is(key.as_bytes(), b"percpu_arena") && shared.config.percpu_arena != PercpuArena::Disabled {
@@ -607,9 +600,7 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
     // An inert key (`config::INERT_KEYS`) is parsed and validated but has
     // no field and is read by nothing; say so, so a report never suggests
     // the feature is on.
-    let inert = INERT_KEYS;
-    for k in 0..inert.len() {
-        let key = &inert[k];
+    for key in INERT_KEYS.iter() {
         writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
     writeln!(out, "Kernel and CPU features: {}", features)?;
@@ -1110,8 +1101,6 @@ fn text_report<W: Write + Report>(out: &mut W, shared: &Shared, o: &Opts, tmp: &
 /// arena/bin geometry, the background thread, the `thp`, `cgroup` and
 /// `stats` objects. `arenas_follow` says whether a `stats.arenas` object
 /// follows (the `stats` line then ends with a comma).
-// As in `text_general`.
-#[allow(clippy::needless_range_loop)]
 // Out of line: the report's sections' formatting frames do not add up
 // in one (design 13.8).
 #[inline(never)]
@@ -1134,11 +1123,9 @@ fn json_general<W: Write + Report>(
     )?;
     writeln!(out, "\t\t\"opt\": {{")?;
     let mut first = true;
-    // `for key in KEYS` with its `let .. else { continue }`, with an index
-    // and an `if let`: Verus does not specify a slice's `IntoIterator`.
-    let keys = KEYS;
-    for k in 0..keys.len() {
-        let key = &keys[k];
+    // `let .. else { continue }` is an `if let`: Verus's `for` does not
+    // support `continue`.
+    for key in KEYS.iter() {
         if let Some(v) = shared.config.get(key.as_bytes()) {
             if !first {
                 writeln!(out, ",")?;
