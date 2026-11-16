@@ -2888,8 +2888,6 @@ pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize, Tracked(oout
 /// return, `out` holds a block of at least `size` bytes aligned to
 /// `align`, and `blk` gets its token; on an error return `oout` is as it
 /// came, so `*out` is untouched.
-// `%`: Verus does not specify `usize::is_multiple_of`.
-#[allow(clippy::manual_is_multiple_of)]
 pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracked(oout): Tracked<&mut COut<*mut u8>>, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     requires
         old(oout).of(out),
@@ -2909,7 +2907,7 @@ pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracke
         r == EINVAL ==> final(errno).val() == old(errno).val(),
         r == ENOMEM ==> final(errno).val() == ENOMEM,
 {
-    if !align.is_power_of_two() || align % core::mem::size_of::<*mut u8>() != 0 {
+    if !align.is_power_of_two() || !align.is_multiple_of(core::mem::size_of::<*mut u8>()) {
         return EINVAL;
     }
     let p = alloc_aligned(align, size, Tracked(blk), Tracked(errno), Tracked(&mut *ord));

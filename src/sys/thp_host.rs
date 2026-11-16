@@ -270,25 +270,15 @@ impl Thp {
         };
         let Some(top) = enabled else { return Thp::NONE };
         // Every candidate size from two pages to the PMD: hugepages-<n>kB/enabled.
-        // `for lg in (lg_page + 1)..=lg_pmd`, spelled out (Verus does not
-        // specify `RangeInclusive`'s iterator), and the paths written with
-        // `append` instead of a loop over `THP_DIR.iter().chain(..)`; the shifts
-        // are `wrapping_shl`, which is what `<<` compiles to in release.
-        let mut lg = lg_page;
-        while lg < lg_pmd
+        // The paths are written with `append` instead of a loop over
+        // `THP_DIR.iter().chain(..)`; the shifts are `wrapping_shl`, which is
+        // what `<<` compiles to in release.
+        for lg in (lg_page + 1)..=lg_pmd
             invariant
-                lg_page <= 64,
-                lg_pmd <= 125,
-                lg_page <= lg <= 125,
-                t.lg_pmd == lg_pmd,
-                0 < page <= 1usize << 33 ==> lg_pmd < 64,
-                buf@.len() == 128,
                 forall|p: &[u8], b: &mut [u8]| p@.len() > 0 && p@.last() == 0 ==> #[trigger] call_requires(read, (p, b)),
                 forall|p: &[u8], b: &mut [u8], n: usize|
                     #[trigger] call_ensures(read, (p, b), n) ==> n <= b@.len() && final(b)@.len() == b@.len(),
-            decreases lg_pmd - lg,
         {
-            lg += 1;
             let len = append(&mut path, 0, &THP_DIR);
             let len = append(&mut path, len, b"hugepages-");
             let kib = 1u64.wrapping_shl(lg as u32) >> 10;
@@ -302,23 +292,25 @@ impl Thp {
                 assert(path@.subrange(0, len + 1).last() == 0);
             }
             let n = read(&path[..len + 1], &mut buf);
-            if n == 0 {
-                continue;
-            }
-            let Some(setting) = parse_thp_setting(&buf[..n]) else {
-                continue;
+            // No `continue`: Verus's `for` does not support it.
+            let setting = if n == 0 {
+                None
+            } else {
+                parse_thp_setting(&buf[..n])
             };
-            let bit = 1u64.wrapping_shl(lg as u32);
-            t.listed |= bit;
-            match setting {
-                ThpSetting::Always => t.always |= bit,
-                ThpSetting::Madvise => t.madvise |= bit,
-                ThpSetting::Inherit => match top {
+            if let Some(setting) = setting {
+                let bit = 1u64.wrapping_shl(lg as u32);
+                t.listed |= bit;
+                match setting {
                     ThpSetting::Always => t.always |= bit,
                     ThpSetting::Madvise => t.madvise |= bit,
-                    _ => {}
-                },
-                ThpSetting::Never => {}
+                    ThpSetting::Inherit => match top {
+                        ThpSetting::Always => t.always |= bit,
+                        ThpSetting::Madvise => t.madvise |= bit,
+                        _ => {}
+                    },
+                    ThpSetting::Never => {}
+                }
             }
         }
         if t.listed == 0 {
@@ -751,6 +743,30 @@ mod tests {
         assert_eq!(t.madvise, 1 << 16);
         assert_eq!(t.always, 0, "every other size is never, not inherit");
         assert_eq!(std::format!("{t}"), "thp=always mthp=64K");
+    }
+
+    #[test]
+    fn thp_table_skips_a_per_size_setting_that_does_not_parse() {
+        let mut files = PER_SIZE_4K.to_vec();
+        files.retain(|(f, _)| !f.starts_with("hugepages-32kB"));
+        files.push(("hugepages-32kB/enabled", "garbage\n"));
+        let t = Thp::from_reader(4096, sysfs(&files));
+        assert_eq!(t.listed & (1 << 15), 0, "32K does not parse");
+        assert_eq!(
+            t.listed,
+            ((1u64 << 22) - 1) & !((1u64 << 14) - 1) & !(1 << 15),
+            "16K and 64K..2M"
+        );
+        assert_eq!(t.madvise, 1 << 21);
+        // No per-size setting parses: the table is the PMD size alone,
+        // as on a kernel before 6.8.
+        files.retain(|(f, _)| !f.starts_with("hugepages-"));
+        files.push(("hugepages-16kB/enabled", "garbage\n"));
+        files.push(("hugepages-2048kB/enabled", "[defer]\n"));
+        let t = Thp::from_reader(4096, sysfs(&files));
+        assert_eq!(t.listed, 1 << 21);
+        assert_eq!(t.madvise, 1 << 21);
+        assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M");
     }
 
     #[test]

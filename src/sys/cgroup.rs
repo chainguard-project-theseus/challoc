@@ -2218,16 +2218,8 @@ mod linux {
                 own_min(dir, mlen, read, &mut own, b"memory.high"),
                 Ordering::Relaxed,
             );
-            // `for (slot, v) in self.level_limit.iter().zip(own)`, spelled
-            // out: Verus does not specify `Zip`.
-            let mut i = 0;
-            while i < LEVELS
-                invariant
-                    i <= LEVELS,
-                decreases LEVELS - i,
-            {
-                self.level_limit[i].store(own[i], Ordering::Relaxed);
-                i += 1;
+            for (slot, v) in self.level_limit.iter().zip(own.iter()) {
+                slot.store(*v, Ordering::Relaxed);
             }
         }
 

@@ -1195,9 +1195,7 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
 
 /// [`SlabTable::take_group`]'s check that the watermark is a group
 /// boundary, which the precondition (proved from [`TableInner::inv`])
-/// says it is. Inlined and `track_caller`, as [`group_geometry`]. A
-/// `debug_assert!` of the equality: Verus does not support
-/// `debug_assert_eq!` (its failure path is `core::panicking::assert_failed`).
+/// says it is. Inlined and `track_caller`, as [`group_geometry`].
 #[inline(always)]
 #[track_caller]
 fn watermark_aligned(s: usize, lg_group: u8)
@@ -1209,8 +1207,9 @@ fn watermark_aligned(s: usize, lg_group: u8)
         assert(1usize << lg_group >= 1) by (bit_vector)
             requires lg_group < 64;
     }
-    debug_assert!(
-        s & ((1 << lg_group) - 1) == 0,
+    debug_assert_eq!(
+        s & ((1 << lg_group) - 1),
+        0,
         "take_group: the watermark is group-aligned"
     );
 }

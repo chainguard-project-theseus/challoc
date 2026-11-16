@@ -61,9 +61,10 @@ counted as a discharge): `<[T]>::reverse` (`slice_reverse`),
 `<[T]>::swap` (`slice_swap`), `<[T]>::get_unchecked::<I>`
 (`slice_get_unchecked`) and `<[T]>::get_unchecked_mut::<I>`
 (`slice_get_unchecked_mut`). A `for` loop over a range `a..b` rests on
-vstd's `Range::next`, whose contract holds under
-`obeys_range_step_spec`, which vstd gives each primitive integer type by
-an admitted broadcast axiom (`std_specs/range.rs`).
+vstd's `Range::next`, and one over `a..=b` on vstd's iterator
+specification of `RangeInclusive` (its `IteratorSpecImpl`); both hold
+under `obeys_range_step_spec`, which vstd gives each primitive integer
+type by an admitted broadcast axiom (`std_specs/range.rs`).
 
 ## Categories and tools
 
