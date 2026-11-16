@@ -1332,7 +1332,7 @@ mod linux {
             Ok(written) => {
                 let words = crate::vspec::div_ceil(written.min(len), 8);
                 // `mask[..words].iter().map(|w| w.count_ones()).sum()`, spelled
-                // out: Verus does not specify `Map` or `Sum`.
+                // out: Verus does not specify `Sum`.
                 let mut bits: u32 = 0;
                 let mut i = 0;
                 while i < words

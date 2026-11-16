@@ -67,9 +67,11 @@ impl Stderr {
 impl fmt::Write for Stderr {
     /// Copies whole characters: a chunk ends on a character boundary, and a
     /// character that does not fit in what is left of the buffer goes out
-    /// after a flush, so the abort path never slices inside one. (Over the
-    /// bytes, with an index: Verus does not specify `str::is_char_boundary`
-    /// or `copy_from_slice`.)
+    /// after a flush, so the abort path never slices inside one. The copy
+    /// is a byte loop rather than `copy_from_slice`: Verus does not take a
+    /// `&mut` through a field of a type with an invariant in a call that
+    /// may unwind, and vstd does not mark `copy_from_slice` or range
+    /// indexing `no_unwind`.
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let mut b = s.as_bytes();
         while !b.is_empty()

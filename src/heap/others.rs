@@ -569,13 +569,10 @@ impl Heap {
 verus! {
 
 /// [`Heap::other_caches`]'s abort on a node for the home arena, which its
-/// callers rule out (the requires).
-///
-/// Trusted: `assert_ne!` calls `core::panicking::assert_failed`, which
-/// Verus cannot specify on stable Rust.
+/// callers rule out (the requires), so `assert_ne!`'s failure branch
+/// (vstd's `assert_failed`, `requires false`) is proved unreachable.
 #[inline(always)]
 #[track_caller]
-#[verifier::external_body]
 fn assert_not_home(arena: &u16, home: &u16)
     requires
         *arena != *home,
@@ -1129,24 +1126,6 @@ impl Heap {
             o = unsafe { (*cur).next };
             Some(cur)
         })
-    }
-}
-
-/// Kani check of the `assert_ne!` abort
-/// (`verus/ledger/src/heap/others.rs.md`; `cfg(kani)` only, see
-/// `verus/README.md`, "Kani").
-#[cfg(kani)]
-mod kani_aborts {
-    use super::assert_not_home;
-
-    /// `assert_not_home`, `requires *arena != *home`: under it the call
-    /// returns, for every pair.
-    #[kani::proof]
-    fn assert_not_home_returns() {
-        let arena: u16 = kani::any();
-        let home: u16 = kani::any();
-        kani::assume(arena != home);
-        assert_not_home(&arena, &home);
     }
 }
 

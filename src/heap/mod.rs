@@ -1651,7 +1651,8 @@ verus! {
 /// inconsistency: `*len == 0` after it returns.
 ///
 /// Trusted: `assert_eq!` calls `core::panicking::assert_failed`, which
-/// Verus cannot specify on stable Rust.
+/// vstd specifies only as unreachable (`requires false`), while this
+/// abort stays reachable when `crate::sys::may_abort()` holds.
 #[verifier::external_body]
 #[inline(always)]
 #[track_caller]

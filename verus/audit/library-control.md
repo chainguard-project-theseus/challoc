@@ -4,11 +4,12 @@
 library, function pointer, panic/abort and termination, made during
 [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
-*This file lists the 112 of those seams that the ledger still lists:
+*This file lists the 111 of those seams that the ledger still lists:
 the 116 the ledger at `26f535a9` listed, less the three statistics
-figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`), which are
-verified since, and `Option::as_deref_mut`, which no code calls and
-whose seam is gone. The others are verified at `26f535a9` or no longer exist
+figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`) and
+`assert_not_home`, which are verified since, and
+`Option::as_deref_mut`, which no code calls and whose seam is gone.
+The others are verified at `26f535a9` or no longer exist
 (among them `parse_from` and the `Display` spec of `sys::cgroup::Cgroup`,
 now verified), so their rows are left out; seams of this scope that the
 audit did not cover are not listed. Each row names the seam by its item
@@ -30,7 +31,7 @@ false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 112 seams listed: 107 sound and 5 fixed; 80 discharged,
+Totals for the 111 seams listed: 106 sound and 5 fixed; 79 discharged,
 9 partly checked and 23 trusted. The category column is
 the ledger's; a few seams of this audit sit in another category there.
 
@@ -60,7 +61,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `KEYS` | `config.rs` | function pointer | discharged | sound | Every `KEYS` entry is a `TABLE` name. |
 | `assert_flushed` | `heap/mod.rs` | panic/abort | discharged | sound | `assert_eq!` (not debug-only): returns only with `*len == 0`. |
 | `assert_refill_empty` | `heap/mod.rs` | panic/abort | discharged | sound | As `assert_flushed`. |
-| `assert_not_home` | `heap/others.rs` | panic/abort | discharged | sound | Requires only; `assert_ne!`. |
 | `debug_scheduled` | `heap/paths.rs` | panic/abort | discharged | sound | No contract; a `debug_assert!`. |
 | `ThreadKey::create` | `heap/shared.rs` | function pointer | trusted | sound | No `ensures`; `valid` records the result. |
 | `S_PUSH_FLAGS` | `heap/shared.rs` | core library | discharged | sound | `offset_of!` value, opaque; facts only through `axiom_shared_layout`, which the build's `const` assertion checks. |

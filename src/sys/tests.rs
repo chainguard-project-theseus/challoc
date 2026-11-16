@@ -538,8 +538,7 @@ fn no_use_of_the_narrow_aborts() {
 /// that function's compound clause, by its exact text
 /// (`assert_flushed`, `assert_refill_empty` and `assert_rekey_flushed`'s
 /// `may_abort() || *len == 0`, and `vspec::check::check`'s
-/// `may_abort_corrupt() || c`). Or it is listed as unfailing (its panic
-/// is its `requires`). Every listed function must still be one. Not
+/// `may_abort_corrupt() || c`). Every listed function must still be one. Not
 /// seen: a panic of an index or a slice (`layout::regions`' `word`
 /// indexes under its `requires`), and an
 /// abort only through a function the body calls (Verus checks a call
@@ -561,7 +560,6 @@ fn trusted_aborts_require_a_capability() {
             concat!("crate::sys::may_", "abort_corrupt() || c,"),
         ),
     ];
-    let unfailing = [("heap/others.rs", "fn assert_not_home(")];
     let aborts = [
         concat!("abo", "rt("),
         concat!("abo", "rt!("),
@@ -673,7 +671,7 @@ fn trusted_aborts_require_a_capability() {
                 }
                 prev = h;
             }
-            if !((granted && !other) || listed(&unfailing)) {
+            if !(granted && !other) {
                 bad.push(format!(
                     "{at}: a trusted body that can abort, without a bare `{cap}` clause \
                      or its listed compound one: `{header}`"
@@ -682,10 +680,7 @@ fn trusted_aborts_require_a_capability() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
-    for e in unfailing
-        .into_iter()
-        .chain(compound.map(|(p, s, _)| (p, s)))
-    {
+    for e in compound.map(|(p, s, _)| (p, s)) {
         assert!(
             used.contains(&e),
             "{e:?}: listed, but no trusted body that can abort"

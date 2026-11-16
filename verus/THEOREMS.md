@@ -5218,7 +5218,7 @@ other's. The pop sites:
 - `other_caches` walks the list reading each key (`node_arena`) and
   returns the first node keyed `arena`; the loop carries that the
   visited keys are not `arena`, so a creation adds at the head a key no
-  node has. `assert_not_home`, discharged by `other_caches`' requires
+  node has. `assert_not_home`, verified under `other_caches`' requires
   `create ==> arena != home`, makes the new key not the home arena.
 - `Heap::set_arena` (`heap/mod.rs`): `other_caches(arena, true)`
   returns the node keyed `arena`, the only one; after the header
@@ -6332,8 +6332,9 @@ bounds, and `Sink::write_str` (verified) keeps it.
 - Every trusted body that can abort requires a capability: those that
   call an abort or a function that requires it (`background::spawn`,
   `call_throw_bad_alloc`) and those that `assert!` or
-  `panic!` (`check`, `assert_flushed`, `assert_refill_empty`;
-  `assert_not_home`'s `assert_ne!` is its `requires`).
+  `panic!` (`check`, `assert_flushed`, `assert_refill_empty`).
+  `assert_not_home`'s `assert_ne!` is verified: its `requires` makes
+  vstd's `assert_failed` (`requires false`) unreachable.
   `sys::tests::trusted_aborts_require_a_capability` checks the
   `external_body` functions whose text shows an abort, a panic macro or
   an `unwrap` (not an index panic) for the capability.
