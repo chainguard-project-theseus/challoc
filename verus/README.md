@@ -25,7 +25,7 @@ make verus VERUS_BASE=origin/main   # the same, and FLOOR against main's
 ```
 
 `make verus` is the kit's target (`proved-port.mk`, from the
-theseus-proved-port package, pinned as `theseus-proved-port~0.3.0` in the
+theseus-proved-port package, pinned as `theseus-proved-port~0.4.0` in the
 checks and as the Makefile's `PROVED_PORT_VERSION`; the installed `KIT`
 names the release). It runs `sh verus/seams.sh --check` (Seams, below),
 then `cargo verus verify` (the default `quantum16` feature) with Verus's

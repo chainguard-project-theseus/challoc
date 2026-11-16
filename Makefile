@@ -293,9 +293,8 @@ melange: ## build and test the Wolfi packages of contrib/wolfi/challoc.yaml with
 # `make kani` runs every Kani harness at QUANTUM, four at a time in terse
 # format; `make kani-regular` (kit 0.3.1) runs them one at a time in
 # regular format with CBMC's verbose output, failing on `warning:
-# ignoring`, as the kani-ignoring check does a shard at a time
-# (.chainguard/ci/kani.yaml, which spells the flags out until the kit pin
-# moves to 0.3.1 and calls `make kani-regular` then).
+# ignoring`, which the kani-ignoring check runs a shard at a time
+# (.chainguard/ci/kani.yaml).
 #
 # `make verify` (the kit's) runs every target VERIFY_TARGETS lists, in
 # order, which is what the package build runs (with VERUS_BASE=none). The
@@ -332,7 +331,7 @@ KANI_JOBS = 4
 # target still runs; point PROVED_PORT_HOME at a root laid out as
 # /usr/share/proved-port (make/, templates/ and KIT) and VERUS_COUNT at a
 # counter built from the kit at that tag to run them.
-PROVED_PORT_VERSION = 0.3.0
+PROVED_PORT_VERSION = 0.4.0
 PROVED_PORT_HOME ?= /usr/share/proved-port
 ifneq ($(wildcard $(PROVED_PORT_HOME)/make/proved-port.mk),)
 include $(PROVED_PORT_HOME)/make/proved-port.mk
