@@ -13,12 +13,14 @@
 // loom model:
 //
 // - the walk is `ClassState::close_page` (`src/class/pages.rs`): the
-//   mask bit stored `Release` (`SlabPages::set_pages`), `fetch_or(0)` of
-//   the word (`AtomicBitmap::probe`), the page reopened (`Release`) if a
-//   slot of it is set, else the discard, which writes the page's slots
-//   here;
+//   mask bit stored (`SlabPages::set_pages`: the stamp's store, then the
+//   mask's, each vstd's `SeqCst` store, which the copy makes on `core`'s
+//   atomics), `fetch_or(0)` of the word (`AtomicBitmap::probe`), the page
+//   reopened (the same stores) if a slot of it is set, else the discard,
+//   which writes the page's slots here;
 // - the claim is the bitmap pass of `ClassState::finish`
-//   (`src/class/mod.rs`): the mask loaded `Acquire`, the open slots
+//   (`src/class/mod.rs`): the mask loaded (`SlabPages::closed_unheld`,
+//   `SeqCst`), the open slots
 //   wanted (`OpenView::word`, `claim_word`'s `allow`, after its
 //   `load_word`), `fetch_or` of them, the mask loaded again, and the
 //   slots on a page closed meanwhile given back (`AtomicBitmap::release`'s
@@ -91,8 +93,8 @@ impl Slab {
     // `ClassState::close_page` for page 1: whether it discarded it.
     fn walk(&self) -> bool {
         // Step 1: `SlabPages::set_pages`.
-        self.stamp.store(1, Ordering::Relaxed);
-        self.closed.store(0b10, Ordering::Release);
+        self.stamp.store(1, Ordering::SeqCst);
+        self.closed.store(0b10, Ordering::SeqCst);
         // Step 2: `AtomicBitmap::probe`.
         let prev = if MUTANT == 2 {
             // SAFETY: vstd's `PAtomicU64` is a struct of one `AtomicU64`,
@@ -104,8 +106,8 @@ impl Slab {
             word::fetch_or(&self.word, 0, Tracked::assume_new())
         };
         if prev & PAGE_SLOTS[1] != 0 {
-            self.stamp.store(1, Ordering::Relaxed);
-            self.closed.store(0, Ordering::Release);
+            self.stamp.store(1, Ordering::SeqCst);
+            self.closed.store(0, Ordering::SeqCst);
             return false;
         }
         // Step 3: the discard.
@@ -115,7 +117,7 @@ impl Slab {
 
     // The bitmap pass of `ClassState::finish` for one slot: the slots kept.
     fn claim(&self) -> u64 {
-        let allow = open_slots(self.closed.load(Ordering::Acquire));
+        let allow = open_slots(self.closed.load(Ordering::SeqCst));
         let cur = word::load(&self.word, Tracked::assume_new());
         let free = !cur & SLOTS & allow;
         let want = free & free.wrapping_neg();
@@ -128,7 +130,7 @@ impl Slab {
             self.write(won, 1);
             return won;
         }
-        let closed = self.closed.load(Ordering::Acquire);
+        let closed = self.closed.load(Ordering::SeqCst);
         let open = if closed == 0 { !0 } else { open_slots(closed) };
         let back = won & !open;
         if back != 0 {

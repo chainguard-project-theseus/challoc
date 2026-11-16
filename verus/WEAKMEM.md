@@ -48,7 +48,7 @@ a compiler barrier.
 | `sys/cgroup.rs` | 40 | sampled cgroup limits and the deferred discovery's phase |
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
-| `slab.rs` | 24 | `SlabDesc`: state, arena, `live`, dirty, `closed`, `shadow`, `stamp` |
+| `slab.rs` | 4 | `SlabDesc::live` (state, arena, dirty, `shadow`, and `SlabPages`' `closed` and `stamp` are vstd `PAtomic*`s, `SeqCst`, every operation inside the descriptor's invariant, with no ordering argument) |
 | `arena.rs` | 13 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
 | `api/mod.rs` | 22 | `STATE.line`, `INIT_TID`, `SEALED`, `FORK_SIGMASK`'s store |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
@@ -683,8 +683,9 @@ shows the check can fail.
   follows the watermark. Controls: a `Relaxed` watermark store does not
   publish the owner; a copy stored after the lock's release lags the
   watermark.
-- Slab descriptors' lock-protected fields, `slab.rs` (a copy of the six
-  `DescPerm` accessors, under two `RawLock` copies for the commit lock
+- Slab descriptors' lock-protected fields, `slab.rs` (a copy of the
+  `DescPerm` accessors' operations, vstd's `SeqCst` loads and stores,
+  under two `RawLock` copies for the commit lock
   and a class lock, the permission a loom `UnsafeCell` in the value of
   the lock that holds it): one thread hands a slab out (`take_group`'s
   `init` and the move between the locks, then `set_state(Active)`), and
@@ -758,7 +759,7 @@ atomics with the
 permissions erased: evidence for the callers' hand-offs under the models
 named, which moves no status (the "status" column marks a copy).
 
-18 seams cite loom, and every one is partly checked
+10 seams cite loom, and every one is partly checked
 (`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
 (`lock.rs.md`, tool loom/GenMC) stays trusted: its contract is
 termination, and the lock models show deadlock freedom only. Drepper's
@@ -773,12 +774,6 @@ another thread's exchange as often as other threads retake the lock.
 | `lock.rs.md` | `axiom_acquired` | partly checked (loom) |
 | `lock.rs.md` | `LockGuard::drop` | partly checked (loom) |
 | `purge/background.rs.md` | `main` | partly checked (loom, GenMC copy) |
-| `slab.rs.md` | `SlabDesc::init` | partly checked (loom) |
-| `slab.rs.md` | `SlabDesc::state_byte_held` | partly checked (loom) |
-| `slab.rs.md` | `SlabDesc::dirty_held` | partly checked (loom) |
-| `slab.rs.md` | `SlabDesc::set_state` | partly checked (loom) |
-| `slab.rs.md` | `SlabDesc::arena_held` | partly checked (loom) |
-| `slab.rs.md` | `SlabDesc::set_dirty_at` | partly checked (loom) |
 | `vspec/atom.rs.md` | `store_usize` | partly checked (Kani, loom, GenMC) |
 | `vspec/atom.rs.md` | `load_usize` | partly checked (Kani, loom, GenMC) |
 | `vspec/atom.rs.md` | `store_usize_at` | partly checked (Kani, loom, GenMC) |
@@ -835,15 +830,13 @@ The arguments, by group (the overrides comments give each in full):
 - The byte wrappers (`vspec/byte.rs`) are not in the table either:
   they are verified over vstd's `PAtomicU8`. The once-cell and
   slot-state models still check the callers' protocols around them.
-- The slab descriptor accessors (`slab.rs`): every access through a
-  permission is made holding the lock whose value holds it (the commit
-  lock's, then the class lock's), so successive holders are ordered by
-  happens-before, and per-location coherence gives the last write
-  through it, for `Relaxed` too, given the lock edge `axiom_acquired`
-  assumes. `access.rs` checks that `slab.rs` writes the three fields
-  only in the accessors. The slab model runs the hand-over between the
-  two locks on one thread and checks the class lock's edge to the next
-  holder.
+- The slab descriptor accessors (`slab.rs`) are not in the table
+  either: they are verified over vstd's `PAtomicU8`, `PAtomicU16` and
+  `PAtomicU64`, each operation inside the descriptor's invariant
+  (`slab::DescInv`), whose ghost variable's other half is the
+  `DescPerm` the lock value holds. The slab model still checks the
+  callers' hand-over between the two locks, and `access.rs` that
+  `slab.rs` touches the fields only where the invariant is opened.
 
 The checks leave out what the statuses list: the bodies themselves
 (the models run copies, and the wrappers' own bodies only within

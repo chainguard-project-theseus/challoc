@@ -9,11 +9,13 @@
 //! `PAtomicU64` (`SeqCst`):
 //!
 //! - the walk is `ClassState::close_page` (`src/class/pages.rs`): the mask
-//!   bit stored `Release` (`SlabPages::set_pages`), `fetch_or(0)` of the
-//!   word (`AtomicBitmap::probe`), the page reopened (`Release`) if a slot
-//!   of it is set, else the discard, which writes the page's slots here;
+//!   bit stored (`SlabPages::set_pages`, vstd's `SeqCst` store, and the
+//!   stamp's before it), `fetch_or(0)` of the word (`AtomicBitmap::probe`),
+//!   the page reopened (the same stores) if a slot of it is set, else the
+//!   discard, which writes the page's slots here;
 //! - the claim is the bitmap pass of `ClassState::finish`
-//!   (`src/class/mod.rs`): the mask loaded `Acquire` (`SlabPages::closed`),
+//!   (`src/class/mod.rs`): the mask loaded (`SlabPages::closed_unheld`,
+//!   vstd's `SeqCst` load),
 //!   the open slots wanted (`OpenView::word`, `claim_word`'s `allow`, after
 //!   its `load_word`), `fetch_or` of them, the mask loaded again, and the
 //!   slots on a page closed meanwhile given back (`AtomicBitmap::release`'s
@@ -91,8 +93,8 @@ enum Mutant {
 /// `ClassState::close_page` for page 1: whether it discarded it.
 fn walk(s: &Slab, mutant: Mutant) -> bool {
     // Step 1: `SlabPages::set_pages`.
-    s.stamp.store(1, Ordering::Relaxed);
-    s.closed.store(0b10, Ordering::Release);
+    s.stamp.store(1, Ordering::SeqCst);
+    s.closed.store(0b10, Ordering::SeqCst);
     // Step 2: `AtomicBitmap::probe`.
     let prev = if mutant == Mutant::LoadProbe {
         s.word.ato.load(Ordering::Acquire)
@@ -100,8 +102,8 @@ fn walk(s: &Slab, mutant: Mutant) -> bool {
         word::fetch_or(&s.word, 0, Tracked::assume_new())
     };
     if prev & PAGE_SLOTS[1] != 0 {
-        s.stamp.store(1, Ordering::Relaxed);
-        s.closed.store(0, Ordering::Release);
+        s.stamp.store(1, Ordering::SeqCst);
+        s.closed.store(0, Ordering::SeqCst);
         return false;
     }
     // Step 3: the discard.
@@ -111,7 +113,7 @@ fn walk(s: &Slab, mutant: Mutant) -> bool {
 
 /// The bitmap pass of `ClassState::finish` for one slot: the slots kept.
 fn claim(s: &Slab, mutant: Mutant) -> u64 {
-    let allow = open_slots(s.closed.load(Ordering::Acquire));
+    let allow = open_slots(s.closed.load(Ordering::SeqCst));
     let cur = word::load(&s.word, Tracked::assume_new());
     let want = lowest(!cur & SLOTS & allow);
     if want == 0 {
@@ -123,7 +125,7 @@ fn claim(s: &Slab, mutant: Mutant) -> u64 {
         s.write(won, 1);
         return won;
     }
-    let closed = s.closed.load(Ordering::Acquire);
+    let closed = s.closed.load(Ordering::SeqCst);
     let open = if closed == 0 { !0 } else { open_slots(closed) };
     let back = won & !open;
     if back != 0 {
@@ -156,7 +158,7 @@ fn race(mutant: Mutant) {
 
 /// The walk closing page 1 races a claim of one slot.
 ///
-/// Covers copies of `SlabPages::set_pages`, `SlabPages::closed`,
+/// Covers copies of `SlabPages::set_pages`, `SlabPages::closed_unheld`,
 /// `AtomicBitmap::probe`, `ClassState::close_page`'s steps and
 /// `ClassState::finish`'s re-check and give-back.
 #[test]

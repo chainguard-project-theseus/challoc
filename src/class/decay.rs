@@ -435,7 +435,8 @@ impl ClassState {
             // `matches!` spelled out: `verus!` does not reach into the
             // macro's arguments, so the ghost and tracked arguments there
             // would not compile.
-            if !(d.arena() == self.arena && match d.state_held(Ghost(s as nat), Tracked(dperms)) {
+            let inv = self.desc_inv(s);
+            if !(d.arena_unheld(inv) == self.arena && match d.state_held(inv, Ghost(s as nat), Tracked(dperms)) {
                 State::Fresh | State::Empty | State::Purged => true,
                 _ => false,
             }) {
@@ -530,7 +531,7 @@ impl ClassState {
                 assert(g.slab_ok(slab as nat));
             }
             let desc = self.desc(slab);
-            if !(desc.state() == State::Empty && desc.live() == 0) {
+            if !(desc.state_unheld(self.desc_inv(slab)) == State::Empty && desc.live() == 0) {
                 // A pending check (`sys::may_abort_pending`) on a free's
                 // tick: the state is read raw from the descriptor, not
                 // through `state_locked`, and no verified invariant relates

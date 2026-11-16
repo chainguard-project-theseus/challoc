@@ -226,7 +226,9 @@ fn thread_exit_flushes_and_frees_the_heap() {
         meta_before
     );
     assert_eq!(
-        s.arena0.classes[c].desc(0).state(),
+        s.arena0.classes[c]
+            .desc(0)
+            .state_unheld(Tracked::assume_new()),
         crate::slab::State::Active
     );
 }

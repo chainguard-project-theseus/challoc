@@ -709,38 +709,37 @@ fn access_entry_tables_control() {
     assert!(!check_entries(&t2).is_empty());
 }
 
-// The descriptor fields a permission records (`SlabDesc`'s and
-// `SlabPages`' seams): non-test slab.rs names `state`, `shadow`, `arena`,
-// `dirty_at`, `closed` and `stamp` (private fields) only in a `Relaxed`
-// load, `SlabPages::closed`'s one `Acquire` load, ghost code, or the nine
-// write lines of `init`, `set_state`, `set_dirty_at` and `set_pages`, each
-// once; and no line starts a
+// The descriptor fields a permission records (vstd `PAtomic*`s, whose
+// every operation takes a permission the descriptor's invariant,
+// `slab::DescInv`, holds; this guard keeps the accesses where the
+// invariant is opened): non-test slab.rs names `state`, `shadow`, `arena`,
+// `dirty_at`, `closed` and `stamp` (private fields) only in a load
+// through a permission of the opened invariant (`.load(Tracked(&a.` or
+// `.load(Tracked(&q.`), ghost code, or the six write lines of the four
+// `store_*` helpers and `set_pages`, each once; and no line starts a
 // split write chain, takes a field's address or borrow, builds a
 // `SlabDesc`, or writes through `as *mut SlabDesc`, `write_bytes`,
 // `write_volatile`, `addr_of` or `transmute`.
 
 const DESC_WRITES: &[(&str, &str)] = &[
+    ("store_state", "self.state.store(Tracked(&mut a.state), v);"),
     (
-        "init",
-        "self.state.store(State::Fresh as u8, Ordering::Relaxed);",
+        "store_shadow",
+        "self.shadow.store(Tracked(&mut a.shadow), v);",
+    ),
+    ("store_arena", "self.arena.store(Tracked(&mut a.arena), v);"),
+    (
+        "store_dirty",
+        "self.dirty_at.store(Tracked(&mut a.dirty), v);",
     ),
     (
-        "init",
-        "self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);",
-    ),
-    ("init", "self.arena.store(arena, Ordering::Relaxed);"),
-    ("init", "self.dirty_at.store(0, Ordering::Relaxed);"),
-    ("set_state", "self.state.store(s as u8, Ordering::Relaxed);"),
-    (
-        "set_state",
-        "self.shadow.store(s as u8 + 1, Ordering::Relaxed);",
+        "set_pages",
+        "self.stamp.store(Tracked(&mut q.stamp), stamp);",
     ),
     (
-        "set_dirty_at",
-        "self.dirty_at.store(ns, Ordering::Relaxed);",
+        "set_pages",
+        "self.closed.store(Tracked(&mut q.closed), closed);",
     ),
-    ("set_pages", "self.stamp.store(stamp, Ordering::Relaxed);"),
-    ("set_pages", "self.closed.store(closed, Ordering::Release);"),
 ];
 
 fn check_desc(t: &Tree) -> Vec<String> {
@@ -786,6 +785,19 @@ fn check_desc(t: &Tree) -> Vec<String> {
             ".stamp",
         ] {
             for i in occurs(c, f, &['(']) {
+                // The opened invariant's permissions (`a`, `q`), passed to
+                // a field's operation, not the fields.
+                if [
+                    "Tracked(&a",
+                    "Tracked(&mut a",
+                    "Tracked(&q",
+                    "Tracked(&mut q",
+                ]
+                .iter()
+                .any(|p| c[..i].ends_with(p))
+                {
+                    continue;
+                }
                 let rest = &c[i + f.len()..];
                 let borrowed = c[..i].rfind('&').is_some_and(|b| {
                     c[b + 1..i]
@@ -795,10 +807,8 @@ fn check_desc(t: &Tree) -> Vec<String> {
                 });
                 if borrowed {
                     field = true;
-                } else if rest.starts_with(".load(Ordering::Relaxed)")
-                    || (f == ".closed"
-                        && l.func == "closed"
-                        && c == "self.closed.load(Ordering::Acquire)")
+                } else if rest.starts_with(".load(Tracked(&a.")
+                    || rest.starts_with(".load(Tracked(&q.")
                 {
                 } else if writes(rest) && rest.starts_with('.') {
                     match DESC_WRITES
@@ -836,35 +846,40 @@ fn access_desc_fields_only_in_accessors() {
 #[test]
 fn access_desc_fields_control() {
     let t = tree();
-    let anchor = "self.dirty_at.store(ns, Ordering::Relaxed);";
+    let anchor = "self.store_dirty(ns, Tracked(inv), Tracked(p));";
     assert!(
         !check_desc(&with(
             &t,
             "src/slab.rs",
             anchor,
-            "self.state.store(0, Ordering::Relaxed);"
+            "self.state.store(Tracked(&mut a.state), 0);"
         ))
         .is_empty()
     );
     assert!(!check_desc(&with(&t, "src/slab.rs", anchor, "let p = &self.arena;")).is_empty());
+    // A borrow through a name the permissions use, outside a `Tracked(`
+    // argument, is still a field borrow.
+    for bare in [
+        "let a = self; let r = &a.state;",
+        "let r = &mut a.shadow;",
+        "let q = self; let r = (&q.closed) as *const _;",
+    ] {
+        assert!(
+            !check_desc(&with(&t, "src/slab.rs", anchor, bare)).is_empty(),
+            "{bare}"
+        );
+    }
+    let dirty = "self.dirty_at.store(Tracked(&mut a.dirty), v);";
+    assert!(!check_desc(&with(&t, "src/slab.rs", dirty, dirty)).is_empty());
+    // A `SlabPages` write outside `set_pages`, and a load of the mask not
+    // through a permission.
+    let pages = "self.closed.store(Tracked(&mut q.closed), closed);";
     assert!(
         !check_desc(&with(
             &t,
             "src/slab.rs",
             anchor,
-            "self.dirty_at.store(ns, Ordering::Relaxed);"
-        ))
-        .is_empty()
-    );
-    // A `SlabPages` write outside `set_pages`, and an `Acquire` load of
-    // the mask outside `closed`.
-    let pages = "self.closed.store(closed, Ordering::Release);";
-    assert!(
-        !check_desc(&with(
-            &t,
-            "src/slab.rs",
-            anchor,
-            "self.closed.store(0, Ordering::Release);"
+            "self.closed.store(Tracked(&mut q.closed), 0);"
         ))
         .is_empty()
     );
@@ -884,7 +899,8 @@ fn access_desc_fields_control() {
 // bitmap words' permissions are vstd's, which only `PAtomicU8::new`,
 // `PAtomicU32::new`, `PAtomicU64::new` and `PAtomicPtr::new` mint, besides
 // `api::axiom_start`'s slot-state bytes, `class::table::axiom_fresh_words`'s
-// bitmap words and `api::resume::axiom_fork_resumed`'s fork slot): each
+// bitmap words, `class::table::axiom_zero_desc`'s descriptor fields and
+// `api::resume::axiom_fork_resumed`'s fork slot): each
 // file builds its permission type only in
 // its minting fn, with one literal, and names the type only in the struct
 // and impl lines and in type position (no `Self`, derive, trait impl or

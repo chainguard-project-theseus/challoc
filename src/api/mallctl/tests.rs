@@ -1442,9 +1442,11 @@ fn utilization_queries_answer_valkeys_defragmenter() {
     let open = |p: *const c_void| {
         let t = s.table(c);
         let (slab, _) = t.locate(p as *mut u8);
-        let closed = t
-            .pages(slab)
-            .map_or(0, |g| t.page_view().with_closed(g.closed()).closed_slots());
+        let closed = t.pages(slab).map_or(0, |g| {
+            t.page_view()
+                .with_closed(g.closed_unheld(Tracked::assume_new()))
+                .closed_slots()
+        });
         cls.nslots() - closed
     };
     assert_eq!(u.nregs, open(p0));

@@ -573,7 +573,7 @@ fn mallocx_routes_arenas_and_caches() {
     );
     let (slab, _) = s.table(c).locate(d);
     let desc = s.table(c).desc(slab);
-    assert_eq!(desc.arena(), lua);
+    assert_eq!(desc.arena_unheld(Tracked::assume_new()), lua);
     let live = desc.live();
     dallocx(
         d,
@@ -792,7 +792,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
     );
     let (slab, _) = s.table(c).locate(d);
     let desc = s.table(c).desc(slab);
-    assert_eq!(desc.arena(), lua);
+    assert_eq!(desc.arena_unheld(Tracked::assume_new()), lua);
     let live = desc.live();
     let cached = cached_in(h);
     mallocx::free(

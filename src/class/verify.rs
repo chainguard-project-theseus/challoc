@@ -7,11 +7,15 @@ use super::abort::wrong_arena;
 use super::slot_loc;
 #[cfg(verus_keep_ghost)]
 use super::table::bits_shape;
+#[cfg(verus_keep_ghost)]
+use super::table::desc_at;
 use super::{ClassState, Pick, SlabTable};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{NCLASSES, class_table, process_regions};
 use crate::purge;
-use crate::slab::{SlabDesc, State};
+#[cfg(verus_keep_ghost)]
+use crate::slab::desc_inv_for;
+use crate::slab::{DescInv, SlabDesc, State};
 use crate::sys;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
@@ -88,7 +92,10 @@ impl ClassState {
     fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> !
         requires
             crate::sys::may_abort_pending(),
+            *d == desc_at(self.spec_table(), slab),
+            slab < self.spec_nslabs(),
     {
+        let inv = self.desc_inv(slab);
         sys::abort_pending(format_args!(
             "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
             self.class,
@@ -96,8 +103,8 @@ impl ClassState {
             desc_ptr_addr(d),
             Says(State::try_from_u8(shadow.wrapping_sub(1))),
             d.live(),
-            d.arena(),
-            d.dirty_at()
+            d.arena_unheld(inv),
+            d.dirty_unheld(inv)
         ))
     }
 }
@@ -223,16 +230,18 @@ pub(super) fn fresh_with_live(
     slab: usize,
     arena: u16,
     desc: &SlabDesc,
+    inv: Tracked<&DescInv>,
     set: usize,
 ) -> !
     requires
         crate::sys::may_abort(),
+        desc_inv_for(*inv@, desc),
 {
     sys::abort_fmt(format_args!(
         "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
-        desc.arena(),
-        desc.dirty_at(),
+        desc.arena_unheld(inv),
+        desc.dirty_unheld(inv),
         desc_ptr_addr(desc)
     ))
 }
@@ -245,16 +254,18 @@ pub(super) fn release_into_fresh(
     slab: usize,
     arena: u16,
     desc: &SlabDesc,
+    inv: Tracked<&DescInv>,
     n: usize,
 ) -> !
     requires
         crate::sys::may_abort_pending(),
+        desc_inv_for(*inv@, desc),
 {
     sys::abort_pending(format_args!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
-        desc.arena(),
-        desc.dirty_at(),
+        desc.arena_unheld(inv),
+        desc.dirty_unheld(inv),
         desc_ptr_addr(desc)
     ))
 }
@@ -403,11 +414,12 @@ impl ClassState {
             crate::sys::may_abort(),
     {
         let d = self.desc(pick.slab as usize);
+        let inv = self.desc_inv(pick.slab as usize);
         let bm = self.table().bits(pick.slab as usize);
         let now = (
-            d.state(),
+            d.state_unheld(inv),
             d.live(),
-            d.arena(),
+            d.arena_unheld(inv),
             bm.allocated(self.class().nslots()),
             self.class().nslots(),
             desc_ptr_addr(d),
@@ -502,7 +514,7 @@ impl ClassState {
             crate::sys::may_abort_pending(),
     {
         let d = self.desc(slab);
-        let (state, shadow) = d.state_bytes();
+        let (state, shadow) = d.state_bytes_unheld(self.desc_inv(slab));
         if shadow != state.wrapping_add(1) {
             self.shadow_written(slab, at, d, state, shadow)
         }

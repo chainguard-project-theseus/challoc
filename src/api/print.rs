@@ -998,7 +998,7 @@ fn slab_histogram<W: Write + Report>(out: &mut W, arena: &Arena, s: &ArenaStats)
                 continue;
             }
             let d = cs.desc(i);
-            if d.arena() != arena.index() {
+            if d.arena_unheld(cs.desc_inv(i)) != arena.index() {
                 continue;
             }
             let live = d.live();

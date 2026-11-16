@@ -119,7 +119,11 @@ fn full_cache_flushes_the_highest_half_sorted_and_slabs_empty() {
     assert_eq!(t.cache(c).len(), 0);
     assert_eq!(live(s, c), 0);
     for i in 0..cs.committed_slabs() {
-        assert_eq!(cs.desc(i).state(), State::Empty, "slab {i}");
+        assert_eq!(
+            cs.desc(i).state_unheld(Tracked::assume_new()),
+            State::Empty,
+            "slab {i}"
+        );
     }
     let st = cs.stats();
     assert_eq!(st.empty, cs.committed_slabs());
@@ -127,7 +131,10 @@ fn full_cache_flushes_the_highest_half_sorted_and_slabs_empty() {
     // Allocating again reuses the lowest slab, now Empty -> Active.
     let p = t.alloc(c);
     assert_eq!(p as usize, s.regions.slab_addr(c, 0));
-    assert_eq!(cs.desc(0).state(), State::Active);
+    assert_eq!(
+        cs.desc(0).state_unheld(Tracked::assume_new()),
+        State::Active
+    );
     t.free(p);
     // The heap was the arena's last: its destruction purges the `Empty`
     // slabs it just flushed (design 13.3).
@@ -675,7 +682,12 @@ fn direct_paths_bypass_the_cache() {
     assert_eq!(live(s, c), 1);
     s.free_direct(0, c, q, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(live(s, c), 0);
-    assert_eq!(s.arena0.classes[c].desc(0).state(), State::Empty);
+    assert_eq!(
+        s.arena0.classes[c]
+            .desc(0)
+            .state_unheld(Tracked::assume_new()),
+        State::Empty
+    );
 }
 
 #[test]

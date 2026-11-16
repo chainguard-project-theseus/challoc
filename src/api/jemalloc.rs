@@ -1165,7 +1165,7 @@ pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (
         }
         return 0;
     }
-    let Some(a) = shared.arenas.get_existing(d.arena()) else {
+    let Some(a) = shared.arenas.get_existing(d.arena_unheld(Tracked(t.desc_inv(slab)))) else {
         proof {
             assert(hint_read(p as usize, rd, 0));
         }

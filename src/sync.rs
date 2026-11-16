@@ -19,9 +19,11 @@ pub(crate) mod atomic {
 /// permission they take is erased.
 pub(crate) mod patomic {
     #[cfg(not(loom))]
-    pub(crate) use vstd::atomic::{PAtomicPtr, PAtomicU8, PAtomicU32, PAtomicU64};
+    pub(crate) use vstd::atomic::{PAtomicPtr, PAtomicU8, PAtomicU16, PAtomicU32, PAtomicU64};
     #[cfg(not(loom))]
-    pub(crate) use vstd::atomic::{PermissionPtr, PermissionU8, PermissionU32, PermissionU64};
+    pub(crate) use vstd::atomic::{
+        PermissionPtr, PermissionU8, PermissionU16, PermissionU32, PermissionU64,
+    };
 
     #[cfg(loom)]
     pub(crate) use loom_patomic::*;

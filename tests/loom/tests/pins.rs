@@ -88,28 +88,37 @@ const PINS: &[(&str, &[&str])] = &[
             "let _ = unsafe { crate::sys::futex_wake(state.as_ptr(), 1) };",
         ],
     ),
-    // `SlabDesc`'s accessors of the lock-protected fields: init,
-    // state_byte_held, dirty_held, set_state, arena_held, set_dirty_at
-    // (tests/loom/src/slab.rs).
+    // `SlabDesc`'s accessors of the lock-protected fields: the four
+    // stores, init, state_byte_held, dirty_held, set_state, arena_held,
+    // set_dirty_at (tests/loom/src/slab.rs; vstd's operations, `SeqCst`).
     (
         "src/slab.rs",
         &[
-            "self.state.store(State::Fresh as u8, Ordering::Relaxed);",
-            "self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);",
-            "self.arena.store(arena, Ordering::Relaxed);",
+            "fn store_state(&self, v: u8, Tracked(inv): Tracked<&DescInv>, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.state.store(Tracked(&mut a.state), v);",
+            "fn store_shadow(&self, v: u8, Tracked(inv): Tracked<&DescInv>)",
+            "self.shadow.store(Tracked(&mut a.shadow), v);",
+            "fn store_arena(&self, v: u16, Tracked(inv): Tracked<&DescInv>, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.arena.store(Tracked(&mut a.arena), v);",
+            "fn store_dirty(&self, v: u64, Tracked(inv): Tracked<&DescInv>, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.dirty_at.store(Tracked(&mut a.dirty), v);",
+            "pub fn init(&self, arena: u16, Tracked(inv): Tracked<&DescInv>, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.store_state(0, Tracked(inv), Tracked(p));",
+            "self.store_shadow(1, Tracked(inv));",
+            "self.store_arena(arena, Tracked(inv), Tracked(p));",
             "self.live.store(0, Ordering::Relaxed);",
-            "self.dirty_at.store(0, Ordering::Relaxed);",
-            "fn state_byte_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)",
-            "self.state.load(Ordering::Relaxed)",
-            "pub fn dirty_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)",
-            "self.dirty_at.load(Ordering::Relaxed)",
-            "pub fn set_state(&self, s: State, Tracked(p): Tracked<&mut DescPerm>)",
-            "self.state.store(s as u8, Ordering::Relaxed);",
-            "self.shadow.store(s as u8 + 1, Ordering::Relaxed);",
-            "pub fn arena_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)",
-            "self.arena.load(Ordering::Relaxed)",
-            "pub fn set_dirty_at(&self, ns: u64, Tracked(p): Tracked<&mut DescPerm>)",
-            "self.dirty_at.store(ns, Ordering::Relaxed);",
+            "self.store_dirty(0, Tracked(inv), Tracked(p));",
+            "fn state_byte_held(&self, Tracked(inv): Tracked<&DescInv>, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u8)",
+            "r = self.state.load(Tracked(&a.state));",
+            "pub fn dirty_held(&self, Tracked(inv): Tracked<&DescInv>, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u64)",
+            "r = self.dirty_at.load(Tracked(&a.dirty));",
+            "pub fn set_state(&self, s: State, Tracked(inv): Tracked<&DescInv>, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.store_state(b, Tracked(inv), Tracked(p));",
+            "self.store_shadow(b + 1, Tracked(inv));",
+            "pub fn arena_held(&self, Tracked(inv): Tracked<&DescInv>, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: u16)",
+            "r = self.arena.load(Tracked(&a.arena));",
+            "pub fn set_dirty_at(&self, ns: u64, Tracked(inv): Tracked<&DescInv>, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.store_dirty(ns, Tracked(inv), Tracked(p));",
         ],
     ),
     // Slab pages, the walk racing a claim (tests/loom/src/pages.rs):
@@ -127,8 +136,8 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/class/mod.rs",
         &[
-            "Some(pg) => geometry.with_closed(pg.closed()),",
-            "Some(pg) => pg.closed(),",
+            "Some(pg) => geometry.with_closed(pg.closed_unheld(Tracked(pinv))),",
+            "Some(pg) => pg.closed_unheld(Tracked(pinv)),",
             "let back = won & !open;",
             "let _ = bm.release(w, back, Tracked(&mut bt));",
         ],
@@ -137,17 +146,24 @@ const PINS: &[(&str, &[&str])] = &[
         "src/bitmap.rs",
         &["prev = crate::vspec::word::fetch_or(w, 0, Tracked(&mut perm));"],
     ),
-    ("src/slab.rs", &["self.closed.load(Ordering::Acquire)"]),
-    // `SlabPages`' accessors of the lock-protected fields: pages_held,
-    // set_pages (tests/loom/src/slab.rs).
     (
         "src/slab.rs",
         &[
-            "pub fn pages_held(&self, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: (u16, u64))",
-            "(self.closed.load(Ordering::Relaxed), self.stamp.load(Ordering::Relaxed))",
-            "pub fn set_pages(&self, closed: u16, stamp: u64, Tracked(p): Tracked<&mut DescPerm>)",
-            "self.stamp.store(stamp, Ordering::Relaxed);",
-            "self.closed.store(closed, Ordering::Release);",
+            "pub fn closed_unheld(&self, Tracked(inv): Tracked<&DescInv>) -> u16",
+            "r = self.closed.load(Tracked(&q.closed));",
+        ],
+    ),
+    // `SlabPages`' accessors of the lock-protected fields: pages_held,
+    // set_pages (tests/loom/src/slab.rs; vstd's operations, `SeqCst`).
+    (
+        "src/slab.rs",
+        &[
+            "pub fn pages_held(&self, Tracked(inv): Tracked<&DescInv>, Ghost(k): Ghost<nat>, Tracked(m): Tracked<&Map<nat, DescPerm>>) -> (r: (u16, u64))",
+            "closed = self.closed.load(Tracked(&q.closed));",
+            "stamp = self.stamp.load(Tracked(&q.stamp));",
+            "pub fn set_pages(&self, closed: u16, stamp: u64, Tracked(inv): Tracked<&DescInv>, Tracked(p): Tracked<&mut DescPerm>)",
+            "self.stamp.store(Tracked(&mut q.stamp), stamp);",
+            "self.closed.store(Tracked(&mut q.closed), closed);",
         ],
     ),
     // `AtomicBitmap`: init's whole-word padding, claim_word, claim_from
@@ -1432,7 +1448,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         &[
             (
                 "self.set_pages_locked(g, pg, slab, new, stamp);",
-                "self.closed.store(0b10, Ordering::Release);",
+                "self.closed.store(0b10, Ordering::SeqCst);",
             ),
             (
                 "if bm.probe(w) & v.page_word(p, w) != 0 {",
@@ -1440,7 +1456,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
             (
                 "self.set_pages_locked(g, pg, slab, v.closed, stamp);",
-                "self.closed.store(0, Ordering::Release);",
+                "self.closed.store(0, Ordering::SeqCst);",
             ),
             (
                 "if !crate::purge::discard_one(a, len, Ghost(closed_page(new, p as u16, a as int, len as int))) {",
@@ -1471,8 +1487,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "pages.rs",
         "src/slab.rs",
         &[(
-            "self.closed.load(Ordering::Acquire)",
-            "let closed = self.closed.load(Ordering::Acquire);",
+            "r = self.closed.load(Tracked(&q.closed));",
+            "let closed = self.closed.load(Ordering::SeqCst);",
         )],
     ),
 ];

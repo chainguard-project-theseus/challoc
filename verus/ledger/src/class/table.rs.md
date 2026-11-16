@@ -15,7 +15,7 @@ file.
 
 ## `store_owner`
 
-src/class/table.rs:1131. Kind: external_body. Category: atomics primitive.
+src/class/table.rs:1183. Kind: external_body. Category: atomics primitive.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: free::loom_free_after_synchronised_handoff and watermark::loom_watermark_take_group_publishes, and GenMC: wm [rc11 imm] and wm3 [rc11 imm arm8]; not checked: this body, which the models replace with loom's `store` and the GenMC cases with `core`'s `store` (a line tests/loom/tests/pins.rs pins to this body's), inside copies of the table steps, in the configurations their files state, the cases each only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); the free path's steps, which no case runs; `perm`'s and `w`'s provenance and the owner page staying committed; the C11 argument above, which no GenMC case checks (the copy takes no permission) and tests/loom/tests/access.rs backs by matching source text only).
 
 > `(*w).store(arena, Relaxed)` of the owner word of hand-out group `group` of `t`, through its permission `perm`: the permission holds `arena` ([`u16_value`], as `vspec::atom::load_u16_at` reads it back), and from here on [`slab_owner`] of every slab of the group is `arena`.
@@ -50,7 +50,7 @@ unsafe fn store_owner(
 
 ## `word_index`
 
-src/class/table.rs:1183. Kind: external_body. Category: inline asm.
+src/class/table.rs:1235. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (emptyasm: word_index in src/class/table.rs).
 
 > [`word_index`] on aarch64: `index` through the empty `asm!`.
@@ -66,15 +66,16 @@ pub(crate) fn word_index(index: usize) -> (r: usize)
 
 ## `axiom_zero_desc`
 
-src/class/table.rs:2822. Kind: axiom. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_desc_reads_fresh; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe, and `desc_id`, `pages_id` and the `DescPerm`'s `id`, ghost identities).
+src/class/table.rs:2980. Kind: axiom. Category: raw pointer (internal).
+Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_desc_reads_fresh; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe, `desc_id` and `pages_id`, ghost identities, the permissions' identities (`atoms_for`: `PermissionU8::id`, `PermissionU16::id`, `PermissionU64::id` against `PAtomicU8::id`, `PAtomicU16::id`, `PAtomicU64::id`), ghost, and that no other permission to the atomics exists (vstd's `PAtomic*::new` mints only for atomics it made); the harness reads the fields through vstd's loads, the permission erased).
 
-> Trusted: the `piece` bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised, and for a 32-byte piece (a stride with room) a `SlabPages` after it: plain atomics, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
+> Trusted: the `piece` bytes at `addr`, which read as zero (`z`, a piece of the descriptor array `Meta::reserve_table` returned), are a `SlabDesc`, initialised, and for a 32-byte piece (a stride with room) a `SlabPages` after it: vstd permissioned atomics (each a struct of one `core` atomic, the global layouts above) and `live`'s `core` atomic, valid for every bit pattern (`PointsToRaw::into_typed` with the value the bytes hold; vstd's raw permissions do not track byte values).
 
-Hashes: contract 4150637954, body none.
+Hashes: contract 3496367819, body none.
 
 ```rust
-axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int, piece: int) -> (tracked r: (PointsTo<SlabDesc>, DescPerm, Option<PointsTo<SlabPages>>))
+axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int, piece: int)
+    -> (tracked r: (PointsTo<SlabDesc>, DescAtoms, Option<PointsTo<SlabPages>>, Option<PagesAtoms>))
     requires
         piece == 16 || piece == 32,
         z.is_range(addr, piece),
@@ -85,7 +86,12 @@ axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int, piece: int) -> (tracked 
     ensures
         perm_at(r.0, addr),
         desc_id(&r.0.value()) == addr,
-        desc_fresh(r.1, addr),
+        atoms_for(r.1, r.3, r.0.value().ids(), pages_ids(r.2)),
+        atoms_vals(r.1, r.3).state == 0,
+        atoms_vals(r.1, r.3).dirty == 0,
+        atoms_vals(r.1, r.3).arena == 0,
+        atoms_vals(r.1, r.3).closed == 0,
+        atoms_vals(r.1, r.3).stamp == 0,
         r.2 is Some <==> piece == 32,
         r.2 matches Some(pg) ==> perm_at(pg, addr + 16) && pages_id(&pg.value()) == addr + 16,
 ;
@@ -93,7 +99,7 @@ axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int, piece: int) -> (tracked 
 
 ## `axiom_zero_owner`
 
-src/class/table.rs:2841. Kind: axiom. Category: raw pointer (internal).
+src/class/table.rs:3005. Kind: axiom. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_owner_loads_zero; not checked: the provenance clause of `perm_at` (`cast_provenance()`), which Kani cannot observe: the harness reads through a pointer to its own buffer).
 
 > Trusted: the two bytes at `addr`, which read as zero (`z`, a piece of the owner array `Meta::reserve_table` returned), are an `AtomicU16`, initialised (valid for every bit pattern), as [`axiom_zero_desc`].
@@ -115,7 +121,7 @@ axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo
 
 ## `axiom_fresh_words`
 
-src/class/table.rs:2872. Kind: axiom. Category: allocator invariant.
+src/class/table.rs:3036. Kind: axiom. Category: allocator invariant.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::fresh_words_load_zero; not checked: the provenance clause of `perm_at` in `words_perms_ok` (`cast_provenance()`), which Kani cannot observe, the one-shot token `once` (one table per class per process), the identities `PermissionU64::id`, `word_at` and `PAtomicU64::id`, ghost, and that no other permission to the words exists (vstd's `PAtomicU64::new` mints only for atomics it made, `api::resume::axiom_fork_resumed` only for the fork slot, `word_at`'s premise)).
 
 > Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.

@@ -2337,7 +2337,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool, Tracked(ord
             // (the queried slot is live, so its pages are open), so that
             // `nregs` is never 0: Valkey divides by it.
             let closed = match t.pages_if_committed(slab as usize) {
-                Some(pg) => t.page_view().with_closed(pg.closed()).closed_slots(),
+                Some(pg) => t.page_view().with_closed(pg.closed_unheld(Tracked(t.desc_inv(slab as usize)))).closed_slots(),
                 None => 0,
             };
             let closed = if closed >= cls.nslots() { 0 } else { closed };
@@ -2362,7 +2362,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool, Tracked(ord
             // Two `if`s, not a let chain: Verus takes no let chain.
             #[allow(clippy::collapsible_if)]
             if verbose {
-                if let Some(a) = shared.arenas.get_existing(d.arena()) {
+                if let Some(a) = shared.arenas.get_existing(d.arena_unheld(Tracked(t.desc_inv(slab as usize)))) {
                     let cs = a.class(class);
                     let (st, curregs) = cs.bin_stats(Tracked(&mut *ord));
                     proof {

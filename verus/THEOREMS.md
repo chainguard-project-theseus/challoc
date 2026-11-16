@@ -1304,13 +1304,13 @@ block; the free cores take the token C holds (common premises, "The
   slabs below `next_slab`, and the class lock's frame the location of
   the owned-slab record, `Inner::oauth`; the class lock bridge
   `owner_locked` is verified), the descriptor permissions
-  (`slab::DescPerm`:
-  `table::axiom_zero_desc`, `class/table.rs`, which mints them from
-  a `ZeroRaw`, partly checked by Kani; `slab::desc_stride` is
-  discharged by Kani, and the `SlabDesc` accessors in `slab.rs` are
-  trusted, partly checked by a loom model on a copy,
-  `verus/ledger/src/slab.rs.md`; the accessors given the lock edge
-  `lock::axiom_acquired` assumes) and `next_slab_locked`
+  (`slab::DescPerm`, the half of a ghost variable whose authority each
+  descriptor's invariant, `slab::DescInv`, holds with vstd's
+  permissions to the descriptor's atomics:
+  `table::axiom_zero_desc`, `class/table.rs`, which mints those
+  permissions from a `ZeroRaw`, partly checked by Kani; `slab::desc_stride` is
+  discharged by Kani, and the `SlabDesc` and `SlabPages` accessors in
+  `slab.rs` are verified over vstd's `PAtomic*`s) and `next_slab_locked`
   (`class/table.rs`, verified).
 - Heap creation and the unfollowed cache writers (common premise): a new
   heap's caches are taken to be empty and `tokened`.
@@ -8944,7 +8944,7 @@ invalid free, and on a valid one only if that state is corrupt:
 - `SlabDesc::sub_live` (`slab.rs`), through
   `dec_live`: the live count would go below zero.
 - `slab::bad_state_byte` (`slab.rs`), through `State::from_u8`,
-  `SlabDesc::state` and `state_held` (`ClassState::state_locked`,
+  `SlabDesc::state_unheld` and `state_held` (`ClassState::state_locked`,
   `class/mod.rs`: the class lock holder's reads in
   `reopen`, `on_live_zero` and the decay walks): a slab state byte that
   is no state.

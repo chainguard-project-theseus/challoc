@@ -237,7 +237,12 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
     let p = t.alloc(c);
     assert!(s.arenas.get_existing(1).is_some());
     assert!(s.multi_arena());
-    assert_eq!(s.arena0.classes[c].desc(0).arena(), 1);
+    assert_eq!(
+        s.arena0.classes[c]
+            .desc(0)
+            .arena_unheld(Tracked::assume_new()),
+        1
+    );
     assert_eq!(s.classify_free(p, Tracked::assume_new()), Ok((c, 1)));
     t.heap().free(
         s,

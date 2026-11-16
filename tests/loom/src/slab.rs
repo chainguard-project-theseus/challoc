@@ -1,9 +1,12 @@
 //! The lock-protected fields of a slab descriptor (`src/slab.rs`,
-//! `DescPerm`), a copy. The accessors below are `SlabDesc`'s bodies line
-//! for line: `init`'s five `Relaxed` stores, the `Relaxed` loads of
+//! `DescPerm`), a copy. The accessors below are `SlabDesc`'s operations
+//! in order, each vstd's `SeqCst` load or store (the fields are vstd
+//! `PAtomic*`s, which the copy writes as loom's atomics with `SeqCst`):
+//! `init`'s four stores and `live`'s `Relaxed` one, the loads of
 //! `state_byte_held`, `dirty_held` and `arena_held`, `set_state`'s two
-//! stores and `set_dirty_at`'s one, and `SlabPages`' `pages_held` (two
-//! `Relaxed` loads) and `set_pages` (a `Relaxed` and a `Release` store). The locks are the copy of `RawLock`
+//! stores (`store_state`, `store_shadow`) and `set_dirty_at`'s one, and
+//! `SlabPages`' `pages_held` (two loads) and `set_pages` (two
+//! stores). The locks are the copy of `RawLock`
 //! (`lock.rs`), and [`Perm`] is the ghost `DescPerm` made concrete: the
 //! three values the last write through the permission stored, in a loom
 //! `UnsafeCell` under the lock whose value holds the permission, as the
@@ -32,8 +35,9 @@
 //!
 //! Left out: `live` (an `AcqRel` read-modify-write count, `bitmap.rs`'s),
 //! which `init` also stores before the slab is published; `shadow`, which
-//! no permission records; `SlabPages::closed`, the claims' `Acquire` load
-//! outside the lock, which the claim model checks; the class code between the steps, which is
+//! no permission records; `SlabPages::closed_unheld`, the claims' load
+//! outside the lock, which the claim model checks; the descriptor
+//! invariant every operation opens (`DescInv`, ghost); the class code between the steps, which is
 //! verified (sequentially consistent) and touches the descriptor only
 //! through these accessors.
 
@@ -73,39 +77,40 @@ impl SlabDesc {
         }
     }
 
-    /// `SlabDesc::init`.
+    /// `SlabDesc::init`: `store_state(0)`, `store_shadow(1)`,
+    /// `store_arena`, `live`'s store and `store_dirty(0)`.
     fn init(&self, arena: u16) {
-        self.state.store(State::Fresh as u8, Ordering::Relaxed);
-        self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);
-        self.arena.store(arena, Ordering::Relaxed);
+        self.state.store(State::Fresh as u8, Ordering::SeqCst);
+        self.shadow.store(State::Fresh as u8 + 1, Ordering::SeqCst);
+        self.arena.store(arena, Ordering::SeqCst);
         self.live.store(0, Ordering::Relaxed);
-        self.dirty_at.store(0, Ordering::Relaxed);
+        self.dirty_at.store(0, Ordering::SeqCst);
     }
 
     /// `SlabDesc::state_byte_held`.
     fn state_byte_held(&self) -> u8 {
-        self.state.load(Ordering::Relaxed)
+        self.state.load(Ordering::SeqCst)
     }
 
     /// `SlabDesc::dirty_held`.
     fn dirty_held(&self) -> u64 {
-        self.dirty_at.load(Ordering::Relaxed)
+        self.dirty_at.load(Ordering::SeqCst)
     }
 
-    /// `SlabDesc::set_state`.
+    /// `SlabDesc::set_state`: `store_state`, then `store_shadow`.
     fn set_state(&self, s: State) {
-        self.state.store(s as u8, Ordering::Relaxed);
-        self.shadow.store(s as u8 + 1, Ordering::Relaxed);
+        self.state.store(s as u8, Ordering::SeqCst);
+        self.shadow.store(s as u8 + 1, Ordering::SeqCst);
     }
 
     /// `SlabDesc::arena_held`.
     fn arena_held(&self) -> u16 {
-        self.arena.load(Ordering::Relaxed)
+        self.arena.load(Ordering::SeqCst)
     }
 
-    /// `SlabDesc::set_dirty_at`.
+    /// `SlabDesc::set_dirty_at` (`store_dirty`).
     fn set_dirty_at(&self, ns: u64) {
-        self.dirty_at.store(ns, Ordering::Relaxed);
+        self.dirty_at.store(ns, Ordering::SeqCst);
     }
 }
 
@@ -120,15 +125,15 @@ impl SlabPages {
     /// `SlabPages::pages_held`.
     fn pages_held(&self) -> (u16, u64) {
         (
-            self.closed.load(Ordering::Relaxed),
-            self.stamp.load(Ordering::Relaxed),
+            self.closed.load(Ordering::SeqCst),
+            self.stamp.load(Ordering::SeqCst),
         )
     }
 
     /// `SlabPages::set_pages`.
     fn set_pages(&self, closed: u16, stamp: u64) {
-        self.stamp.store(stamp, Ordering::Relaxed);
-        self.closed.store(closed, Ordering::Release);
+        self.stamp.store(stamp, Ordering::SeqCst);
+        self.closed.store(closed, Ordering::SeqCst);
     }
 }
 

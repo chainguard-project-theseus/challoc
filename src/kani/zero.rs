@@ -88,14 +88,15 @@ fn zero_owner_loads_zero() {
 
 /// `class::table::axiom_zero_desc`, `requires z.is_range(addr, piece)`
 /// (`piece` 16 or 32), `0 < addr`, `addr % 16 == 0`, `ensures perm_at(r.0,
-/// addr)`, `desc_id(&r.0.value()) == addr`, `desc_fresh(r.1, addr)` and,
-/// for 32, `perm_at` of the `SlabPages` at `addr + 16`: at every
-/// 16-aligned offset of the buffer whose `piece` bytes there are zero,
-/// the pointers are what a read of a `SlabDesc`, and of a `SlabPages`
-/// after it, needs, and the accessors read what `desc_fresh` records:
-/// state byte 0 (`state_byte(State::Fresh)`, read as `Fresh`), `dirty_at`
-/// 0 and arena 0, no page closed and no stamp. Not checked: `perm_at`'s
-/// provenance, and `desc_id`, `pages_id` and the permission's `id`, ghost
+/// addr)`, `desc_id(&r.0.value()) == addr`, `atoms_vals` all 0 and, for
+/// 32, `perm_at` of the `SlabPages` at `addr + 16`: at every 16-aligned
+/// offset of the buffer whose `piece` bytes there are zero, the pointers
+/// are what a read of a `SlabDesc`, and of a `SlabPages` after it, needs,
+/// and the shipped readers (vstd's loads, the invariant and permissions
+/// erased) read what `atoms_vals` records: state byte 0
+/// (`state_byte(State::Fresh)`, read as `Fresh`), `dirty_at` 0 and arena
+/// 0, no page closed and no stamp. Not checked: `perm_at`'s provenance,
+/// and `atoms_for`, `desc_id`, `pages_id` and the permissions' ids, ghost
 /// identities.
 #[kani::proof]
 fn zero_desc_reads_fresh() {
@@ -107,18 +108,25 @@ fn zero_desc_reads_fresh() {
             assert!(kani::mem::can_dereference(p));
             // SAFETY: `can_dereference`, checked above.
             let d = unsafe { &*p };
-            assert_eq!(d.state_bytes().0, 0);
-            assert!(matches!(d.state(), State::Fresh));
-            assert_eq!(d.dirty_at(), 0);
-            assert_eq!(d.arena(), 0);
+            assert_eq!(d.state_bytes_unheld(Tracked::assume_new()).0, 0);
+            assert!(matches!(
+                d.state_unheld(Tracked::assume_new()),
+                State::Fresh
+            ));
+            assert_eq!(d.dirty_unheld(Tracked::assume_new()), 0);
+            assert_eq!(d.arena_unheld(Tracked::assume_new()), 0);
             if piece == 32 {
                 let q = at::<SlabPages>(&b, i + 16);
                 assert!(kani::mem::can_dereference(q));
                 // SAFETY: `can_dereference`, checked above.
                 let g = unsafe { &*q };
-                assert_eq!(g.closed(), 0);
+                assert_eq!(g.closed_unheld(Tracked::assume_new()), 0);
                 assert_eq!(
-                    g.pages_held(Ghost::assume_new(), Tracked::assume_new()),
+                    g.pages_held(
+                        Tracked::assume_new(),
+                        Ghost::assume_new(),
+                        Tracked::assume_new()
+                    ),
                     (0, 0)
                 );
             }

@@ -54,7 +54,7 @@ use crate::lock::{LockHeld, LockOrder};
 use crate::meta::{Carve, MetaClaim};
 use crate::purge::PurgedZero;
 use crate::purge::background::StateHold;
-use crate::slab::{DescPerm, StateTicket};
+use crate::slab::{DescAtoms, DescPerm, PagesAtoms, StateTicket};
 use crate::sys::SigMask;
 use crate::sys::cgroup::{CellClaim, CellSeen};
 use crate::sys::tls::{HeapLoan, TlsCell, TlsSlot};
@@ -205,6 +205,14 @@ const _: () = assert!(<StateHold as NotCopy<_>>::HOLDS && <StateHold as NotClone
 
 // `DescPerm` is neither Copy nor Clone: one descriptor's permission.
 const _: () = assert!(<DescPerm as NotCopy<_>>::HOLDS && <DescPerm as NotClone<_>>::HOLDS);
+
+// `DescAtoms` is neither Copy nor Clone: the permissions to one
+// descriptor's atomics.
+const _: () = assert!(<DescAtoms as NotCopy<_>>::HOLDS && <DescAtoms as NotClone<_>>::HOLDS);
+
+// `PagesAtoms` is neither Copy nor Clone: the permissions to one
+// `SlabPages`' atomics.
+const _: () = assert!(<PagesAtoms as NotCopy<_>>::HOLDS && <PagesAtoms as NotClone<_>>::HOLDS);
 
 // `StateTicket` is neither Copy nor Clone: a descriptor's state record.
 const _: () = assert!(<StateTicket as NotCopy<_>>::HOLDS && <StateTicket as NotClone<_>>::HOLDS);

@@ -86,9 +86,9 @@ use crate::meta::Meta;
 #[cfg(verus_keep_ghost)]
 use crate::purge::PurgedZero;
 use crate::purge::{self, Decayer};
-use crate::slab::{DescPerm, SlabDesc, State};
+use crate::slab::{DescInv, DescPerm, SlabDesc, State};
 #[cfg(verus_keep_ghost)]
-use crate::slab::{StateTicket, desc_id, state_byte};
+use crate::slab::{StateTicket, desc_id, desc_inv_for, pages_inv_for, state_byte};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::addr::cast_provenance;
 use crate::vspec::zero::{ZeroRaw, Zeroed};
@@ -132,8 +132,8 @@ pub(crate) use table::load_mirror;
 pub(crate) use table::word_index;
 #[cfg(verus_keep_ghost)]
 use table::{
-    bits_ghost, bits_shape, desc_at, guard_marked, lemma_bit_in_slab, slab_marked, slab_mask_of,
-    slab_owner, words_of,
+    bits_ghost, bits_shape, desc_at, desc_loc, guard_marked, lemma_bit_in_slab, slab_marked,
+    slab_mask_of, slab_owner, words_of,
 };
 #[cfg(verus_keep_ghost)]
 pub use table::{committed_ns, mark_loc, mask_shape, owner_mark, owner_ns, slot_loc, slot_owner};
@@ -1864,12 +1864,15 @@ spec fn set_wf(s: Set, n: nat) -> bool {
 }
 
 /// Owned slab `s`'s descriptor permission in `dperms` is to its
-/// descriptor in `t`, and records the ghost state `st` and stamp `dirty`
-/// and, unless `s` is a guard slab (whose descriptor stays zero), the
-/// arena `arena`.
+/// descriptor in `t`, the half of its invariant's ghost variable
+/// ([`table::desc_loc`]), and records the ghost state `st` and stamp
+/// `dirty` and, unless `s` is a guard slab (whose descriptor stays zero),
+/// the arena `arena`.
 spec fn desc_ok(dperms: Map<nat, DescPerm>, t: SlabTable, arena: u16, s: nat, st: State, dirty: u64) -> bool {
     &&& dperms.contains_key(s)
+    &&& s < t.spec_nslabs()
     &&& dperms[s].id() == desc_id(&desc_at(t, s as usize))
+    &&& dperms[s].loc() == desc_loc(t, s as usize)
     &&& dperms[s].state() == state_byte(st)
     &&& dperms[s].dirty() == dirty
     &&& !t.spec_is_guard(s as usize) ==> dperms[s].arena() == arena
@@ -2917,15 +2920,36 @@ impl ClassState {
 }
 
 impl ClassState {
-    /// [`SlabTable::desc`].
-    #[inline]
+    /// [`SlabTable::desc`]. Always inlined, as it was before its callers
+    /// took the descriptor invariant ([`desc_inv`](ClassState::desc_inv))
+    /// too: `release_slab` called it out of line otherwise.
+    #[inline(always)]
     pub fn desc(&self, slab: usize) -> (r: &SlabDesc)
         requires
             crate::sys::may_abort_pending(),
         ensures
             *r == desc_at(self.spec_table(), slab),
+            slab < self.spec_nslabs(),
     {
         self.table().desc(slab)
+    }
+
+    /// Slab `slab`'s descriptor invariant ([`SlabTable::desc_inv`]), which
+    /// every access to its descriptor's fields, and its `SlabPages`',
+    /// opens.
+    // `slab` and `t` are read only by the ghost code.
+    #[allow(unused_variables)]
+    #[inline(always)]
+    pub fn desc_inv(&self, slab: usize) -> (r: Tracked<&DescInv>)
+        requires
+            slab < self.spec_nslabs(),
+        ensures
+            *r@ == self.spec_table().spec_desc_inv(slab),
+            desc_inv_for(*r@, &desc_at(self.spec_table(), slab)),
+            self.spec_table().spec_desc_stride() >= 32 ==> pages_inv_for(*r@, &table::pages_at(self.spec_table(), slab)),
+    {
+        let t = self.table();
+        Tracked(t.desc_inv(slab))
     }
 }
 
@@ -3032,6 +3056,7 @@ impl ClassState {
             g.descs(),
             g.table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
+            slab < self.spec_nslabs(),
         ensures
             g.owns(slab as nat) ==> r == g.st(slab as nat),
     {
@@ -3040,7 +3065,7 @@ impl ClassState {
                 g.lemma_desc(slab as nat);
             }
         }
-        let r = d.state_held(Ghost(slab as nat), Tracked(g.dperms.borrow()));
+        let r = d.state_held(self.desc_inv(slab), Ghost(slab as nat), Tracked(g.dperms.borrow()));
         proof {
             if g.owns(slab as nat) {
                 lemma_state_byte_inj(r, g.st(slab as nat));
@@ -3067,7 +3092,7 @@ impl ClassState {
     {
         match self.table().pages(slab) {
             Some(pg) => {
-                let (closed, _) = pg.pages_held(Ghost(slab as nat), Tracked(g.dperms.borrow()));
+                let (closed, _) = pg.pages_held(self.desc_inv(slab), Ghost(slab as nat), Tracked(g.dperms.borrow()));
                 (closed, self.table().page_view().with_closed(closed).closed_slots())
             },
             None => (0, 0),
@@ -3089,6 +3114,7 @@ impl ClassState {
             g.descs(),
             g.table@ == self.spec_table(),
             *d == desc_at(self.spec_table(), slab),
+            slab < self.spec_nslabs(),
         ensures
             g.owns(slab as nat) ==> r == g.dirty@[slab as nat],
     {
@@ -3097,7 +3123,7 @@ impl ClassState {
                 g.lemma_desc(slab as nat);
             }
         }
-        d.dirty_held(Ghost(slab as nat), Tracked(g.dperms.borrow()))
+        d.dirty_held(self.desc_inv(slab), Ghost(slab as nat), Tracked(g.dperms.borrow()))
     }
 
     /// `SlabDesc::set_state` on owned slab `slab`'s descriptor `d` under
@@ -3142,8 +3168,9 @@ impl ClassState {
         proof {
             g.lemma_desc(k);
         }
+        let inv = self.desc_inv(slab);
         let tracked mut p = g.dperms.borrow_mut().tracked_remove(slab as nat);
-        d.set_state(s, Tracked(&mut p));
+        d.set_state(s, inv, Tracked(&mut p));
         proof {
             g.dperms.borrow_mut().tracked_insert(slab as nat, p);
             g.states@ = g.states@.insert(k, s);
@@ -3187,8 +3214,9 @@ impl ClassState {
         proof {
             g.lemma_desc(k);
         }
+        let inv = self.desc_inv(slab);
         let tracked mut p = g.dperms.borrow_mut().tracked_remove(slab as nat);
-        d.set_dirty_at(ns, Tracked(&mut p));
+        d.set_dirty_at(ns, inv, Tracked(&mut p));
         proof {
             g.dperms.borrow_mut().tracked_insert(slab as nat, p);
             g.dirty@ = g.dirty@.insert(k, ns);
@@ -3894,6 +3922,7 @@ impl ClassState {
             // a claim takes only slots of open pages, and gives back what
             // it won on a page that closed meanwhile.
             let pages = t.pages(slab);
+            let tracked pinv = t.desc_inv(slab);
             let geometry = t.page_view();
             let mut k: usize = 0;
             let mut word = match rng.as_mut() {
@@ -3935,6 +3964,7 @@ impl ClassState {
                     got + want <= out@.len(),
                     out@.len() == old(out)@.len(),
                     slab < self.spec_nslabs(),
+                    pages matches Some(pg) ==> pages_inv_for(*pinv, pg),
                     want <= nslots,
                     nslots <= sb,
                     sb == class_table()[self.spec_class() as int].slab_bits,
@@ -3967,7 +3997,7 @@ impl ClassState {
                 let tracked mut wt = t.empty_tokens();
                 // Step 1: the open pages as the claim starts.
                 let view = match pages {
-                    Some(pg) => geometry.with_closed(pg.closed()),
+                    Some(pg) => geometry.with_closed(pg.closed_unheld(Tracked(pinv))),
                     None => geometry,
                 };
                 let Some((w, won)) = bm.claim_from(word, want - k, view, Tracked(&mut wt), Tracked(&cm), Tracked(&cs)) else {
@@ -3990,10 +4020,11 @@ impl ClassState {
                 // out. The walk closes a page before it reads the page's
                 // words with a read-modify-write, so a claim whose
                 // `fetch_or` came after that read sees the page closed here
-                // (`SlabPages::closed`, `Acquire`); one whose `fetch_or` came
-                // before it left its bit set, and the walk keeps the page.
+                // (`SlabPages::closed_unheld`, at least `Acquire`); one
+                // whose `fetch_or` came before it left its bit set, and the
+                // walk keeps the page.
                 let closed = match pages {
-                    Some(pg) => pg.closed(),
+                    Some(pg) => pg.closed_unheld(Tracked(pinv)),
                     None => 0,
                 };
                 let open = if closed == 0 { !0u64 } else { geometry.with_closed(closed).word(w) };
@@ -4579,7 +4610,7 @@ impl ClassState {
                     seen = seen.insert(s as nat, busy);
                     assert(g@.slab_ok(s as nat));
                 }
-                if desc.state() == State::Active {
+                if desc.state_unheld(self.desc_inv(s)) == State::Active {
                     let (full, seen_full) = self.table().bits(s).is_full_seen();
                     if full {
                         g.clear_partial_full(s, seen_full);
@@ -4806,7 +4837,7 @@ impl ClassState {
             self.check_shadow(slab, "take");
             if state == State::Fresh {
                 if live != 0 {
-                    fresh_with_live(self.class as usize, slab, self.arena, desc, self.table().bits(slab).allocated(self.class().nslots()));
+                    fresh_with_live(self.class as usize, slab, self.arena, desc, self.desc_inv(slab), self.table().bits(slab).allocated(self.class().nslots()));
                 }
                 proof {
                     assert(g.st(slab as nat) == State::Fresh);
@@ -4970,11 +5001,12 @@ impl ClassState {
         }
         if cfg!(debug_assertions) {
             let owner = self.table().owner(slab).0;
-            let arena = desc.arena_held(Ghost(slab as nat), Tracked(g.dperms.borrow()));
+            let inv = self.desc_inv(slab);
+            let arena = desc.arena_held(inv, Ghost(slab as nat), Tracked(g.dperms.borrow()));
             debug_assert!(
                 owner == self.arena,
                 "take: slab {slab} state {:?} live {live}: owner {owner}, not arena {}",
-                desc.state(),
+                desc.state_unheld(inv),
                 self.arena
             );
             debug_assert!(
@@ -5552,8 +5584,8 @@ impl ClassState {
     {
         if purge::check_zero() {
             self.check_shadow(slab, "release");
-            if self.desc(slab).state() == State::Fresh {
-                release_into_fresh(self.class as usize, slab, self.arena, self.desc(slab), n);
+            if self.desc(slab).state_unheld(self.desc_inv(slab)) == State::Fresh {
+                release_into_fresh(self.class as usize, slab, self.arena, self.desc(slab), self.desc_inv(slab), n);
             }
         }
         if self.desc(slab).sub_live(n) == n {
@@ -5979,10 +6011,11 @@ impl ClassState {
                     guard_free(p as usize, self.class as usize, slab);
                 }
                 let d = self.desc(slab);
-                if d.arena() != self.arena {
-                    owner_mismatch(self.class as usize, slab >> self.table().lg_group, slab, self.arena, d.arena());
+                let inv = self.desc_inv(slab);
+                if d.arena_unheld(inv) != self.arena {
+                    owner_mismatch(self.class as usize, slab >> self.table().lg_group, slab, self.arena, d.arena_unheld(inv));
                 }
-                if d.state() == State::Fresh {
+                if d.state_unheld(inv) == State::Fresh {
                     release_into_fresh_slab(p as usize, self.class as usize, slab);
                 }
                 cur_slab = slab;
@@ -6455,7 +6488,7 @@ impl ClassState {
             }
             seen += 1;
             let closed = match t.pages_if_committed(s) {
-                Some(pg) => v0.with_closed(pg.closed()).closed_slots(),
+                Some(pg) => v0.with_closed(pg.closed_unheld(Tracked(t.desc_inv(s)))).closed_slots(),
                 None => 0,
             };
             let live = match t.desc_if_committed(s) {

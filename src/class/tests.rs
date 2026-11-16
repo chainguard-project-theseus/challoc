@@ -247,13 +247,16 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     };
     // Slab 0 goes Empty; its group mates 1..4 are Active, so nothing is purged.
     cs.release(&p[..n]);
-    assert_eq!(cs.desc(0).state(), State::Empty);
+    assert_eq!(cs.desc(0).state_unheld(Tracked::assume_new()), State::Empty);
     assert_eq!(
         cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         0
     );
-    assert_eq!(cs.desc(0).state(), State::Empty);
-    assert_eq!(cs.oldest_empty(), cs.desc(0).dirty_at());
+    assert_eq!(cs.desc(0).state_unheld(Tracked::assume_new()), State::Empty);
+    assert_eq!(
+        cs.oldest_empty(),
+        cs.desc(0).dirty_unheld(Tracked::assume_new())
+    );
     // Another arena gets the next group (slabs 128..256: groups are
     // whole page groups, so a page group never straddles arenas);
     // 128..132 is page group 32, not a guard (124..128 is), so its
@@ -273,13 +276,17 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(r.len(), 3 * n);
     for s in [0, 5, 6] {
         assert_eq!(in_slab(&r, s).len(), n, "slab {s}");
-        assert_eq!(cs.desc(s).state(), State::Active, "slab {s}");
-        assert_eq!(cs.desc(s).arena(), 0);
+        assert_eq!(
+            cs.desc(s).state_unheld(Tracked::assume_new()),
+            State::Active,
+            "slab {s}"
+        );
+        assert_eq!(cs.desc(s).arena_unheld(Tracked::assume_new()), 0);
     }
-    assert_eq!(cs.desc(128).arena(), 1);
+    assert_eq!(cs.desc(128).arena_unheld(Tracked::assume_new()), 1);
     // Slab 7 was committed with its page group (by slab 4) and handed
     // to arena 0 with the group, but no refill has used it: Fresh.
-    assert_eq!(cs.desc(7).state(), State::Fresh);
+    assert_eq!(cs.desc(7).state_unheld(Tracked::assume_new()), State::Fresh);
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -309,9 +316,13 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
         3
     );
     for s in 4..7 {
-        assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+        assert_eq!(
+            cs.desc(s).state_unheld(Tracked::assume_new()),
+            State::Purged,
+            "slab {s}"
+        );
     }
-    assert_eq!(cs.desc(7).state(), State::Fresh);
+    assert_eq!(cs.desc(7).state_unheld(Tracked::assume_new()), State::Fresh);
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -325,15 +336,19 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     // whenever the coarse clock has moved on) included.
     cs.release(&p[n..4 * n]);
     cs.release(&in_slab(&r, 0));
-    let oldest = cs.desc(1).dirty_at();
-    assert!(cs.desc(0).dirty_at() >= oldest);
+    let oldest = cs.desc(1).dirty_unheld(Tracked::assume_new());
+    assert!(cs.desc(0).dirty_unheld(Tracked::assume_new()) >= oldest);
     assert_eq!(
         cs.purge_empty(oldest, Tracked::assume_new(), Tracked::assume_new()),
         4
     );
     for s in 0..4 {
-        assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
-        assert_eq!(cs.desc(s).dirty_at(), 0);
+        assert_eq!(
+            cs.desc(s).state_unheld(Tracked::assume_new()),
+            State::Purged,
+            "slab {s}"
+        );
+        assert_eq!(cs.desc(s).dirty_unheld(Tracked::assume_new()), 0);
     }
     assert_eq!(
         cs.stats(),
@@ -350,12 +365,15 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(claim, Claim { n: 3, zeroed: true });
     assert_eq!(z[0] as usize, base);
     cs.release(&z);
-    assert_eq!(cs.desc(0).state(), State::Empty);
+    assert_eq!(cs.desc(0).state_unheld(Tracked::assume_new()), State::Empty);
     assert_eq!(
         cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         1
     );
-    assert_eq!(cs.desc(0).state(), State::Purged);
+    assert_eq!(
+        cs.desc(0).state_unheld(Tracked::assume_new()),
+        State::Purged
+    );
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -377,11 +395,14 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     assert_eq!(cs.table().committed_slabs(), 256);
     for s in 12..16 {
         assert!(cs.is_guard_slab(s));
-        assert_eq!(cs.desc(s).state(), State::Fresh);
+        assert_eq!(cs.desc(s).state_unheld(Tracked::assume_new()), State::Fresh);
         assert_eq!(cs.desc(s).live(), 0);
     }
     // The other arena's group is untouched by all of this.
-    assert_eq!(other.desc(128).state(), State::Active);
+    assert_eq!(
+        other.desc(128).state_unheld(Tracked::assume_new()),
+        State::Active
+    );
     assert_eq!(other.desc(128).live(), n);
     assert_eq!(
         other.stats(),
@@ -420,8 +441,12 @@ fn slabs_are_handed_out_in_line_sized_groups() {
     assert!(t.bits(0).is_full());
     for s in 1..128 {
         assert_eq!(t.owner(s).0, 0, "slab {s}");
-        assert_eq!(t.desc(s).state(), State::Fresh, "slab {s}");
-        assert_eq!(t.desc(s).arena(), 0, "slab {s}");
+        assert_eq!(
+            t.desc(s).state_unheld(Tracked::assume_new()),
+            State::Fresh,
+            "slab {s}"
+        );
+        assert_eq!(t.desc(s).arena_unheld(Tracked::assume_new()), 0, "slab {s}");
         assert_eq!(t.desc(s).live(), 0, "slab {s}");
         assert!(!t.bits(s).is_full(), "slab {s}");
         for slot in 0..4 {
@@ -580,9 +605,9 @@ fn first_claim_is_lowest_addresses_and_zero() {
         assert_eq!(cs.locate(q), (0, i));
     }
     let d = cs.desc(0);
-    assert_eq!(d.state(), State::Active);
+    assert_eq!(d.state_unheld(Tracked::assume_new()), State::Active);
     assert_eq!(d.live(), 10);
-    assert_eq!(d.arena(), 0);
+    assert_eq!(d.arena_unheld(Tracked::assume_new()), 0);
     assert_eq!(cs.committed_slabs(), 1);
     assert_eq!(
         cs.stats(),
@@ -753,7 +778,7 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     let mut whole: Vec<*mut u8> = all[3 * n..4 * n].to_vec();
     whole.sort();
     cs.release(&whole);
-    assert_eq!(cs.desc(3).state(), State::Empty);
+    assert_eq!(cs.desc(3).state_unheld(Tracked::assume_new()), State::Empty);
     assert!(!cs.is_partial(3, Tracked::assume_new()));
     assert_eq!(cs.stats().empty, 1);
     assert_eq!(cs.stats().nonfull, 1);
@@ -761,7 +786,10 @@ fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
     let mut whole: Vec<*mut u8> = all[(slabs - 1) * n..].to_vec();
     whole.sort();
     cs.release(&whole);
-    assert_eq!(cs.desc(slabs - 1).state(), State::Empty);
+    assert_eq!(
+        cs.desc(slabs - 1).state_unheld(Tracked::assume_new()),
+        State::Empty
+    );
     assert!(!cs.is_partial(slabs - 1, Tracked::assume_new()));
     assert_eq!(cs.stats().empty, 2);
     assert_eq!(cs.stats().nonfull, 0);
@@ -778,9 +806,9 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     rev.reverse();
     cs.release(&rev);
     let d = cs.desc(0);
-    assert_eq!(d.state(), State::Empty);
+    assert_eq!(d.state_unheld(Tracked::assume_new()), State::Empty);
     assert_eq!(d.live(), 0);
-    assert!(d.dirty_at() > 0);
+    assert!(d.dirty_unheld(Tracked::assume_new()) > 0);
     assert!(!cs.is_partial(0, Tracked::assume_new()));
     assert_eq!(
         cs.stats(),
@@ -800,8 +828,8 @@ fn release_all_makes_empty_then_reuse_then_purge() {
         }
     );
     assert_eq!(q[0], p[0]);
-    assert_eq!(d.state(), State::Active);
-    assert_eq!(d.dirty_at(), 0);
+    assert_eq!(d.state_unheld(Tracked::assume_new()), State::Active);
+    assert_eq!(d.dirty_unheld(Tracked::assume_new()), 0);
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -811,23 +839,23 @@ fn release_all_makes_empty_then_reuse_then_purge() {
         }
     );
     cs.release(&q);
-    assert_eq!(d.state(), State::Empty);
+    assert_eq!(d.state_unheld(Tracked::assume_new()), State::Empty);
     // Purge with a cutoff before dirty_at does nothing; after it purges.
     assert_eq!(
         cs.purge_empty(
-            d.dirty_at() - 1,
+            d.dirty_unheld(Tracked::assume_new()) - 1,
             Tracked::assume_new(),
             Tracked::assume_new()
         ),
         0
     );
-    assert_eq!(d.state(), State::Empty);
+    assert_eq!(d.state_unheld(Tracked::assume_new()), State::Empty);
     assert_eq!(
         cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
         1
     );
-    assert_eq!(d.state(), State::Purged);
-    assert_eq!(d.dirty_at(), 0);
+    assert_eq!(d.state_unheld(Tracked::assume_new()), State::Purged);
+    assert_eq!(d.dirty_unheld(Tracked::assume_new()), 0);
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -840,7 +868,7 @@ fn release_all_makes_empty_then_reuse_then_purge() {
     let (r, claim) = env.claim(cs, 4);
     assert_eq!(claim, Claim { n: 4, zeroed: true });
     assert_eq!(r[0], p[0]);
-    assert_eq!(d.state(), State::Active);
+    assert_eq!(d.state_unheld(Tracked::assume_new()), State::Active);
     assert_eq!(
         cs.stats(),
         ClassStats {
@@ -876,7 +904,8 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     let t0 = cs.oldest_empty();
     assert!(t0 > 0);
     for s in 0..n {
-        cs.desc(s).set_dirty_at(t0, Tracked::assume_new());
+        cs.desc(s)
+            .set_dirty_at(t0, Tracked::assume_new(), Tracked::assume_new());
     }
     // Before the first step ends: no walk, the deadline is its end.
     assert_eq!(cs.decay(t0 + 999, W), Some(t0 + 1000));
@@ -897,7 +926,11 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
         } else {
             State::Purged
         };
-        assert_eq!(cs.desc(s).state(), want, "slab {s}");
+        assert_eq!(
+            cs.desc(s).state_unheld(Tracked::assume_new()),
+            want,
+            "slab {s}"
+        );
     }
     assert_eq!(cs.oldest_empty(), t0);
     // A quarter of the way in nothing more would have gone; three
@@ -922,26 +955,37 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     let (q, _) = env.claim(cs, nslots * 2);
     cs.release(&q);
     let t = cs.oldest_empty();
-    cs.desc(0).set_dirty_at(t, Tracked::assume_new());
-    cs.desc(1).set_dirty_at(t + W / 2, Tracked::assume_new());
+    cs.desc(0)
+        .set_dirty_at(t, Tracked::assume_new(), Tracked::assume_new());
+    cs.desc(1)
+        .set_dirty_at(t + W / 2, Tracked::assume_new(), Tracked::assume_new());
     assert_eq!(cs.decay(t + W - 1000, W), Some(t + W));
-    assert_eq!(cs.desc(0).state(), State::Purged);
-    assert_eq!(cs.desc(1).state(), State::Empty);
+    assert_eq!(
+        cs.desc(0).state_unheld(Tracked::assume_new()),
+        State::Purged
+    );
+    assert_eq!(cs.desc(1).state_unheld(Tracked::assume_new()), State::Empty);
     assert_eq!(cs.oldest_empty(), t + W / 2);
     assert_eq!(
         cs.decay(t + W / 2 + W - 2000, W),
         Some(t + W / 2 + W - 1000)
     );
-    assert_eq!(cs.desc(1).state(), State::Empty);
+    assert_eq!(cs.desc(1).state_unheld(Tracked::assume_new()), State::Empty);
     assert_eq!(cs.decay(t + W / 2 + W - 1000, W), None);
-    assert_eq!(cs.desc(1).state(), State::Purged);
+    assert_eq!(
+        cs.desc(1).state_unheld(Tracked::assume_new()),
+        State::Purged
+    );
     // A claim reuses slab 0 (the lowest Empty): the atomic is now stale
     // (too early). The next decay finds nothing and clears it.
     let (r, _) = env.claim(cs, nslots);
     cs.release(&r[..1]);
-    assert_eq!(cs.desc(0).state(), State::Active);
+    assert_eq!(
+        cs.desc(0).state_unheld(Tracked::assume_new()),
+        State::Active
+    );
     cs.release(&r[1..]);
-    assert_eq!(cs.desc(0).state(), State::Empty);
+    assert_eq!(cs.desc(0).state_unheld(Tracked::assume_new()), State::Empty);
     let t = cs.oldest_empty();
     assert!(t > 0);
     let (r, _) = env.claim(cs, 1);
@@ -955,7 +999,10 @@ fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
     let t = cs.oldest_empty();
     assert!(t > 0);
     assert_eq!(cs.decay(t, 0), None);
-    assert_eq!(cs.desc(0).state(), State::Purged);
+    assert_eq!(
+        cs.desc(0).state_unheld(Tracked::assume_new()),
+        State::Purged
+    );
     // Purging everything at once clears it too.
     let (r, _) = env.claim(cs, nslots * 2);
     cs.release(&r);
@@ -979,7 +1026,8 @@ fn decay_walks_at_once_after_the_period_shrinks() {
     cs.release(&p);
     let t0 = cs.oldest_empty();
     for s in 0..4 {
-        cs.desc(s).set_dirty_at(t0, Tracked::assume_new());
+        cs.desc(s)
+            .set_dirty_at(t0, Tracked::assume_new(), Tracked::assume_new());
     }
     // A walk under a 20 s period leaves a deadline 100 ms out.
     let long = 20_000_000_000;
@@ -1011,7 +1059,11 @@ fn purge_batches_a_whole_region() {
     assert_eq!(cs.stats().purged, n);
     assert_eq!(cs.oldest_empty(), 0);
     for s in 0..n {
-        assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+        assert_eq!(
+            cs.desc(s).state_unheld(Tracked::assume_new()),
+            State::Purged,
+            "slab {s}"
+        );
     }
 }
 
@@ -1031,7 +1083,8 @@ fn a_slab_whose_discard_fails_stays_empty() {
     cs.release(&p);
     let t0 = cs.oldest_empty();
     for s in 0..4 {
-        cs.desc(s).set_dirty_at(t0, Tracked::assume_new());
+        cs.desc(s)
+            .set_dirty_at(t0, Tracked::assume_new(), Tracked::assume_new());
     }
     let page = crate::sys::features::page_size();
     let locked = env.regions.slab_addr(c, 1);
@@ -1042,10 +1095,14 @@ fn a_slab_whose_discard_fails_stays_empty() {
         let st = cs.stats();
         assert_eq!((st.empty, st.purged), (1, 3), "{st:?}");
         for s in [0, 2, 3] {
-            assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+            assert_eq!(
+                cs.desc(s).state_unheld(Tracked::assume_new()),
+                State::Purged,
+                "slab {s}"
+            );
         }
-        assert_eq!(cs.desc(1).state(), State::Empty);
-        assert_eq!(cs.desc(1).dirty_at(), t0);
+        assert_eq!(cs.desc(1).state_unheld(Tracked::assume_new()), State::Empty);
+        assert_eq!(cs.desc(1).dirty_unheld(Tracked::assume_new()), t0);
         assert_eq!(cs.oldest_empty(), t0);
     };
     assert_eq!(
@@ -1141,7 +1198,7 @@ fn guard_slabs_are_skipped() {
     assert_eq!(cs.stats().committed, 7);
     assert_eq!(cs.stats().guards, 2);
     // A guard slab's descriptor is zero: any free into it aborts.
-    assert_eq!(cs.desc(3).state(), State::Fresh);
+    assert_eq!(cs.desc(3).state_unheld(Tracked::assume_new()), State::Fresh);
     assert_eq!(cs.desc(3).live(), 0);
     // `commit_slab` of a guard slab (here slab 11, handed out with the
     // group of slab 8 and not yet reached): committed, the guard installed
@@ -1187,7 +1244,11 @@ fn works_for_every_class() {
             cs.check(q);
         }
         cs.release(&p);
-        assert_eq!(cs.desc(0).state(), State::Empty, "class {c}");
+        assert_eq!(
+            cs.desc(0).state_unheld(Tracked::assume_new()),
+            State::Empty,
+            "class {c}"
+        );
         assert_eq!(
             cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
             1
@@ -1329,8 +1390,8 @@ fn two_arenas_share_one_region() {
     let (p1, _) = env.claim(cs1, 3);
     assert_eq!(cs0.committed_slabs(), 2);
     assert_eq!(cs1.committed_slabs(), 2);
-    assert_eq!(cs0.desc(0).arena(), 0);
-    assert_eq!(cs0.desc(1).arena(), 1);
+    assert_eq!(cs0.desc(0).arena_unheld(Tracked::assume_new()), 0);
+    assert_eq!(cs0.desc(1).arena_unheld(Tracked::assume_new()), 1);
     assert_eq!(cs0.locate(p0[0]).0, 0);
     assert_eq!(cs1.locate(p1[0]).0, 1);
     assert!(cs0.is_partial(0, Tracked::assume_new()) && !cs0.is_partial(1, Tracked::assume_new()));
@@ -1340,15 +1401,21 @@ fn two_arenas_share_one_region() {
     // Each arena keeps growing past the other's slabs.
     let (q1, _) = env.claim(cs1, cs1.class().nslots());
     assert_eq!(cs1.locate(q1[q1.len() - 1]).0, 2);
-    assert_eq!(cs0.desc(2).arena(), 1);
+    assert_eq!(cs0.desc(2).arena_unheld(Tracked::assume_new()), 1);
     let (q0, _) = env.claim(cs0, cs0.class().nslots());
     assert_eq!(cs0.locate(q0[q0.len() - 1]).0, 3);
-    assert_eq!(cs0.desc(3).arena(), 0);
+    assert_eq!(cs0.desc(3).arena_unheld(Tracked::assume_new()), 0);
     // Releases land in the owner's sets only.
     cs1.release(&p1);
     cs1.release(&q1);
-    assert_eq!(cs1.desc(1).state(), State::Empty);
-    assert_eq!(cs1.desc(2).state(), State::Empty);
+    assert_eq!(
+        cs1.desc(1).state_unheld(Tracked::assume_new()),
+        State::Empty
+    );
+    assert_eq!(
+        cs1.desc(2).state_unheld(Tracked::assume_new()),
+        State::Empty
+    );
     assert_eq!(cs1.stats().empty, 2);
     assert_eq!(cs0.stats().empty, 0);
     assert_eq!(
@@ -1552,7 +1619,7 @@ fn release_into_an_uncommitted_slab_of_the_group_aborts() {
         "group of {}",
         cs.table().committed_slabs()
     );
-    assert_eq!(cs.desc(1).state(), State::Fresh);
+    assert_eq!(cs.desc(1).state_unheld(Tracked::assume_new()), State::Fresh);
     assert_eq!(cs.stats().committed, 1);
     cs.release(&[env.regions.slab_addr(c, 1) as *mut u8]);
 }
@@ -1674,7 +1741,7 @@ fn randomised_model_check() {
             total_live += d.live();
             let bm = cs.table().bits(s);
             assert_eq!(bm.allocated(cls.nslots()), d.live(), "slab {s}");
-            match d.state() {
+            match d.state_unheld(Tracked::assume_new()) {
                 State::Empty => {
                     assert_eq!(d.live(), 0);
                     assert!(!cs.is_partial(s, Tracked::assume_new()));
@@ -1708,7 +1775,10 @@ fn randomised_model_check() {
     assert_eq!(st.purged, st.committed);
     assert_eq!(st.empty, 0);
     for s in 0..cs.committed_slabs() {
-        assert_eq!(cs.desc(s).state(), State::Purged);
+        assert_eq!(
+            cs.desc(s).state_unheld(Tracked::assume_new()),
+            State::Purged
+        );
     }
     // Everything is reusable afterwards, from slab 0, and zero.
     let (p, claim) = env.claim(cs, 3);
@@ -1768,7 +1838,11 @@ fn concurrent_claims_are_disjoint() {
     assert_eq!(st.nonfull, 0);
     for s in 0..cs.committed_slabs() {
         let d = cs.desc(s);
-        assert_eq!(d.state(), State::Empty, "slab {s}");
+        assert_eq!(
+            d.state_unheld(Tracked::assume_new()),
+            State::Empty,
+            "slab {s}"
+        );
         assert_eq!(d.live(), 0, "slab {s}");
         assert!(!cs.table().bits(s).is_full());
         for slot in 0..cs.class().nslots() {
@@ -2068,7 +2142,10 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
             1
         );
-        assert_eq!(cs.desc(0).state(), State::Purged);
+        assert_eq!(
+            cs.desc(0).state_unheld(Tracked::assume_new()),
+            State::Purged
+        );
         if !purge::purged_is_zero() {
             break;
         }
@@ -2370,7 +2447,7 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
     // line is initialised) and not yet committed.
     let (p, _) = env.claim(cs, n);
     assert_eq!(p.len(), n);
-    assert_eq!(cs.desc(1).state(), State::Fresh);
+    assert_eq!(cs.desc(1).state_unheld(Tracked::assume_new()), State::Fresh);
     assert_eq!(
         cs.table().bits(1).claim_word(
             0,
@@ -2456,7 +2533,7 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     assert_ne!(slots, sorted, "shuffled");
     assert!(cs.table().bits(0).is_full());
     cs.release(&out);
-    assert_eq!(cs.desc(0).state(), State::Empty);
+    assert_eq!(cs.desc(0).state_unheld(Tracked::assume_new()), State::Empty);
     let mut half = vec![ptr::null_mut(); n / 2];
     let c1 = cs.claim_random(
         &env.meta,
@@ -2572,7 +2649,11 @@ fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes()
     let (p, _) = env.claim(cs, 3 * n);
     cs.release(&p);
     for s in 0..3 {
-        assert_eq!(cs.desc(s).state(), State::Empty, "slab {s}");
+        assert_eq!(
+            cs.desc(s).state_unheld(Tracked::assume_new()),
+            State::Empty,
+            "slab {s}"
+        );
     }
     /// Records each visit.
     struct Seen(Vec<(usize, u64)>);
@@ -2597,7 +2678,7 @@ fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes()
     assert_eq!(
         seen.0,
         (0..3)
-            .map(|s| (s, cs.desc(s).dirty_at()))
+            .map(|s| (s, cs.desc(s).dirty_unheld(Tracked::assume_new())))
             .collect::<Vec<_>>()
     );
     assert!(
@@ -2625,7 +2706,8 @@ fn a_purge_over_an_empty_set_slab_that_is_not_empty_aborts() {
     assert_eq!(cs.stats().empty, 2);
     // Corrupt the descriptor: the set says `Empty`, the state byte says
     // `Active`.
-    cs.desc(1).set_state(State::Active, Tracked::assume_new());
+    cs.desc(1)
+        .set_state(State::Active, Tracked::assume_new(), Tracked::assume_new());
     cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new());
 }
 
@@ -2893,27 +2975,66 @@ fn slab_pages_sit_after_the_header_where_the_stride_has_room() {
         assert!(stride >= 32, "class {c}");
         let (d0, d1) = (cs.desc(s0), cs.desc(s1));
         // The next slab opened on demand (docs/proposals/slab-pages.md, 3.3).
-        let m1 = cs.table().pages(s1).unwrap().closed();
+        let m1 = cs
+            .table()
+            .pages(s1)
+            .unwrap()
+            .closed_unheld(Tracked::assume_new());
         assert_eq!(
             pg as *const _ as usize,
             d0 as *const _ as usize + 16,
             "class {c}"
         );
-        assert_eq!(pg.closed(), 0, "class {c}");
-        pg.set_pages(0b1010_0101, 77, Tracked::assume_new());
+        assert_eq!(pg.closed_unheld(Tracked::assume_new()), 0, "class {c}");
+        pg.set_pages(
+            0b1010_0101,
+            77,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         assert_eq!(
-            pg.pages_held(Ghost::assume_new(), Tracked::assume_new()),
+            pg.pages_held(
+                Tracked::assume_new(),
+                Ghost::assume_new(),
+                Tracked::assume_new()
+            ),
             (0b1010_0101, 77),
             "class {c}"
         );
-        assert_eq!(pg.closed(), 0b1010_0101, "class {c}");
+        assert_eq!(
+            pg.closed_unheld(Tracked::assume_new()),
+            0b1010_0101,
+            "class {c}"
+        );
         for d in [d0, d1] {
-            assert_eq!(d.state(), State::Active, "class {c}");
-            assert_eq!(d.state_bytes(), (1, 2), "class {c}");
-            assert_eq!((d.arena(), d.dirty_at()), (0, 0), "class {c}");
+            assert_eq!(
+                d.state_unheld(Tracked::assume_new()),
+                State::Active,
+                "class {c}"
+            );
+            assert_eq!(
+                d.state_bytes_unheld(Tracked::assume_new()),
+                (1, 2),
+                "class {c}"
+            );
+            assert_eq!(
+                (
+                    d.arena_unheld(Tracked::assume_new()),
+                    d.dirty_unheld(Tracked::assume_new())
+                ),
+                (0, 0),
+                "class {c}"
+            );
         }
-        assert_eq!(cs.table().pages(s1).unwrap().closed(), m1, "class {c}");
-        pg.set_pages(0, 0, Tracked::assume_new());
+        assert_eq!(
+            cs.table()
+                .pages(s1)
+                .unwrap()
+                .closed_unheld(Tracked::assume_new()),
+            m1,
+            "class {c}"
+        );
+        pg.set_pages(0, 0, Tracked::assume_new(), Tracked::assume_new());
         cs.release(&p);
     }
     assert!(with > 0);
@@ -2944,7 +3065,7 @@ fn claims_take_only_the_slots_of_open_pages() {
         // Every page closed but the first and the last.
         let all = ((1u32 << view.pages) - 1) as u16;
         let closed = all & !1 & !(1 << (view.pages - 1));
-        pg.set_pages(closed, 0, Tracked::assume_new());
+        pg.set_pages(closed, 0, Tracked::assume_new(), Tracked::assume_new());
         let v = view.with_closed(closed);
         let open: Vec<usize> = (0..view.nslots)
             .filter(|&s| v.word(s / 64) >> (s % 64) & 1 == 1)
@@ -2973,12 +3094,12 @@ fn claims_take_only_the_slots_of_open_pages() {
         let (s, _) = cs.locate(q[0]);
         assert_eq!(s, s0, "class {c}: a closed page reopens before a new slab");
         assert_eq!(
-            pg.closed(),
+            pg.closed_unheld(Tracked::assume_new()),
             closed & (closed - 1),
             "class {c}: the lowest closed page reopened"
         );
         held.extend(q);
-        pg.set_pages(0, 0, Tracked::assume_new());
+        pg.set_pages(0, 0, Tracked::assume_new(), Tracked::assume_new());
         cs.release(&held);
         tested += 1;
     }
@@ -3039,7 +3160,11 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
         }
         close_pages_t(cs, 1, 0, true);
         let pg = cs.table().pages(s0).unwrap();
-        assert_eq!(pg.closed(), want, "class {c}: closed pages");
+        assert_eq!(
+            pg.closed_unheld(Tracked::assume_new()),
+            want,
+            "class {c}: closed pages"
+        );
         let hidden = view.with_closed(want).closed_slots();
         assert_eq!(closed_slots_t(cs), hidden, "class {c}");
         // The statistics (docs/proposals/slab-pages.md, 3.6): the closed
@@ -3091,13 +3216,17 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
             }
         }
         assert_eq!(
-            pg.closed(),
+            pg.closed_unheld(Tracked::assume_new()),
             0,
             "class {c}: every page reopened before another slab"
         );
         // Only the next slab, opened on demand, has closed pages now.
         let s1 = cs.locate(*more.last().unwrap()).0;
-        let m1 = cs.table().pages(s1).unwrap().closed();
+        let m1 = cs
+            .table()
+            .pages(s1)
+            .unwrap()
+            .closed_unheld(Tracked::assume_new());
         assert_eq!(
             closed_slots_t(cs),
             view.with_closed(m1).closed_slots(),
@@ -3107,7 +3236,7 @@ fn the_walk_closes_the_free_pages_of_a_partial_slab() {
         cs.release(&more);
         cs.release(&kept);
         assert_eq!(
-            pg.closed(),
+            pg.closed_unheld(Tracked::assume_new()),
             0,
             "class {c}: an Empty slab has every page open"
         );
@@ -3155,23 +3284,27 @@ fn the_walk_closes_pages_along_the_decay_curve() {
     let period = 1_000_000_000u64;
     let t0 = 5_000_000_000u64;
     let due = close_pages_t(cs, t0, period, false).expect("a deadline");
-    assert_eq!(pg.closed(), 0, "a young closable page stays open");
+    assert_eq!(
+        pg.closed_unheld(Tracked::assume_new()),
+        0,
+        "a young closable page stays open"
+    );
     assert!(due > t0 && due <= t0 + period);
     // Before the deadline the walk does not run.
     assert_eq!(close_pages_t(cs, due - 1, period, false), Some(due));
-    assert_eq!(pg.closed(), 0);
+    assert_eq!(pg.closed_unheld(Tracked::assume_new()), 0);
     close_pages_t(cs, t0 + period, period, false);
     let all = ((1u32 << view.pages) - 1) as u16;
     let first = (0..view.pages)
         .filter(|&p| p * view.pg < view.size)
         .fold(0u16, |m, p| m | 1 << p);
     assert_eq!(
-        pg.closed(),
+        pg.closed_unheld(Tracked::assume_new()),
         all & !first,
         "a period old, every closable page closed"
     );
     cs.release(&held[..1]);
-    assert_eq!(pg.closed(), 0);
+    assert_eq!(pg.closed_unheld(Tracked::assume_new()), 0);
 }
 
 /// Slab pages: `cs`'s `closed_slots`, under the class lock.
@@ -3216,21 +3349,25 @@ fn a_defrag_hint_closes_pages_a_step_old() {
     let step = period / crate::purge::STEPS as u64;
     let t0 = 5_000_000_000u64;
     close_pages_t(cs, t0, period, false);
-    assert_eq!(pg.closed(), 0, "young on the curve");
+    assert_eq!(
+        pg.closed_unheld(Tracked::assume_new()),
+        0,
+        "young on the curve"
+    );
     cs.note_defrag_hint();
     assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 1);
     close_pages_t(cs, t0 + 2 * step, period, false);
     assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 0);
     let all = ((1u32 << view.pages) - 1) as u16;
     assert_eq!(
-        pg.closed(),
+        pg.closed_unheld(Tracked::assume_new()),
         all & !1,
         "hinted: every page a step old closed"
     );
     cs.note_defrag_hint();
     assert_eq!(cs.hint_armed.load(Ordering::Relaxed), 0, "within 100 ms");
     cs.release(&held[..1]);
-    assert_eq!(pg.closed(), 0);
+    assert_eq!(pg.closed_unheld(Tracked::assume_new()), 0);
 }
 
 /// Slab pages, the reservation bound: a walk between a refill's
@@ -3278,7 +3415,7 @@ fn a_walk_between_reservation_and_claim_leaves_the_reserved_slots_open() {
         );
         assert_eq!(got.len(), want, "class {c}: the reservation was met");
         let pg = cs.table().pages(s0).unwrap();
-        let v = view.with_closed(pg.closed());
+        let v = view.with_closed(pg.closed_unheld(Tracked::assume_new()));
         for &x in &got {
             let (s, k) = cs.locate(x);
             assert_eq!(s, s0, "class {c}");
@@ -3335,7 +3472,7 @@ fn an_emptied_slab_takes_its_closed_slots_out_of_the_count() {
         cs.release(&freed);
         close_pages_t(cs, 1, 0, true);
         let pg = cs.table().pages(s0).unwrap();
-        if pg.closed() == 0 {
+        if pg.closed_unheld(Tracked::assume_new()) == 0 {
             cs.release(&kept);
             continue;
         }
@@ -3343,7 +3480,7 @@ fn an_emptied_slab_takes_its_closed_slots_out_of_the_count() {
         // The last held slots go: the slab empties with its pages closed.
         cs.release(&kept);
         assert_eq!(
-            pg.closed(),
+            pg.closed_unheld(Tracked::assume_new()),
             0,
             "class {c}: an Empty slab has every page open"
         );
@@ -3399,7 +3536,11 @@ fn an_epoch_arms_the_walk_to_close_pages_a_step_old() {
     let step = period / crate::purge::STEPS as u64;
     let t0 = 5_000_000_000u64;
     close_pages_t(cs, t0, period, false);
-    assert_eq!(pg.closed(), 0, "young on the curve");
+    assert_eq!(
+        pg.closed_unheld(Tracked::assume_new()),
+        0,
+        "young on the curve"
+    );
     let t1 = t0 + 2 * step;
     assert!(cs.arm_pages_hint(t1), "the first epoch arms the walk");
     assert!(
@@ -3408,13 +3549,17 @@ fn an_epoch_arms_the_walk_to_close_pages_a_step_old() {
     );
     close_pages_t(cs, t1, period, false);
     let all = ((1u32 << view.pages) - 1) as u16;
-    assert_eq!(pg.closed(), all & !1, "armed: every page a step old closed");
+    assert_eq!(
+        pg.closed_unheld(Tracked::assume_new()),
+        all & !1,
+        "armed: every page a step old closed"
+    );
     assert!(
         cs.arm_pages_hint(t1 + HINT_NS),
         "one HINT_NS later arms it again"
     );
     cs.release(&held[..1]);
-    assert_eq!(pg.closed(), 0);
+    assert_eq!(pg.closed_unheld(Tracked::assume_new()), 0);
 }
 
 /// `cs.lowest_partial()` with a made-up lock order token.
@@ -3515,7 +3660,12 @@ fn lowest_partial_keeps_a_slab_with_closed_pages_to_reopen() {
     let keep = view.pg / view.size;
     let (s0, s1, k0, k1) = two_partial_slabs(&env, cs, keep);
     close_pages_t(cs, 1, 0, true);
-    let v = view.with_closed(cs.table().pages(s0).unwrap().closed());
+    let v = view.with_closed(
+        cs.table()
+            .pages(s0)
+            .unwrap()
+            .closed_unheld(Tracked::assume_new()),
+    );
     let open_free = (0..view.nslots)
         .filter(|&k| v.word(k / 64) >> (k % 64) & 1 == 1)
         .count()

@@ -18,7 +18,7 @@
 #[cfg(verus_keep_ghost)]
 use super::decay::walk_ok;
 #[cfg(verus_keep_ghost)]
-use super::table::desc_at;
+use super::table::pages_of;
 use super::{ClassState, Inner};
 use crate::bitmap::AtomicBitmap;
 use crate::layout::pages::OpenView;
@@ -27,8 +27,6 @@ use crate::lock::LockOrder;
 use crate::lock::rank_class;
 use crate::purge::{Curve, STEPS};
 use crate::slab::SlabPages;
-#[cfg(verus_keep_ghost)]
-use crate::slab::{desc_id, pages_id};
 use core::sync::atomic::Ordering;
 use vstd::prelude::*;
 
@@ -146,7 +144,7 @@ impl ClassState {
         requires
             walk_ok(self, *old(g)),
             old(g).owns(slab as nat),
-            pages_id(pg) == desc_id(&desc_at(self.spec_table(), slab)) + 16,
+            pages_of(self.spec_table(), slab, pg),
         ensures
             walk_ok(self, *final(g)),
             final(g).states == old(g).states,
@@ -174,8 +172,9 @@ impl ClassState {
         proof {
             g.lemma_desc(k);
         }
+        let inv = self.desc_inv(slab);
         let tracked mut p = g.dperms.borrow_mut().tracked_remove(k);
-        pg.set_pages(closed, stamp, Tracked(&mut p));
+        pg.set_pages(closed, stamp, inv, Tracked(&mut p));
         proof {
             g.dperms.borrow_mut().tracked_insert(k, p);
             super::lemma_descs_update(g0, *g, k);
@@ -195,7 +194,7 @@ impl ClassState {
             old(g).descs(),
             old(g).table@ == self.spec_table(),
             old(g).owns(slab as nat),
-            pages_id(pg) == desc_id(&desc_at(self.spec_table(), slab)) + 16,
+            pages_of(self.spec_table(), slab, pg),
         ensures
             final(g).descs(),
             final(g).states == old(g).states,
@@ -222,8 +221,9 @@ impl ClassState {
         proof {
             g.lemma_desc(k);
         }
+        let inv = self.desc_inv(slab);
         let tracked mut p = g.dperms.borrow_mut().tracked_remove(k);
-        pg.set_pages(closed, stamp, Tracked(&mut p));
+        pg.set_pages(closed, stamp, inv, Tracked(&mut p));
         proof {
             g.dperms.borrow_mut().tracked_insert(k, p);
             super::lemma_descs_update(g0, *g, k);
@@ -262,11 +262,15 @@ impl ClassState {
     }
 
     /// Slab `slab`'s closed pages and stamp, read under this arena's class
-    /// lock (`g`) through the permission `g` holds.
-    // `g` and `slab` are read only by the specification (ghost).
+    /// lock (`g`) through the permission `g` holds, inside its descriptor
+    /// invariant.
+    // `g` is read only by the specification (ghost).
     #[allow(unused_variables)]
-    pub(super) fn pages_locked(g: &Inner, pg: &SlabPages, slab: usize) -> (u16, u64) {
-        pg.pages_held(Ghost(slab as nat), Tracked(g.dperms.borrow()))
+    pub(super) fn pages_locked(&self, g: &Inner, pg: &SlabPages, slab: usize) -> (u16, u64)
+        requires
+            pages_of(self.spec_table(), slab, pg),
+    {
+        pg.pages_held(self.desc_inv(slab), Ghost(slab as nat), Tracked(g.dperms.borrow()))
     }
 
     /// The open pages of view `v` (a slab's geometry and closed mask) whose
@@ -339,7 +343,7 @@ impl ClassState {
             old(g).owns(slab as nat),
             slab < self.spec_nslabs(),
             !self.spec_table().spec_is_guard(slab),
-            pages_id(pg) == desc_id(&desc_at(self.spec_table(), slab)) + 16,
+            pages_of(self.spec_table(), slab, pg),
             v.paged(),
             p < v.pages,
         ensures
@@ -436,7 +440,7 @@ impl ClassState {
             final(g).zeros == old(g).zeros,
     {
         if let Some(pg) = self.table().pages(slab) {
-            let (closed, stamp) = Self::pages_locked(&*g, pg, slab);
+            let (closed, stamp) = self.pages_locked(&*g, pg, slab);
             if closed != 0 || stamp != 0 {
                 let n = self.table().page_view().with_closed(closed).closed_slots();
                 let ghost gc = *g;
@@ -480,7 +484,7 @@ impl ClassState {
         let Some(pg) = t.pages(slab) else {
             return;
         };
-        let (closed, stamp) = Self::pages_locked(&*g, pg, slab);
+        let (closed, stamp) = self.pages_locked(&*g, pg, slab);
         if closed == 0 {
             return;
         }
@@ -549,6 +553,7 @@ impl ClassState {
     /// the next deadline while closable pages are left (a curve step on),
     /// none otherwise; the walk's own gate stays a step ahead while the
     /// class has partial slabs.
+    #[verifier::spinoff_prover]
     pub fn close_pages(&self, now: u64, decay_ns: u64, all: bool, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
         requires
             self.is_process(),
@@ -633,9 +638,9 @@ impl ClassState {
             }
             if let Some(pg) = t.pages(s) {
                 proof {
-                    assert(pages_id(pg) == desc_id(&desc_at(self.spec_table(), s)) + 16);
+                    assert(pages_of(self.spec_table(), s, pg));
                 }
-                let (closed, stamp) = Self::pages_locked(&g, pg, s);
+                let (closed, stamp) = self.pages_locked(&g, pg, s);
                 let v = v0.with_closed(closed);
                 let cand = Self::closable(&t.bits(s), v);
                 let st = if cand == 0 { 0 } else if stamp == 0 { if now == 0 { 1 } else { now } } else { stamp };
@@ -659,7 +664,7 @@ impl ClassState {
                                 s < self.spec_nslabs(),
                                 g@.partial.map@.contains(s as nat),
                                 !self.spec_table().spec_is_guard(s),
-                                pages_id(pg) == desc_id(&desc_at(self.spec_table(), s)) + 16,
+                                pages_of(self.spec_table(), s, pg),
                                 g@.partial == part,
                             decreases v0.pages - p,
                         {
@@ -667,7 +672,7 @@ impl ClassState {
                                 proof {
                                     assert(g@.slab_ok(s as nat));
                                 }
-                                let (c, sp) = Self::pages_locked(&g, pg, s);
+                                let (c, sp) = self.pages_locked(&g, pg, s);
                                 let _ = self.close_page(&mut g, s, pg, v0.with_closed(c), p, sp);
                             }
                             p += 1;
@@ -712,6 +717,7 @@ impl ClassState {
                     }
                 }
             }
+            next = g.partial.map.lowest_set_from(s + 1);
             proof {
                 assert(g@.partial == gp);
                 assert forall|j: int| 0 <= j < nf implies #[trigger] g@.partial.map@.contains(found[j].slab as nat)
@@ -721,8 +727,8 @@ impl ClassState {
                         assert(gp.map@.contains(fh[j].slab as nat));
                     }
                 }
+                assert(walk_ok(self, g@));
             }
-            next = g.partial.map.lowest_set_from(s + 1);
         }
         let ghost gc = g@;
         g.pages_cursor = next.unwrap_or(0);
@@ -776,7 +782,7 @@ impl ClassState {
                             fs < self.spec_nslabs(),
                             g@.partial.map@.contains(fs as nat),
                             !self.spec_table().spec_is_guard(fs),
-                            pages_id(pg) == desc_id(&desc_at(self.spec_table(), fs)) + 16,
+                            pages_of(self.spec_table(), fs, pg),
                             g@.partial == part,
                         decreases v0.pages - p,
                     {
@@ -793,7 +799,7 @@ impl ClassState {
                                 proof {
                                     assert(g@.slab_ok(fs as nat));
                                 }
-                                let (c, sp) = Self::pages_locked(&g, pg, fs);
+                                let (c, sp) = self.pages_locked(&g, pg, fs);
                                 let hid = self.close_page(&mut g, fs, pg, v0.with_closed(c), p, sp);
                                 if hid == 0 {
                                     left = true;

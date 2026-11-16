@@ -64,7 +64,12 @@ counted as a discharge): `<[T]>::reverse` (`slice_reverse`),
 vstd's `Range::next`, and one over `a..=b` on vstd's iterator
 specification of `RangeInclusive` (its `IteratorSpecImpl`); both hold
 under `obeys_range_step_spec`, which vstd gives each primitive integer
-type by an admitted broadcast axiom (`std_specs/range.rs`).
+type by an admitted broadcast axiom (`std_specs/range.rs`). A `for`
+loop over a slice rests on vstd's specification of `<[T]>::iter` (each
+element in order), one over `s.chunks(n)` on `<[T]>::chunks`'s (each
+chunk at most `n` long; `api::jemalloc::malloc_write`), and one over
+`a.iter().zip(b.iter())` on `Zip`'s (`sys::cgroup`), all in
+`std_specs/slice.rs` and `std_specs/iter.rs`.
 
 ## Categories and tools
 
