@@ -10,7 +10,11 @@
 # code.
 members = [{ name = "challoc", path = ".", ships = true }]
 # `challoc_tls_check` is the debug TLS check build the tlscheck job makes.
-test_cfgs = ["test", "kani", "challoc_tls_check"]
+# `loom` is set only by the loom crate (tests/loom), which builds src/
+# under it to model-check the vspec wrappers; no Verus run and no shipped
+# build sets it, so its code (src/sync.rs's `PAtomic*` stand-ins over
+# loom's atomics) is test code.
+test_cfgs = ["test", "kani", "challoc_tls_check", "loom"]
 # challoc's tests bind a variable named `tracked`, a Verus keyword
 # (api/mallctl.rs); Verus code never writes `let tracked =`.
 stand_ins = [["let tracked =", "let trackd_ ="]]
@@ -19,11 +23,9 @@ verus_only_ghost = true
 # Verus runs twice, natively on x86_64 (`verus`, `verus-main`) and on
 # aarch64 (`verus-arm64`), all three `make verus`
 # (.chainguard/ci/verus.yaml), so each architecture's code is checked by
-# the run that sets its `target_arch`. No run passes `--cfg loom`
-# (vspec's `new`s are `#[cfg(not(loom))]`; tests/loom builds them under
-# it, outside Verus).
+# the run that sets its `target_arch`. No run passes `--cfg loom`; as a
+# test cfg (above), `cfg(not(loom))` code counts as shipped.
 verus_sets = ['target_arch = "x86_64"', 'target_arch = "aarch64"']
-verus_never_sets = ["loom"]
 
 [floor]
 path = "verus/FLOOR"
@@ -54,3 +56,7 @@ sections = [
   { heading = "## Premises", prefixes = "C" },
   { heading = "## Loader and kernel premises", prefixes = "L", callers = true },
 ]
+
+[[narrowed]]
+change = "[crates] test_cfgs adds \"loom\""
+reason = "the only cfg(loom) items are src/sync.rs's loom stand-ins for vstd's PAtomic types (16 functions: new, load, store, swap, compare_exchange, fetch_or, fetch_add_wrapping, fetch_sub_wrapping); cfg(loom) is set only by the loom test crate, never by Verus or a shipped build, so they are test code. Nothing verified or trusted leaves the tally (#767)"

@@ -89,9 +89,11 @@ calling `assume`, `admit` or `Tracked::assume_new`) or outside `verus!`.
 Ghost functions (`spec`, `proof`) are counted apart, except a proof taken
 on trust (an `axiom fn`, or a `proof fn` that is `external_body` or calls
 `assume`, `admit` or `Tracked::assume_new`), which counts as trusted. Code
-compiled only under `test`, `kani` or `challoc_tls_check` (the debug TLS
-check build) is left out (`cfg(test)`, such a name inside `cfg(all(..))`,
-or `cfg(any(..))` with only such arguments), and so is a test module's
+compiled only under `test`, `kani`, `challoc_tls_check` (the debug TLS
+check build) or `loom` (the loom crate's build, `tests/loom`; in `src/`
+only `src/sync.rs`'s stand-ins for vstd's `PAtomic` types) is left out
+(`cfg(test)`, such a name inside `cfg(all(..))`, or `cfg(any(..))` with
+only such arguments), and so is a test module's
 directory. So is an executable function whose own `cfg` holds only under
 those names or `verus_keep_ghost`, such as
 `cfg(any(test, verus_keep_ghost))`: Verus verifies it, but no build ships
@@ -147,7 +149,8 @@ A function under a `cfg` Verus's build might not meet counts as trusted,
 not verified. `verus/count.toml` names the atoms the verus checks set:
 `target_arch = "x86_64"` (`verus`, `verus-main`) and `target_arch =
 "aarch64"` (`verus-arm64`), each checked by the run on that
-architecture, and `loom`, which no Verus run sets.
+architecture. No Verus run sets `loom`; it is a test cfg (above), so
+`cfg(not(loom))` code counts as shipped.
 
 The [README badge](../README.md) shows FLOOR's `functions` and `lines`
 figures. The repository is private, so shields.io cannot read the
