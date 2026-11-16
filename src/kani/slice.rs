@@ -12,7 +12,8 @@
 //! elements; a small sort and a quicksort run past that).
 //! `from_raw_parts` is also checked at bytes, and `rotate_left` on two
 //! longer slices, the shortest that reach its second algorithm.
-//! `reverse`, which vstd specifies, is checked the same way.
+//! `reverse`, `swap`, `get_unchecked` and `get_unchecked_mut`, which
+//! vstd specifies, are checked the same way, against vstd's contracts.
 //! The trusted wrappers `vspec::slice::select_ptrs` and
 //! `select_ptrs_by_key` are checked as `sort_ptrs` is, at every length to
 //! `SORT_MAX` and every index (see [`select_ranks_on`]), which reaches
@@ -52,8 +53,9 @@ fn same<T: PartialEq>(a: &[T], b: &[T]) -> bool {
     true
 }
 
-/// `<[T]>::swap`: under `a, b < len`, `old.update(a, old[b])
-/// .update(b, old[a])`.
+/// vstd's specification of `<[T]>::swap`, which verified code uses
+/// (`class/mod.rs`) and the ledger does not list: under `a, b < len`,
+/// `old.update(a, old[b]).update(b, old[a])`.
 #[kani::proof]
 #[kani::unwind(8)]
 fn slice_swap() {
@@ -116,11 +118,12 @@ fn slice_is_sorted_by_key() {
     assert_eq!(r, (1..n).all(|k| key(&a[k - 1]) <= key(&a[k])));
 }
 
-/// `<[T]>::get_unchecked::<I>`: under the `index` precondition (in
-/// bounds), the element or subslice `index` gives, at the instantiations
-/// the proofs use: `usize`,
-/// `RangeTo` and `RangeFrom`. Kani's undefined-behaviour checks cover the
-/// unchecked access itself.
+/// vstd's specification of `<[T]>::get_unchecked::<I>`, which verified
+/// code uses (`heap/flush.rs`, `heap/shared.rs`, `arena.rs`, `api/libc.rs`)
+/// and the ledger does not list: under `index.in_bounds(slice)`, the
+/// element or subslice `index` gives (`index_postcondition`), at the
+/// instantiations the proofs use: `usize`, `RangeTo` and `RangeFrom`.
+/// Kani's undefined-behaviour checks cover the unchecked access itself.
 #[kani::proof]
 #[kani::unwind(8)]
 fn slice_get_unchecked() {
@@ -141,8 +144,9 @@ fn slice_get_unchecked() {
     assert!(core::ptr::eq(hi, &s[k..]));
 }
 
-/// `<[T]>::get_unchecked_mut::<I>`: as `get_unchecked`, and a write
-/// through the result is the write `index_mut` would make.
+/// vstd's specification of `<[T]>::get_unchecked_mut::<I>`: as
+/// `get_unchecked`, and a write through the result is the write
+/// `index_mut` would make.
 #[kani::proof]
 #[kani::unwind(8)]
 fn slice_get_unchecked_mut() {

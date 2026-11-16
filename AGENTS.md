@@ -18,3 +18,10 @@ behind design decisions (consult it before re-researching anything).
   (`make quick` first, then `make bench-launch SUITE=...`); local runs are
   indicative.
 - Run `cargo fmt` before committing; CI requires `cargo fmt --check`.
+- Before calling a proof change done, run this grep against the base:
+  every new hit has a seam in verus/ledger/ (`sh verus/seams.sh --write`)
+  and a reason.
+
+  ```
+  grep -rnE 'assume\(|admit\(|assume_new|assume_specification|assume_unsupported_attributes|external_body|external_(fn|type|trait)_specification|verifier::external\]|axiom fn' --include=*.rs
+  ```

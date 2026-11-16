@@ -291,10 +291,9 @@ melange: ## build and test the Wolfi packages of contrib/wolfi/challoc.yaml with
 # no verus/RLIMIT, so the counter runs without --rlimit.
 #
 # `make kani` runs every Kani harness at QUANTUM, four at a time in terse
-# format; `make kani-regular` (kit 0.3.1) runs them one at a time in
-# regular format with CBMC's verbose output, failing on `warning:
-# ignoring`, which the kani-ignoring check runs a shard at a time
-# (.chainguard/ci/kani.yaml).
+# format; `make kani-regular` runs them one at a time in regular format
+# with CBMC's verbose output, failing on `warning: ignoring`, which the
+# kani-ignoring check runs a shard at a time (.chainguard/ci/kani.yaml).
 #
 # `make verify` (the kit's) runs every target VERIFY_TARGETS lists, in
 # order, which is what the package build runs (with VERUS_BASE=none). The

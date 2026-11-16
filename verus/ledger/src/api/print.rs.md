@@ -13,6 +13,10 @@ file.
 | `cancel_restore` | external_body | FFI/syscall | Kani | discharged |
 | `write_file` | external_body | FFI/syscall | Kani | discharged |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
+| `malloc_..._print` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `je_mall..._print` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `malloc_info` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `malloc_stats` | unsupported-attribute | C ABI export | ABI tests | trusted |
 
 ## `WriteCallback`
 
@@ -97,7 +101,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `axiom_c_call`
 
-src/api/print.rs:1719. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1721. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
@@ -111,4 +115,66 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
     ensures
         c.fresh(e),
 ;
+```
+
+## `malloc_stats_print`
+
+src/api/print.rs:1741. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1768398676, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn malloc_stats_print (verified_export_pair!)
+```
+
+## `je_malloc_stats_print`
+
+src/api/print.rs:1741. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 3439469082, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn je_malloc_stats_print (verified_export_pair!)
+```
+
+## `malloc_info`
+
+src/api/print.rs:1749. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 865260301, body none.
+
+```rust
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
+```
+
+## `malloc_stats`
+
+src/api/print.rs:1761. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 2235657784, body none.
+
+```rust
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn malloc_stats() {
 ```

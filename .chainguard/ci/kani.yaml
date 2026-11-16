@@ -96,11 +96,11 @@ checks:
   # fails). Kani 0.68.0 with CBMC 6.11.0 leaves `<`, `<=`, `>` and
   # `>=` on two non-constant bools unconstrained (CBMC prints
   # `warning: ignoring >=` and the harness can pass vacuously), and the
-  # terse output `-j` requires hides that warning, so this check runs
-  # `make kani-regular` (the kit's, since 0.3.1): without KANI_JOBS, in
-  # regular format with `--verbosity 9`, failing on that line
-  # (KANI_IGNORING_PATTERN, `warning: ignoring`); scripts/kani-boolcmp.sh
-  # (the lint check) is the presubmit half.
+  # terse output `-j` requires hides that warning, so this check is the
+  # kit's `make kani-regular`: without KANI_JOBS, in regular format with
+  # `--verbosity 9`, failing on KANI_IGNORING_PATTERN (`warning:
+  # ignoring`); scripts/kani-boolcmp.sh (the lint check) is the presubmit
+  # half.
   # In regular format the harnesses take about 75 min per quantum one at a
   # time, past one job's timeout, so each quantum runs as 4 shards that
   # kani.sh splits by ci/kani-weights.txt's seconds:

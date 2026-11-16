@@ -188,7 +188,7 @@ These bug classes are outside the guarantees, by design or by the scope of the t
 
 ## Coverage
 
-[Verus](README.md) release `0.2026.10.18.7d82994` checks every operation in a `verus!` function for arithmetic overflow, division by zero, out-of-bounds indexing, reachable panics, and loop and recursion termination. It also checks the function's `requires` and `ensures` contract. Ghost code is erased from ordinary builds.
+[Verus](README.md) checks every operation in a `verus!` function for arithmetic overflow, division by zero, out-of-bounds indexing, reachable panics, and loop and recursion termination. It also checks the function's `requires` and `ensures` contract. Ghost code is erased from ordinary builds. The coverage table below was measured with Verus release `0.2026.10.18.7d82994`.
 
 The [counter](count) includes executable functions under `src/` and excludes test code. It counts a function as Verus-verified when it is inside `verus!`, is neither `external_body` nor `external`, and has no `assume`, `admit`, or `Tracked::assume_new` in its body. It counts ghost functions separately. Shares are rounded down to a tenth of a percent.
 

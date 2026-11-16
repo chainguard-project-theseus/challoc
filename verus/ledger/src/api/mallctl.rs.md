@@ -10,6 +10,12 @@ file.
 | `VERSION` | external_body const | core library | Kani | discharged |
 | `root` | external_body | allocator invariant | Kani | discharged |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
+| `mallctl` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `je_mallctl` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `mallctlnametomib` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `je_mall...etomib` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `mallctlbymib` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `je_mallctlbymib` | unsupported-attribute | C ABI export | ABI tests | trusted |
 
 ## `VERSION`
 
@@ -55,4 +61,100 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
     ensures
         c.fresh(e),
 ;
+```
+
+## `mallctl`
+
+src/api/mallctl.rs:3624. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 2866297003, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn mallctl (verified_export_pair!)
+```
+
+## `je_mallctl`
+
+src/api/mallctl.rs:3624. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 3955255827, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn je_mallctl (verified_export_pair!)
+```
+
+## `mallctlnametomib`
+
+src/api/mallctl.rs:3624. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 3637414215, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn mallctlnametomib (verified_export_pair!)
+```
+
+## `je_mallctlnametomib`
+
+src/api/mallctl.rs:3624. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 4198614550, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn je_mallctlnametomib (verified_export_pair!)
+```
+
+## `mallctlbymib`
+
+src/api/mallctl.rs:3624. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 3786856480, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn mallctlbymib (verified_export_pair!)
+```
+
+## `je_mallctlbymib`
+
+src/api/mallctl.rs:3624. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 2321715546, body none.
+
+```rust
+$(#[$m])*
+#[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn je_mallctlbymib (verified_export_pair!)
 ```

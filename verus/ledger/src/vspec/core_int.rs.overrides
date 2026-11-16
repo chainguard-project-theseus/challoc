@@ -1,6 +1,5 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
 u64::count_ones	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_count_ones)	contract 2850801986, body none
-<[T]>::get_unchecked::<I>	core library	Kani	discharged (Kani: kani_proofs::slice::slice_get_unchecked)	contract 2363183819, body none
 usize::trailing_zeros	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_trailing_zeros)	contract 164998548, body none
 usize::leading_zeros	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_leading_zeros)	contract 3297159394, body none
 usize::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_is_power_of_two)	contract 2270565661, body none

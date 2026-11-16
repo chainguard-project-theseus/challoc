@@ -5260,7 +5260,12 @@ impl Huge {
     /// so they are neither live descriptors nor the same block.
     ///
     /// The proof is large, and its solver cost moves with unrelated items
-    /// elsewhere in the crate; the rlimit leaves it headroom.
+    /// elsewhere in the crate; the rlimit leaves it headroom. It runs in a
+    /// solver of its own (`spinoff_prover`), where it costs about 1.3
+    /// billion: in the module's shared solver, after the functions verified
+    /// before it, it cost 3.3 billion at quantum 16, and at quantum 8 Verus
+    /// stopped (`expected rlimit-count in smt statistics`).
+    #[verifier::spinoff_prover]
     #[verifier::rlimit(1600)]
     #[allow(non_shorthand_field_patterns)]
     // The extra arguments are ghost and tracked state.
@@ -5363,6 +5368,9 @@ impl Huge {
         let ghost mut vr = ve;
         proof {
             old(g).lemma_wf_for_take();
+            // A descriptor's size, which `is_disjoint` needs nonzero below:
+            // the `global layout` fact does not reach a spun-off prover.
+            old(g).lemma_in_meta(spare, 0);
             // The table's keys lie inside their extents, which end at the
             // mark; `ext`'s pages belong to no other extent.
             assert(keys_inside(t0, d0, old_mark as int)) by {

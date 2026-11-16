@@ -6,10 +6,10 @@
 //! ([`Tcache::None`], straight against the slab bitmaps).
 
 use core::ptr;
+use vstd::prelude::Tracked;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
-use vstd::prelude::{Ghost, Tracked};
 
 use super::Shared;
 use crate::lock::LockOrder;

@@ -40,8 +40,8 @@ against main before the push the run covers, so a change that leaves the seam le
 stale, breaks a proof or lowers the verified share fails CI.
 
 The check gets Verus from the `verus` package, release
-`0.2026.10.18.7d82994`, which matches Cargo.toml's
-`vstd = "=0.0.0-2026-10-18-0147"` and brings the toolchain it runs with
+`0.2026.11.02.8bf68ee`, which matches Cargo.toml's
+`vstd = "=0.0.0-2026-11-01-0251"` and brings the toolchain it runs with
 (the `rust-1.99` stream, 1.99.1) and z3. The package has no aarch64 cross
 target, so `--target aarch64-unknown-linux-gnu` cannot be verified from
 an x86_64 host; a second check, `verus-arm64`, runs the same steps
@@ -49,8 +49,9 @@ natively on an arm64 runner with the package's arm64 build. To run it on
 this machine instead:
 
 1. Download the release for this machine from
-   <https://github.com/verus-lang/verus/releases/tag/release/0.2026.10.18.7d82994>
-   (the release's Linux build is x86-64 only) and put its directory on `PATH`.
+   <https://github.com/verus-lang/verus/releases/tag/release/0.2026.11.02.8bf68ee>
+   (it has Linux builds for x86-64 and arm64, `x86-linux` and `arm64-linux`)
+   and put its directory on `PATH`.
 2. `rustup toolchain install 1.99.1`.
 
 Cargo keeps a verified crate's result: when nothing changed, `make verus`

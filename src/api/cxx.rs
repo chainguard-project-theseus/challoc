@@ -691,9 +691,9 @@ mod exports {
     #[cfg(verus_keep_ghost)]
     use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::c_void;
+    use vstd::prelude::verus;
     #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
-    use vstd::prelude::{Tracked, verus};
 
     verus! {
 
@@ -711,6 +711,7 @@ mod exports {
 
     /// `operator new(size_t)`
     #[unsafe(export_name = "_Znwm")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new(size: usize) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
@@ -727,6 +728,7 @@ mod exports {
 
     /// `operator new[](size_t)`
     #[unsafe(export_name = "_Znam")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new_array(size: usize) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
@@ -743,6 +745,7 @@ mod exports {
 
     /// `operator new(size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnwmRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
@@ -758,6 +761,7 @@ mod exports {
 
     /// `operator new[](size_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnamRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
@@ -773,6 +777,7 @@ mod exports {
 
     /// `operator new(size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnwmSt11align_val_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new_aligned(size: usize, align: usize) -> (r: *mut c_void)
         ensures
             crate::meta::is_pow2(align) ==> crate::heap::fits(r as *mut u8, size as int, align as int),
@@ -790,6 +795,7 @@ mod exports {
 
     /// `operator new[](size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZnamSt11align_val_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new_array_aligned(size: usize, align: usize) -> (r: *mut c_void)
         ensures
             crate::meta::is_pow2(align) ==> crate::heap::fits(r as *mut u8, size as int, align as int),
@@ -807,6 +813,7 @@ mod exports {
 
     /// `operator new(size_t, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnwmSt11align_val_tRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new_aligned_nothrow(
         size: usize,
         align: usize,
@@ -827,6 +834,7 @@ mod exports {
 
     /// `operator new[](size_t, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnamSt11align_val_tRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn new_array_aligned_nothrow(
         size: usize,
         align: usize,
@@ -847,6 +855,7 @@ mod exports {
 
     /// `operator delete(void*)`
     #[unsafe(export_name = "_ZdlPv")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete(p: *mut c_void)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -862,6 +871,7 @@ mod exports {
 
     /// `operator delete[](void*)`
     #[unsafe(export_name = "_ZdaPv")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_array(p: *mut c_void)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -877,6 +887,7 @@ mod exports {
 
     /// `operator delete(void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -892,6 +903,7 @@ mod exports {
 
     /// `operator delete[](void*, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdaPvRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -907,6 +919,7 @@ mod exports {
 
     /// `operator delete(void*, size_t)`
     #[unsafe(export_name = "_ZdlPvm")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_sized(p: *mut c_void, size: usize)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -923,6 +936,7 @@ mod exports {
 
     /// `operator delete[](void*, size_t)`
     #[unsafe(export_name = "_ZdaPvm")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -939,6 +953,7 @@ mod exports {
 
     /// `operator delete(void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -954,6 +969,7 @@ mod exports {
 
     /// `operator delete[](void*, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvSt11align_val_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -969,6 +985,7 @@ mod exports {
 
     /// `operator delete(void*, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdlPvSt11align_val_tRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -984,6 +1001,7 @@ mod exports {
 
     /// `operator delete[](void*, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdaPvSt11align_val_tRKSt9nothrow_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_array_aligned_nothrow(
         p: *mut c_void,
         _align: usize,
@@ -1003,6 +1021,7 @@ mod exports {
 
     /// `operator delete(void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvmSt11align_val_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
@@ -1026,6 +1045,7 @@ mod exports {
 
     /// `operator delete[](void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvmSt11align_val_t")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize)
         ensures
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),

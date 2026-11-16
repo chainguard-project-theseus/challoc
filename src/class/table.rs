@@ -847,13 +847,18 @@ proof fn lemma_nslabs_bound(n: usize, m: usize, lg: usize)
         requires n <= m >> lg, 12 <= lg <= 22;
 }
 
-} // verus!
+// The commit lock's state takes the second line of a `SlabTable` (Verus
+// checks this against the compiler's layout), which leaves `TABLE_TAIL`
+// the third.
+global layout Padded<Lock<TableInner>> is size == 128, align == 128;
 
 /// Padding that keeps the stride of `[SlabTable; NCLASSES]` at 384 bytes,
 /// three lines, off a multiple of 512 (see
-/// [`ClassState`](super::ClassState)), whatever the commit lock's state
-/// takes of the second and third.
-const TABLE_TAIL: usize = 2 * PAD_ALIGN - core::mem::size_of::<Padded<Lock<TableInner>>>();
+/// [`ClassState`](super::ClassState)): what the commit lock's state leaves
+/// of the second and third.
+exec const TABLE_TAIL: usize = 2 * PAD_ALIGN - core::mem::size_of::<Padded<Lock<TableInner>>>();
+
+} // verus!
 
 const _: () = assert!(core::mem::offset_of!(SlabTable, inner) == PAD_ALIGN);
 const _: () = assert!(core::mem::size_of::<SlabTable>() == 3 * PAD_ALIGN);
@@ -2081,7 +2086,9 @@ impl SlabTable {
         // The watermark, with its invariant (0, at most any slab count).
         let tracked committed_inv = WatermarkInv::new((usize_id(&committed_slabs), nslabs, sloc, wloc), (cperm, seen1, wvar), committed_ns());
         proof {
-            reveal(regions_held);
+            assert(regions_held()) by {
+                reveal(regions_held);
+            }
             assert(lock_init(inner.0).wloc@ == wloc);
             assert(committed_inv.constant() == (usize_id(&committed_slabs), nslabs, sloc, wloc));
             assert(committed_inv.namespace() == committed_ns());

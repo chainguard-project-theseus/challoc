@@ -1697,7 +1697,9 @@ mod exports {
     #[cfg(verus_keep_ghost)]
     use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::{c_char, c_int, c_void};
-    use vstd::prelude::{Tracked, verus};
+    #[cfg(verus_keep_ghost)]
+    use vstd::prelude::Tracked;
+    use vstd::prelude::verus;
 
     // `verified_export_pair!` expands inside its own `verus!`; this outer
     // block holds it (Verus passes the invocation through) and the mint.
@@ -1743,6 +1745,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
         proof {
             crate::sys::grant_syscalls();
@@ -1754,6 +1757,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn malloc_stats() {
         proof {
             crate::sys::grant_syscalls();

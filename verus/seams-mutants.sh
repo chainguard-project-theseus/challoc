@@ -16,6 +16,11 @@
 # with none, must fail `--check` with the
 # message of the rule it breaks, and one that only adds a
 # comment, reindents or moves the seam (or rewraps the check) must pass.
+# Each ledger mutant adds an attribute to an unsupported-attribute seam
+# (or to what `verified_export_pair!` writes above its exports), or
+# changes a continuation line of one that spans lines: after
+# `--write`, the seam's hashes must change, so the unwritten ledger is
+# stale; a comment added must leave them as they were.
 # Exits 1 if a mutant survives, a passing edit
 # fails, or an edit no longer applies.
 #
@@ -77,6 +82,68 @@ tree() {
 				fail=1
 			fi
 		elif [ $rc = 1 ] && echo "$out" | grep -F "$want" | grep -qF ": $2 (${3:-$1}:"; then
+			echo "seams-mutants: $name: caught"
+		else
+			echo "seams-mutants: $name: SURVIVED"
+			fail=1
+		fi
+	done
+}
+
+# hashline LEDGER SEAM: the Hashes line of SEAM's entry in LEDGER.
+hashline() {
+	awk -v h="## \`$2\`" '$0 == h { f = 1; next } f && /^Hashes: / { print; exit }' "$1"
+}
+
+# moves FILE SEAM LEDGER [BASE]: the ledger mutants on stdin, `name|want|sed
+# expression` lines, each a sed edit of FILE in a copy of the tree, then
+# `--write` there. A trusted seam records no hashes in its overrides, so
+# no rule fails on an edit of it; the edit shows as a stale ledger
+# instead. want is `moves` when SEAM's Hashes line in LEDGER (a path under
+# verus/ledger/) must change, so `--check` on the unwritten tree fails,
+# and `pass` when it must stay as it is. With BASE, a sed expression, the
+# hashes compared against are those of the tree with BASE applied to FILE
+# and written, and each mutant edits that tree.
+moves() {
+	while IFS='|' read -r name want expr; do
+		[ -n "$name" ] || continue
+		rm -rf "$t/tree" && mkdir "$t/tree" && cp -R src verus tests "$t/tree/" || exit 2
+		rm -f "$t/tree/$m"
+		src=$1
+		if [ -n "${4:-}" ]; then
+			sed "$4" "$1" > "$t/base" && cp "$t/base" "$t/tree/$1" || exit 2
+			if cmp -s "$1" "$t/base"; then
+				echo "seams-mutants: $name: the base edit no longer applies"
+				fail=1
+				continue
+			fi
+			sh "$t/tree/verus/seams.sh" --write > /dev/null 2>&1
+			src=$t/base
+		fi
+		sed "$expr" "$src" > "$t/tree/$1"
+		if cmp -s "$src" "$t/tree/$1"; then
+			echo "seams-mutants: $name: the edit no longer applies"
+			fail=1
+			continue
+		fi
+		if [ -n "${4:-}" ]; then
+			before=$(hashline "$t/tree/verus/ledger/$3" "$2")
+		else
+			before=$(hashline "verus/ledger/$3" "$2")
+		fi
+		sh "$t/tree/verus/seams.sh" --write > /dev/null 2>&1
+		after=$(hashline "$t/tree/verus/ledger/$3" "$2")
+		if [ -z "$before" ] || [ -z "$after" ]; then
+			echo "seams-mutants: $name: no Hashes line for $2 in verus/ledger/$3"
+			fail=1
+		elif [ "$want" = pass ]; then
+			if [ "$before" = "$after" ]; then
+				echo "seams-mutants: $name: passes"
+			else
+				echo "seams-mutants: $name: FAILED, want the hashes unchanged: $before; now $after"
+				fail=1
+			fi
+		elif [ "$before" != "$after" ]; then
 			echo "seams-mutants: $name: caught"
 		else
 			echo "seams-mutants: $name: SURVIVED"
@@ -240,5 +307,46 @@ an edited body|its body changed|/^pub fn desc_stride/,/^}/s/DESC_STRIDE\[class\]
 a comment added|pass|/^pub fn desc_stride/,/^}/s/class < NCLASSES,/class < NCLASSES, \/\/ a comment/
 reindented|pass|/^pub fn desc_stride/,/^}/s/^    /        /
 moved down a line|pass|1{h;s/.*//;G;}
+EOF
+
+# The unsupported-attribute seam challoc_version of src/api/mod.rs:
+# Verus takes every attribute it refuses on it on trust.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+moves src/api/mod.rs challoc_version src/api/mod.rs.md <<'EOF'
+an attribute added|moves|/^pub extern "C" fn challoc_version()/i #[inline(never)]
+a comment added|pass|s/^pub extern "C" fn challoc_version() -> \*const core::ffi::c_char {$/& \/\/ a comment/
+EOF
+
+# The unsupported-attribute seams of a verified_export_pair! invocation
+# (mallocx / je_mallocx in src/api/jemalloc.rs): the attributes the macro
+# writes above each export, and those the invocation passes through.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+moves src/api/mod.rs mallocx src/api/jemalloc.rs.md <<'EOF'
+an attribute added to the macro's first export|moves|/^macro_rules! verified_export_pair/,/pub extern "C" fn \$name(/s/^            #\[unsafe(no_mangle)\]$/&\n            #[cold]/
+EOF
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+moves src/api/mod.rs je_mallocx src/api/jemalloc.rs.md <<'EOF'
+an attribute added to the macro's second export|moves|/pub extern "C" fn \$name(/,/pub extern "C" fn \$je(/s/^            #\[unsafe(no_mangle)\]$/&\n            #[cold]/
+EOF
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+moves src/api/jemalloc.rs mallocx src/api/jemalloc.rs.md <<'EOF'
+an attribute passed through the invocation|moves|/^        fn mallocx \/ je_mallocx(/i #[cold]
+EOF
+
+# Attributes that span lines, each read through its closing bracket: one
+# added above challoc_version, and a value changed on a continuation line
+# of one there and of one the macro writes above its first export.
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+moves src/api/mod.rs challoc_version src/api/mod.rs.md <<'EOF'
+a multi-line attribute added|moves|/^\/\/\/ parsers of that string\.$/,/^pub extern "C" fn challoc_version/s/^#\[unsafe(no_mangle)\]$/#[unsafe(\n    link_section = ".text.challoc.exports"\n)]\n&/
+EOF
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+moves src/api/mod.rs challoc_version src/api/mod.rs.md '/^\/\/\/ parsers of that string\.$/,/^pub extern "C" fn challoc_version/s/^#\[unsafe(no_mangle)\]$/#[unsafe(\n    link_section = ".text.challoc.exports"\n)]\n&/' <<'EOF'
+a multi-line attribute's value changed|moves|s/^    link_section = ".text.challoc.exports"$/    link_section = ".text.challoc.other"/
+a comment added inside a multi-line attribute|pass|s/^    link_section = ".text.challoc.exports"$/& \/\/ a comment/
+EOF
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+moves src/api/mod.rs mallocx src/api/jemalloc.rs.md '/^macro_rules! verified_export_pair/,/pub extern "C" fn \$name(/s/^            #\[unsafe(no_mangle)\]$/&\n            #[cfg_attr(\n                any(),\n                link_section = ".text.challoc.exports"\n            )]/' <<'EOF'
+a multi-line attribute's value changed in the macro|moves|s/^                link_section = ".text.challoc.exports"$/                link_section = ".text.challoc.other"/
 EOF
 exit $fail
