@@ -345,7 +345,7 @@ pub proof fn theorem_guard_reach(p: *mut u8, size: int, align: int, a: int, c: i
 /// Not covered: descriptors and owner words are written
 /// through `&` references to atomics, located by the accessors but not
 /// tied to permissions; bitmap words are written through `WordPerm`s held
-/// in the table's word invariants, whose addresses the theorem does not
+/// in the table's word invariants, whose words the theorem does not
 /// tie to `bit_word_addr` (that needs a `class::table` lemma); the
 /// last word of a bitmap whose bit count is not a multiple of 64; the
 /// arenas' slab-set bitmaps. Thread-local storage is not apart from every

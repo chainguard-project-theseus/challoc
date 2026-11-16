@@ -9,7 +9,8 @@
 //! return any value, the contracts' "any pointer", is what lets other
 //! threads in, and no harness constrains it.
 //!
-//! Then the trusted atomic wrappers of `vspec/word.rs` and
+//! Then the trusted atomic wrappers of `vspec/word.rs` (the fork slot's
+//! `load_fork_slot`; the bitmap words' are verified over vstd) and
 //! `vspec/atom.rs`
 //! (all but its `load_usize_seen`, whose persistent set is ghost, and
 //! `usize_ptr`, checked in its own file), each run on a real `core`
@@ -190,63 +191,14 @@ fn bad_store_order() -> Ordering {
     o
 }
 
-/// `vspec::word::fetch_or`: `prev == old(perm).value()` and
-/// `final(perm).value() == prev | v`, under every ordering.
+/// `vspec::word::load_fork_slot`: `r == perm.value()`, and the slot is
+/// unchanged.
 #[kani::proof]
-fn word_fetch_or() {
-    let v0: u64 = kani::any();
-    let v: u64 = kani::any();
-    let w = AtomicU64::new(v0);
-    let prev = word::fetch_or(&w, v, any_order(), Tracked::assume_new());
-    assert_eq!(prev, v0);
-    assert_eq!(w.load(Ordering::Relaxed), prev | v);
-}
-
-/// `vspec::word::fetch_and`: `prev == old(perm).value()` and
-/// `final(perm).value() == prev & v`, under every ordering.
-#[kani::proof]
-fn word_fetch_and() {
-    let v0: u64 = kani::any();
-    let v: u64 = kani::any();
-    let w = AtomicU64::new(v0);
-    let prev = word::fetch_and(&w, v, any_order(), Tracked::assume_new());
-    assert_eq!(prev, v0);
-    assert_eq!(w.load(Ordering::Relaxed), prev & v);
-}
-
-/// `vspec::word::store`: under `!(ordering is Acquire) && !(ordering is
-/// AcqRel)`, `final(perm).value() == v`.
-#[kani::proof]
-fn word_store() {
-    let w = AtomicU64::new(kani::any());
-    let v: u64 = kani::any();
-    word::store(&w, v, store_order(), Tracked::assume_new());
-    assert_eq!(w.load(Ordering::Relaxed), v);
-}
-
-/// `vspec::word::load`: under `!(ordering is Release) && !(ordering is
-/// AcqRel)`, `r == perm.value()`, and the word is unchanged.
-#[kani::proof]
-fn word_load() {
+fn word_load_fork_slot() {
     let v0: u64 = kani::any();
     let w = AtomicU64::new(v0);
-    assert_eq!(word::load(&w, load_order(), Tracked::assume_new()), v0);
+    assert_eq!(word::load_fork_slot(&w, Tracked::assume_new()), v0);
     assert_eq!(w.load(Ordering::Relaxed), v0);
-}
-
-/// The orderings `vspec::word`'s `requires` exclude panic: a store with
-/// `Acquire` or `AcqRel`, a load with `Release` or `AcqRel`. Not part of
-/// a contract.
-#[kani::proof]
-#[kani::should_panic]
-fn word_bad_orders() {
-    let w = AtomicU64::new(kani::any());
-    if kani::any() {
-        word::store(&w, kani::any(), bad_store_order(), Tracked::assume_new());
-    } else {
-        word::load(&w, bad_load_order(), Tracked::assume_new());
-    }
-    super::must_not_return();
 }
 
 /// `vspec::atom::store_usize`: under `!(ordering is Acquire) &&

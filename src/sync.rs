@@ -19,17 +19,54 @@ pub(crate) mod atomic {
 /// permission they take is erased.
 pub(crate) mod patomic {
     #[cfg(not(loom))]
-    pub(crate) use vstd::atomic::{
-        PAtomicPtr, PAtomicU8, PAtomicU32, PermissionPtr, PermissionU8, PermissionU32,
-    };
+    pub(crate) use vstd::atomic::{PAtomicPtr, PAtomicU8, PAtomicU32, PAtomicU64};
+    #[cfg(not(loom))]
+    pub(crate) use vstd::atomic::{PermissionPtr, PermissionU8, PermissionU32, PermissionU64};
 
     #[cfg(loom)]
     pub(crate) use loom_patomic::*;
 
     #[cfg(loom)]
     mod loom_patomic {
-        use loom::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
+        use loom::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
         use vstd::prelude::Tracked;
+
+        /// The erased permission of a [`PAtomicU64`].
+        pub(crate) struct PermissionU64;
+
+        /// `vstd::atomic::PAtomicU64` over loom's `AtomicU64`. `ato` is
+        /// the crate's, which vstd's is not: the bitmap models' controls
+        /// run an operation weaker than vstd's `SeqCst` on it.
+        pub(crate) struct PAtomicU64 {
+            pub(crate) ato: AtomicU64,
+        }
+
+        impl PAtomicU64 {
+            pub(crate) fn new(v: u64) -> (Self, Tracked<PermissionU64>) {
+                (
+                    PAtomicU64 {
+                        ato: AtomicU64::new(v),
+                    },
+                    Tracked::assume_new(),
+                )
+            }
+
+            pub(crate) fn load(&self, _perm: Tracked<&PermissionU64>) -> u64 {
+                self.ato.load(Ordering::SeqCst)
+            }
+
+            pub(crate) fn store(&self, _perm: Tracked<&mut PermissionU64>, v: u64) {
+                self.ato.store(v, Ordering::SeqCst)
+            }
+
+            pub(crate) fn fetch_or(&self, _perm: Tracked<&mut PermissionU64>, v: u64) -> u64 {
+                self.ato.fetch_or(v, Ordering::SeqCst)
+            }
+
+            pub(crate) fn fetch_and(&self, _perm: Tracked<&mut PermissionU64>, v: u64) -> u64 {
+                self.ato.fetch_and(v, Ordering::SeqCst)
+            }
+        }
 
         /// The erased permission of a [`PAtomicPtr`].
         pub(crate) struct PermissionPtr<T>(core::marker::PhantomData<*mut T>);

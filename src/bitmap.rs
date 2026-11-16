@@ -3,7 +3,7 @@
 //! Two structures live here and both are pure logic.
 //!
 //! [`AtomicBitmap`] is one slab's view of its class's slot bitmap, a
-//! contiguous `[AtomicU64]` array in the metadata region (`class/`). It
+//! contiguous `[PAtomicU64]` array in the metadata region (`class/`). It
 //! has no owner and is only ever touched with atomic read-modify-write
 //! operations. A set bit means "not available to a refill": the slot is
 //! live in the program or sitting in a thread cache. Padding bits past the
@@ -18,17 +18,17 @@
 //! `tzcnt`s. The prefix is tracked by the highest level-1 word that can be
 //! non-zero, so a heap with a few thousand slabs scans one word.
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
 
 use crate::layout::pages::OpenView;
+use crate::sync::patomic::PAtomicU64;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::core_int::popcount;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::ptr::ptr_add;
 use crate::vspec::word::WordPerm;
 #[cfg(verus_keep_ghost)]
-use crate::vspec::word::word_addr;
+use crate::vspec::word::{word_at, word_id};
 use crate::vspec::zero::ZeroRaw;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::zero::axiom_zero_word;
@@ -431,7 +431,7 @@ proof fn lemma_count_le(x: u64, y: u64)
 
 /// One slab's slots in the class bitmap (design 4).
 ///
-/// The class bitmap is one contiguous array of `AtomicU64` per class, slab
+/// The class bitmap is one contiguous array of `PAtomicU64` per class, slab
 /// `s` owning bits `s * slab_bits .. (s + 1) * slab_bits`
 /// (`Class::slab_bits`, `nslots` padded so that this range is either a
 /// whole number of words or one range inside a single word). The view holds
@@ -452,7 +452,7 @@ proof fn lemma_count_le(x: u64, y: u64)
 /// word invariants (`invs`, [`WordInv`]), which hold the permissions of the
 /// view's words.
 pub struct AtomicBitmap<'a> {
-    words: &'a [AtomicU64],
+    words: &'a [PAtomicU64],
     shift: u32,
     mask: u64,
     #[allow(dead_code)]
@@ -578,7 +578,7 @@ impl<'a> AtomicBitmap<'a> {
     /// [`init`]: AtomicBitmap::init
     #[inline]
     pub fn from_words(
-        words: &'a [AtomicU64],
+        words: &'a [PAtomicU64],
         first: Ghost<int>,
         slots: Ghost<Slots>,
         invs: Tracked<&'a Map<int, WordInv>>,
@@ -608,7 +608,7 @@ impl<'a> AtomicBitmap<'a> {
     /// padded bit count (`Class::slab_bits`), below 64.
     #[inline]
     pub fn sub_word(
-        word: &'a AtomicU64,
+        word: &'a PAtomicU64,
         shift: u32,
         nbits: usize,
         first: Ghost<int>,
@@ -783,7 +783,7 @@ impl<'a> AtomicBitmap<'a> {
                     proof {
                         fw.disjoint(&d);
                     }
-                    crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));
+                    crate::vspec::word::store(w, pad, Tracked(&mut perm));
                     proof {
                         // Bit `k` of the word is slot `lo + k` of the slab:
                         // set exactly when it is padding.
@@ -851,7 +851,7 @@ impl<'a> AtomicBitmap<'a> {
                     assert(x0 & m == 0u64 ==> x0 & !m == x0) by (bit_vector);
                 }
                 let tracked mut fr = f.split(init_marks(first, mid));
-                crate::vspec::word::fetch_and(w, !self.mask, Ordering::Relaxed, Tracked(&mut perm));
+                crate::vspec::word::fetch_and(w, !self.mask, Tracked(&mut perm));
                 proof {
                     assert forall|c: int| first <= c < mid implies
                         #[trigger] has_bit(x0, (c - 64 * j) as u64) == !sl.real(c) by {
@@ -879,7 +879,7 @@ impl<'a> AtomicBitmap<'a> {
                     proof {
                         f.disjoint(&d);
                     }
-                    crate::vspec::word::fetch_or(w, pad, Ordering::Relaxed, Tracked(&mut perm));
+                    crate::vspec::word::fetch_or(w, pad, Tracked(&mut perm));
                     proof {
                         assert forall|c: int| mid <= c < end implies
                             #[trigger] has_bit(x0 | pad, (c - 64 * j) as u64) == !sl.real(c) by {
@@ -1069,8 +1069,8 @@ impl<'a> AtomicBitmap<'a> {
         proof {
             use_type_invariant(self);
         }
+        let cur = self.load_word(i);
         let w = &self.words[i];
-        let cur = w.load(Ordering::Relaxed);
         let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);
         proof {
             let s = self.shift;
@@ -1112,12 +1112,13 @@ impl<'a> AtomicBitmap<'a> {
         assert(word_ok(self.words@[i as int], j, self.slots@, *self.invs@));
         let tracked inv = self.invs.borrow().tracked_borrow(j);
         let prev;
-        // Acquire pairs with the Release in `release`: the new owner's
-        // accesses to the slot happen after the previous owner's.
+        // `SeqCst` (vstd's), at least the Acquire that pairs with the
+        // Release half of `release`'s: the new owner's accesses to the
+        // slot happen after the previous owner's.
         vstd::open_atomic_invariant!(inv => pair => {
             let tracked (mut perm, mut g, mut u, d, mut sn) = pair;
             let ghost x0 = perm.value();
-            prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));
+            prev = crate::vspec::word::fetch_or(w, want, Tracked(&mut perm));
             proof {
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
                 let slots = self.slots@;
@@ -1328,7 +1329,7 @@ impl<'a> AtomicBitmap<'a> {
         let tracked mut toks = toks.take();
         vstd::open_atomic_invariant!(inv => pair => {
             let tracked (mut perm, mut g, u, d, sn) = pair;
-            prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));
+            prev = crate::vspec::word::fetch_and(w, !m, Tracked(&mut perm));
             proof {
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
                 let slots = self.slots@;
@@ -1409,7 +1410,33 @@ impl<'a> AtomicBitmap<'a> {
     #[cfg(test)]
     pub fn is_set(&self, bit: usize) -> bool {
         let b = bit + self.shift as usize;
-        (self.words[b / 64].load(Ordering::Relaxed) >> (b % 64)) & 1 == 1
+        (self.load_word(b / 64) >> (b % 64)) & 1 == 1
+    }
+
+    /// Word `i`, all of it (word coordinates): a load inside the word's
+    /// invariant, through its permission (vstd's, `SeqCst`).
+    #[inline(always)]
+    fn load_word(&self, i: usize) -> (r: u64)
+        requires
+            i < self.spec_words(),
+        opens_invariants [word_ns()]
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let ghost j = self.first@ / 64 + i;
+        assert(word_ok(self.words@[i as int], j, self.slots@, *self.invs@));
+        let tracked inv = self.invs.borrow().tracked_borrow(j);
+        let w = &self.words[i];
+        let x;
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (perm, g, u, d, sn) = pair;
+            x = crate::vspec::word::load(w, Tracked(&perm));
+            proof {
+                pair = (perm, g, u, d, sn);
+            }
+        });
+        x
     }
 
     /// The slab's bits in word `i` (slab coordinates, padding included).
@@ -1423,7 +1450,7 @@ impl<'a> AtomicBitmap<'a> {
         proof {
             use_type_invariant(self);
         }
-        let v = self.words[i].load(Ordering::Relaxed);
+        let v = self.load_word(i);
         proof {
             let s = self.shift;
             let sm = self.mask;
@@ -1434,7 +1461,8 @@ impl<'a> AtomicBitmap<'a> {
 
     /// The slab's bits in word `i` (slab coordinates, padding included),
     /// read with a read-modify-write that changes nothing (`fetch_or(0)`,
-    /// `AcqRel`): the slab-pages walk's step 2
+    /// `SeqCst`, at least the `AcqRel` it needs): the slab-pages walk's
+    /// step 2
     /// (docs/proposals/slab-pages.md, 3.4). Unlike a load it takes a place
     /// in the word's modification order against every claim's `fetch_or`,
     /// so a claim that comes after it reads from it and, through its
@@ -1455,7 +1483,7 @@ impl<'a> AtomicBitmap<'a> {
         let prev;
         vstd::open_atomic_invariant!(inv => pair => {
             let tracked (mut perm, g, u, d, sn) = pair;
-            prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));
+            prev = crate::vspec::word::fetch_or(w, 0, Tracked(&mut perm));
             proof {
                 assert(prev | 0u64 == prev) by (bit_vector);
                 pair = (perm, g, u, d, sn);
@@ -1510,9 +1538,20 @@ impl<'a> AtomicBitmap<'a> {
     /// Whether every bit, padding included, is set. A full slab leaves the
     /// partial set (design section 5).
     pub fn is_full(&self) -> bool {
-        self.words
-            .iter()
-            .all(|w| w.load(Ordering::Relaxed) & self.mask == self.mask)
+        // `self.words.iter().all(..)`, as a loop: each word is read
+        // through its invariant (`load_word`).
+        let mut i = 0;
+        while i < self.words.len()
+            invariant
+                i <= self.words@.len(),
+            decreases self.words@.len() - i,
+        {
+            if self.load_word(i) & self.mask != self.mask {
+                return false;
+            }
+            i += 1;
+        }
+        true
     }
 
     /// [`is_full`](AtomicBitmap::is_full), with the record of a true read
@@ -3450,13 +3489,13 @@ pub open spec fn word_ns() -> int {
 }
 
 /// The fixed part of word `j`'s invariant: its bitmap, its index in the
-/// class bitmap and its address.
+/// class bitmap and its identity ([`word_at`] its address).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub ghost struct WordKey {
     pub slots: Slots,
     pub j: int,
-    pub addr: usize,
+    pub id: int,
 }
 
 /// The slots of word `j` whose bits are clear in `x`.
@@ -3572,7 +3611,7 @@ pub struct WordPred;
 
 impl InvariantPredicate<WordKey, WordVal> for WordPred {
     open spec fn inv(k: WordKey, v: WordVal) -> bool {
-        &&& v.0.addr() == k.addr
+        &&& v.0.id() == k.id
         &&& v.1.id() == k.slots.loc
         &&& v.1@ == addrs(k.slots, free_bits(k.slots, k.j, v.0.value()))
         &&& v.2.id() == k.slots.mloc
@@ -3608,7 +3647,7 @@ pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
 pub open spec fn words_wf(invs: Map<int, WordInv>, s: Slots, base: usize, nwords: int) -> bool {
     forall|j: int| #![trigger invs.contains_key(j)] #![trigger invs[j]] 0 <= j < nwords ==> {
         &&& invs.contains_key(j)
-        &&& invs[j].constant() == (WordKey { slots: s, j, addr: (base + 8 * j) as usize })
+        &&& invs[j].constant() == (WordKey { slots: s, j, id: word_at(base + 8 * j) })
         &&& invs[j].namespace() == word_ns()
     }
 }
@@ -3633,7 +3672,7 @@ pub proof fn fresh_word_invs(
     n: nat,
 ) -> (tracked r: Map<int, WordInv>)
     requires
-        forall|j: int| #![trigger perms.contains_key(j)] #![trigger perms[j]] 0 <= j < n ==> perms.contains_key(j) && perms[j].addr() == base + 8 * j && perms[j].value() == 0,
+        forall|j: int| #![trigger perms.contains_key(j)] #![trigger perms[j]] 0 <= j < n ==> perms.contains_key(j) && perms[j].id() == word_at(base + 8 * j) && perms[j].value() == 0,
         s.wf(),
         toks.id() == s.loc,
         forall|b: int| 0 <= b < 64 * n && s.real(b) ==> toks@.contains(#[trigger] s.addr(b)),
@@ -3651,7 +3690,7 @@ pub proof fn fresh_word_invs(
         let j = n - 1;
         assert(0 <= j < n);
         assert(perms.contains_key(j));
-        assert(perms[j].addr() == base + 8 * j);
+        assert(perms[j].id() == word_at(base + 8 * j));
         let tracked mut perms = perms;
         let tracked mut toks = toks;
         let tracked mut marks = marks;
@@ -3677,8 +3716,8 @@ pub proof fn fresh_word_invs(
                 lemma_addr_inj(s, b, b2);
             }
         }
-        let k = WordKey { slots: s, j, addr: (base + 8 * j) as usize };
-        assert(p.addr() == k.addr);
+        let k = WordKey { slots: s, j, id: word_at(base + 8 * j) };
+        assert(p.id() == k.id);
         assert(t.id() == s.loc);
         assert(t@ == addrs(s, free_bits(s, j, p.value())));
         assert(marks_ok(s, j, p.value(), u@, d@));
@@ -3860,9 +3899,9 @@ proof fn lemma_sub_pad_bits(mask: u64, pad: u64, n: usize, width: u64, sh: u64)
 }
 
 /// `w` is word `j` of class bitmap `s`: `invs` holds its invariant.
-pub open spec fn word_ok(w: AtomicU64, j: int, s: Slots, invs: Map<int, WordInv>) -> bool {
+pub open spec fn word_ok(w: PAtomicU64, j: int, s: Slots, invs: Map<int, WordInv>) -> bool {
     &&& invs.contains_key(j)
-    &&& invs[j].constant() == (WordKey { slots: s, j, addr: word_addr(&w) })
+    &&& invs[j].constant() == (WordKey { slots: s, j, id: word_id(&w) })
     &&& invs[j].namespace() == word_ns()
 }
 
@@ -3872,7 +3911,7 @@ pub open spec fn word_ok(w: AtomicU64, j: int, s: Slots, invs: Map<int, WordInv>
 /// slot tokens).
 #[cfg(test)]
 impl<'a> AtomicBitmap<'a> {
-    pub fn from_words_t(words: &'a [AtomicU64]) -> AtomicBitmap<'a> {
+    pub fn from_words_t(words: &'a [PAtomicU64]) -> AtomicBitmap<'a> {
         AtomicBitmap::from_words(
             words,
             Ghost::assume_new(),
@@ -3881,7 +3920,7 @@ impl<'a> AtomicBitmap<'a> {
         )
     }
 
-    pub fn sub_word_t(word: &'a AtomicU64, shift: u32, nbits: usize) -> AtomicBitmap<'a> {
+    pub fn sub_word_t(word: &'a PAtomicU64, shift: u32, nbits: usize) -> AtomicBitmap<'a> {
         AtomicBitmap::sub_word(
             word,
             shift,

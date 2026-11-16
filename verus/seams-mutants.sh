@@ -201,16 +201,16 @@ tree src/vspec/zero.rs Unbacked <<'EOF'
 a second type of a checked name|a second tracked type|/^pub tracked struct Zeroed {$/i pub(crate) tracked struct Unbacked { ghost x: int }
 EOF
 
-# The seam is the external_body tracked type WordPerm of src/vspec/word.rs,
+# The seam is the external_body tracked type HeapPerm of src/heap/thread.rs,
 # whose status cites its not-Copy check in src/vspec/notcopy.rs.
 # shellcheck disable=SC2016 # sed scripts, not shell expansions
-tree src/vspec/notcopy.rs WordPerm src/vspec/word.rs <<'EOF'
-the Clone check dropped|neither Copy nor Clone|s/^const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS \&\& <WordPerm as NotClone<_>>::HOLDS);$/const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS);/
-another type checked|neither Copy nor Clone|s/^const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS \&\& <WordPerm as NotClone/const _: () = assert!(<HeapPerm as NotCopy<_>>::HOLDS \&\& <HeapPerm as NotClone/
-the check removed|neither Copy nor Clone|/^const _: () = assert!(<WordPerm as NotCopy/d
+tree src/vspec/notcopy.rs HeapPerm src/heap/thread.rs <<'EOF'
+the Clone check dropped|neither Copy nor Clone|s/^const _: () = assert!(<HeapPerm as NotCopy<_>>::HOLDS \&\& <HeapPerm as NotClone<_>>::HOLDS);$/const _: () = assert!(<HeapPerm as NotCopy<_>>::HOLDS);/
+another type checked|neither Copy nor Clone|s/^const _: () = assert!(<HeapPerm as NotCopy<_>>::HOLDS \&\& <HeapPerm as NotClone/const _: () = assert!(<Reserved as NotCopy<_>>::HOLDS \&\& <Reserved as NotClone/
+the check removed|neither Copy nor Clone|/^const _: () = assert!(<HeapPerm as NotCopy/d
 the Clone impl removed|neither Copy nor Clone|/^impl<T: Clone> NotClone<IfClone> for T {}$/d
-a comment added|pass|/^\/\/ `WordPerm` is neither/s/$/ More words./
-rewrapped|pass|s/^const _: () = assert!(<WordPerm as NotCopy<_>>::HOLDS \&\& /const _: () = assert!(\n    <WordPerm as NotCopy<_>>::HOLDS \&\& /
+a comment added|pass|/^\/\/ `HeapPerm` is neither/s/$/ More words./
+rewrapped|pass|s/^const _: () = assert!(<HeapPerm as NotCopy<_>>::HOLDS \&\& /const _: () = assert!(\n    <HeapPerm as NotCopy<_>>::HOLDS \&\& /
 EOF
 
 # The seam is the external type specification of core::ffi::c_void in

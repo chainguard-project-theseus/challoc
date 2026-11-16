@@ -237,9 +237,9 @@ impl StateTicket {
 }
 
 /// The address of a descriptor: the identity a [`DescPerm`] is for (as
-/// `vspec::word::word_addr` is a bitmap word's). `class::table`'s
-/// `axiom_zero_desc` ties it to the descriptor's address when it mints
-/// the permissions.
+/// `vspec::word::word_at` names a bitmap word's by its address).
+/// `class::table`'s `axiom_zero_desc` ties it to the descriptor's address
+/// when it mints the permissions.
 pub uninterp spec fn desc_id(d: &SlabDesc) -> usize;
 
 /// `m` holds a permission for `d` under key `k`.

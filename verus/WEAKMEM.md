@@ -2,11 +2,12 @@
 
 The Verus proofs assume sequential consistency (SC). vstd's `std`
 atomic specifications return any value for a load and ignore the
-ordering, and the bitmap word wrappers (`vspec/word.rs`: `load`,
-`fetch_or`, `fetch_and`, `store`) are single atomic steps whose
-specifications drop the `Ordering` argument. Verus therefore does not
-check that the `Relaxed`, `Acquire` and `Release` orderings are strong
-enough. This file names the protocols that depend on those orderings,
+ordering, and vstd's permissioned atomics, which the bitmap words
+(`vspec/word.rs`: `load`, `fetch_or`, `fetch_and`, `store`) and the
+other ported `vspec` families use, are `SeqCst` under vstd's SC model.
+Verus therefore does not check that the `Relaxed`, `Acquire` and
+`Release` orderings of the remaining `core` atomics are strong enough.
+This file names the protocols that depend on those orderings,
 says what the loom models in `tests/loom` check about each, and states
 what the checks leave out.
 
@@ -26,8 +27,9 @@ leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
 vstd's atomics (built only by the loom crate), inline `#[cfg(test)]`
 and `#[cfg(kani)]` modules, and comment lines). The counters behind
 `vspec/count.rs`, the route byte behind `vspec/flags.rs` and the
-arena and explicit-cache table entries behind `vspec/entry.rs` are vstd
-atomics, whose operations are `SeqCst` with no ordering argument. The count keeps lines in `#[cfg(test)]`
+arena and explicit-cache table entries behind `vspec/entry.rs` and the
+class bitmap words behind `vspec/word.rs` are vstd atomics, whose
+operations are `SeqCst` with no ordering argument. The count keeps lines in `#[cfg(test)]`
 functions and statements outside those modules: `sys/abort.rs` and
 `sys/pac.rs` have only such lines (test hooks), and several other rows
 include a few.
@@ -48,12 +50,11 @@ a compiler barrier.
 | `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 24 | `SlabDesc`: state, arena, `live`, dirty, `closed`, `shadow`, `stamp` |
 | `arena.rs` | 13 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
-| `api/mod.rs` | 23 | `STATE.line`, `INIT_TID`, `SEALED` |
+| `api/mod.rs` | 22 | `STATE.line`, `INIT_TID`, `SEALED`, `FORK_SIGMASK`'s store |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
-| `class/table.rs` | 16 | watermark; bitmap and owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
+| `class/table.rs` | 15 | watermark; owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
 | `lock.rs` | 12 | the lock word; the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` |
 | `heap/slotstate.rs` | 11 | `double_free_scan`'s per-slot state byte |
-| `bitmap.rs` | 10 | `&[AtomicU64]` words |
 | `class/pages.rs` | 8 | `hint_due`, `hint_armed`, `pages_due`, `Relaxed` |
 | `huge/mod.rs`, `huge/free.rs` | 7, 2 | `retain_max`, `purge_on_free`, `mixed_guards`, `Relaxed` |
 | `heap/shared.rs` | 2 | test code only: `parts`' watermark read and `set`'s `#[cfg(test)]` exchange (`free_flags` goes through `vspec::flags`, `SeqCst`, with no ordering argument) |
@@ -63,10 +64,13 @@ a compiler barrier.
 
 ### P1. Slab bitmap claim and release
 
-- Claim: `AtomicBitmap::claim_word` (`bitmap.rs`) reads the word
-  `Relaxed` as a hint, then claims with `fetch_or(Acquire)`. Release:
-  `AtomicBitmap::release`'s `fetch_and(Release)`, then
-  `SlabDesc::sub_live` (`slab.rs`), a `fetch_sub(AcqRel)`.
+- Claim: `AtomicBitmap::claim_word` (`bitmap.rs`) reads the word as a
+  hint (`load_word`), then claims with `fetch_or`. Release:
+  `AtomicBitmap::release`'s `fetch_and`, then `SlabDesc::sub_live`
+  (`slab.rs`), a `fetch_sub(AcqRel)`. The word's operations are vstd's
+  `PAtomicU64` ones, `SeqCst`: at least the `Acquire` claim and the
+  `Release` release the edge below needs (the bitmap model's controls
+  weaken each to `Relaxed` and race).
 - Edge: the releaser's `fetch_and` synchronises with the next
   claimer's `fetch_or`, so the previous owner's writes to the slot
   happen before the next owner's (the comment in `claim_word`).
@@ -75,7 +79,7 @@ a compiler barrier.
 - Reservation: under the class lock, `ClassState::take` reads `live`
   `Acquire` and adds with `AcqRel`. Releasers clear bits before they
   subtract, so a reader of the lower `live` sees the cleared bits.
-- Init: `AtomicBitmap::init` writes `Relaxed` under the commit lock,
+- Init: `AtomicBitmap::init` writes (`SeqCst`) under the commit lock,
   and `SlabTable::take_group` publishes the slab with the watermark's
   `Release` store (`committed_slabs`); the owner words likewise.
 - Fresh slab commit: `SlabTable::commit_run` makes a run of the arena's
@@ -90,7 +94,7 @@ a compiler barrier.
   no loom model covers it.
 - Property: no slot is held by two threads; slot data is race-free
   across a release and the next claim; a claimer that reserved a slot
-  (`live`) finds a clear bit. A stale `Relaxed` hint costs passes:
+  (`live`) finds a clear bit. A stale hint costs passes:
   `MAX_EMPTY_PASSES` (`1 << 22`, `class/mod.rs`) empty passes in a row
   reach the `reservation_unmet` abort (`class/abort.rs`), which a
   bounded checker reaches only with the constant lowered.
@@ -200,11 +204,12 @@ a compiler barrier.
 
 - The free path reads the class line's copy of the watermark
   (`heap::ClassLine`, through `class::load_mirror`; the slow path reads
-  the table's watermark), the bitmap bit and the owner word `Relaxed`,
-  with no acquire. It reads the `FREE_ROUTE` bit of the `free_flags`
-  byte (`Shared::free_flags`, after the bit test) with vstd's `SeqCst`
-  load (`vspec::flags::load`; `ldarb` on aarch64), which its
-  correctness does not need: the same argument covers it. The argument
+  the table's watermark) and the owner word `Relaxed`, with no acquire.
+  It reads the bitmap bit (`bit_word_held`, vstd's `PAtomicU64::load`;
+  `ldar` on aarch64) and the `FREE_ROUTE` bit of the `free_flags` byte
+  (`Shared::free_flags`, after the bit test; `vspec::flags::load`,
+  `ldarb` on aarch64) with vstd's `SeqCst` load, which its correctness
+  does not need: the same argument covers them. The argument
   (comments in `class/table.rs` and `heap/shared.rs`) is that the
   program frees after it allocates, so happens-before runs from the
   allocation.
@@ -586,20 +591,23 @@ shows the check can fail.
   lock by a compare-and-exchange to `LOCKED`, dropping a sleeper's
   `CONTENDED` mark, deadlocks (`loom_lock_dropped_mark_loses_a_wake_up`),
   and a bare wait on the stand-in deadlocks (`loom_futex_stand_in_sleeps`).
-- P1, `bitmap.rs` (`AtomicBitmap`'s whole-word steps over one loom
-  word, through `vspec/word.rs`'s wrappers as they are, with copies of the class steps around it, citing `slab.rs` and
-  `class/mod.rs`): two owners release while a third thread reserves
-  through `live` under the `RawLock` copy and claims; one owner releases
-  two slots to two claimers; `init` is published by `Release` and
-  `Acquire`. Slot data is a loom `UnsafeCell` per slot. No race between
-  a release and the next owner, disjoint masks, no padding claimed, no
-  double release, and the `live` reservation is met on the first pass
-  (one pass more per competing claimer): the `Relaxed` hint load always
-  sees a bit that `live` promised, because the `Acquire` load of `live`
-  reads the releaser's `AcqRel` `fetch_sub`, which follows its `Release`
-  `fetch_and`. Controls: a `Relaxed` release, a `Relaxed` claim and a
-  `Relaxed` commit each race or leave the slab unpublished, and a write
-  to an unclaimed slot races (`loom_bitmap_unclaimed_write_is_a_race`).
+- P1, `bitmap.rs` (`AtomicBitmap`'s whole-word steps over one word,
+  through `vspec/word.rs`'s verified wrappers as they are, over the
+  `cfg(loom)` stand-in for vstd's `PAtomicU64`, `SeqCst`, with copies of
+  the class steps around it, citing `slab.rs` and `class/mod.rs`): two
+  owners release while a third thread reserves through `live` under the
+  `RawLock` copy and claims; one owner releases two slots to two
+  claimers; `init` is published by `Release` and `Acquire`. Slot data is
+  a loom `UnsafeCell` per slot. No race between a release and the next
+  owner, disjoint masks, no padding claimed, no double release, and the
+  `live` reservation is met on the first pass (one pass more per
+  competing claimer): the hint load always sees a bit that `live`
+  promised, because the `Acquire` load of `live` reads the releaser's
+  `AcqRel` `fetch_sub`, which follows its `fetch_and`. Controls: a
+  `Relaxed` release and a `Relaxed` claim (on the stand-in's loom
+  atomic, its `ato`) race, a `Relaxed` commit leaves the slab
+  unpublished, and a write to an unclaimed slot races
+  (`loom_bitmap_unclaimed_write_is_a_race`).
   Not modelled: sub-word views, more than one word, purge, and the
   claim's `xorshift` start word.
 - P3, `background.rs` (`purge/background.rs`, `purge.rs`): the free,
@@ -625,12 +633,15 @@ shows the check can fail.
   path's load is of the class line's watermark copy, stored after the
   watermark, so a synchronised free can also read the copy behind
   (`Lagged`): a fast-path miss whose slow path re-reads the table's
-  watermark and finds the slab. With a `Relaxed` hand-off all four
-  outcomes appear: the checks pass, the watermark reads below the slab,
-  the bit reads clear, and the owner word reads as its initial 0. Each
-  of the last three is a fast-path miss; the slow path re-reads, and
-  only a stale re-read too causes a spurious abort or releases the slot
-  to arena 0 (possible, not modelled). Controls: the `Relaxed` hand-off
+  watermark and finds the slab. With a `Relaxed` hand-off three outcomes
+  appear: the checks pass, the watermark reads below the slab, and the
+  bit reads clear, each of the last two a fast-path miss; the slow path
+  re-reads, and only a stale re-read too causes a spurious abort
+  (possible, not modelled). The owner word does not read its initial 0
+  once the bit reads set: the bit's load is vstd's `SeqCst` and reads
+  the claim's `fetch_or` (or a later read-modify-write of the word),
+  which follows the claimer's `Acquire` watermark load, which follows
+  the owner store. Controls: the `Relaxed` hand-off
   with the free touching the block races; with the claimer's watermark
   load `Relaxed`, a synchronised free can read the owner as 0. The
   `free_flags` route bit is modelled in `flags.rs`, not here.
@@ -747,7 +758,7 @@ atomics with the
 permissions erased: evidence for the callers' hand-offs under the models
 named, which moves no status (the "status" column marks a copy).
 
-23 seams cite loom, and every one is partly checked
+18 seams cite loom, and every one is partly checked
 (`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
 (`lock.rs.md`, tool loom/GenMC) stays trusted: its contract is
 termination, and the lock models show deadlock freedom only. Drepper's
@@ -773,11 +784,6 @@ another thread's exchange as often as other threads retake the lock.
 | `vspec/atom.rs.md` | `store_usize_at` | partly checked (Kani, loom, GenMC) |
 | `vspec/atom.rs.md` | `load_usize_seen` | partly checked (loom, GenMC) |
 | `vspec/atom.rs.md` | `load_u16_at` | partly checked (Kani, loom, GenMC) |
-| `vspec/word.rs.md` | `WordPerm` | partly checked (loom) |
-| `vspec/word.rs.md` | `fetch_or` | partly checked (Kani, loom, GenMC) |
-| `vspec/word.rs.md` | `store` | partly checked (Kani, loom, GenMC) |
-| `vspec/word.rs.md` | `load` | partly checked (Kani, loom) |
-| `vspec/word.rs.md` | `fetch_and` | partly checked (Kani, loom, GenMC) |
 
 The arguments, by group (the overrides comments give each in full):
 
@@ -801,13 +807,14 @@ The arguments, by group (the overrides comments give each in full):
   its invariant and frame rest on the holders' releases, and at the first
   acquisition the initial value's frame is checked by nothing and its
   visibility rests on the lock's publication.
-- The bitmap word wrappers (`vspec/word.rs`): C11 per-location
-  coherence gives each contract, and the P1 and P5 models check the
-  cross-location edges the SC proof needs. The proofs use `load` only
-  for "a set bit is not a guard slab", true of every value. `WordPerm`
-  is the SC abstraction itself; its content is the wrappers' contracts
-  and the fact that every write goes through them, which `access.rs`
-  checks.
+- The bitmap word wrappers (`vspec/word.rs`) are not in the table:
+  they are verified over vstd's `PAtomicU64`, whose `SeqCst` operations
+  vstd specifies under its sequentially consistent model. The P1, P5
+  and pages models still check the cross-location edges the SC proof
+  needs around them. The fork slot's `load_fork_slot` stays trusted
+  (Kani only, `word.rs.overrides`): `FORK_SIGMASK` is a `core` atomic,
+  written and read under every allocator lock, and its permission's
+  value is `api::resume::axiom_fork_resumed`'s premise.
 - The count wrappers (`vspec/count.rs`) are not in the table: they are
   verified over vstd's `PAtomicU32`, whose `SeqCst` operations vstd
   specifies under its sequentially consistent model. The count, narenas

@@ -351,9 +351,10 @@ fn bad(file: &str, l: &Line) -> String {
     format!("{file}:{}: {}", l.n, l.code)
 }
 
-// The bitmap words (`vspec/word.rs`'s seams): non-test bitmap.rs writes a
+// The bitmap words (vstd `PAtomicU64`s, whose permissions
+// `class::table::axiom_fresh_words` mints): non-test bitmap.rs writes a
 // word only through `vspec::word`'s wrappers, and class/table.rs, which
-// casts word addresses to `&AtomicU64`, calls no atomic write method but
+// casts word addresses to `&PAtomicU64`, calls no atomic write method but
 // the owner word's store in `store_owner` (once; it writes the watermark
 // and its copy through `vspec::atom`'s wrappers).
 
@@ -391,7 +392,7 @@ fn access_bitmap_words_only_through_vspec_word() {
 #[test]
 fn access_bitmap_words_control() {
     let t = tree();
-    let anchor = "crate::vspec::word::fetch_or(w, pad, Ordering::Relaxed, Tracked(&mut perm));";
+    let anchor = "crate::vspec::word::fetch_or(w, pad, Tracked(&mut perm));";
     assert!(
         !check_words(&with(
             &t,
@@ -879,10 +880,12 @@ fn access_desc_fields_control() {
 }
 
 // One permission per atomic (the watermark wrappers' seams; the route
-// byte's, the state bytes', the counters' and the table entries'
-// permissions are vstd's, which only `PAtomicU8::new`, `PAtomicU32::new`
-// and `PAtomicPtr::new` mint, besides `api::axiom_start`'s slot-state
-// bytes): each file builds its permission type only in
+// byte's, the state bytes', the counters', the table entries' and the
+// bitmap words' permissions are vstd's, which only `PAtomicU8::new`,
+// `PAtomicU32::new`, `PAtomicU64::new` and `PAtomicPtr::new` mint, besides
+// `api::axiom_start`'s slot-state bytes, `class::table::axiom_fresh_words`'s
+// bitmap words and `api::resume::axiom_fork_resumed`'s fork slot): each
+// file builds its permission type only in
 // its minting fn, with one literal, and names the type only in the struct
 // and impl lines and in type position (no `Self`, derive, trait impl or
 // child module); and no `const` item calls a minting fn, vstd's included,
@@ -894,6 +897,7 @@ const PERMS: &[(&str, &str, &str)] = &[("src/vspec/atom.rs", "UsizePerm", "new_u
 const MINTERS: &[&str] = &[
     "PAtomicU8::new",
     "PAtomicU32::new",
+    "PAtomicU64::new",
     "PAtomicPtr::new",
     "count::new",
     "new_usize",
@@ -1156,14 +1160,14 @@ fn access_init_once_words_control() {
 }
 
 // The fork signal-mask slot (`FORK_SIGMASK`, a word `vspec/word.rs`'s
-// `load` reads through the permission `api::resume::resumed` mints, so
-// the word wrappers' seams rest on it too): every shipped line that names
+// `load_fork_slot` reads through the permission `api::resume::resumed`
+// mints, so that seam rests on it): every shipped line that names
 // the static, `fork_slot`, `resumed` or `saved_sigmask` anywhere, or the
 // slot's binding (`slot` in `save_sigmask`, `resumed` and `fork_release`,
 // `w` in `saved_sigmask`), is one of the lines below, each once. So the
 // slot's one write is `save_sigmask`'s raw `store`, and the only other
-// access is `saved_sigmask`'s `vspec::word::load`. Spec clauses
-// (`word_addr(..)`) and ghost code are left out.
+// access is `saved_sigmask`'s `vspec::word::load_fork_slot`. Spec clauses
+// (`fork_slot_id(..)`) and ghost code are left out.
 
 /// `(fn, line)`, `""` outside a fn: the shipped lines the check matches.
 const SLOT_LINES: &[(&str, &str)] = &[
@@ -1179,7 +1183,7 @@ const SLOT_LINES: &[(&str, &str)] = &[
     ("saved_sigmask", "w: &AtomicU64,"),
     (
         "saved_sigmask",
-        "crate::vspec::word::load(w, Ordering::Relaxed, Tracked(slot))",
+        "crate::vspec::word::load_fork_slot(w, Tracked(slot))",
     ),
     (
         "fork_release",
@@ -1208,7 +1212,7 @@ fn check_slot(t: &Tree) -> Vec<String> {
     for (file, text) in t {
         for l in shipped(text) {
             let c = &l.code;
-            if l.ghost || c.contains("word_addr(") {
+            if l.ghost || c.contains("fork_slot_id(") {
                 continue;
             }
             let api = file == "src/api/mod.rs";

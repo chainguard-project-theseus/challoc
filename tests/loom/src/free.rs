@@ -17,7 +17,8 @@
 //! - the free path is `Shared::set_slot` and `home_owns` (through
 //!   `heap::free_fast_slot` and `free_fast_tail`): `ClassLine::set_slab`'s
 //!   watermark copy (`class::load_mirror`, `Relaxed`) and bit
-//!   (`SlabTable::bit_word`, `Relaxed`, through `vspec::word::load`),
+//!   (`SlabTable::bit_word`, through `vspec::word::load`, vstd's
+//!   `SeqCst`, over the `cfg(loom)` stand-in of `PAtomicU64`),
 //!   then, when the flag byte has `FREE_ROUTE` (`home_owns`),
 //!   `ClassLine::owner` (`owner_from`, `load_owner`'s `load_u16_at`,
 //!   `Relaxed`; the model always reads it); `SlabTable::check_located`,
@@ -45,10 +46,11 @@
 //! claimer's `Acquire` load of the watermark stands for that chain).
 
 use crate::bitmap::AtomicBitmap;
+use crate::sync::patomic::PAtomicU64;
 use crate::vspec::{self, atom, word};
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
-use loom::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use loom::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use loom::thread;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -94,7 +96,7 @@ struct Table {
     /// The group's owner word.
     owner: AtomicU16,
     /// The slab's bitmap word.
-    words: [AtomicU64; 1],
+    words: [PAtomicU64; 1],
     /// The slots' first words (user data, then the cache link).
     data: [UnsafeCell<u64>; NSLOTS],
     /// The program's hand-off of a slot (`slot + 1`; 0 for none yet).
@@ -111,7 +113,7 @@ impl Table {
             committed: AtomicUsize::new(0),
             mirror: AtomicUsize::new(0),
             owner: AtomicU16::new(0),
-            words: [AtomicU64::new(0)],
+            words: [PAtomicU64::new(0).0],
             data: [UnsafeCell::new(0), UnsafeCell::new(0)],
             chan: AtomicUsize::new(0),
         }
@@ -186,7 +188,7 @@ impl Table {
             return Out::NeverCommitted;
         }
         // `bit_word`.
-        let x = word::load(&self.words[0], Ordering::Relaxed, Tracked::assume_new());
+        let x = word::load(&self.words[0], Tracked::assume_new());
         if (x >> slot) & 1 != 1 {
             return Out::NotLive;
         }
@@ -273,13 +275,16 @@ fn loom_free_after_synchronised_handoff() {
 }
 
 /// A `Relaxed` hand-off (a data race on the block under C11, so outside
-/// the C contract): documents what the checks may then read. Each of the
-/// three reads can be stale: the watermark copy below the slab (with the
-/// table's watermark too, or not: `Lagged`), the bit clear, or the owner
-/// word's initial 0, each a fast-path miss (see [`Out`]: a spurious abort
-/// or a slot released to arena 0 needs the slow path's re-read stale
-/// too). The free does not touch the block here (that would be a reported
-/// race).
+/// the C contract): documents what the checks may then read. The
+/// watermark copy can read below the slab (with the table's watermark
+/// too, or not: `Lagged`), or the bit clear, each a fast-path miss (see
+/// [`Out`]: a spurious abort needs the slow path's re-read stale too).
+/// The owner word cannot read its initial 0 once the bit reads set: the
+/// bit's load is vstd's `SeqCst`, at least `Acquire`, and reads the
+/// claim's `fetch_or` (or a later read-modify-write of the word), whose
+/// `Release` half follows the claimer's `Acquire` load of the watermark,
+/// which `take_group`'s owner store comes before. The free does not touch
+/// the block here (that would be a reported race).
 ///
 /// Runs `vspec::atom::load_usize`,
 /// `vspec::atom::load_usize_seen` and `vspec::atom::load_u16_at`
@@ -294,13 +299,7 @@ fn loom_free_after_relaxed_handoff() {
         &SEEN,
     );
     let seen = SEEN.lock().unwrap();
-    let all = BTreeSet::from([
-        Out::Ok,
-        Out::Lagged,
-        Out::NeverCommitted,
-        Out::NotLive,
-        Out::Misrouted(0),
-    ]);
+    let all = BTreeSet::from([Out::Ok, Out::Lagged, Out::NeverCommitted, Out::NotLive]);
     assert_eq!(*seen, all, "outcomes: {seen:?}");
 }
 

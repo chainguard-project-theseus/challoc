@@ -1,11 +1,23 @@
 use super::*;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::vec;
 use std::vec::Vec;
 
 use crate::testutil::xorshift;
 
-fn atomic_words(n: usize) -> Vec<AtomicU64> {
-    (0..n).map(|_| AtomicU64::new(0)).collect()
+fn atomic_words(n: usize) -> Vec<PAtomicU64> {
+    (0..n).map(|_| word0()).collect()
+}
+
+/// A bitmap word holding zero (its permission erased: the tests hold no
+/// ghost state).
+fn word0() -> PAtomicU64 {
+    PAtomicU64::new(0).0
+}
+
+/// The value of `w` (vstd's load, through an erased permission).
+fn peek(w: &PAtomicU64) -> u64 {
+    w.load(Tracked::assume_new())
 }
 
 #[test]
@@ -59,7 +71,7 @@ fn init_with_more_bits_than_the_view_aborts() {
 #[test]
 #[should_panic(expected = "nbits does not match the view")]
 fn init_of_a_sub_word_view_past_its_share_aborts() {
-    let word = AtomicU64::new(0);
+    let word = word0();
     AtomicBitmap::sub_word_t(&word, 8, 4).init_t(5);
 }
 
@@ -190,7 +202,7 @@ fn atomic_bitmap_matches_model() {
 #[test]
 fn sub_word_views_are_independent() {
     for nbits in [4usize, 8, 16, 32] {
-        let word = AtomicU64::new(0);
+        let word = word0();
         let nslots = nbits - nbits / 4; // some padding in every slab
         let views: Vec<AtomicBitmap> = (0..64 / nbits)
             .map(|k| AtomicBitmap::sub_word_t(&word, (k * nbits) as u32, nbits))
@@ -240,7 +252,7 @@ fn sub_word_views_are_independent() {
         v.init_t(nslots);
         assert_eq!(v.allocated(nslots), 0);
         assert_eq!(views[0].allocated(nslots), 3);
-        let whole = word.load(Ordering::Relaxed);
+        let whole = peek(&word);
         for (k, o) in views.iter().enumerate() {
             assert_eq!(
                 (whole >> (k * nbits)) & ((1u64 << nbits) - 1),
@@ -257,7 +269,7 @@ fn sub_word_views_are_independent() {
 fn sub_word_matches_model() {
     let mut s = 0x1234_5678_9ABC_DEF0u64;
     for nbits in [4usize, 8, 16, 32] {
-        let word = AtomicU64::new(0);
+        let word = word0();
         let shift = (xorshift(&mut s) as u32 % (64 / nbits as u32)) * nbits as u32;
         let bm = AtomicBitmap::sub_word_t(&word, shift, nbits);
         let nslots = nbits - 1;
@@ -267,7 +279,7 @@ fn sub_word_matches_model() {
         let other = AtomicBitmap::sub_word_t(&word, other_shift, nbits);
         other.init_t(nslots);
         other.claim(2);
-        let before = word.load(Ordering::Relaxed) & !bm.mask;
+        let before = peek(&word) & !bm.mask;
         let mut model = vec![false; nslots];
         for _ in 0..5000 {
             if xorshift(&mut s).is_multiple_of(2) {
@@ -302,11 +314,7 @@ fn sub_word_matches_model() {
             }
             assert_eq!(bm.is_full(), model.iter().all(|b| *b));
             assert_eq!(bm.allocated(nslots), model.iter().filter(|b| **b).count());
-            assert_eq!(
-                word.load(Ordering::Relaxed) & !bm.mask,
-                before,
-                "neighbour bits changed"
-            );
+            assert_eq!(peek(&word) & !bm.mask, before, "neighbour bits changed");
         }
     }
 }
@@ -323,7 +331,7 @@ fn concurrent_claims_are_disjoint() {
     const NBITS: usize = 1000;
     const THREADS: usize = 8;
     const ROUNDS: usize = 4000;
-    let words: Arc<Vec<AtomicU64>> = Arc::new(atomic_words(NBITS.div_ceil(64)));
+    let words: Arc<Vec<PAtomicU64>> = Arc::new(atomic_words(NBITS.div_ceil(64)));
     AtomicBitmap::from_words_t(&words).init_t(NBITS);
     let stamps: Arc<Vec<AtomicU8>> = Arc::new((0..NBITS).map(|_| AtomicU8::new(0)).collect());
     let total = Arc::new(AtomicU64::new(0));
@@ -670,7 +678,7 @@ fn two_level_ranges_match_model() {
 #[test]
 #[should_panic(expected = "release outside the slab")]
 fn a_release_outside_the_sub_word_view_aborts() {
-    let word = AtomicU64::new(0);
+    let word = word0();
     let v = AtomicBitmap::sub_word_t(&word, 8, 8);
     v.init_t(6);
     // Slab coordinates: bit 8 of an 8-bit view is the next slab's.
@@ -680,7 +688,7 @@ fn a_release_outside_the_sub_word_view_aborts() {
 #[test]
 #[should_panic(expected = "padding bit of the slab was cleared")]
 fn a_cleared_padding_bit_aborts_the_allocated_count() {
-    let word = AtomicU64::new(0);
+    let word = word0();
     let v = AtomicBitmap::sub_word_t(&word, 0, 8);
     v.init_t(6);
     assert_eq!(v.allocated(6), 0);
@@ -696,8 +704,8 @@ fn a_cleared_padding_bit_aborts_the_allocated_count() {
 /// (what the last owner wrote before `release`), writes its own token
 /// to all four words, checks them, writes 0 and releases. A claimer
 /// that reads a token, or a holder whose token changed, saw a release
-/// not ordered before the next claim: `release`'s `fetch_and(Release)`
-/// to `claim_word`'s `fetch_or(Acquire)` (WEAKMEM.md, P1).
+/// not ordered before the next claim: `release`'s `fetch_and` to
+/// `claim_word`'s `fetch_or`, both vstd `SeqCst` (WEAKMEM.md, P1).
 #[test]
 #[ignore]
 fn stress_bitmap_claim_release_edge() {
@@ -708,7 +716,7 @@ fn stress_bitmap_claim_release_edge() {
     // SAFETY: each slot's data is touched only by the thread holding
     // the slot's bit, which is the property under test.
     unsafe impl Sync for Data {}
-    let word = [AtomicU64::new(0)];
+    let word = [word0()];
     let bm = AtomicBitmap::from_words_t(&word);
     bm.init_t(SLOTS);
     let data = Data(core::array::from_fn(|_| UnsafeCell::new([0; 4])));
@@ -778,5 +786,5 @@ fn stress_bitmap_claim_release_edge() {
         (0, 0),
         "a claim saw another holder's data"
     );
-    assert_eq!(word[0].load(Ordering::Relaxed), !0u64 << SLOTS);
+    assert_eq!(peek(&word[0]), !0u64 << SLOTS);
 }

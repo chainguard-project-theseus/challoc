@@ -121,7 +121,7 @@ use crate::lock::{Lock, LockHeld, LockOrder};
 use crate::lock::{RawLock, rank_arena_stats, rank_class, rank_sets, rank_state, rank_table};
 use crate::purge;
 use crate::purge::background::{State, StateHold};
-use crate::sync::patomic::{PAtomicU8, PAtomicU32};
+use crate::sync::patomic::{PAtomicU8, PAtomicU32, PermissionU64};
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 #[cfg(verus_keep_ghost)]
@@ -129,9 +129,8 @@ use crate::sys::{SigMask, all_blocked, effective};
 use crate::vspec::byte::BytePerm;
 use crate::vspec::count::CountPerm;
 use crate::vspec::once;
-use crate::vspec::word::WordPerm;
 #[cfg(verus_keep_ghost)]
-use crate::vspec::word::word_addr;
+use crate::vspec::word::fork_slot_id;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
@@ -768,10 +767,14 @@ verus! {
 /// records. Its identity is carried by the holds rather than stated of
 /// the static (Verus cannot name a static in a specification): the
 /// prepare's hold records the word it stored to
-/// ([`ForkHeld::slot_addr`], bookkeeping: nothing reads that hold
+/// ([`ForkHeld::slot_id`], bookkeeping: nothing reads that hold
 /// after the store), and the release's hold is handed over for the word
 /// [`fork_slot`] returns to the release ([`resume::resumed`]); that the
-/// two are one word is the handoff's premise.
+/// two are one word is the handoff's premise. A `core` atomic, not a
+/// vstd `PAtomicU64`: the prepare's store goes through no permission.
+/// The release's permission is vstd's `PermissionU64`, for the slot's
+/// identity ([`fork_slot_id`]), read through
+/// `vspec::word::load_fork_slot`.
 exec static FORK_SIGMASK: AtomicU64 = AtomicU64::new(0);
 
 /// [`FORK_SIGMASK`] as a reference. Nothing is claimed of it: the holds
@@ -1946,7 +1949,7 @@ pub open spec fn lock_at(s: Shared, arenas: Map<int, Arena>, k: ForkLock) -> Raw
 /// the arenas `fork_prepare` found, `n` the arena count it read, and one
 /// [`LockHeld`] per listed lock, each the hold of the lock its key names,
 /// the mask its holder records as stored in [`FORK_SIGMASK`] (`saved`)
-/// and the address of that word (`slot_addr`), with, in the
+/// and the identity of that word (`slot_id`), with, in the
 /// release's hold, the permission to that word (`slot`).
 /// It also keeps the permission of the creation lock's cell (`created`,
 /// from `Arenas::lock_held`), whose value's half of the registry's
@@ -1963,8 +1966,8 @@ pub tracked struct ForkHeld {
     ghost arenas: Map<int, Arena>,
     tracked toks: Map<ForkLock, LockHeld>,
     ghost saved: Option<u64>,
-    ghost slot_addr: usize,
-    tracked slot: Option<WordPerm>,
+    ghost slot_id: int,
+    tracked slot: Option<PermissionU64>,
     tracked created: crate::arena::CreatedPerm,
 }
 
@@ -2001,20 +2004,21 @@ impl ForkHeld {
         self.saved
     }
 
-    /// The address of the word this hold's holder records as storing its
-    /// [`saved`](ForkHeld::saved) content ([`save_sigmask`]: the word
-    /// of [`FORK_SIGMASK`]); meaningful once that is `Some`.
-    pub closed spec fn slot_addr(self) -> usize {
-        self.slot_addr
+    /// The identity ([`fork_slot_id`]) of the word this hold's holder
+    /// records as storing its [`saved`](ForkHeld::saved) content
+    /// ([`save_sigmask`]: the word of [`FORK_SIGMASK`]); meaningful once
+    /// that is `Some`.
+    pub closed spec fn slot_id(self) -> int {
+        self.slot_id
     }
 
     /// The hold has the permission to the word it records
-    /// ([`slot_addr`](ForkHeld::slot_addr)), and its value is the content
+    /// ([`slot_id`](ForkHeld::slot_id)), and its value is the content
     /// the hold records: the release's hold, as [`resume::axiom_fork_resumed`]
     /// hands it over (`fork_prepare` stores without one, under every
     /// lock).
     pub closed spec fn has_slot(self) -> bool {
-        self.slot matches Some(p) && p.addr() == self.slot_addr && self.saved == Some(p.value())
+        self.slot matches Some(p) && p.id() == self.slot_id && self.saved == Some(p.value())
     }
 
     /// The hold has no permission to [`FORK_SIGMASK`]: the prepare's hold,
@@ -2024,13 +2028,14 @@ impl ForkHeld {
         self.slot is None
     }
 
-    /// This hold after [`save_sigmask`] stored `m` in the word at `a`.
-    pub closed spec fn with_saved(self, m: u64, a: usize) -> ForkHeld {
-        ForkHeld { saved: Some(m), slot_addr: a, ..self }
+    /// This hold after [`save_sigmask`] stored `m` in the word `a`
+    /// identifies.
+    pub closed spec fn with_saved(self, m: u64, a: int) -> ForkHeld {
+        ForkHeld { saved: Some(m), slot_id: a, ..self }
     }
 
     /// Storing in the slot changes neither the locks held nor the arenas.
-    proof fn lemma_with_saved(self, s: Shared, m: u64, a: usize)
+    proof fn lemma_with_saved(self, s: Shared, m: u64, a: int)
         ensures
             self.wf(s) ==> self.with_saved(m, a).wf(s),
             self.all() ==> self.with_saved(m, a).all(),
@@ -2437,7 +2442,7 @@ extern "C" fn fork_prepare() {
         s.arenas.lemma_frozen(cp);
         assert(arenas =~= cp.value().snap().1);
     }
-    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot_addr: 0, slot: None, created: cp };
+    let tracked mut held = ForkHeld { n: n as int, arenas, toks, saved: None, slot_id: 0, slot: None, created: cp };
     for c in 0..NCLASSES
         invariant
             crate::sys::may_syscall(),
@@ -2536,7 +2541,7 @@ extern "C" fn fork_prepare() {
     // which only the state lock's acquisition on this root gives).
     crate::lock::fork_window_open(Tracked(&ord));
     proof {
-        before.lemma_with_saved(*s, mask, held.slot_addr());
+        before.lemma_with_saved(*s, mask, held.slot_id());
         assert(fork_holds(*s, held, state));
         assert(fork_sig_holds(sig, held, orig));
     }
@@ -2562,13 +2567,13 @@ fn save_sigmask(
         fork_holds(s, *old(held), *state),
         old(held).no_slot(),
     ensures
-        *final(held) == old(held).with_saved(mask, final(held).slot_addr()),
+        *final(held) == old(held).with_saved(mask, final(held).slot_id()),
 {
     let slot = fork_slot();
     slot.store(mask, Ordering::Relaxed);
     proof {
         held.saved = Some(mask);
-        held.slot_addr = word_addr(slot);
+        held.slot_id = fork_slot_id(slot);
     }
 }
 
@@ -2591,12 +2596,12 @@ fn saved_sigmask(
     requires
         fork_holds(s, *held, *state),
         held.has_slot(),
-        held.slot_addr() == word_addr(w),
+        held.slot_id() == fork_slot_id(w),
     ensures
         held.saved() == Some(r),
 {
     let tracked slot = held.slot.tracked_borrow();
-    crate::vspec::word::load(w, Ordering::Relaxed, Tracked(slot))
+    crate::vspec::word::load_fork_slot(w, Tracked(slot))
 }
 
 /// Release the locks taken by `fork_prepare`, in reverse order, then let
@@ -2988,7 +2993,7 @@ mod resume {
     use crate::lock::rank_state;
     use crate::purge::background::StateHold;
     #[cfg(verus_keep_ghost)]
-    use crate::{sys::effective, vspec::word::word_addr};
+    use crate::{sys::effective, vspec::word::fork_slot_id};
     use core::sync::atomic::AtomicU64;
     #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
@@ -3010,9 +3015,13 @@ mod resume {
     /// permission to the slot whose value is that content
     /// ([`ForkHeld::has_slot`]): the one trusted link between the slot and
     /// the hold, through which `saved_sigmask` reads (no other permission
-    /// to the slot exists). `save_sigmask`'s store is unchecked, so that
-    /// the word holds the `saved` the prepare's hold recorded is part of
-    /// this premise too. `state` must be the state lock's hold
+    /// to the slot exists: the permission is vstd's `PermissionU64`, which
+    /// otherwise only vstd's `PAtomicU64::new` and
+    /// `class::table::axiom_fresh_words` mint, for other identities, as
+    /// the slot is a `core` atomic no `new` made and no class bitmap
+    /// word). `save_sigmask`'s store is unchecked, so that the word holds
+    /// the `saved` the prepare's hold recorded is part of this premise
+    /// too. `state` must be the state lock's hold
     /// ([`StateHold::wf`]): a fact about a hold the caller already has is a
     /// requirement, never a conclusion (ensured, a hold of any other lock
     /// would prove `false`). The hold also has the permission of the
@@ -3041,7 +3050,7 @@ mod resume {
         ensures
             fork_holds(*s, r.0, *state),
             r.0.has_slot(),
-            r.0.slot_addr() == word_addr(slot),
+            r.0.slot_id() == fork_slot_id(slot),
             r.0.saved() matches Some(m) && effective(m) == m && m & !crate::sys::BLOCKABLE_SIGNALS == 0,
             r.1.root(),
             r.1.ranks().subset_of(r.0.held_ranks().insert(rank_state())),
@@ -3062,7 +3071,7 @@ mod resume {
         ensures
             fork_holds(*s, r.1@, *state),
             r.1@.has_slot(),
-            r.1@.slot_addr() == word_addr(r.0),
+            r.1@.slot_id() == fork_slot_id(r.0),
             r.1@.saved() matches Some(m) && effective(m) == m && m & !crate::sys::BLOCKABLE_SIGNALS == 0,
             r.2@.root(),
             r.2@.ranks().subset_of(r.1@.held_ranks().insert(rank_state())),

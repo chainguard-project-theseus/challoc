@@ -1,9 +1,10 @@
 // GenMC port of tests/loom/src/bitmap.rs: the slab bitmap's claim and
 // release with the `live` reservation. challoc's `vspec/word.rs`
-// wrappers (`store`, `fetch_or`, `fetch_and`) and, for the commit count,
-// `vspec/atom.rs`'s (`store_usize`, `load_usize_seen`) run unchanged
-// over `core` atomics; `AtomicBitmap::init` (whole words),
-// `claim_word`, `claim_from`, `release`, `ClassState::take`'s
+// wrappers (`store`, `load`, `fetch_or`, `fetch_and`, over vstd's
+// `PAtomicU64`, `SeqCst` on `core`'s `AtomicU64`) and, for the commit
+// count, `vspec/atom.rs`'s (`store_usize`, `load_usize_seen`, over
+// `core` atomics) run unchanged; `AtomicBitmap::init` (whole words),
+// `load_word`, `claim_word`, `claim_from`, `release`, `ClassState::take`'s
 // reservation, the class bitmap pass and the free path's release then
 // `dec_live` are copies, as in the loom model, for one slab of
 // `NSLOTS` slots in one word. The class lock is genmc-std's `Mutex`,
@@ -17,20 +18,20 @@
 // `MODE` 0 is loom's `release_then_reserve` (two owners release one slot
 // each while a third thread reserves one and claims it), with `MUTANT`
 // 1 (the release's `fetch_and` `Relaxed`) and 2 (the claim's `fetch_or`
-// `Relaxed`) as its controls. `MODE` 1 is `loom_bitmap_two_claimers`.
-// `MODE` 2 is loom's `init_published`: `init`'s `Relaxed` writes,
-// published by the commit count's store (ordered `PUBLISH`), as a
-// claimer that sees the slab committed reads them. `MODE` 3 is
-// `loom_bitmap_unclaimed_write_is_a_race`, a control.
+// `Relaxed`) as its controls, which run on the word's `AtomicU64`
+// ([`raw`]). `MODE` 1 is `loom_bitmap_two_claimers`. `MODE` 2 is loom's
+// `init_published`: `init`'s writes, published by the commit count's
+// store (ordered `PUBLISH`), as a claimer that sees the slab committed
+// reads them. `MODE` 3 is `loom_bitmap_unclaimed_write_is_a_race`, a
+// control.
 //
 // The seam ledger cites this template's pass cases (verus/SEAMS.md,
-// "Status") for `word::store` (`bitmap_init_published` only),
-// `word::fetch_or`, `word::fetch_and`, `atom::store_usize` and
-// `atom::load_usize_seen`, as evidence only: the
-// permissions are erased (`Tracked::assume_new()`, and an erased
-// invariant for `load_usize_seen`), so no case checks a wrapper's
-// contract.
+// "Status") for `atom::store_usize` and `atom::load_usize_seen`, as
+// evidence only: the permissions are erased (`Tracked::assume_new()`,
+// and an erased invariant for `load_usize_seen`), so no case checks a
+// wrapper's contract. The word wrappers are verified (no seams).
 
+use crate::sync::patomic::PAtomicU64;
 use crate::vspec::{atom, word};
 use core::cell::UnsafeCell;
 use core::ptr;
@@ -54,6 +55,14 @@ fn min(a: usize, b: usize) -> usize {
     m
 }
 
+// The word's `AtomicU64`, for the controls, which run an operation weaker
+// than vstd's `SeqCst` on it.
+fn raw(w: &PAtomicU64) -> &AtomicU64 {
+    // SAFETY: vstd's `PAtomicU64` is a struct of one `AtomicU64`, of its
+    // size and alignment (the const assertion in src/class/table.rs).
+    unsafe { &*(w as *const PAtomicU64 as *const AtomicU64) }
+}
+
 // `bitmap::lowest_n_bits`: the lowest `n` set bits of `m`.
 fn lowest_n_bits(m: u64, n: usize) -> u64 {
     let (mut m, mut r) = (m, 0);
@@ -71,7 +80,7 @@ fn lowest_n_bits(m: u64, n: usize) -> u64 {
 // One slab: its bitmap word, `live`, the class lock and the slot data;
 // and the class table's commit count.
 struct Slab {
-    words: [AtomicU64; 1],
+    words: [PAtomicU64; 1],
     live: AtomicU32,
     lock: Mutex<()>,
     data: [UnsafeCell<u64>; NSLOTS],
@@ -83,7 +92,7 @@ struct Slab {
 unsafe impl Sync for Slab {}
 
 static S: Slab = Slab {
-    words: [AtomicU64::new(0)],
+    words: [PAtomicU64::new(0).0],
     live: AtomicU32::new(0),
     lock: Mutex::new(()),
     data: [UnsafeCell::new(0), UnsafeCell::new(0)],
@@ -103,19 +112,24 @@ impl Slab {
             } else {
                 !0u64 << (nbits - lo)
             };
-            word::store(w, pad, Ordering::Relaxed, Tracked::assume_new());
+            word::store(w, pad, Tracked::assume_new());
         }
+    }
+
+    // `AtomicBitmap::load_word`.
+    fn load_word(&self, i: usize) -> u64 {
+        word::load(&self.words[i], Tracked::assume_new())
     }
 
     // `AtomicBitmap::claim_word`: the bits of word `i` this call won.
     fn claim_word(&self, i: usize, n: usize) -> u64 {
+        let cur = self.load_word(i);
         let w = &self.words[i];
-        let cur = w.load(Ordering::Relaxed);
         let want = lowest_n_bits(!cur, n);
         if want == 0 {
             return 0;
         }
-        let prev = word::fetch_or(w, want, Ordering::Acquire, Tracked::assume_new());
+        let prev = word::fetch_or(w, want, Tracked::assume_new());
         want & !prev
     }
 
@@ -184,17 +198,12 @@ impl Slab {
     }
 
     // `release`, then `dec_live`; `MUTANT` 1 orders the bitmap's
-    // `fetch_and` `Relaxed` instead of `release`'s `Release`.
+    // `fetch_and` `Relaxed` instead of `release`'s `SeqCst`.
     fn release(&self, mask: u64, relaxed: bool) {
         let prev = if relaxed {
-            self.words[0].fetch_and(!mask, Ordering::Relaxed)
+            raw(&self.words[0]).fetch_and(!mask, Ordering::Relaxed)
         } else {
-            word::fetch_and(
-                &self.words[0],
-                !mask,
-                Ordering::Release,
-                Tracked::assume_new(),
-            )
+            word::fetch_and(&self.words[0], !mask, Tracked::assume_new())
         };
         gassert!(prev & mask == mask, "released a clear bit");
         let n = mask.count_ones();
@@ -202,12 +211,16 @@ impl Slab {
         gassert!(prev >= n, "live underflow");
     }
 
-    // `MUTANT` 2's claim of one slot: the lowest clear bit taken by a
-    // `Relaxed` `fetch_or` instead of `claim_word`'s `Acquire`.
+    // `MUTANT` 2's claim of one slot: the hint load and the `fetch_or`
+    // that takes the lowest clear bit are both `Relaxed`, where
+    // `claim_word`'s `load_word` and `fetch_or` are both `SeqCst`. Only
+    // the `fetch_or`'s ordering carries the claim's acquire; the hint
+    // load's ordering is not what the control tests.
     fn claim_relaxed(&self) -> u64 {
-        let free = !self.words[0].load(Ordering::Relaxed) & SLAB_MASK;
+        let w = raw(&self.words[0]);
+        let free = !w.load(Ordering::Relaxed) & SLAB_MASK;
         let bit = free & free.wrapping_neg();
-        if bit != 0 && self.words[0].fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+        if bit != 0 && w.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
             return bit;
         }
         gassert!(false, "reservation unmet");
@@ -256,7 +269,7 @@ fn release_then_reserve() {
         "live is not 0 at the end"
     );
     gassert!(
-        s.words[0].load(Ordering::Relaxed) & SLAB_MASK == 0,
+        s.load_word(0) & SLAB_MASK == 0,
         "a slot is still claimed at the end"
     );
 }
@@ -293,7 +306,7 @@ fn init_published() {
         atom::store_usize(&s.committed, 1, PUBLISH, Tracked::assume_new());
     });
     if vspec::load_usize_seen(&s.committed, Ordering::Acquire) == 1 {
-        let hint = s.words[0].load(Ordering::Relaxed);
+        let hint = s.load_word(0);
         gassert!(
             hint & !SLAB_MASK == !SLAB_MASK,
             "the hint missed the padding"

@@ -135,7 +135,7 @@ const PINS: &[(&str, &[&str])] = &[
     ),
     (
         "src/bitmap.rs",
-        &["prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));"],
+        &["prev = crate::vspec::word::fetch_or(w, 0, Tracked(&mut perm));"],
     ),
     ("src/slab.rs", &["self.closed.load(Ordering::Acquire)"]),
     // `SlabPages`' accessors of the lock-protected fields: pages_held,
@@ -158,12 +158,12 @@ const PINS: &[(&str, &[&str])] = &[
             "let pad = if nbits >= lo + 64 {",
             "} else if nbits <= lo {",
             "!0u64 << (nbits - lo)",
-            "crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
-            "let cur = w.load(Ordering::Relaxed);",
+            "crate::vspec::word::store(w, pad, Tracked(&mut perm));",
+            "let cur = self.load_word(i);",
             "let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);",
             "if want == 0 {",
             "return 0;",
-            "prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));",
+            "prev = crate::vspec::word::fetch_or(w, want, Tracked(&mut perm));",
             "(want & !prev) >> self.shift",
             "let got = self.claim_word(i, n, view.word(i), Tracked(&mut *toks), Tracked(inited), Tracked(seen));",
             "if got != 0 {",
@@ -172,7 +172,7 @@ const PINS: &[(&str, &[&str])] = &[
             "if i == len {",
             "i = 0;",
             "let m = mask << self.shift;",
-            "prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));",
+            "prev = crate::vspec::word::fetch_and(w, !m, Tracked(&mut perm));",
         ],
     ),
     // The class steps around the bitmap: the claim loop's empty passes,
@@ -214,7 +214,7 @@ const PINS: &[(&str, &[&str])] = &[
             "load_usize_seen(&self.committed_slabs, Ordering::Acquire, &self.committed_inv).0",
             "r = load_usize(&self.committed_slabs, order, Tracked(&v.0));",
             "slab < self.watermark(Ordering::Relaxed)",
-            "x = crate::vspec::word::load(w, Ordering::Relaxed, Tracked(&perm));",
+            "x = crate::vspec::word::load(w, Tracked(&perm));",
             "unsafe { load_owner(self, word, Ghost(slab), seen) }",
             "self.check_live(slab, slot, p, held, Tracked(obs));",
             "unsafe { self.owner_at(slab, Tracked(seen)) }",
@@ -459,18 +459,6 @@ const PINS: &[(&str, &[&str])] = &[
 /// futex call and are deliberately not pinned:
 /// `(file, enclosing fn, line, reason)`.
 const WAIVED: &[(&str, &str, &str, &str)] = &[
-    (
-        "src/bitmap.rs",
-        "init",
-        "crate::vspec::word::fetch_and(w, !self.mask, Ordering::Relaxed, Tracked(&mut perm));",
-        "init of a sub-word bitmap (mask != !0): bitmap.rs leaves sub-word bitmaps out",
-    ),
-    (
-        "src/bitmap.rs",
-        "init",
-        "crate::vspec::word::fetch_or(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
-        "init of a sub-word bitmap (mask != !0): bitmap.rs leaves sub-word bitmaps out",
-    ),
     (
         "src/class/mod.rs",
         "take",
@@ -956,13 +944,13 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("} else if nbits <= lo {", "} else if nbits <= lo {"),
             ("!0u64 << (nbits - lo)", "!0u64 << (nbits - lo)"),
             (
-                "crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));",
-                "word::store(w, pad, Ordering::Relaxed, Tracked::assume_new());",
+                "crate::vspec::word::store(w, pad, Tracked(&mut perm));",
+                "word::store(w, pad, Tracked::assume_new());",
             ),
             ("pub fn claim_word(", ""),
             (
-                "let cur = w.load(Ordering::Relaxed);",
-                "let cur = w.load(Ordering::Relaxed);",
+                "let cur = self.load_word(i);",
+                "let cur = self.load_word(i);",
             ),
             (
                 "let want = lowest_n_bits(!cur & self.mask & (allow << self.shift), n);",
@@ -971,8 +959,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("if want == 0 {", "if want == 0 {"),
             ("return 0;", "return 0;"),
             (
-                "prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));",
-                "let prev = word::fetch_or(w, want, Ordering::Acquire, Tracked::assume_new());",
+                "prev = crate::vspec::word::fetch_or(w, want, Tracked(&mut perm));",
+                "let prev = word::fetch_or(w, want, Tracked::assume_new());",
             ),
             ("(want & !prev) >> self.shift", "want & !prev"),
             ("pub fn claim_from(", ""),
@@ -991,8 +979,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));",
-                "word::fetch_and(\n&self.words[0],\n!mask,\nOrdering::Release,\nTracked::assume_new(),\n)",
+                "prev = crate::vspec::word::fetch_and(w, !m, Tracked(&mut perm));",
+                "word::fetch_and(&self.words[0], !mask, Tracked::assume_new())",
             ),
         ],
     ),
@@ -1464,8 +1452,8 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
         "pages.rs",
         "src/bitmap.rs",
         &[(
-            "prev = crate::vspec::word::fetch_or(w, 0, Ordering::AcqRel, Tracked(&mut perm));",
-            "word::fetch_or(&self.word, 0, Ordering::AcqRel, Tracked::assume_new())",
+            "prev = crate::vspec::word::fetch_or(w, 0, Tracked(&mut perm));",
+            "word::fetch_or(&self.word, 0, Tracked::assume_new())",
         )],
     ),
     (
@@ -1475,7 +1463,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("let back = won & !open;", "let back = won & !open;"),
             (
                 "let _ = bm.release(w, back, Tracked(&mut bt));",
-                "word::fetch_and(&self.word, !back, Ordering::Release, Tracked::assume_new());",
+                "word::fetch_and(&self.word, !back, Tracked::assume_new());",
             ),
         ],
     ),

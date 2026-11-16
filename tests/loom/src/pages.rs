@@ -5,30 +5,32 @@
 //! (page 0 holds slots 0 and 1, page 1 slots 1 and 2), and a closed-page
 //! mask, `SlabPages::closed`. The main thread holds slot 0, so page 1 is
 //! closable. The steps are copies, calling `vspec/word.rs`'s wrappers,
-//! which run here as they are:
+//! which run here as they are, over the `cfg(loom)` stand-in of vstd's
+//! `PAtomicU64` (`SeqCst`):
 //!
 //! - the walk is `ClassState::close_page` (`src/class/pages.rs`): the mask
 //!   bit stored `Release` (`SlabPages::set_pages`), `fetch_or(0)` of the
-//!   word `AcqRel` (`AtomicBitmap::probe`), the page reopened (`Release`)
-//!   if a slot of it is set, else the discard, which writes the page's
-//!   slots here;
+//!   word (`AtomicBitmap::probe`), the page reopened (`Release`) if a slot
+//!   of it is set, else the discard, which writes the page's slots here;
 //! - the claim is the bitmap pass of `ClassState::finish`
 //!   (`src/class/mod.rs`): the mask loaded `Acquire` (`SlabPages::closed`),
-//!   the open slots wanted (`OpenView::word`, `claim_word`'s `allow`),
-//!   `fetch_or` of them `Acquire`, the mask loaded again, and the slots on
-//!   a page closed meanwhile given back (`AtomicBitmap::release`'s
-//!   `fetch_and`, `Release`); the claimer then writes the slots it kept.
+//!   the open slots wanted (`OpenView::word`, `claim_word`'s `allow`, after
+//!   its `load_word`), `fetch_or` of them, the mask loaded again, and the
+//!   slots on a page closed meanwhile given back (`AtomicBitmap::release`'s
+//!   `fetch_and`); the claimer then writes the slots it kept.
 //!
 //! Checked: each slot's data is a loom `UnsafeCell`, so a discard and a
 //! claimer's write of one slot that no happens-before orders is a reported
 //! race: no slot a claim keeps is discarded. The controls: a claim without
 //! its re-check, and a walk whose step 2 is a load rather than a
-//! read-modify-write, each race.
+//! read-modify-write (an `Acquire` load of the stand-in's loom atomic,
+//! `ato`), each race.
 //!
 //! Left out: the class lock, which serialises walks with each other and
 //! with reopens (one walk here); the reservation (`live`), which the walk
 //! respects under the lock; the closed-slot count; the ghost tokens.
 
+use crate::sync::patomic::PAtomicU64;
 use crate::vspec::word;
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
@@ -58,7 +60,7 @@ fn lowest(m: u64) -> u64 {
 }
 
 struct Slab {
-    word: AtomicU64,
+    word: PAtomicU64,
     closed: AtomicU16,
     stamp: AtomicU64,
     data: [UnsafeCell<u8>; NSLOTS],
@@ -93,9 +95,9 @@ fn walk(s: &Slab, mutant: Mutant) -> bool {
     s.closed.store(0b10, Ordering::Release);
     // Step 2: `AtomicBitmap::probe`.
     let prev = if mutant == Mutant::LoadProbe {
-        s.word.load(Ordering::Acquire)
+        s.word.ato.load(Ordering::Acquire)
     } else {
-        word::fetch_or(&s.word, 0, Ordering::AcqRel, Tracked::assume_new())
+        word::fetch_or(&s.word, 0, Tracked::assume_new())
     };
     if prev & PAGE_SLOTS[1] != 0 {
         s.stamp.store(1, Ordering::Relaxed);
@@ -110,12 +112,12 @@ fn walk(s: &Slab, mutant: Mutant) -> bool {
 /// The bitmap pass of `ClassState::finish` for one slot: the slots kept.
 fn claim(s: &Slab, mutant: Mutant) -> u64 {
     let allow = open_slots(s.closed.load(Ordering::Acquire));
-    let cur = s.word.load(Ordering::Relaxed);
+    let cur = word::load(&s.word, Tracked::assume_new());
     let want = lowest(!cur & SLOTS & allow);
     if want == 0 {
         return 0;
     }
-    let prev = word::fetch_or(&s.word, want, Ordering::Acquire, Tracked::assume_new());
+    let prev = word::fetch_or(&s.word, want, Tracked::assume_new());
     let won = want & !prev;
     if mutant == Mutant::NoRecheck {
         s.write(won, 1);
@@ -125,7 +127,7 @@ fn claim(s: &Slab, mutant: Mutant) -> u64 {
     let open = if closed == 0 { !0 } else { open_slots(closed) };
     let back = won & !open;
     if back != 0 {
-        word::fetch_and(&s.word, !back, Ordering::Release, Tracked::assume_new());
+        word::fetch_and(&s.word, !back, Tracked::assume_new());
     }
     let kept = won & !back;
     s.write(kept, 1);
@@ -135,7 +137,7 @@ fn claim(s: &Slab, mutant: Mutant) -> u64 {
 fn race(mutant: Mutant) {
     model(move || {
         let s = leak(Slab {
-            word: AtomicU64::new(!SLOTS | 0b001),
+            word: PAtomicU64::new(!SLOTS | 0b001).0,
             closed: AtomicU16::new(0),
             stamp: AtomicU64::new(0),
             data: [UnsafeCell::new(0), UnsafeCell::new(0), UnsafeCell::new(0)],

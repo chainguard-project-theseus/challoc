@@ -643,11 +643,11 @@ specifications of `core`.
 value (vstd), except where a permission or an invariant fixes it. The
 `free` path's dispatch byte (`vspec/flags.rs`, above) is a vstd
 `PAtomicU8` whose `load` and `fetch_or` are proved through its atomic
-invariant, under vstd's sequentially consistent model, not trusted. The
-three bitmap word writers
-(`vspec/word.rs`) are one atomic step each and ignore
-the ordering, as is the one word load that returns its value
-(`vspec::word::load`, theorem 7). Kani runs each remaining trusted
+invariant, under vstd's sequentially consistent model, not trusted. So
+are the class bitmap words (`vspec/word.rs`): vstd `PAtomicU64`s whose
+three writers and load (`vspec::word::load`, theorem 7) are verified over
+vstd's `SeqCst` operations, each inside the word's invariant. Kani runs
+each remaining trusted
 `vspec` atomic wrapper on a real atomic, one thread
 (`src/kani/atomic.rs`), and the loom models in `tests/loom` check
 interleavings of the protocols on copies of the code, so the ledger
@@ -1159,8 +1159,8 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
   block, and so challoc's heap pointer slot, inside that buffer.
 - Writes through `&` atomics (descriptors, owner words, `AtomicBitmap`
   words) are located, not tied to permissions. Bitmap words have
-  `WordPerm`s inside `bitmap::WordPred` (`bitmap.rs`), but the
-  theorem does not use them.
+  `WordPerm`s (vstd's `PermissionU64`) inside `bitmap::WordPred`
+  (`bitmap.rs`), but the theorem does not use them.
 - Arenas' slab-set tables (`SetTable::new`, `Set::in_table`,
   `class/sets.rs`): no placement stated.
 - A class bitmap whose bit count is not a multiple of 64: the last word
@@ -1220,8 +1220,8 @@ writer keeps:
 - Authority per class: `table::slot_loc` (`class/table.rs`),
   minted by `SlabTable::new`.
 - Free slots: tokens in each word's `AtomicInvariant`,
-  `bitmap::WordPred` (`bitmap.rs`): the word's `WordPerm` and the
-  tokens of exactly its clear bits.
+  `bitmap::WordPred` (`bitmap.rs`): the word's `WordPerm` (vstd's
+  `PermissionU64`) and the tokens of exactly its clear bits.
 - Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs`)
   move out the tokens of the bits their `fetch_or` won;
   `ClassState::claim_with` (`class/mod.rs`) returns them by index.
@@ -1285,18 +1285,19 @@ block; the free cores take the token C holds (common premises, "The
   permission each; once per class is checked (its token), that `base`
   is the class bitmap's first word is not. Kani partly checks it
   (`kani_proofs::zero::fresh_words_load_zero`: the words load zero); the
-  provenance clause, the one-shot token and the ghost location
-  identities are not checked.
-- `vspec::word::word_addr` (`vspec/word.rs`) is a word's identity;
-  `fetch_or`, `store`, `fetch_and` are single
-  atomic steps whose result is the permission's value (ordering
-  ignored; trusted, partly checked by Kani on one thread and by the
-  bitmap loom models on copies of the code,
-  `verus/ledger/src/vspec/word.rs.md`).
+  provenance clause, the one-shot token and the ghost identities
+  (`vspec::word::word_at`, vstd's `PermissionU64::id` and
+  `PAtomicU64::id`) are not checked; nor is that no other
+  `PermissionU64` for these words exists (vstd's `PAtomicU64::new`
+  mints only for atomics it made).
+- The words are vstd `PAtomicU64`s: `vspec::word`'s `fetch_or`,
+  `store`, `fetch_and` and `load` are verified over vstd's one
+  operation each (`SeqCst`), whose result is the permission's value
+  under vstd's sequentially consistent model (vstd's trust).
 - `SlabTable::bits_unchecked` is verified: the view's words are the
   class bitmap's through the permissions of `table::axiom_fresh_words`
-  (`class/table.rs`), whose `word_addr` ties them to the word
-  invariants.
+  (`class/table.rs`), whose identities (`word_at` of each word's
+  address) tie them to the word invariants.
 - The class and commit locks' `LockSpec` impls (`class/mod.rs`,
   `class/table.rs`; the commit lock's
   value also keeps the owner words' persistent witness markers of the
@@ -1647,9 +1648,10 @@ share no page with the guard pages of any live run, its own included.
 - The class lines' premises ("Class lines", common premises): the
   watermark copy is never ahead of the watermark, and the copy's
   pointer stays valid.
-- `vspec::word::load` (`external_body`, one atomic load of the word, as
-  the three writers are one atomic step each); its result is the
-  permission's value under sequential consistency.
+- `vspec::word::load` (verified over vstd's `PAtomicU64::load`, one
+  `SeqCst` atomic load of the word, as the three writers are one vstd
+  operation each); its result is the permission's value under vstd's
+  sequentially consistent model.
 - The class lock's invariant (`class::Inner`'s `LockSpec` impl) for
   `ready`, and `api::shared_deref`'s `Shared::wf`
   for the class lines and the table geometry the free paths read.
@@ -1836,8 +1838,9 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
   `load_owner` and the fast path's `owner_from`), the watermark's loads
   (`vspec::atom::load_usize` and `load_usize_seen`, atomic loads; the
   class line's watermark copy is read by the same `load_usize`, through
-  the verified `class::load_mirror`), `vspec::word::load` (an atomic
-  load), `layout::regions::entry_barrier` (an empty
+  the verified `class::load_mirror`), vstd's `PAtomicU64::load` (an
+  atomic load, under the verified `vspec::word::load`),
+  `layout::regions::entry_barrier` (an empty
   `asm!`, x86_64), `addr_to_ptr`, `api::shared_ptr`, `api::shared_base`
   and `class::table::word_index` (each an empty `asm!` on aarch64 and
   verified on x86_64, `shared_base` over `api::shared_storage_ptr`, a
@@ -7812,19 +7815,19 @@ assert(fork_sig_holds(sig, held, orig));
 // api/mod.rs (both verified): the slot is written and read
 // only under every allocator lock; the store, under the prepare's hold
 // (no permission to the slot, `no_slot`), is recorded in the
-// hold with the word it went to (`slot_addr`), and the release's hold
-// carries the permission to that word (`has_slot`: a
-// `vspec::word::WordPerm` for `slot_addr()` whose value is `saved`),
+// hold with the word it went to (`slot_id`), and the release's hold
+// carries the permission to that word (`has_slot`: a vstd
+// `PermissionU64` for `slot_id()` whose value is `saved`),
 // through which the load reads
 fn save_sigmask(mask, Ghost(s), Tracked(held): Tracked<&mut ForkHeld>, Tracked(state))
     requires fork_holds(s, *old(held), *state), old(held).no_slot(),
-    ensures *final(held) == old(held).with_saved(mask, final(held).slot_addr()),
+    ensures *final(held) == old(held).with_saved(mask, final(held).slot_id()),
 { let slot = fork_slot(); slot.store(mask, Ordering::Relaxed);
-  proof { held.saved = Some(mask); held.slot_addr = word_addr(slot); } }
+  proof { held.saved = Some(mask); held.slot_id = fork_slot_id(slot); } }
 fn saved_sigmask(w: &AtomicU64, Ghost(s), Tracked(held): Tracked<&ForkHeld>, Tracked(state)) -> (r: u64)
-    requires fork_holds(s, *held, *state), held.has_slot(), held.slot_addr() == word_addr(w),
+    requires fork_holds(s, *held, *state), held.has_slot(), held.slot_id() == fork_slot_id(w),
     ensures held.saved() == Some(r),
-{ word::load(w, Ordering::Relaxed, Tracked(held.slot.tracked_borrow())) }
+{ word::load_fork_slot(w, Tracked(held.slot.tracked_borrow())) }
 
 // fork_release (api/mod.rs): from the handoff, `saved` is the
 // hold's slot content and `fork_sig_holds(sig, held, saved)`;
@@ -7851,7 +7854,7 @@ state lock) holds; it stores `orig` and records it in the hold, and
 across the store. `saved_sigmask` is called before the release's first
 unlock (`fork_unlock(state)` consumes the state token, so a later call
 could not meet the requirement); it loads through the hold's slot
-permission, so `word::load`'s `r == perm.value()` and `has_slot` give
+permission, so `word::load_fork_slot`'s `r == perm.value()` and `has_slot` give
 `held.saved() == Some(r)`. The read mask has `SIGCANCEL` and
 `SIGSETXID` clear (`fork_sig_holds`, from the handoff), as
 `set_signal_mask` requires. Restoring with `set_signal_mask` leaves
@@ -7929,7 +7932,7 @@ handoff premises).
 - *The slot's identity* (part of `axiom_fork_resumed`). Verus cannot name
   a static in a specification, so `fork_slot` (verified, `&FORK_SIGMASK`)
   claims nothing. The prepare's hold records the word its store went to
-  (`slot_addr`; bookkeeping only, as nothing reads that hold after the
+  (`slot_id`, its `fork_slot_id`; bookkeeping only, as nothing reads that hold after the
   store), and the resumed hold's permission is for the word the axiom
   is passed, so that the release's word is the prepare's (both
   `&FORK_SIGMASK`; a static has one address) is the handoff premise.
@@ -7940,8 +7943,10 @@ handoff premises).
   `api::resume`, whose one function, the verified `resumed`
   (`fork_release` calls it), passes `fork_slot()`'s word and returns it
   with the hold.
-- *Its loads* (`vspec::word::load`, the existing permission-atomic
-  wrapper: one atomic load, whose result is the permission's value).
+- *Its loads* (`vspec::word::load_fork_slot`, trusted: one `Relaxed`
+  `core` load of the slot, whose result is the permission's value; the
+  permission is vstd's `PermissionU64`, but the slot stays a `core`
+  atomic, as the prepare's store goes through no permission).
 
 **Scope.** The fork handlers, for every completing pair (a prepare
 that returns, then the parent or the child handler on the same thread).

@@ -1,7 +1,7 @@
 //! The axioms that read bytes known to be zero as typed values:
 //! `vspec::zero::axiom_zero_word` (a `u64`) and `class::table`'s
 //! `axiom_zero_owner` (an `AtomicU16`), `axiom_zero_desc` (a `SlabDesc`,
-//! and a `SlabPages` after it) and `axiom_fresh_words` (`AtomicU64`s) (`verus/ledger/src/`), checked
+//! and a `SlabPages` after it) and `axiom_fresh_words` (`PAtomicU64`s) (`verus/ledger/src/`), checked
 //! against their contracts (`huge::table::axiom_zero_entry`, an `Entry`,
 //! is checked next to its private type, in `huge::table::kani_table`). Each turns a `ZeroRaw`, ghost bytes that read
 //! as zero, into the permissions `PointsToRaw::into_typed` would give,
@@ -20,9 +20,10 @@
 //! cast, which Kani cannot observe: the harnesses read through a pointer
 //! to their own buffer, so the ledger lists that clause as not checked.
 
-use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::slab::{SlabDesc, SlabPages, State};
+use crate::sync::patomic::PAtomicU64;
 use vstd::prelude::{Ghost, Tracked};
 
 /// The buffer's length: two descriptors, four words.
@@ -131,9 +132,10 @@ fn zero_desc_reads_fresh() {
 /// value permission holds 0 and `words_perms_ok` (each word's permission
 /// initialised at `base + 8 * j`): for every `n` up to four words and
 /// every 8-aligned `base` with the words in the buffer, the `8 * n` bytes
-/// from `base` zero, each word's pointer is what a read of an `AtomicU64`
-/// needs and the word loads 0. Not checked: `perm_at`'s provenance, the
-/// one-shot token `once`, and the location identities (`WordPerm::addr`, `word_addr`), ghost.
+/// from `base` zero, each word's pointer is what a read of a `PAtomicU64`
+/// needs and the word loads 0 (vstd's load, the permission erased). Not
+/// checked: `perm_at`'s provenance, the one-shot token `once`, and the
+/// identities (`PermissionU64::id`, `word_at`, `PAtomicU64::id`), ghost.
 #[kani::proof]
 fn fresh_words_load_zero() {
     for n in 0..=N / 8 {
@@ -141,10 +143,10 @@ fn fresh_words_load_zero() {
         while base + 8 * n <= N {
             let b = zeroed(base, 8 * n);
             for j in 0..n {
-                let p = at::<AtomicU64>(&b, base + 8 * j);
+                let p = at::<PAtomicU64>(&b, base + 8 * j);
                 assert!(kani::mem::can_dereference(p));
                 // SAFETY: `can_dereference`, checked above.
-                assert_eq!(unsafe { &*p }.load(Ordering::Relaxed), 0);
+                assert_eq!(unsafe { &*p }.load(Tracked::assume_new()), 0);
             }
             base += 8;
         }
