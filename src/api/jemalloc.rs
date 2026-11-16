@@ -1242,9 +1242,9 @@ mod exports {
     #[cfg(verus_keep_ghost)]
     use crate::vspec::cbuf::{CCall, CEntry};
     use core::ffi::{c_int, c_void};
+    use vstd::prelude::verus;
     #[cfg(verus_keep_ghost)]
     use vstd::prelude::*;
-    use vstd::prelude::{Tracked, verus};
 
     // `verified_export_pair!` expands inside its own `verus!`; this outer
     // block holds it (Verus passes the invocation through).

@@ -136,14 +136,15 @@ mod tests {
     /// which would let Verus prove anything after them, and no
     /// `#[verifier(..)]` attribute: the `#[verifier::name]` spelling is the
     /// one `verus/seams.sh` reads, and `name` is one of the attributes the
-    /// crate uses: seam kinds `seams.sh` lists (`external_body`),
-    /// proof settings (`rlimit`), and `external`, which keeps an item out of
-    /// verification. An attribute that trusts code goes in `seams.sh`
-    /// before this list.
+    /// crate uses: seam kinds `seams.sh` lists (`external_body`,
+    /// `assume_unsupported_attributes`), proof settings (`rlimit`), and
+    /// `external`, which keeps an item out of verification. An attribute
+    /// that trusts code goes in `seams.sh` before this list.
     #[test]
     fn no_assume_or_admit_in_verified_code() {
         const ATTRS: &[&str] = &[
             "accept_recursive_types",
+            "assume_unsupported_attributes",
             "atomic",
             "exec_allows_no_decreases_clause",
             "external",

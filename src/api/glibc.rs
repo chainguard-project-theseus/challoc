@@ -253,11 +253,13 @@ mod exports {
     verus! {
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn mallopt(param: c_int, value: c_int) -> c_int {
         super::mallopt(param, value)
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn mallinfo() -> super::MallInfo {
         proof {
             crate::sys::grant_syscalls();
@@ -268,6 +270,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn mallinfo2() -> super::MallInfo2 {
         proof {
             crate::sys::grant_syscalls();

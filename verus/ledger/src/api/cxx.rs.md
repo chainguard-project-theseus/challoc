@@ -16,6 +16,26 @@ file.
 | `call_handler_caught` | external_body | function pointer | Kani | trusted |
 | `oom` | no_decreases | termination | none (assumption) | trusted |
 | `axiom_c_call` | axiom | C-program contract | none (assumption) | trusted |
+| `new` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `new_array` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `new_nothrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `new_arr...othrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `new_aligned` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `new_arr...ligned` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `new_ali...othrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `new_arr...othrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_array` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_nothrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_...othrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_sized` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_..._sized` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_aligned` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_...ligned` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_...othrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_...othrow` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_...ligned` | unsupported-attribute | C ABI export | ABI tests | trusted |
+| `delete_...ligned` | unsupported-attribute | C ABI export | ABI tests | trusted |
 
 ## `get_new_handler_addr`
 
@@ -172,4 +192,304 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
     ensures
         c.fresh(e),
 ;
+```
+
+## `new`
+
+src/api/cxx.rs:715. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 2568954085, body none.
+
+```rust
+#[unsafe(export_name = "_Znwm")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new(size: usize) -> (r: *mut c_void)
+```
+
+## `new_array`
+
+src/api/cxx.rs:732. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 542033941, body none.
+
+```rust
+#[unsafe(export_name = "_Znam")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new_array(size: usize) -> (r: *mut c_void)
+```
+
+## `new_nothrow`
+
+src/api/cxx.rs:749. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1203773717, body none.
+
+```rust
+#[unsafe(export_name = "_ZnwmRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> (r: *mut c_void)
+```
+
+## `new_array_nothrow`
+
+src/api/cxx.rs:765. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 738862500, body none.
+
+```rust
+#[unsafe(export_name = "_ZnamRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> (r: *mut c_void)
+```
+
+## `new_aligned`
+
+src/api/cxx.rs:781. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 4077012661, body none.
+
+```rust
+#[unsafe(export_name = "_ZnwmSt11align_val_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new_aligned(size: usize, align: usize) -> (r: *mut c_void)
+```
+
+## `new_array_aligned`
+
+src/api/cxx.rs:799. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1420837942, body none.
+
+```rust
+#[unsafe(export_name = "_ZnamSt11align_val_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new_array_aligned(size: usize, align: usize) -> (r: *mut c_void)
+```
+
+## `new_aligned_nothrow`
+
+src/api/cxx.rs:817. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 4158904720, body none.
+
+```rust
+#[unsafe(export_name = "_ZnwmSt11align_val_tRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new_aligned_nothrow(
+```
+
+## `new_array_aligned_nothrow`
+
+src/api/cxx.rs:838. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1516681193, body none.
+
+```rust
+#[unsafe(export_name = "_ZnamSt11align_val_tRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn new_array_aligned_nothrow(
+```
+
+## `delete`
+
+src/api/cxx.rs:859. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1861708591, body none.
+
+```rust
+#[unsafe(export_name = "_ZdlPv")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete(p: *mut c_void)
+```
+
+## `delete_array`
+
+src/api/cxx.rs:875. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 2027078464, body none.
+
+```rust
+#[unsafe(export_name = "_ZdaPv")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_array(p: *mut c_void)
+```
+
+## `delete_nothrow`
+
+src/api/cxx.rs:891. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 787130473, body none.
+
+```rust
+#[unsafe(export_name = "_ZdlPvRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void)
+```
+
+## `delete_array_nothrow`
+
+src/api/cxx.rs:907. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 216420032, body none.
+
+```rust
+#[unsafe(export_name = "_ZdaPvRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void)
+```
+
+## `delete_sized`
+
+src/api/cxx.rs:923. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 2386586881, body none.
+
+```rust
+#[unsafe(export_name = "_ZdlPvm")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_sized(p: *mut c_void, size: usize)
+```
+
+## `delete_array_sized`
+
+src/api/cxx.rs:940. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1500281959, body none.
+
+```rust
+#[unsafe(export_name = "_ZdaPvm")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize)
+```
+
+## `delete_aligned`
+
+src/api/cxx.rs:957. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1379859810, body none.
+
+```rust
+#[unsafe(export_name = "_ZdlPvSt11align_val_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize)
+```
+
+## `delete_array_aligned`
+
+src/api/cxx.rs:973. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 3282353392, body none.
+
+```rust
+#[unsafe(export_name = "_ZdaPvSt11align_val_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize)
+```
+
+## `delete_aligned_nothrow`
+
+src/api/cxx.rs:989. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1564672025, body none.
+
+```rust
+#[unsafe(export_name = "_ZdlPvSt11align_val_tRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void)
+```
+
+## `delete_array_aligned_nothrow`
+
+src/api/cxx.rs:1005. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 587727411, body none.
+
+```rust
+#[unsafe(export_name = "_ZdaPvSt11align_val_tRKSt9nothrow_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_array_aligned_nothrow(
+```
+
+## `delete_sized_aligned`
+
+src/api/cxx.rs:1025. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 1266157280, body none.
+
+```rust
+#[unsafe(export_name = "_ZdlPvmSt11align_val_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize)
+```
+
+## `delete_array_sized_aligned`
+
+src/api/cxx.rs:1049. Kind: unsupported-attribute. Category: C ABI export.
+Tool: ABI tests. Status: trusted.
+
+> Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
+
+Hashes: contract 3031866987, body none.
+
+```rust
+#[unsafe(export_name = "_ZdaPvmSt11align_val_t")]
+#[verifier::assume_unsupported_attributes]
+pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize)
 ```

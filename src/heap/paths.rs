@@ -7,7 +7,7 @@ use vstd::map::Map;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
-use vstd::prelude::{Ghost, Tracked, int};
+use vstd::prelude::{Tracked, int};
 use vstd::raw_ptr::ptr_mut_ref;
 use vstd::resource::set::GhostSingleton;
 

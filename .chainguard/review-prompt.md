@@ -129,8 +129,9 @@ get wrong.
 - The kit, of which this port carries no copy: it takes the kit as
   the theseus-proved-port package, whose installed `KIT` names the
   release. Its pin is the `theseus-proved-port~X.Y.Z` package version in
-  every `.chainguard/ci` file that installs it and in
-  `.chainguard/ci/env/dev.yaml`, `PROVED_PORT_VERSION` in the Makefile,
+  every `.chainguard/ci` file that installs it and in the environment
+  the development sessions install (`.chainguard/develop.yaml`, or the
+  file its `from:` names), `PROVED_PORT_VERSION` in the Makefile,
   and the `vX.Y.Z` ref of the proved-port marketplace in
   `.claude/settings.json`; they move together, to the same release, in
   one pull request. A change that moves some of them but not all is

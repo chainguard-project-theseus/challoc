@@ -2473,9 +2473,11 @@ alone and keeps no duplicates): entry `k - 1` ends as `s[c[k - 1]]`, so
 the first differing draw puts different entries there.
 
 **Premises beyond the common ones.** None. The proof uses only the
-`assume_specification` of `<[T]>::swap` (`vspec/slice.rs`;
-discharged by Kani, ledger `verus/ledger/src/vspec/slice.rs.md`), vstd's
-`Rev` and range iterator specs, vstd's multiset lemmas, and vstd's
+vstd's `assume_specification` of `<[T]>::swap` (trusted as vstd's,
+which the ledger does not list; the Kani harness
+`kani_proofs::slice::slice_swap` checks it), vstd's `Rev` and range
+iterator specs (`Range::next`'s rests on vstd's
+`obeys_range_step_spec` axioms, which vstd admits), vstd's multiset lemmas, and vstd's
 `Option::as_mut` specification (the reborrow `claim_with` and `finish`
 lend the state through; it carries the state's final value back to the
 lender).

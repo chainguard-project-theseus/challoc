@@ -67,6 +67,7 @@ macro_rules! verified_export_pair {
         $(
             $(#[$m])*
             #[unsafe(no_mangle)]
+            #[verifier::assume_unsupported_attributes]
             pub extern "C" fn $name($($arg: $ty),*) $(-> ($r: $ret))?
                 $(ensures $($ens)*)?
             {
@@ -78,6 +79,7 @@ macro_rules! verified_export_pair {
             }
             $(#[$m])*
             #[unsafe(no_mangle)]
+            #[verifier::assume_unsupported_attributes]
             pub extern "C" fn $je($($arg: $ty),*) $(-> ($r: $ret))?
                 $(ensures $($ens)*)?
             {
@@ -152,6 +154,7 @@ verus! {
 /// `mallctl("version")` stays jemalloc-shaped (`5.3.0-0-gchalloc`) for
 /// parsers of that string.
 #[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
 pub extern "C" fn challoc_version() -> *const core::ffi::c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const core::ffi::c_char
 }
@@ -1271,6 +1274,7 @@ pub fn feature_line() -> &'static str
 /// `api::restated::read_only_restatements_match_their_bodies` checks
 /// that the two make the same calls.
 #[unsafe(no_mangle)]
+#[verifier::assume_unsupported_attributes]
 pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     proof {
         crate::sys::grant_syscalls();

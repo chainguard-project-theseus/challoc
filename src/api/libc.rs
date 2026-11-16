@@ -3185,6 +3185,7 @@ mod exports {
 
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.malloc")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn malloc(size: usize) -> (r: *mut c_void)
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
@@ -3204,6 +3205,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn je_malloc(size: usize) -> (r: *mut c_void)
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
@@ -3224,6 +3226,7 @@ mod exports {
 
     #[unsafe(no_mangle)]
     #[unsafe(link_section = ".text.challoc.free")]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn free(p: *mut c_void)
         ensures
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
@@ -3238,6 +3241,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn je_free(p: *mut c_void)
         ensures
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
@@ -3458,6 +3462,7 @@ mod exports {
     // The glibc-only names, which jemalloc does not prefix.
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn reallocarray(p: *mut c_void, n: usize, m: usize) -> (r: *mut c_void)
         ensures
             n * m > usize::MAX ==> r@.addr == 0,
@@ -3482,6 +3487,7 @@ mod exports {
     /// C23 `free_sized`: the size is checked against the class and stands
     /// in for the slot bit test (design 6.3).
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn free_sized(p: *mut c_void, size: usize)
         ensures
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
@@ -3498,6 +3504,7 @@ mod exports {
 
     /// C23 `free_aligned_sized`: as `free_sized`, with the alignment.
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn free_aligned_sized(p: *mut c_void, align: usize, size: usize)
         ensures
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
@@ -3513,6 +3520,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn malloc_trim(pad: usize) -> (r: c_int)
         ensures
             r == 0 || r == 1,
@@ -3530,6 +3538,7 @@ mod exports {
     // names, no `je_` twins, declared in <challoc/challoc.h>.
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> (r: *mut c_void)
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
@@ -3552,6 +3561,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn challoc_calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut c_void)
         ensures
             n * m > usize::MAX ==> r@.addr == 0,
@@ -3575,6 +3585,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn challoc_realloc_usable(p: *mut c_void, size: usize, usable: *mut usize) -> (r: *mut c_void)
         ensures
             p@.addr != 0 && size == 0 ==> r@.addr == 0,
@@ -3599,6 +3610,7 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
     pub extern "C" fn challoc_free_usable(p: *mut c_void) -> (r: usize)
         ensures
             p@.addr == 0 ==> r == 0,

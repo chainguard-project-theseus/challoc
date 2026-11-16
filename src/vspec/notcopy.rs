@@ -1,7 +1,7 @@
 //! Compile-time checks that every `tracked` struct or enum under `src`
 //! is neither `Copy` nor `Clone`: the ghost tokens, and the ghost records
 //! and bundles of permissions verified code passes by value. Verus
-//! (0.2026.10.18) verifies a `tracked` struct that derives both
+//! (0.2026.11.02) verifies a `tracked` struct that derives both
 //! (`verus/SEAMS.md`, "Status"), and verified code can copy
 //! a value of a `Copy` type; ruling out `Clone` too, which `Copy`
 //! requires, also rules out an explicit duplicate. Without either, code

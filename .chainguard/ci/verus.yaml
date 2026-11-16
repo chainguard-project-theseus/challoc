@@ -1,11 +1,15 @@
 # Verus and Kani: every proof holds, every Kani harness passes, and the
 # checked shares of the shipped crates stay at or above verus/FLOOR. The
-# verus checks are `make verus` (verus/README.md): `cargo verus focus`
-# over challoc (the Makefile's VERUS_MODE makes it `cargo verus verify`,
-# cargo's default package), then the kit counter (verus-count, from the
-# theseus-proved-port package) with --floor, which compares verus/FLOOR
-# with the base revision's copy, so that lowering a figure needs a new
-# `lowered` line, and holds each function's rlimit use to verus/RLIMIT.
+# verus checks first run `make verus-headers`, which holds the port's
+# copies of the kit's Verus files (this one among them) to the installed
+# templates' headers, so a header that drifts fails here rather than at
+# the next kit bump. Then they run `make verus` (verus/README.md):
+# `cargo verus focus` over challoc (the Makefile's VERUS_MODE makes it
+# `cargo verus verify` of cargo's default package), then the kit counter
+# (verus-count, from the theseus-proved-port package) with --floor, which
+# compares verus/FLOOR with the base revision's copy, so that lowering a
+# figure needs a new `lowered` line, and holds each function's rlimit use
+# to verus/RLIMIT.
 # When a figure rises, and what a `lowered` line needs, is verus/FLOOR's
 # header's rule. The kani checks are `make kani`: the kit's kani.sh,
 # from the same package, over every harness of the crates KANI_CRATES
@@ -32,7 +36,7 @@
 # does, so one is the default. A port whose proved code differs by
 # target (`cfg(target_arch)`, pointer width, page size) runs the proofs
 # on both, as challoc does: uncomment verus-amd64 below. A port whose
-# proofs outgrow the timeout moves up a class (pcre3: xlarge-arm64) and
+# proofs outgrow the timeout moves up a class (to xlarge-arm64, say) and
 # says why here.
 #
 # Every check here is in the port from its first commit: Checks refuses
@@ -44,17 +48,18 @@
 # none and fails with any; the first harness deletes that line. A port
 # that will never discharge a seam with Kani leaves Kani out from its
 # first commit: no kani or kani-main, no `kani~0.68.0` in the
-# packages here or in .chainguard/ci/env/dev.yaml, and no Kani in the
-# toolchain entry of .chainguard/deps.yaml.
+# packages here or in the development sessions' environment, and no Kani
+# in the toolchain entry of .chainguard/deps.yaml.
 #
 # verus is pinned to the release the workspace's vstd pin names
-# (Cargo.toml; bump both together, and .chainguard/ci/env/dev.yaml's),
-# and it brings the rust stream and z3 that release runs with. kani is
-# pinned to the release the Kani records under verus/seams/ name, built
-# against the same rust stream. theseus-proved-port is pinned to the kit
-# release the Makefile's PROVED_PORT_VERSION names (bump both together,
-# and .chainguard/ci/env/dev.yaml's). git reads the base revision's
-# verus/FLOOR.
+# (Cargo.toml; bump both together, and the development sessions'
+# environment's), and it brings the rust stream and z3 that release runs
+# with. kani is pinned to the release the Kani records under verus/seams/
+# name, built against the same rust stream. theseus-proved-port is pinned
+# to the kit release the Makefile's PROVED_PORT_VERSION names (bump both
+# together, and the development sessions' environment's). The development
+# sessions' environment is .chainguard/develop.yaml, or the file its
+# `from:` names. git reads the base revision's verus/FLOOR.
 # VERUS_THREADS gives Verus every vCPU of the guest (CG_CPUS), one z3
 # per module.
 
@@ -79,12 +84,13 @@
 version: 1
 
 environment:
-  packages: [verus~0.2026.10.18, theseus-proved-port~0.3.0, build-base, busybox, make, git]
+  packages: [verus~0.2026.11.02, theseus-proved-port~0.4.0, build-base, busybox, make, git]
 
 checks:
   verus:
     description: >-
-      make verus: the seam ledger check (verus/ledger/), cargo verus verify over challoc on x86_64, and the
+      make verus-headers, then make verus: the seam ledger check
+      (verus/ledger/), cargo verus verify over challoc on x86_64, and the
       kit counter's coverage floor (verus/FLOOR) against the pull
       request's base; then the proofs of the quantum-8 build; then the
       not-Copy control (verus/notcopy-control.sh) under the package's
@@ -95,6 +101,9 @@ checks:
     network: &crates
       egress: [index.crates.io, static.crates.io]
     steps:
+      - &headers-step
+        name: Verus file headers
+        cmd: [make, verus-headers]
       - &verus-step
         name: seam ledger, proofs and coverage floor
         cmd:
@@ -120,8 +129,8 @@ checks:
   # The same on aarch64: the package's arm64 build, run natively.
   verus-arm64:
     description: >-
-      make verus on aarch64, natively: the seam ledger check, cargo verus
-      verify over the aarch64 build of challoc,
+      make verus-headers, then make verus on aarch64, natively: the seam
+      ledger check, cargo verus verify over the aarch64 build of challoc,
       and the coverage floor against the pull request's base; then the
       proofs of the quantum-8 build.
     trigger: [presubmit]
@@ -129,6 +138,7 @@ checks:
     timeout: 45m
     network: *crates
     steps:
+      - *headers-step
       - *verus-step
       - *verus-q8
 
@@ -138,14 +148,15 @@ checks:
   # compare verus/FLOOR with.
   verus-main:
     description: >-
-      make verus on main: the seam ledger check, the proofs and the
-      coverage floor, against main before the push this run covers; then
-      the proofs of the quantum-8 build, so two pull requests that each
-      pass alone cannot break them on main unseen.
+      make verus-headers, then make verus on main: the seam ledger check,
+      the proofs and the coverage floor, against main before the push
+      this run covers; then the proofs of the quantum-8 build, so two pull
+      requests that each pass alone cannot break them on main unseen.
     trigger: [postsubmit]
     resources: large-amd64
     timeout: 45m
     network: *crates
     steps:
+      - *headers-step
       - *verus-step
       - *verus-q8

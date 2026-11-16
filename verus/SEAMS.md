@@ -21,7 +21,13 @@ tool (or a stated assumption) plugs in:
 - a `Tracked::assume_new()` or `Ghost::assume_new()` inside `verus!`,
   outside tests and outside `external_body` bodies (an entry notes the
   ones inside; code outside `verus!` is not verified, so its own are
-  not seams).
+  not seams);
+- the `no_mangle`, `export_name` and `link_section` attributes of an
+  item marked `#[verifier::assume_unsupported_attributes]`, which Verus
+  does not check (the item stays verified; kind `unsupported-attribute`,
+  status always `trusted`). An export that `verified_export_pair!`
+  writes has its entry at the invocation's line, where the counter
+  lists it.
 
 ## The ledger
 
@@ -45,18 +51,34 @@ space (a signature reflowed one parameter per line) changes them, and a
 `/* */` comment counts as code. A method's hashes do not cover its
 `impl` line (the impl's generics and `where` bounds).
 
+### vstd's contracts
+
+The ledger lists only what `src/` states. A `core` contract that vstd
+states itself is trusted as vstd's, has no ledger entry, and Verus
+rejects a second one in `src/`. Those the proofs rest on that a Kani
+harness checks (`src/kani/slice.rs`, against vstd's contract, not
+counted as a discharge): `<[T]>::reverse` (`slice_reverse`),
+`<[T]>::swap` (`slice_swap`), `<[T]>::get_unchecked::<I>`
+(`slice_get_unchecked`) and `<[T]>::get_unchecked_mut::<I>`
+(`slice_get_unchecked_mut`). A `for` loop over a range `a..b` rests on
+vstd's `Range::next`, whose contract holds under
+`obeys_range_step_spec`, which vstd gives each primitive integer type by
+an admitted broadcast axiom (`std_specs/range.rs`).
+
 ## Categories and tools
 
 The categories are inline asm, FFI/syscall, function pointer,
 UnsafeCell/volatile/transmute, raw pointer (internal), raw pointer from C
 caller, panic/abort, atomics primitive, platform/kernel fact, C-program
-contract and termination, plus two this ledger adds: core library (a
+contract and termination, plus three this ledger adds: core library (a
 specification of a `core` function or type, checkable against `core`
-itself) and allocator invariant (a ghost fact about challoc's own
-protocol whose producer is unverified code). The tools are Islaris/Isla,
-RefinedRust, Kani, loom/GenMC, Verus (the fact is provable in Verus
-itself, once its producer states it or a lemma derives it) and none
-(assumption).
+itself), allocator invariant (a ghost fact about challoc's own
+protocol whose producer is unverified code) and C ABI export (an
+`unsupported-attribute` seam: the symbol or section a C caller links
+against). The tools are Islaris/Isla, RefinedRust, Kani, loom/GenMC,
+Verus (the fact is provable in Verus itself, once its producer states it
+or a lemma derives it), ABI tests (the C and C++ programs under
+`tests/c`, which call the exported symbols) and none (assumption).
 
 `seams.sh` picks a category from the kind, the path and the body. The
 seams of `src/a/b.rs` may have an overrides file,
@@ -340,7 +362,7 @@ A ghost token, a `tracked` struct or enum, is linear because its type
 is not `Copy`: verified code can copy a value of a `Copy` type. The
 check below also rules out `Clone`, which `Copy` requires, so no
 explicit duplicate exists either. Verus does not check this itself:
-Verus 0.2026.10.18 verifies the crate with `#[derive(Clone, Copy)]` on
+Verus 0.2026.11.02 verifies the crate with `#[derive(Clone, Copy)]` on
 the tracked `Unbacked`.
 `src/vspec/notcopy.rs` checks it at compile time for every `tracked`
 struct or enum under `src/`, seam or not, one assertion per type,

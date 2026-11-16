@@ -30,6 +30,15 @@
 #                        external_body bodies (those inside are noted on
 #                        their function's entry; code outside `verus!` is
 #                        not verified, so its own are no seam)
+#   unsupported-attribute  `#[verifier::assume_unsupported_attributes]` on
+#                        a fn, const or static (every attribute Verus
+#                        refuses on it, such as `no_mangle`,
+#                        `export_name` or `link_section`, taken on
+#                        trust; the item itself stays verified), and
+#                        each export a `verified_export_pair!` invocation
+#                        writes, at the invocation's line; the contract
+#                        is every outer attribute line of the item (for
+#                        a pair export, the invocation's and the macro's)
 # and prints, per item, its place, the contract Verus assumes (the
 # signature with its requires/ensures, verbatim), a category and a
 # proposed discharging tool. Categories and tools come from heuristics on
@@ -268,10 +277,28 @@ function finish_doc(    s) {
     s = doc; sub(/\. .*$/, ".", s); return s
 }
 
+# An entry for an item marked `#[verifier::assume_unsupported_attributes]`,
+# at line `at`. Verus then takes on trust every attribute it would refuse
+# on the item (`no_mangle`, `export_name`, `link_section` and the rest),
+# so the contract, which the entry's hash covers, is every outer
+# attribute line of the item and the item's line: an attribute added to
+# the item changes the ledger.
+function unsupported(name, at, contract,    e) {
+    e = begin("unsupported-attribute", name)
+    eline[e] = at; econtract[e] = contract; ehc[e] = contract
+    edoc[e] = "Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol."
+    return e
+}
+
+# The `@@`-joined attribute lines pair_attrs gives, one per line.
+function pairattrs(s) {
+    gsub(/@@/, "\n", s); return s
+}
+
 newfile {
     newfile = 0
-    depth = 0; nimpl = 0; skip = 0; cap = 0; attrs = ""; hattrs = ""; doc = ""
-    pendtest = 0; lastfn = ""; pendimpl = ""; inverus = 0
+    depth = 0; nimpl = 0; skip = 0; cap = 0; attrs = ""; hattrs = ""; doc = ""; uattrs = ""; aopen = 0
+    pendtest = 0; lastfn = ""; pendimpl = ""; inverus = 0; pairln = 0
 }
 
 {
@@ -305,10 +332,17 @@ newfile {
         next
     }
     if (t == "") next
-    if (t ~ /^#!?\[/) {
-        attrs = attrs " " t; hattrs = hattrs " " strip(raw, c)
-        if (t ~ /^#\[cfg\((all\()?test[,)]/) pendtest = 1
-        if (t ~ /^#\[cfg\(test\)\]/) pendtest = 1
+    # An attribute, read through its closing bracket when it spans lines.
+    if (aopen > 0 || t ~ /^#!?\[/) {
+        if (aopen > 0) { at = at " " t; ah = ah " " trim(strip(raw, c)); au = au " " trim(strip(raw, c)) }
+        else { at = t; ah = strip(raw, c); au = trim(strip(raw, c)) }
+        aopen += count(c, "[") - count(c, "]")
+        if (aopen > 0) next
+        aopen = 0
+        attrs = attrs " " at; hattrs = hattrs " " ah
+        if (at ~ /^#\[/) uattrs = uattrs au "\n"
+        if (at ~ /^#\[cfg\((all\()?test[,)]/) pendtest = 1
+        if (at ~ /^#\[cfg\(test\)\]/) pendtest = 1
         next
     }
 
@@ -316,7 +350,7 @@ newfile {
     # A test-only item is skipped from its first line through its body,
     # which may open lines below a multi-line fn signature (pendtest 2).
     if (pendtest) {
-        attrs = ""; hattrs = ""; doc = ""
+        attrs = ""; hattrs = ""; doc = ""; uattrs = ""
         if (opens > closes) { pendtest = 0; skip = 1; skipd = depth; depth += opens - closes }
         else if (pendtest == 1 && t ~ /(^|[ \t])fn [A-Za-z_]/ && t !~ /;$/) pendtest = 2
         else if (pendtest == 1 || t ~ /;$/ || closes > opens) pendtest = 0
@@ -359,6 +393,23 @@ newfile {
     }
     if (isfn) lastfn = qual(fname)
 
+    # Unchecked symbol and section attributes: an entry beside any other
+    # seam of the item. A `verified_export_pair!` invocation writes two
+    # exports per `fn a / b(..)` line, each `#[unsafe(no_mangle)]`.
+    if (attrs ~ /verifier(::|\()assume_unsupported_attributes/) {
+        if (isfn) unsupported(qual(fname), LN, uattrs trim(strip(raw, c)))
+        else if (match(t, /(const|static)( mut)? [A-Z_a-z][A-Za-z0-9_]*/)) {
+            s = substr(t, RSTART, RLENGTH); sub(/^.* /, "", s)
+            unsupported(qual(s), LN, uattrs trim(strip(raw, c)))
+        }
+    }
+    if (pairln && match(t, /^fn [A-Za-z_][A-Za-z0-9_]* *\/ *[A-Za-z_][A-Za-z0-9_]*/)) {
+        s = substr(t, 4, RLENGTH - 3); gsub(/ /, "", s); split(s, pr, "/")
+        if (pairname == "" || pairje == "") { print "seams: " FILE ":" LN ": no verified_export_pair! attributes in src/api/mod.rs" > "/dev/stderr"; bad = 1 }
+        unsupported(pr[1], pairln, uattrs pairattrs(pairname) "pub extern \"C\" fn " pr[1] " (verified_export_pair!)")
+        unsupported(pr[2], pairln, uattrs pairattrs(pairje) "pub extern \"C\" fn " pr[2] " (verified_export_pair!)")
+    }
+
     if (kind == "" && inverus && c ~ /(Tracked|Ghost)::assume_new\(\)/) {
         e = begin(c ~ /Tracked::assume_new/ ? "assume_new" : "ghost_assume_new", lastfn)
         econtract[e] = rawt; ehc[e] = strip(raw, c)
@@ -369,7 +420,7 @@ newfile {
         cap = !feed(raw, c)
         if (kind == "spec_impl" && name ~ /^(Display|Debug|LowerHex|UpperHex|Octal|Binary|LowerExp|UpperExp|Pointer)SpecImpl/) efmt[cur] = trait_key(t)
     }
-    attrs = ""; hattrs = ""; doc = ""
+    attrs = ""; hattrs = ""; doc = ""; uattrs = ""
 
     if (t ~ /^(pub(\([a-z]+\))? )?(unsafe )?impl[< ]/) {
         if (inverus && t ~ / for / && t !~ /SpecImpl/) verified_impl[FILE SUBSEP trait_key(t)] = 1
@@ -379,9 +430,11 @@ newfile {
         nimpl++; implname[nimpl] = pendimpl; impld[nimpl] = depth; pendimpl = ""
     }
     if (t ~ /^verus! *\{/) { inverus = 1; verusd = depth }
+    if (t ~ /^verified_export_pair! *\{/) { pairln = LN; paird = depth }
     depth += opens - closes
     while (nimpl > 0 && depth <= impld[nimpl]) nimpl--
     if (inverus && depth <= verusd) inverus = 0
+    if (pairln && depth <= paird) pairln = 0
 }
 EOF
 )
@@ -446,6 +499,7 @@ function tool_of(cat) {
     if (cat == "termination") return "loom/GenMC"
     if (cat == "core library") return "Kani"
     if (cat == "allocator invariant") return "RefinedRust"
+    if (cat == "C ABI export") return "ABI tests"
     return "?"
 }
 
@@ -453,6 +507,7 @@ function tool_of(cat) {
 function guess(e,    k, b, nm, f) {
     k = ekind[e]; b = ebody[e]; nm = ename[e]; f = efile[e]
     if (k == "no_decreases") return "termination"
+    if (k == "unsupported-attribute") return "C ABI export"
     if (b ~ /asm!/) return "inline asm"
     if (k == "assume_spec" || k == "ext_type_spec" || k == "ext_trait_spec" || k == "spec_impl") {
         if (nm ~ /Atomic/) return "atomics primitive"
@@ -501,9 +556,9 @@ END {
         ehc[m] = ehc[e]; ehb[m] = ehb[e]
     }
     n = m
-    ncat = split("inline asm|FFI/syscall|function pointer|UnsafeCell/volatile/transmute|raw pointer (internal)|raw pointer from C caller|panic/abort|atomics primitive|platform/kernel fact|C-program contract|termination|core library|allocator invariant", cats, "|")
-    ntool = split("Islaris/Isla|RefinedRust|Kani|loom/GenMC|Verus|none (assumption)", tools, "|")
-    nkind = split("external_body|external_body proof|external_body type|external_body const|axiom|assume_spec|ext_type_spec|ext_trait_spec|spec_impl|no_decreases|assume_new|ghost_assume_new", kinds, "|")
+    ncat = split("inline asm|FFI/syscall|function pointer|UnsafeCell/volatile/transmute|raw pointer (internal)|raw pointer from C caller|panic/abort|atomics primitive|platform/kernel fact|C-program contract|termination|core library|allocator invariant|C ABI export", cats, "|")
+    ntool = split("Islaris/Isla|RefinedRust|Kani|loom/GenMC|Verus|ABI tests|none (assumption)", tools, "|")
+    nkind = split("external_body|external_body proof|external_body type|external_body const|axiom|assume_spec|ext_type_spec|ext_trait_spec|spec_impl|no_decreases|assume_new|ghost_assume_new|unsupported-attribute", kinds, "|")
     for (i = 1; i <= ncat; i++) catok[cats[i]] = 1
     for (i = 1; i <= ntool; i++) toolok[tools[i]] = 1
     for (e = 1; e <= n; e++) {
@@ -719,13 +774,40 @@ stream() {
   done
 }
 
+# pair_attrs FN: the attribute lines `verified_export_pair!` (src/api/mod.rs)
+# writes above its `fn $FN(` export, `$(#[$m])*` included, joined by `@@`,
+# for the contract of each pair entry; nothing when the macro is missing.
+# An attribute that spans lines is read through its closing bracket.
+pair_attrs() {
+  [ -f src/api/mod.rs ] || return 0
+  awk -v fn="fn \$$1(" '
+    function brackets(s) { return gsub(/\[/, "[", s) - gsub(/\]/, "]", s) }
+    /^macro_rules! verified_export_pair/ { on = 1; next }
+    !on { next }
+    open > 0 {
+      s = $0; sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); cur = cur " " s
+      open += brackets(s)
+      if (open <= 0) { a = a cur "@@"; open = 0 }
+      next
+    }
+    index($0, fn) { printf "%s", a; exit }
+    /^[ \t]*(\$\()?#\[/ {
+      s = $0; sub(/^[ \t]+/, "", s)
+      open = brackets(s)
+      if (open > 0) { sub(/[ \t]+$/, "", s); cur = s; next }
+      a = a s "@@"; open = 0; next
+    }
+    /^[ \t]*pub extern "C" fn / { a = "" }' src/api/mod.rs
+}
+
 # scan MODE DIR [HASHDIR]: scan the marked stream on stdin; the totals on
 # stdout (summary), or the ledger files under DIR, with the seams' hashes
 # (computed in HASHDIR, emptied first) and HASHDIR/drift, the overrides
 # lines whose hashes disagree with the items.
 scan() {
   if [ -n "${3:-}" ]; then rm -rf "$3" && mkdir -p "$3"; fi
-  awk -v mode="$1" -v outdir="$2" -v hashdir="${3:-}" -v drift="${3:+$3/drift}" "$marker
+  awk -v mode="$1" -v outdir="$2" -v hashdir="${3:-}" -v drift="${3:+$3/drift}" \
+    -v pairname="$(pair_attrs name)" -v pairje="$(pair_attrs je)" "$marker
 $typeimpls
 $overrides
 $prog
