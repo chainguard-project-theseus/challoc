@@ -90,7 +90,7 @@ environment:
 checks:
   verus:
     description: >-
-      make verus: the seam ledger check (verus/ledger/), cargo verus verify over challoc on x86_64, and the
+      make verus-headers, then make verus: the seam ledger check (verus/ledger/), cargo verus verify over challoc on x86_64, and the
       kit counter's coverage floor (verus/FLOOR) against the pull
       request's base; then the proofs of the quantum-8 build; then the
       not-Copy control (verus/notcopy-control.sh) under the package's
@@ -101,6 +101,12 @@ checks:
     network: &crates
       egress: [index.crates.io, static.crates.io]
     steps:
+      - &verus-headers-step
+        name: Verus file headers
+        # The kit's verus-headers (headers.sh): the kit's Verus files
+        # against the installed templates' headers. The kit's `make
+        # verus` does not run it, so each verus check runs it first.
+        cmd: [make, verus-headers]
       - &verus-step
         name: seam ledger, proofs and coverage floor
         cmd:
@@ -126,7 +132,7 @@ checks:
   # The same on aarch64: the package's arm64 build, run natively.
   verus-arm64:
     description: >-
-      make verus on aarch64, natively: the seam ledger check, cargo verus
+      make verus-headers, then make verus on aarch64, natively: the seam ledger check, cargo verus
       verify over the aarch64 build of challoc,
       and the coverage floor against the pull request's base; then the
       proofs of the quantum-8 build.
@@ -135,6 +141,7 @@ checks:
     timeout: 45m
     network: *crates
     steps:
+      - *verus-headers-step
       - *verus-step
       - *verus-q8
 
@@ -144,7 +151,7 @@ checks:
   # compare verus/FLOOR with.
   verus-main:
     description: >-
-      make verus on main: the seam ledger check, the proofs and the
+      make verus-headers, then make verus on main: the seam ledger check, the proofs and the
       coverage floor, against main before the push this run covers; then
       the proofs of the quantum-8 build, so two pull requests that each
       pass alone cannot break them on main unseen.
@@ -153,5 +160,6 @@ checks:
     timeout: 45m
     network: *crates
     steps:
+      - *verus-headers-step
       - *verus-step
       - *verus-q8
