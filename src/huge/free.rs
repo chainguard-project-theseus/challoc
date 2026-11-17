@@ -950,6 +950,20 @@ proof fn lemma_free_keyed(g0: Inner, t: Table, d: *mut HugeDesc)
     }
 }
 
+/// An `Active` descriptor is not on the `Empty` list.
+proof fn lemma_active_unlisted(g0: Inner, d: *mut HugeDesc)
+    requires
+        elist_ok(g0.empty_head, g0.empty_tail, g0.elist@, g0.descs@),
+        g0.descs@.contains_key(d),
+        g0.descs@[d].value().state == RunState::Active as u8,
+    ensures
+        !g0.elist@.contains(d),
+{
+    if g0.elist@.contains(d) {
+        assert(enode(g0.elist@, g0.descs@, g0.elist@.index_of(d)));
+    }
+}
+
 /// What [`Huge::free_run`] reads from `wf` before it changes anything.
 proof fn lemma_free_start(g0: Inner, page: usize)
     requires
@@ -971,6 +985,9 @@ proof fn lemma_free_start(g0: Inner, page: usize)
         forall|x: *mut HugeDesc| #[trigger] g0.all@.contains(x) <==> g0.descs@.contains_key(x),
         g0.free.map.wf(),
         g0.free.map.spec_nbits() == g0.np@,
+        g0.free.map.in_meta(),
+        g0.free.own_claimed(),
+        g0.free.l1_words <= 0x1_0000_0000,
 {
     let d0 = g0.descs@;
     assert forall|i: int| 0 <= i < g0.all@.len() implies (#[trigger] d0[g0.all@[i]].value()).pages >= 1 && d0[g0.all@[i]].value().state
@@ -1256,10 +1273,14 @@ impl Huge {
     /// neighbours and gains the run's descriptor when it survives as an
     /// `Empty` extent.
     ///
-    /// `wf` is hidden here (the lemmas read it). The body checks in its own
-    /// solver instance, with the free-bitmap proof at the
-    /// lock release; the rlimit leaves headroom for the cost moving with
-    /// unrelated items elsewhere in the crate.
+    /// `wf` is hidden here (the lemmas read it), and so are
+    /// `Seq::no_duplicates` and `Seq::index_of`: the list lemmas
+    /// (`lemma_retired`, `lemma_free_end`, `lemma_active_unlisted`) read
+    /// them, and unfolded in this body their quantifiers fire on every
+    /// pair of list indices in sight. The body checks in its own solver
+    /// instance, with the free-bitmap proof at the lock release; the
+    /// rlimit leaves headroom for the cost moving with unrelated items
+    /// elsewhere in the crate.
     #[verifier::rlimit(120)]
     #[verifier::spinoff_prover]
     #[verifier::loop_isolation(false)]
@@ -1281,6 +1302,8 @@ impl Huge {
             r.pages == tok.npages(),
     {
         hide(Inner::wf);
+        hide(Seq::no_duplicates);
+        hide(Seq::index_of);
         broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
 
         proof {
@@ -1652,11 +1675,8 @@ impl Huge {
                 assert(desc_ok(m.vs, g0.next_page));
             }
             assert(lo < hi <= g0.next_page);
-            assert(!gr.elist@.contains(d)) by {
-                if g0.elist@.contains(d) {
-                    assert(enode(g0.elist@, d0, g0.elist@.index_of(d)));
-                }
-            }
+            lemma_active_unlisted(g0, d);
+            assert(!gr.elist@.contains(d));
         }
         // `survivor` is live: `d` (still the run's descriptor) or an
         // `Empty` neighbour that keeps its age and list position.
@@ -1731,9 +1751,6 @@ impl Huge {
                 } else {
                     t0.lookup(key)
                 } by {}
-                assert(g0.free.map.in_meta() && g0.free.own_claimed() && g0.free.l1_words <= 0x1_0000_0000) by {
-                    reveal(Inner::wf);
-                }
                 assert(gl.free.map.place() == g0.free.map.place());
                 assert(gl.free == g0.free);
                 assert(freed_free(g0.free.map.view(), g@.free.map.view(), vd));
