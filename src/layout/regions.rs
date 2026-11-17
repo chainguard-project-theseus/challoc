@@ -1369,8 +1369,10 @@ impl Regions {
                     requires rel < len, lg < 64;
                 let base = self.huge_base;
                 assert(base <= p && rel == p - base);
-                assert(rel % (1usize << lg) == 0) by (bit_vector)
-                    requires rel & sub(1usize << lg, 1) == 0, lg < 64;
+                let pu = 1usize << lg;
+                assert(pu > 0 && pu & sub(pu, 1) == 0) by (bit_vector)
+                    requires pu == 1usize << lg, lg < 64;
+                crate::meta::lemma_mod_mask(rel, pu);
             }
             return Kind::Huge {
                 page: rel >> self.lg_page,
@@ -2148,11 +2150,7 @@ proof fn lemma_base_mod(superblock: usize, j: int, stride: int, o: usize, l: u32
     vstd::arithmetic::div_mod::lemma_mod_self_0(p as int);
     lemma_pow2_divides_pow2(p, p as int, 22);
     assert(MAX_SLAB == 0x40_0000) by (bit_vector);
-    assert(o & sub(p, 1) == 0 ==> o % p == 0) by (bit_vector)
-        requires
-            p > 0,
-            p & sub(p, 1) == 0,
-    ;
+    crate::meta::lemma_mod_mask(o, p);
     let m = p as int;
     lemma_aligned_down(superblock as int, MAX_SLAB as int, m);
     lemma_aligned_down(stride, MAX_SLAB as int, m);
@@ -3058,9 +3056,12 @@ mod linux {
                 // `Regions::ready`: the page, the metadata base and the huge
                 // region's page count.
                 let (mb, lp, lm, lh) = (meta_base, lg_page, lg_meta, lg_huge);
-                assert(mb % (1usize << lp) == 0 && (1usize << lm) % (1usize << lp) == 0 && (1usize << lm) > 0 && (1usize << lp) >= 16
-                    && ((1usize << lh) >> lp) > 0 && ((1usize << lh) >> lp) <= 0xffff_ffff) by (bit_vector)
-                    requires mb & 0x3f_ffff == 0, 12 <= lp <= 22, 30 <= lm <= 40, 34 <= lh <= 40;
+                let (pu, pm) = (1usize << lp, 1usize << lm);
+                assert(pu > 0 && pu & sub(pu, 1) == 0 && pm & sub(pm, 1) == 0 && pm >= pu && mb & sub(pu, 1) == 0
+                    && pm > 0 && pu >= 16 && ((1usize << lh) >> lp) > 0 && ((1usize << lh) >> lp) <= 0xffff_ffff) by (bit_vector)
+                    requires pu == 1usize << lp, pm == 1usize << lm, mb & 0x3f_ffff == 0, 12 <= lp <= 22, 30 <= lm <= 40, 34 <= lh <= 40;
+                crate::meta::lemma_mod_mask(mb, pu);
+                crate::meta::lemma_pow2_divides(pm, pu);
             }
 
             let r = Regions::from_parts(

@@ -169,8 +169,9 @@ impl Lazy {
             if folio > align {
                 let k = choose|k: u64| k < 64 && folio == #[trigger] (1usize << k);
                 let a = align;
-                assert(folio % a == 0) by (bit_vector)
-                    requires a & sub(a, 1) == 0, a > 0, k < 64, folio == 1usize << k, folio > a;
+                assert(folio & sub(folio, 1) == 0) by (bit_vector)
+                    requires k < 64, folio == 1usize << k;
+                crate::meta::lemma_pow2_divides(folio, a);
                 let (q, r) = (base as int / folio as int, folio as int / a as int);
                 vstd::arithmetic::div_mod::lemma_fundamental_div_mod(base as int, folio as int);
                 vstd::arithmetic::div_mod::lemma_fundamental_div_mod(folio as int, a as int);

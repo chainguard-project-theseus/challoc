@@ -1926,34 +1926,12 @@ impl SlabTable {
             broadcast use vstd::std_specs::bits::axiom_u64_trailing_zeros;
             assert(u64_trailing_zeros(slabs_per_page as u64) < 64);
             assert(u64_trailing_zeros(group as u64) < 64);
-            let (b, lr, ls) = (regions.class_base[class as int], regions.lg_region, cls.lg_slab);
-            assert(b < 1usize << 57 && nslabs <= (usize::MAX - b) as usize >> ls && nslabs <= ((1usize << 57) - b) as usize >> ls) by (bit_vector)
-                requires b + (1usize << lr) <= 1usize << 57, nslabs == (1usize << lr) >> ls, lr <= 38, ls <= 22;
-            let k = choose|k: nat| k < 64 && group as nat == #[trigger] pow2(k);
-            vstd::bits::lemma_usize_pow2_no_overflow(k);
-            vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
-            let (ku, k64) = (k as usize, k as u64);
-            assert(group == 1usize << ku);
-            assert(group == 1usize << k64) by (bit_vector) requires group == 1usize << ku, ku as u64 == k64, k64 < 64;
-            lemma_tz_shl(group, k64);
-            let lg = u64_trailing_zeros(group as u64) as u8;
-            assert(group == 1usize << lg) by (bit_vector) requires group == 1usize << k64, lg as u64 == k64;
+            lemma_region_slabs(regions.class_base[class as int], regions.lg_region, cls.lg_slab, nslabs);
+            lemma_pow2_tz(group);
             // The page group: `1 << lg_slabs_per_page`, whole in the region.
-            let j = choose|j: nat| j < 64 && slabs_per_page as nat == #[trigger] pow2(j);
-            vstd::bits::lemma_usize_pow2_no_overflow(j);
-            vstd::bits::lemma_usize_shl_is_mul(1, j as usize);
-            let (ju, j64) = (j as usize, j as u64);
-            assert(slabs_per_page == 1usize << ju);
-            assert(slabs_per_page == 1usize << j64) by (bit_vector)
-                requires slabs_per_page == 1usize << ju, ju as u64 == j64, j64 < 64;
-            lemma_tz_shl(slabs_per_page, j64);
-            let lgs = u64_trailing_zeros(slabs_per_page as u64) as u8;
-            assert(slabs_per_page == 1usize << lgs) by (bit_vector)
-                requires slabs_per_page == 1usize << j64, lgs as u64 == j64;
-            assert(lgs <= 26) by (bit_vector)
-                requires slabs_per_page == 1usize << j64, lgs as u64 == j64, j64 < 64, slabs_per_page <= 0x400_0000;
-            assert(nslabs & sub(slabs_per_page, 1) == 0) by (bit_vector)
-                requires nslabs % slabs_per_page == 0, slabs_per_page == 1usize << j64, j64 < 64;
+            lemma_pow2_tz(slabs_per_page);
+            crate::meta::lemma_pow2_bits(slabs_per_page);
+            crate::meta::lemma_mod_mask(nslabs, slabs_per_page);
             let lp = regions.lg_page;
             assert((1usize << lp) <= 0x8000_0000_0000_0000usize) by (bit_vector) requires lp < 64;
             reveal(SlabTable::page_groups_ok);
@@ -2083,17 +2061,7 @@ impl SlabTable {
         let ghost ng = (nslabs + group - 1) / (group as int);
         proof {
             assert((group as u32) as usize == 1usize << lgg && lgg < 64);
-            let (n, gr) = (nslabs as int, group as int);
-            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(n + gr - 1, gr);
-            vstd::arithmetic::mul::lemma_mul_is_commutative(ng, gr);
-            vstd::arithmetic::div_mod::lemma_mod_bound(n + gr - 1, gr);
-            assert(ng == (n + gr - 1) / gr);
-            assert(ng * gr + (n + gr - 1) % gr == n + gr - 1);
-            assert(0 <= ng);
-            assert(ng == 0 || (ng - 1) * gr < n) by (nonlinear_arith)
-                requires ng * gr + (n + gr - 1) % gr == n + gr - 1, 0 <= (n + gr - 1) % gr, gr >= 1, ng >= 0;
-            assert(ng * gr >= n) by (nonlinear_arith)
-                requires ng * gr + (n + gr - 1) % gr == n + gr - 1, (n + gr - 1) % gr < gr;
+            lemma_groups_cover(nslabs as int, group as int);
         }
         let tracked oinvs = fresh_owner_invs(omap, smarks, owners_base as int, class as int, lgg, group as u32, nslabs, ng as nat);
         // Where each descriptor's ghost variable is: its invariant's, for
@@ -2278,6 +2246,65 @@ pub(crate) proof fn lemma_tz_shl(x: usize, k: u64)
     }
 }
 
+/// A class region at `b` of `2^lr` bytes ending at or below `2^57` holds
+/// `nslabs` slabs of `2^ls` bytes, which fit between `b` and either bound.
+proof fn lemma_region_slabs(b: usize, lr: u32, ls: u8, nslabs: usize)
+    requires
+        b + (1usize << lr) <= 1usize << 57,
+        nslabs == (1usize << lr) >> ls,
+        lr <= 38,
+        ls <= 22,
+    ensures
+        b < 1usize << 57,
+        nslabs <= (usize::MAX - b) as usize >> ls,
+        nslabs <= ((1usize << 57) - b) as usize >> ls,
+{
+    assert(b < 1usize << 57 && nslabs <= (usize::MAX - b) as usize >> ls && nslabs <= ((1usize << 57) - b) as usize >> ls) by (bit_vector)
+        requires b + (1usize << lr) <= 1usize << 57, nslabs == (1usize << lr) >> ls, lr <= 38, ls <= 22;
+}
+
+/// `ceil(n / gr)` groups of `gr` cover `n` slabs, and one fewer does not.
+proof fn lemma_groups_cover(n: int, gr: int)
+    requires
+        n >= 0,
+        gr >= 1,
+    ensures
+        0 <= (n + gr - 1) / gr,
+        (n + gr - 1) / gr == 0 || ((n + gr - 1) / gr - 1) * gr < n,
+        (n + gr - 1) / gr * gr >= n,
+{
+    let ng = (n + gr - 1) / gr;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(n + gr - 1, gr);
+    vstd::arithmetic::mul::lemma_mul_is_commutative(ng, gr);
+    vstd::arithmetic::div_mod::lemma_mod_bound(n + gr - 1, gr);
+    assert(ng * gr + (n + gr - 1) % gr == n + gr - 1);
+    assert(0 <= ng);
+    assert(ng == 0 || (ng - 1) * gr < n) by (nonlinear_arith)
+        requires ng * gr + (n + gr - 1) % gr == n + gr - 1, 0 <= (n + gr - 1) % gr, gr >= 1, ng >= 0;
+}
+
+/// A power of two is one shifted left by its trailing zeros, which are at
+/// most 26 when it is at most `2^26`.
+proof fn lemma_pow2_tz(x: usize)
+    requires
+        crate::meta::is_pow2(x),
+    ensures
+        u64_trailing_zeros(x as u64) < 64,
+        x == 1usize << (u64_trailing_zeros(x as u64) as u8),
+        x <= 0x400_0000 ==> u64_trailing_zeros(x as u64) <= 26,
+{
+    let k = choose|k: nat| k < 64 && x as nat == #[trigger] pow2(k);
+    vstd::bits::lemma_usize_pow2_no_overflow(k);
+    vstd::bits::lemma_usize_shl_is_mul(1, k as usize);
+    let (ku, k64) = (k as usize, k as u64);
+    assert(x == 1usize << ku);
+    assert(x == 1usize << k64) by (bit_vector) requires x == 1usize << ku, ku as u64 == k64, k64 < 64;
+    lemma_tz_shl(x, k64);
+    let lg = u64_trailing_zeros(x as u64) as u8;
+    assert(x == 1usize << lg) by (bit_vector) requires x == 1usize << k64, lg as u64 == k64;
+    assert(x <= 0x400_0000 ==> k64 <= 26) by (bit_vector) requires x == 1usize << k64, k64 < 64;
+}
+
 /// The page groups [`SlabTable::new`] computes: `max(page / slab, 1)`
 /// slabs, a power of two dividing the region's slab count, which is at
 /// most `2^26` (a region is at most `2^LG_REGION_PREFERRED` bytes of slabs
@@ -2317,8 +2344,10 @@ proof fn lemma_new_geometry(lp: u32, ls: u32, lr: u32, page: usize, ss: usize, n
         let m: u32 = sub(lr, ls);
         assert(page / ss == 1usize << k) by (bit_vector)
             requires page == 1usize << lp, ss == 1usize << ls, k == sub(lp, ls), ls <= lp, lp <= 38;
-        assert((1usize << k) >= 1 && (1usize << m) % (1usize << k) == 0 && (1usize << k) <= (1usize << m)) by (bit_vector)
-            requires k <= m, m <= 38;
+        let (pk, pm) = (1usize << k, 1usize << m);
+        assert(pk >= 1 && pk & sub(pk, 1) == 0 && pm & sub(pm, 1) == 0 && pk <= pm) by (bit_vector)
+            requires pk == 1usize << k, pm == 1usize << m, k <= m, m <= 38;
+        crate::meta::lemma_pow2_divides(pm, pk);
         crate::meta::lemma_is_pow2_shl(k as usize);
         assert((1usize << k) == (1usize << (k as usize))) by (bit_vector);
         // `spp == 2^k` and `2^k * 2^ls == 2^lp`.
@@ -4615,7 +4644,14 @@ impl SlabTable {
             let (n, lg) = (self.nslabs, self.lg_group);
             assert(s % g@.group@ == 0);
             assert(s < n && lg < 64 ==> s >> lg <= n >> lg) by (bit_vector);
-            assert(s % (1usize << lg) == 0 && lg < 64 ==> s & sub(1usize << lg, 1) == 0 && (s >> lg) << lg == s) by (bit_vector);
+            if lg < 64 {
+                let pu = 1usize << lg;
+                assert(pu > 0 && pu & sub(pu, 1) == 0) by (bit_vector)
+                    requires pu == 1usize << lg, lg < 64;
+                crate::meta::lemma_mod_mask(s, pu);
+                assert(s & sub(pu, 1) == 0 ==> (s >> lg) << lg == s) by (bit_vector)
+                    requires pu == 1usize << lg, lg < 64;
+            }
         }
         watermark_aligned(s, self.lg_group);
         let (_, end) = self.group_range(s >> self.lg_group);

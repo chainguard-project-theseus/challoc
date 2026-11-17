@@ -2787,11 +2787,7 @@ proof fn lemma_mask_mod(x: usize, a: usize)
         x & ((a - 1) as usize) == 0 ==> (x as int) % (a as int) == 0,
 {
     crate::meta::lemma_pow2_bits(a);
-    assert(x & ((a - 1) as usize) == 0 ==> x % a == 0) by (bit_vector)
-        requires
-            a > 0,
-            a & sub(a, 1) == 0,
-    ;
+    crate::meta::lemma_mod_mask(x, a);
 }
 
 /// `aligned_alloc` and `memalign`: `EINVAL` unless `align` is a power of
@@ -3041,11 +3037,7 @@ pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errn
                 m == rounded & !((page - 1) as usize),
         ;
         // m is `rounded` less its low bits, which are `rounded % page`.
-        assert(rounded % page == rounded & sub(page, 1)) by (bit_vector)
-            requires
-                page > 0,
-                page & sub(page, 1) == 0,
-        ;
+        crate::meta::lemma_mod_mask(rounded, page);
         assert(m <= rounded && sub(rounded, m) == rounded & sub(page, 1)) by (bit_vector)
             requires
                 m == rounded & !sub(page, 1),

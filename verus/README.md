@@ -167,6 +167,28 @@ make targets: a change to either lands in the kit and reaches challoc
 with the next release, through the deps agent's kit entry
 (`.chainguard/deps.yaml`).
 
+## Headroom
+
+`make verus` writes Verus's statistics to `target/verus-stats.json`, and
+the counter holds each verified function's rlimit use, as a share of its
+limit, to [RLIMIT](RLIMIT). Z3's count is deterministic, so a function
+near its limit passes on the change that put it there and fails on main
+once a change beside it adds a little; RLIMIT's header says how to
+restore headroom. `verus` and `verus-main` hold the x86_64 run to it and
+`verus-arm64` the aarch64 run, each at quantum 16 and, in its second
+step (`make verus-q8`, statistics in `target/verus-stats-q8.json`), at
+quantum 8, whose class table differs; an `allow` line gives the largest
+of a function's four shares.
+
+A Verus or Z3 bump moves every count at once, and it gets no exception:
+it may not raise max-share or add or raise an `allow` line. The bump
+change restores the headroom it costs, in RLIMIT's order
+(`spinoff_prover`, a split, a smaller context). challoc does not raise
+a `#[verifier::rlimit]` for it, or for anything else, so RLIMIT's last
+resort, an `rlimit-raised` line, is not one here. That holds for a bump
+the deps agent opens too: its PR stays red until the headroom is
+restored on it.
+
 ## Seams
 
 ```sh

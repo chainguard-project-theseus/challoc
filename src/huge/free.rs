@@ -1717,43 +1717,36 @@ impl Huge {
         }
         g.free.map.set_range(page, n);
         g.add_extent(survivor);
+        // The release's facts are proved in a scope of their own, so that
+        // only they, not the merge's quantified facts, reach the unlock and
+        // the postcondition.
         proof {
-            let m3 = Merge { vm: g@.descs@[survivor].value(), ..m2 };
-            assert(m3.surv_ok());
-            assert forall|key: usize| #[trigger] gr.table.lookup(key) == if is_key(vd, key as int) || m3.nb_key(2, key as int) {
-                None
-            } else {
-                t0.lookup(key)
-            } by {}
-            assert(g0.free.map.in_meta() && g0.free.own_claimed() && g0.free.l1_words <= 0x1_0000_0000) by {
-                reveal(Inner::wf);
+            let len = (n * page_size) as int;
+            assert(g@.wf() && lock_frame(lock_init(self.inner), g@)
+                && retain_cap(g0, g@, page as int, n as int, usable as int, cap as int, pof, now, discarded, addr as int, len)) by {
+                let m3 = Merge { vm: g@.descs@[survivor].value(), ..m2 };
+                assert(m3.surv_ok());
+                assert forall|key: usize| #[trigger] gr.table.lookup(key) == if is_key(vd, key as int) || m3.nb_key(2, key as int) {
+                    None
+                } else {
+                    t0.lookup(key)
+                } by {}
+                assert(g0.free.map.in_meta() && g0.free.own_claimed() && g0.free.l1_words <= 0x1_0000_0000) by {
+                    reveal(Inner::wf);
+                }
+                assert(gl.free.map.place() == g0.free.map.place());
+                assert(gl.free == g0.free);
+                assert(freed_free(g0.free.map.view(), g@.free.map.view(), vd));
+                assert(m3.nbrs_ok(g0));
+                lemma_free_end(g0, gr, gl, g@, m3);
+                // The lock's frame: the ghost page count, shift, base and
+                // `Meta` identity are the ones `new` set.
+                assert(lock_frame(lock_init(self.inner), g@));
+                // The retain cap holds of the value the lock is released
+                // with.
+                assert(g@.descs@.contains_key(survivor));
+                lemma_retain_cap(g0, g@, survivor, survivor != d, page as int, n as int, usable as int, cap as int, pof, now, discarded, addr as int, len);
             }
-            assert(gl.free.map.place() == g0.free.map.place());
-            assert(gl.free == g0.free);
-            assert(freed_free(g0.free.map.view(), g@.free.map.view(), vd));
-            assert(m3.nbrs_ok(g0));
-            lemma_free_end(g0, gr, gl, g@, m3);
-            // The lock's frame: the ghost page count, shift, base and `Meta`
-            // identity are the ones `new` set.
-            assert(lock_frame(lock_init(self.inner), g@));
-            // The retain cap holds of the value the lock is released
-            // with.
-            assert(g@.descs@.contains_key(survivor));
-            lemma_retain_cap(
-                g0,
-                g@,
-                survivor,
-                survivor != d,
-                page as int,
-                n as int,
-                usable as int,
-                cap as int,
-                pof,
-                now,
-                discarded,
-                addr as int,
-                (n * page_size) as int,
-            );
         }
         let first = self.sync_oldest(&g);
         g.unlock();

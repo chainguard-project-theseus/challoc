@@ -1691,19 +1691,48 @@ proof fn lemma_step(page: usize, step: usize)
     }
 }
 
+/// A nonzero `x` with one bit set is a power of two.
+pub(crate) proof fn lemma_bits_pow2(x: usize)
+    requires
+        x > 0,
+        x & sub(x, 1) == 0,
+    ensures
+        is_pow2(x),
+    decreases x,
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    if x == 1 {
+        assert(x as nat == pow2(0));
+    } else {
+        let h = x / 2;
+        assert(x % 2 == 0 && h > 0 && h & sub(h, 1) == 0) by (bit_vector)
+            requires
+                x > 1,
+                x & sub(x, 1) == 0,
+                h == x / 2,
+        ;
+        lemma_bits_pow2(h);
+        let k = choose|k: nat| k < 64 && h as nat == #[trigger] pow2(k);
+        vstd::arithmetic::power2::lemma_pow2_unfold(k + 1);
+        assert(x as nat == pow2(k + 1));
+    }
+}
+
 /// For a power of two `a`, `x % a` is the low bits of `x`.
-proof fn lemma_mod_mask(x: usize, a: usize)
+///
+/// A `bit_vector` query of `x % a` with `a` unknown bit-blasts a 64-bit
+/// division and takes nearly the whole default rlimit; vstd's lemma reaches
+/// the same fact by induction on the exponent.
+pub(crate) proof fn lemma_mod_mask(x: usize, a: usize)
     requires
         a > 0,
         a & sub(a, 1) == 0,
     ensures
         x % a == x & sub(a, 1),
 {
-    assert(x % a == x & sub(a, 1)) by (bit_vector)
-        requires
-            a > 0,
-            a & sub(a, 1) == 0,
-    ;
+    lemma_bits_pow2(a);
+    let k = choose|k: nat| k < 64 && a as nat == #[trigger] pow2(k);
+    vstd::bits::lemma_usize_low_bits_mask_is_mod(x, k);
 }
 
 /// Of two powers of two, the larger is a multiple of the smaller.

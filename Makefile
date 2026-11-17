@@ -286,9 +286,12 @@ melange: ## build and test the Wolfi packages of contrib/wolfi/challoc.yaml with
 # the kit counter, which holds the tree to verus/FLOOR and fails a
 # figure lowered below <rev>'s without a reason (verus/README.md).
 # VERUS_BASE=none runs the counter with no base, for a local run. The
-# quantum-8 proofs are `make verus-proofs VERUS_CARGO_FLAGS='--no-default-features
-# --features quantum8' VERUS_STATS=target/verus-stats-q8.json`. challoc has
-# no verus/RLIMIT, so the counter runs without --rlimit.
+# counter also holds each verified function's rlimit use, from the run's
+# statistics, to verus/RLIMIT (VERUS_RLIMIT, on by default in the kit;
+# verus/README.md, "Headroom"). `make verus-q8 VERUS_BASE=<rev>` does the
+# same for the quantum-8 build: `make verus-proofs` with its features and
+# VERUS_STATS=target/verus-stats-q8.json, then `make verus-count` over
+# those statistics.
 #
 # `make kani` runs every Kani harness at QUANTUM, four at a time in terse
 # format; `make kani-regular` runs them one at a time in regular format
@@ -313,7 +316,6 @@ melange: ## build and test the Wolfi packages of contrib/wolfi/challoc.yaml with
 # tests, Miri and fuzzing.
 VERIFY_TARGETS = verus verus-q8 notcopy-control kani-boolcmp kani kani-q8 kani-regular kani-regular-q8
 VERUS_MODE = verify
-VERUS_RLIMIT =
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` that no harness reaches; `-Z stubbing` for `kani::stub`,
 # `-Z mem-predicates` for `kani::mem` (.chainguard/ci/kani.yaml).
@@ -350,8 +352,9 @@ verus-seams: ## the seam ledger under verus/ledger/ matches the tree (verus/seam
 # The quantum-8 runs are each a make of their own, so QUANTUM=8 and the
 # quantum-8 features reach the kit target as command-line variables.
 .PHONY: verus-q8 notcopy-control kani-boolcmp kani-q8 kani-regular-q8
-verus-q8: ## the Verus proofs of the quantum-8 build (verus.yaml's second step)
+verus-q8: ## the Verus proofs of the quantum-8 build, then the counter over their statistics (verus.yaml's second step; VERUS_BASE=<rev> or none)
 	$(MAKE) --no-print-directory verus-proofs VERUS_CARGO_FLAGS='--no-default-features --features quantum8' VERUS_STATS=target/verus-stats-q8.json
+	$(MAKE) --no-print-directory verus-count VERUS_STATS=target/verus-stats-q8.json
 notcopy-control: ## the not-Copy checks reject a Copy and a Clone type (verus/notcopy-control.sh)
 	sh verus/notcopy-control.sh
 kani-boolcmp: ## no ordering comparison on bools in Kani code, and the scan's fixtures (ci/kani-boolcmp-test.sh)

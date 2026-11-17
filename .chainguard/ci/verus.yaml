@@ -75,12 +75,13 @@
 # names both architectures. The timeouts stay 45 minutes.
 #
 # `make verus` first checks the seam ledger (the Makefile's verus-seams:
-# `sh verus/seams.sh --check`); challoc has no verus/RLIMIT, so the
-# counter runs without --rlimit. The quantum-8 build (`--features
-# quantum8`) has its own class table, so its proofs run too, as `make
-# verus-proofs` with its features. The verus package brings the rust
-# stream (rust-1.99, which lint.yaml and Dockerfile.dev pin too), so this
-# file installs no rust of its own. build-base is build.rs's C++ compiler.
+# `sh verus/seams.sh --check`), and the counter holds each function's
+# rlimit use on that architecture to verus/RLIMIT. The quantum-8 build
+# (`--features quantum8`) has its own class table, so its proofs run too
+# (the Makefile's verus-q8), and the counter holds their rlimit use to
+# verus/RLIMIT as well. The verus package brings the rust stream
+# (rust-1.99, which lint.yaml and Dockerfile.dev pin too), so this file
+# installs no rust of its own. build-base is build.rs's C++ compiler.
 version: 1
 
 environment:
@@ -117,8 +118,9 @@ checks:
       - &verus-q8
         name: proofs at quantum 8
         # The Makefile's verus-q8: make verus-proofs with the quantum-8
-        # features, statistics to target/verus-stats-q8.json.
-        cmd: [sh, -c, 'make verus-q8 VERUS_THREADS="${CG_CPUS:-}"']
+        # features, statistics to target/verus-stats-q8.json, then the
+        # counter over them (verus/RLIMIT), against the same base.
+        cmd: [sh, -c, 'make verus-q8 VERUS_THREADS="${CG_CPUS:-}" VERUS_BASE="${CHAINGUARD_BASE_REVISION:?no base revision to compare verus/RLIMIT with}"']
       - name: not-Copy control
         # The not-Copy checks of src/vspec/notcopy.rs hold only while
         # rustc rejects their ambiguous impls; lint.yaml's

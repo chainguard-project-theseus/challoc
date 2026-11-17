@@ -1093,8 +1093,9 @@ pub(super) proof fn lemma_group_well_formed(t: SlabTable, slab: usize, spp: usiz
     // `first` is a multiple of `spp`, so its byte offset is a multiple of
     // the group's bytes, a page multiple.
     let m = sub(spp, 1);
-    assert(first % spp == 0) by (bit_vector)
+    assert(spp > 0 && spp & m == 0 && first & m == 0) by (bit_vector)
         requires spp == 1usize << lgs, lgs <= 26, m == sub(spp, 1), first == slab & !m;
+    crate::meta::lemma_mod_mask(first, spp);
     let q = first as int / spp as int;
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(first as int, spp as int);
     let g = spp as int * sz;
@@ -1220,8 +1221,9 @@ impl ClassState {
             // slab, and `slab` in the empty set.
             vstd::arithmetic::div_mod::lemma_div_multiples_vanish(first as int, sz);
             assert(sz * first == first as int * sz) by (nonlinear_arith);
-            assert(first % spp == 0) by (bit_vector)
-                requires spp >= 1, spp & sub(spp, 1) == 0, first == slab & !sub(spp, 1);
+            assert(first & sub(spp, 1) == 0) by (bit_vector)
+                requires first == slab & !sub(spp, 1);
+            crate::meta::lemma_mod_mask(first, spp);
             assert(pend_ok(self, *g, spp as int, (first + spp) as int, new));
         }
         t.end = Ghost((first + spp) as usize);

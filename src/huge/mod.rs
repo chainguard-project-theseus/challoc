@@ -4481,8 +4481,7 @@ impl Huge {
                     requires pu == 1usize << lg32, lg32 < 64;
                 assert(align & sub(pu, 1) == 0) by (bit_vector)
                     requires align & sub(align, 1) == 0, pu > 0, pu & sub(pu, 1) == 0, align >= pu;
-                assert(align % pu == align & sub(pu, 1)) by (bit_vector)
-                    requires pu > 0, pu & sub(pu, 1) == 0;
+                crate::meta::lemma_mod_mask(align, pu);
                 crate::layout::lemma_aligned_down(aligned as int, align as int, p);
                 crate::layout::lemma_mod_lin3(aligned as int, -1, self.base as int, 0, 0, p);
                 vstd::arithmetic::div_mod::lemma_fundamental_div_mod(d as int, p);
