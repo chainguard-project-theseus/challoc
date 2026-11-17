@@ -48,6 +48,7 @@ mod paths;
 mod perms;
 mod shared;
 pub(crate) mod slotstate;
+pub(crate) mod sort;
 mod tcaches;
 #[cfg(verus_keep_ghost)]
 mod theorems;

@@ -716,7 +716,7 @@ pub(crate) open spec fn permutes(s: Seq<*mut u8>, o: Seq<*mut u8>) -> bool {
 }
 
 /// Swapping two entries of `s` (what `<[T]>::swap` does) permutes it.
-proof fn lemma_swap_permutes(s: Seq<*mut u8>, i: int, j: int)
+pub(crate) proof fn lemma_swap_permutes(s: Seq<*mut u8>, i: int, j: int)
     requires
         0 <= i < s.len(),
         0 <= j < s.len(),

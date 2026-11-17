@@ -141,24 +141,6 @@ pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as cor
         array_iter_rest(*old(i)).len() == 0 ==> r is None && array_iter_rest(*final(i)) == array_iter_rest(*old(i)),
 ;
 
-/// `s.sort_unstable()` on a slice of raw pointers: permutes `s`. Trusted:
-/// `core` documents panics for an `Ord` that is not a total order or
-/// that panics itself, and a thin pointer's `Ord` compares addresses,
-/// a total order that does not panic, so the call returns with `s` a
-/// permutation of what it held. A wrapper for `*mut u8` alone, where an
-/// `assume_specification` of `<[T]>::sort_unstable` would cover every
-/// `T: Ord`. `#[inline(always)]` leaves the machine code of the bare call.
-#[inline(always)]
-#[verifier::external_body]
-pub fn sort_ptrs(s: &mut [*mut u8])
-    ensures
-        final(s)@.len() == old(s)@.len(),
-        final(s)@.to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
-{
-    s.sort_unstable()
-}
-
 } // verus!
 
 verus! {
@@ -237,28 +219,6 @@ pub fn select_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], index:
         forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
 {
     s.select_nth_unstable_by_key(index, f);
-}
-
-/// `s.sort_unstable_by_key(f)` on a slice of raw pointers with a `usize`
-/// key: permutes `s`. Trusted: `core` documents panics for an `Ord` that
-/// is not a total order or that panics itself, and `usize`'s `Ord` is a
-/// total order that does not panic, so with `f` callable on every entry
-/// the call returns with `s` a permutation of what it held. A wrapper for
-/// `*mut u8` entries and `usize` keys alone, where an
-/// `assume_specification` of `<[T]>::sort_unstable_by_key` would cover
-/// every `K: Ord`. `#[inline(always)]` leaves the machine code of the
-/// bare call.
-#[inline(always)]
-#[verifier::external_body]
-pub fn sort_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], f: F)
-    requires
-        forall|x: &*mut u8| #[trigger] f.requires((x,)),
-    ensures
-        final(s)@.len() == old(s)@.len(),
-        final(s)@.to_multiset() == old(s)@.to_multiset(),
-        forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
-{
-    s.sort_unstable_by_key(f)
 }
 
 } // verus!

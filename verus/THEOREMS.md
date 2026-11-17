@@ -385,11 +385,10 @@ the call does not return (theorem 3, which is not voided for it).
   `node_arena` and `node_set_arena` are verified. The list's length
   bound is proved (`Heap::lemma_list_bound`: its keys are distinct
   `u16`s).
-- `<[T]>::sort_unstable`'s contract (`vspec/slice.rs`: a permutation;
-  a Kani record checks it for slices of up to 12 entries), under the
-  flush's kept-half sort and the fallback of the verified
-  `flush::group_by_slab` (whose result is a permutation of the batch,
-  so the flush's tokens follow it).
+- `heap::sort::sort_ptrs` and `sort_ptrs_by_key` (verified: each
+  permutes its slice), under the flush's kept-half sort and the
+  fallback of the verified `flush::group_by_slab` (whose result is a
+  permutation of the batch, so the flush's tokens follow it).
 - The contracts of `vspec::slice::select_ptrs` and
   `select_ptrs_by_key` (`vspec/slice.rs`: `select_nth_unstable` and
   its keyed form on `*mut u8` entries, a permutation; a Kani record checks it for slices

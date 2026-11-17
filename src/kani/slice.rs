@@ -5,18 +5,14 @@
 //! none of these methods looks at the element type beyond moving or
 //! comparing it) for every slice up to `MAX` elements (`SORTED_MAX` for
 //! `is_sorted`) with arbitrary contents (`verus/ledger/src/vspec/`).
-//! The trusted wrappers `vspec::slice::sort_ptrs` and `sort_ptrs_by_key`
-//! are checked at every length to `SORT_MAX` on pointers at addresses
-//! below the length (every order pattern; see [`sort_ranks_on`]), which
-//! reaches only the insertion sort of `core`'s `sort_unstable` (to 20
-//! elements; a small sort and a quicksort run past that).
 //! `from_raw_parts` is also checked at bytes, and `rotate_left` on two
 //! longer slices, the shortest that reach its second algorithm.
 //! `reverse`, `swap`, `get_unchecked` and `get_unchecked_mut`, which
 //! vstd specifies, are checked the same way, against vstd's contracts.
 //! The trusted wrappers `vspec::slice::select_ptrs` and
-//! `select_ptrs_by_key` are checked as `sort_ptrs` is, at every length to
-//! `SORT_MAX` and every index (see [`select_ranks_on`]), which reaches
+//! `select_ptrs_by_key` are checked at every length to `SORT_MAX` on
+//! pointers at addresses below the length (every order pattern) and at
+//! every index (see [`select_ranks_on`]), which reaches
 //! `core`'s `select_nth_unstable` on its three short paths only (the
 //! largest or smallest entry swapped into place at the last or first
 //! index, an insertion sort at any other index, to 16 elements; a
@@ -253,10 +249,8 @@ fn slice_as_ptr() {
     assert!(same(&a, &old));
 }
 
-/// The longest slice `sort_ptrs` and `select_ptrs` are checked on, at
-/// every length up to it: `core`'s `sort_unstable` sorts these by
-/// insertion alone (up to 20 elements), and `select_nth_unstable` takes
-/// its short paths (insertion up to 16).
+/// The longest slice `select_ptrs` is checked on, at every length up to
+/// it: `select_nth_unstable` takes its short paths (insertion up to 16).
 const SORT_MAX: usize = 12;
 
 /// `old` and `new` hold `v` equally often.
@@ -269,133 +263,20 @@ fn same_count<const L: usize>(old: &[*mut u8; L], new: &[*mut u8; L], v: *mut u8
     a == b
 }
 
-/// `sort_ptrs` (or, `by_key`, `sort_ptrs_by_key` with the key `L - addr`)
-/// on a slice of `L` pointers at arbitrary addresses below `L`: the
-/// length is kept, an arbitrary entry, old or new, occurs as often after
-/// as before (so the multiset is kept, and every entry is one of the old
-/// ones), and the addresses end sorted (descending, `by_key`). Addresses below
-/// `L` give every order pattern `L` pointers can have, ties included
-/// (each is its own dense rank), which is all a comparison sort sees,
-/// and a thin pointer's `Ord` compares addresses alone. `L` is a
-/// constant: with a symbolic length CBMC would also unwind every longer
-/// algorithm `core` picks by length.
-fn sort_ranks_on<const L: usize>(by_key: bool) {
-    let mut s: [*mut u8; L] = [core::ptr::null_mut(); L];
-    for e in s.iter_mut() {
-        let r: usize = kani::any();
-        kani::assume(r < L);
-        *e = core::ptr::without_provenance_mut(r);
-    }
-    let old = s;
-    let v: &mut [*mut u8] = &mut s;
-    if by_key {
-        crate::vspec::slice::sort_ptrs_by_key(v, |p| L - *p as usize);
-    } else {
-        crate::vspec::slice::sort_ptrs(v);
-    }
-    assert!(v.len() == L);
-    let i: usize = kani::any();
-    if i < L {
-        assert!(same_count(&old, &s, old[i]));
-        assert!(same_count(&old, &s, s[i]));
-    }
-    for k in 1..L {
-        let (a, b) = (s[k - 1] as usize, s[k] as usize);
-        assert!(if by_key { a >= b } else { a <= b });
-    }
-}
-
-/// `sort_ptrs`: no `requires`; the length and the multiset are kept, and
-/// every entry is one of the old ones, for every slice of up to
-/// `SORT_MAX` pointers: here the lengths to 9, and each longer length in
-/// a harness of its own, which keeps each harness to a few minutes.
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_short() {
-    sort_ranks_on::<0>(false);
-    sort_ranks_on::<1>(false);
-    sort_ranks_on::<2>(false);
-    sort_ranks_on::<3>(false);
-    sort_ranks_on::<4>(false);
-    sort_ranks_on::<5>(false);
-    sort_ranks_on::<6>(false);
-    sort_ranks_on::<7>(false);
-    sort_ranks_on::<8>(false);
-    sort_ranks_on::<9>(false);
-}
-
-/// `sort_ptrs` on 10 pointers (`sort_ptrs_short`).
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_10() {
-    sort_ranks_on::<10>(false);
-}
-
-/// `sort_ptrs` on 11 pointers (`sort_ptrs_short`).
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_11() {
-    sort_ranks_on::<11>(false);
-}
-
-/// `sort_ptrs` on `SORT_MAX` pointers (`sort_ptrs_short`).
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_12() {
-    const _: () = assert!(SORT_MAX == 12);
-    sort_ranks_on::<12>(false);
-}
-
-/// `sort_ptrs_by_key`, with the key `L - addr` (so the addresses end in
-/// descending order): the length and the multiset are kept, and every
-/// entry is one of the old ones, for every slice of up to `SORT_MAX`
-/// pointers, split by length as for `sort_ptrs`. Every address is below
-/// `L`, so the key never overflows; the harness does not check the
-/// contract's `forall f.requires` for a pointer above `L`.
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_by_key_short() {
-    sort_ranks_on::<0>(true);
-    sort_ranks_on::<1>(true);
-    sort_ranks_on::<2>(true);
-    sort_ranks_on::<3>(true);
-    sort_ranks_on::<4>(true);
-    sort_ranks_on::<5>(true);
-    sort_ranks_on::<6>(true);
-    sort_ranks_on::<7>(true);
-    sort_ranks_on::<8>(true);
-    sort_ranks_on::<9>(true);
-}
-
-/// `sort_ptrs_by_key` on 10 pointers (`sort_ptrs_by_key_short`).
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_by_key_10() {
-    sort_ranks_on::<10>(true);
-}
-
-/// `sort_ptrs_by_key` on 11 pointers (`sort_ptrs_by_key_short`).
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_by_key_11() {
-    sort_ranks_on::<11>(true);
-}
-
-/// `sort_ptrs_by_key` on `SORT_MAX` pointers (`sort_ptrs_by_key_short`).
-#[kani::proof]
-#[kani::unwind(14)]
-fn sort_ptrs_by_key_12() {
-    sort_ranks_on::<12>(true);
-}
-
 /// `select_ptrs` (or, `by_key`, `select_ptrs_by_key` with the key
 /// `L - addr`) at an arbitrary index below `L` on a slice of `L`
-/// pointers at arbitrary addresses below `L`, as [`sort_ranks_on`]: the
-/// length is kept, an arbitrary entry, old or new, occurs as often after
-/// as before, and (beyond the contract) the entry at the index splits the
-/// slice: no entry before it has a higher address and no entry after it
-/// a lower one (the other way round, `by_key`). `L` is a constant and at
-/// least 1, the contract's `index < len` for some index.
+/// pointers at arbitrary addresses below `L`: the length is kept, an
+/// arbitrary entry, old or new, occurs as often after as before (so the
+/// multiset is kept, and every entry is one of the old ones), and
+/// (beyond the contract) the entry at the index splits the slice: no
+/// entry before it has a higher address and no entry after it a lower
+/// one (the other way round, `by_key`). Addresses below `L` give every
+/// order pattern `L` pointers can have, ties included (each is its own
+/// dense rank), which is all a comparison-based selection sees, and a
+/// thin pointer's `Ord` compares addresses alone. `L` is a constant and
+/// at least 1, the contract's `index < len` for some index: with a
+/// symbolic length CBMC would also unwind every longer algorithm `core`
+/// picks by length.
 fn select_ranks_on<const L: usize>(by_key: bool) {
     let mut s: [*mut u8; L] = [core::ptr::null_mut(); L];
     for e in s.iter_mut() {
@@ -433,7 +314,8 @@ fn select_ranks_on<const L: usize>(by_key: bool) {
 /// `select_ptrs`: `requires index < len`; the length and the multiset
 /// are kept, every entry is one of the old ones, and the entry at the
 /// index splits the slice, for every slice of up to `SORT_MAX` pointers
-/// and every index in it, split by length as for `sort_ptrs`.
+/// and every index in it: here the lengths to 9, and each longer length
+/// in a harness of its own, which keeps each harness to a few minutes.
 #[kani::proof]
 #[kani::unwind(14)]
 fn select_ptrs_short() {
@@ -470,10 +352,9 @@ fn select_ptrs_12() {
     select_ranks_on::<12>(false);
 }
 
-/// `select_ptrs_by_key`, with the key `L - addr`: as `select_ptrs`; and,
-/// as for `sort_ptrs_by_key`, the key never overflows, and the harness
-/// does not check the contract's `forall f.requires` for a pointer above
-/// `L`.
+/// `select_ptrs_by_key`, with the key `L - addr`: as `select_ptrs`. Every
+/// address is below `L`, so the key never overflows; the harness does
+/// not check the contract's `forall f.requires` for a pointer above `L`.
 #[kani::proof]
 #[kani::unwind(14)]
 fn select_ptrs_by_key_short() {

@@ -346,10 +346,10 @@ impl Heap {
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
     // Hot free path: the body's source is as written, except that its
-    // selection and its two sorts go through the `#[inline(always)]`
-    // wrappers `select_ptrs_by_key`, `select_ptrs`, `sort_ptrs_by_key`
-    // and `sort_ptrs`, and its three header writes pass the header's own
-    // permission (`Tracked(..)`). Each erased `Tracked(..)` argument is a
+    // selection goes through the `#[inline(always)]` wrappers
+    // `select_ptrs_by_key` and `select_ptrs`, its two sorts are the
+    // verified ones of [`super::sort`], and its three header writes pass
+    // the header's own permission (`Tracked(..)`). Each erased `Tracked(..)` argument is a
     // closure instance, and the three put `flush_arena` past rustc's
     // MIR-inliner cycle-check budget, so the inliner lays this path out
     // differently from a body with no such arguments.
@@ -446,15 +446,16 @@ impl Heap {
             // every flush; on the sorted path (about 1.25k cycles per
             // flush on xmalloc-test's consumer side) that doubles the
             // flush's cost.
-            // The keyed forms only when signed: `sort_unstable_by_key` and
-            // friends take a comparator closure and lose the primitive
-            // pointer sort's specialisations, which costs every flush even
-            // when the key is the identity. The mask itself only when
+            // The keyed `core` forms only when signed: `is_sorted_by_key`
+            // and `select_nth_unstable_by_key` take a closure and lose the
+            // primitive pointer forms' specialisations, which costs every
+            // flush even when the key is the identity. The mask itself only when
             // signed: `pac::mask` is an `xpacd`, UNDEFINED on a CPU without
             // the extension (`SIGILL` on Neoverse N1, the Altra), and no
             // PAC instruction may run unless the probe said yes.
             let addr_mask = if pac { !pac::mask() } else { usize::MAX };
             let key = |e: &*mut u8| (*e as usize) & addr_mask;
+            let skey = |e: *mut u8| (e as usize) & addr_mask;
             let all = stack_mut(
                 slots,
                 0,
@@ -509,9 +510,9 @@ impl Heap {
                 }
                 if rest_len > 1 && (k < 2 || k % 32 == 0) {
                     if pac {
-                        crate::vspec::slice::sort_ptrs_by_key(all.get_unchecked_mut(..rest_len), key);
+                        super::sort::sort_ptrs_by_key(all.get_unchecked_mut(..rest_len), skey);
                     } else {
-                        crate::vspec::slice::sort_ptrs(all.get_unchecked_mut(..rest_len));
+                        super::sort::sort_ptrs(all.get_unchecked_mut(..rest_len));
                     }
                     proof {
                         lemma_from_sub(a1, rest_len as int, all@);
@@ -1092,19 +1093,17 @@ verus! {
 /// slab number (and the batch's minimum address); a batch from one slab is
 /// done; one spanning fewer than [`GROUP_BUCKETS`] slabs is permuted by
 /// [`flag_sort`] on `slab - lowest`; anything wider, a cache holding slots
-/// of more than 256 slabs' span, falls back to `sort_unstable` on the
-/// address. Every path is O(n) but the last, a full sort of half the
+/// of more than 256 slabs' span, falls back to a sort on the address
+/// ([`super::sort::sort_ptrs`]). Every path is O(n) but the last, a full sort of half the
 /// entries.
 ///
 /// Verus checks the sweep and the dispatch: every key is in `[kmin,
 /// kmax]`, so [`flag_sort`]'s keys are below `span <= GROUP_BUCKETS`,
 /// and only the batch's order changes (the multiset of entries is kept,
-/// so their slot tokens follow). The result is an entry of the batch;
-/// that it is the lowest is not part of the contract (the flush's
-/// straddle check needs it only for its strength, not for any proof).
-/// The fallback `sort_unstable` is the core
-/// library's, through `vspec::slice::sort_ptrs` (a permutation).
-/// The body hands
+/// so their slot tokens follow, the fallback sort's included). The
+/// result is an entry of the batch; that it is the lowest is not part
+/// of the contract (the flush's straddle check needs it only for its
+/// strength, not for any proof). The body hands
 /// [`flag_sort`] batches of up to the cache's capacity, at most
 /// `tcache_nslots_small_max`'s bound `MAX_NSLOTS` (65536), the length `flag_sort` is verified for since
 /// its cursors are `u32`.
@@ -1184,7 +1183,7 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
                 { key(p) - kmin },
         );
     } else {
-        crate::vspec::slice::sort_ptrs(high);
+        super::sort::sort_ptrs(high);
     }
     low
 }
@@ -1664,39 +1663,6 @@ proof fn lemma_sorted<F: Fn(*mut u8) -> usize>(key: F, s: Seq<*mut u8>, v0: Seq<
     }
 }
 
-/// An entry of a permutation of `v0` is one of `v0`'s.
-proof fn lemma_in_perm(s: Seq<*mut u8>, v0: Seq<*mut u8>, i: int)
-    requires
-        s.to_multiset() == v0.to_multiset(),
-        0 <= i < s.len(),
-    ensures
-        v0.contains(s[i]),
-{
-    broadcast use vstd::seq_lib::group_to_multiset_ensures;
-    assert(s.contains(s[i]));
-    assert(s.to_multiset().count(s[i]) > 0);
-    assert(v0.to_multiset().count(s[i]) > 0);
-}
-
-/// Swapping two entries keeps the multiset.
-proof fn lemma_swap_multiset(s: Seq<*mut u8>, i: int, j: int)
-    requires
-        0 <= i < s.len(),
-        0 <= j < s.len(),
-    ensures
-        s.update(j, s[i]).update(i, s[j]).to_multiset() == s.to_multiset(),
-{
-    broadcast use {vstd::seq_lib::group_to_multiset_ensures, vstd::multiset::group_multiset_axioms};
-    let s1 = s.update(j, s[i]);
-    if i == j {
-        assert(s1.update(i, s[j]) =~= s);
-    } else {
-        assert(s1[i] == s[i]);
-        assert(s.to_multiset().count(s[j]) > 0);
-        assert(s1.update(i, s[j]).to_multiset() =~= s.to_multiset());
-    }
-}
-
 /// American flag sort: permute `v` in place so that entries with equal
 /// `key` (below `nb`, at most [`GROUP_BUCKETS`]) are contiguous, buckets
 /// in ascending key order. One counting sweep, a prefix sum, and one
@@ -1823,7 +1789,8 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
             }
             let mut p = v[i];
             proof {
-                lemma_in_perm(v@, v0, i as int);
+                super::sort::lemma_in_perm(v@, v0);
+                assert(v0.contains(v@[i as int]));
             }
             let mut kb = key(p);
             proof {
@@ -1861,7 +1828,8 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
                 core::mem::swap(&mut p, &mut v[j]);
                 proof {
                     assert(v1.update(i as int, p1)[j as int] == p);
-                    lemma_in_perm(v1.update(i as int, p1), v0, j as int);
+                    super::sort::lemma_in_perm(v1.update(i as int, p1), v0);
+                    assert(v0.contains(v1.update(i as int, p1)[j as int]));
                 }
                 kb = key(p);
                 proof {
@@ -1869,7 +1837,7 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
                     assert(next@ =~= n1.update(kf(key, p1), next@[kf(key, p1)]));
                     assert(v@ =~= v1.update(j as int, p1));
                     let ghost s = v1.update(i as int, p1);
-                    lemma_swap_multiset(s, i as int, j as int);
+                    crate::class::lemma_swap_permutes(s, j as int, i as int);
                     assert(v@.update(i as int, p) =~= s.update(j as int, s[i as int]).update(i as int, s[j as int]));
                     lemma_slack_step(n1, end@, nb as int, kf(key, p1), next@[kf(key, p1)]);
                     lemma_slack_nonneg(n1, end@, nb as int);
