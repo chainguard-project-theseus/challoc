@@ -16,10 +16,16 @@
 # above its figure and names the figure to record. The figures, and the
 # README badge that shows them, rise in a pull request of their own, to
 # the figures the check names, never in the pull request that earns them,
-# so that pull requests landing in parallel do not conflict here. The one
+# so that pull requests landing in parallel do not conflict here. One
 # exception is the port's first proof pull request, which may raise every
 # figure from 0.0 in the same pull request, whether it brings the counter
 # or the counter landed earlier with every figure at 0.0.
+#
+# A FLOOR pull request may record a figure below the one the check names,
+# never below the base revision's, when an open pull request lands that
+# share lower without a `lowered` line (code that verifies in fewer lines,
+# say); its description names that pull request, and the next FLOOR pull
+# request records the figure the check names then.
 #
 # README.md's Verus badge gives `functions` and `lines` as written here
 # (verus/count.toml's `[badge]`), and the check fails when it does not, so

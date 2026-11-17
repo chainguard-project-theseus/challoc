@@ -92,7 +92,10 @@ get wrong.
   with no reason, is Blocking. FLOOR and the README badge rise in a pull
   request of their own, to the figures the check names (FLOOR's header):
   a raise in a pull request that changes anything else is a Question
-  citing that header. `verus/count.toml` configures the counter and
+  citing that header. A FLOOR pull request that records a figure below
+  the one the check names, never below the base revision's, and names
+  the open pull request that lands that share lower, follows the rule.
+  `verus/count.toml` configures the counter and
   changes how the checks run: the counter compares it with the base
   revision's and fails a narrowed `[crates]` or a removed or moved
   `[badge]` without a `[[narrowed]]` line giving its reason, and reads

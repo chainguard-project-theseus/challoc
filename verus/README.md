@@ -25,7 +25,7 @@ make verus VERUS_BASE=origin/main   # the same, and FLOOR against main's
 ```
 
 `make verus` is the kit's target (`proved-port.mk`, from the
-theseus-proved-port package, pinned as `theseus-proved-port~0.4.0` in the
+theseus-proved-port package, pinned as `theseus-proved-port~0.4.4` in the
 checks and as the Makefile's `PROVED_PORT_VERSION`; the installed `KIT`
 names the release). It runs `sh verus/seams.sh --check` (Seams, below),
 then `cargo verus verify` (the default `quantum16` feature) with Verus's
@@ -54,8 +54,9 @@ this machine instead:
    and put its directory on `PATH`.
 2. `rustup toolchain install 1.99.1`.
 
-Cargo keeps a verified crate's result: when nothing changed, `make verus`
-prints no results line for it. `cargo clean -p challoc` forces a full run.
+`make verus` and `make verus-q8` clean challoc's earlier Verus results
+before cargo verus runs (the kit's clean, `VERUS_CLEAN`), so every run
+verifies the crate again and writes its statistics.
 
 Ordinary builds and tests are unchanged (`make build`, `make test`).
 

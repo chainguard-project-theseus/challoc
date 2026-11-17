@@ -19,4 +19,4 @@
 # (`chainctl develop --check clippy`).
 version: 1
 environment:
-  packages: [bash, make, git, build-base, coreutils, busybox, docker-29, iptables, verus~0.2026.11.02, kani~0.68.0, cbmc~6.11.0, theseus-proved-port~0.4.0, apk-tools, wolfi-keys]
+  packages: [bash, make, git, build-base, coreutils, busybox, docker-29, iptables, verus~0.2026.11.02, kani~0.68.0, cbmc~6.11.0, theseus-proved-port~0.4.4, apk-tools, wolfi-keys]
