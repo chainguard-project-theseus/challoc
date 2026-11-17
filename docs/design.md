@@ -831,8 +831,10 @@ that needs more falls back to `rallocx`, as jemalloc's contract allows.
   refills and rebuilds keep taking the lowest partial slab. The split: a
   slot array already in address order (`is_sorted`) is split directly;
   otherwise `select_nth_unstable` puts the released half on top and
-  `group_by_slab` groups it with a counting pass on the slab number (a
-  sort when it spans more than 256 slabs). The release accumulates each
+  `group_by_slab` groups it with a counting pass on the slab number
+  (when it spans more than 256 slabs, a counting pass on the slab
+  number shifted down to fit 256 buckets, then an address sort of each
+  bucket, which leaves the batch in address order). The release accumulates each
   slab's bits in a scratch bitmap and clears them, one atomic per touched
   word. The kept half is sorted only on the first two consecutive
   unsorted flushes and every 32nd after (`unsorted_flushes`), so a cache

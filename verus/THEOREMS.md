@@ -402,9 +402,11 @@ the call does not return (theorem 3, which is not voided for it).
   bound is proved (`Heap::lemma_list_bound`: its keys are distinct
   `u16`s).
 - `heap::sort::sort_ptrs` and `sort_ptrs_by_key` (verified: each
-  permutes its slice), under the flush's kept-half sort and the
-  fallback of the verified `flush::group_by_slab` (whose result is a
-  permutation of the batch, so the flush's tokens follow it).
+  permutes its slice), under the flush's kept-half sort, and
+  `sort_ptrs_range` (verified: permutes its slice), under the
+  per-bucket sorts of the verified `flush::group_by_slab`'s wide
+  fallback (whose result is a permutation of the batch, so the
+  flush's tokens follow it).
 - The contracts of `vspec::slice::select_ptrs` and
   `select_ptrs_by_key` (`vspec/slice.rs`: `select_nth_unstable` and
   its keyed form on `*mut u8` entries, a permutation; a Kani record checks it for slices
