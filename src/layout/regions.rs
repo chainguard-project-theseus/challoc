@@ -2638,17 +2638,24 @@ mod linux {
         r
     }
 
-    /// Word `i` of the random bytes (`8 * i` on, the target's byte order).
-    /// Trusted: `copy_from_slice` and `from_ne_bytes`; any word will do.
-    #[verifier::external_body]
+    /// Word `i` of the random bytes (`8 * i` on), little-endian: the byte
+    /// order of every target challoc builds for, so it is the
+    /// `from_ne_bytes` word, and LLVM folds the bytes into one load. Any
+    /// word will do.
     #[inline(always)]
     fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
         requires
             i < NCLASSES + 3,
     {
-        let mut b = [0u8; 8];
-        b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
-        u64::from_ne_bytes(b)
+        let o = 8 * i;
+        (rnd[o] as u64)
+            | (rnd[o + 1] as u64) << 8
+            | (rnd[o + 2] as u64) << 16
+            | (rnd[o + 3] as u64) << 24
+            | (rnd[o + 4] as u64) << 32
+            | (rnd[o + 5] as u64) << 40
+            | (rnd[o + 6] as u64) << 48
+            | (rnd[o + 7] as u64) << 56
     }
 
     /// The abort of [`Regions::reserve_owning`] when `getrandom` fails.
@@ -3175,34 +3182,27 @@ mod linux {
         }
     }
 
-    /// Kani harness for `word`, this module's seam that Kani can run
-    /// (`verus/ledger/src/layout/regions.rs.md`).
-    #[cfg(kani)]
-    mod kani_word {
-        use super::{NCLASSES, word};
-
-        /// `word`, `requires i < NCLASSES + 3`, no `ensures`: under it the
-        /// call returns, for every byte string and every `i < NCLASSES + 3`
-        /// (and the word is bytes `8 * i..8 * i + 8` in native order, as its
-        /// body reads them).
-        #[kani::proof]
-        fn word_returns() {
-            let rnd: [u8; 8 * (NCLASSES + 3)] = kani::any();
-            let i: usize = kani::any();
-            kani::assume(i < NCLASSES + 3);
-            let w = word(&rnd, i);
-            let mut b = [0u8; 8];
-            b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
-            assert_eq!(w, u64::from_ne_bytes(b));
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         use super::{
             CLASSES, LG_SLIDE, MAX_SLAB, NCLASSES, SLIDE_STEPS, align_base, class_offset, colour,
-            slab_multiple,
+            slab_multiple, word,
         };
+
+        /// `word` reads bytes `8 * i..8 * i + 8` in the target's byte order:
+        /// for every `i` it is the word `from_ne_bytes` makes of them.
+        #[test]
+        fn word_is_the_native_word() {
+            let mut rnd = [0u8; 8 * (NCLASSES + 3)];
+            for (k, b) in rnd.iter_mut().enumerate() {
+                *b = (k as u8).wrapping_mul(151).wrapping_add(7);
+            }
+            for i in 0..NCLASSES + 3 {
+                let mut b = [0u8; 8];
+                b.copy_from_slice(&rnd[8 * i..8 * i + 8]);
+                assert_eq!(word(&rnd, i), u64::from_ne_bytes(b), "word {i}");
+            }
+        }
 
         /// No random word gives a zero offset: the huge and metadata
         /// slides and the class offsets always leave `MAX_SLAB` below their

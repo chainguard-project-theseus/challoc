@@ -12,7 +12,6 @@ file.
 | `Reserve...sjoint` | external_body proof | platform/kernel fact | none (assumption) | trusted |
 | `Reserve...backed` | external_body proof | platform/kernel fact | none (assumption) | trusted |
 | `try_reserve` | external_body | FFI/syscall | none (assumption) | trusted |
-| `word` | external_body | core library | Kani | discharged |
 | `entry_barrier` | external_body | inline asm | Islaris/Isla | trusted |
 
 ## `Reserved`
@@ -97,21 +96,6 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
         crate::sys::may_syscall(),
     ensures
         r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
-```
-
-## `word`
-
-src/layout/regions.rs:2645. Kind: external_body. Category: core library.
-Tool: Kani. Status: discharged (Kani: layout::regions::linux::kani_word::word_returns).
-
-> Word `i` of the random bytes (`8 * i` on, the target's byte order).
-
-Hashes: contract 1501169047, body 3652660392.
-
-```rust
-fn word(rnd: &[u8; 8 * (NCLASSES + 3)], i: usize) -> u64
-    requires
-        i < NCLASSES + 3,
 ```
 
 ## `entry_barrier`
