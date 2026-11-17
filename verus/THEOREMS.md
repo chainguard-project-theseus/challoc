@@ -65,6 +65,22 @@ leave out (theorem 33). Remaining work is tracked in
   environment is a source test (`environment_has_one_reader`,
   `config/linux_tests.rs`), not Verus. The theorem does not state that
   the loaded `Config` equals the one with neither variable set.
+- **Every configuration source leaves a well-formed config**
+  (`Config::set`'s contract, `config.rs`): from a well-formed `Config`
+  (`Config::wf`: `tcache_nslots_small_max` in `[MIN_CAP, MAX_NSLOTS]`,
+  `lg_tcache_nslots_mul` in `[-16, 16]`, `guard_slab_interval` 0 or a
+  power of two in `[2, MAX_GUARD_SLAB_INTERVAL]`), every `set` of any
+  key to any value leaves one, so `Config::DEFAULT`
+  (`lemma_default_wf`) and every parsed source give `cap_for` and
+  `SlabTable::new` the ranges they need. The tunable's parser is
+  `Config::set_at`, one arm per `KEYS` index; `set_listed` returns
+  `None`, the config unchanged, exactly when no `KEYS` entry is named
+  `key` (`get` likewise). Premises: the `core` specifications of
+  `u32::is_power_of_two` and `usize::next_power_of_two`
+  (`vspec/core_int.rs`, both discharged by Kani). Weaker than the code:
+  which field an arm writes is not stated; the unit test
+  `the_table_is_the_one_spelling_of_every_key` checks each name against
+  its field.
 - **Overflow reach** (`heap::theorem_overflow_reach`, `heap/theorems.rs`):
   between any byte of a block that `fits` and any byte of the metadata
   region, the `Shared` static, another class region or the huge region,
@@ -6413,7 +6429,7 @@ bounds, and `Sink::write_str` (verified) keeps it.
   `PAtomicU8` operation each, `SeqCst`), `class_entry`,
   the watermark's load `vspec::atom::load_usize` (the registry is read
   through `Arenas::get_existing` and the verified `arena_ref`),
-  `Config::get` and `KEYS`, `vspec::ptr::ref_ptr`
+  `vspec::ptr::ref_ptr`
   (the address of `copy_prefix`'s value; the accesses to the caller's
   memory verify over `vspec::cbuf` and the `core` specs of
   `vspec::ptr`), the kernel fact `axiom_read_count` (`sys::read`'s

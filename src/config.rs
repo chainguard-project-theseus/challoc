@@ -23,12 +23,11 @@
 //! it applies to keys that appeared before it in the same or an earlier
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
-//! Three tables name the keys. [`TABLE`] holds the tunables the allocator
-//! reads, jemalloc's and challoc's own (`lazy_band`, `guards`,
-//! ...): one [`Key`] per tunable with its name,
-//! its parser and its reader, so [`Config::set`], [`Config::get`]
-//! (`opt.<key>`) and the name list [`KEYS`] all come from the one entry;
-//! the modules named in each field's doc act on the values.
+//! Three tables name the keys. [`KEYS`] names the tunables the allocator
+//! reads, jemalloc's and challoc's own (`lazy_band`, `guards`, ...), in
+//! table order; [`Config::set`] and [`Config::get`] (`opt.<key>`) find a
+//! key's index there and run that index's parser or reader; the modules
+//! named in each field's doc act on the values.
 //! [`IGNORED_KEYS`] are jemalloc keys accepted with any value and ignored,
 //! so a conf string written against jemalloc parses clean. The *inert*
 //! key ([`INERT_KEYS`]: `stats_print`) is parsed as a bool but nothing in
@@ -41,6 +40,8 @@ use core::ffi::CStr;
 use core::fmt::{self, Write as _};
 
 use crate::heap::{MAX_CAP, MIN_CAP};
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::string::*;
@@ -65,15 +66,10 @@ pub const MAX_GUARD_SLAB_INTERVAL: u32 = 1 << 22;
 /// caps decay at `NSTIME_SEC_MAX * 1000`, which is far larger, but a `u64`
 /// of nanoseconds must not overflow when the interval is converted.
 pub const MAX_INTERVAL_MS: i64 = 1_000_000_000_000;
-
-} // verus!
-
 /// Largest `huge_retain_max`: the preferred huge region (2^40 bytes,
 /// `layout::LG_HUGE_PREFERRED`); no run can be larger, so anything above
 /// means "retain every freed run for decay".
 pub const MAX_HUGE_RETAIN_MAX: usize = 1 << crate::layout::LG_HUGE_PREFERRED;
-
-verus! {
 
 /// `thp` values (`default` is accepted as `never`; design 7, 10 and 17,
 /// `thp.rs`).
@@ -357,10 +353,10 @@ impl Config {
     }
 
     /// Set one key from its textual value: a [`KEYS`] entry's parser
-    /// ([`TABLE`]), an inert key ([`INERT_KEYS`]: validated as a bool, then
-    /// [`Issue::Inert`]), an ignored key ([`IGNORED_KEYS`]: any value), else
-    /// [`Issue::UnknownKey`]. An out-of-range number is clamped *and*
-    /// returned as [`Issue::OutOfRange`].
+    /// ([`Config::set_at`]), an inert key ([`INERT_KEYS`]: validated as a
+    /// bool, then [`Issue::Inert`]), an ignored key ([`IGNORED_KEYS`]: any
+    /// value), else [`Issue::UnknownKey`]. An out-of-range number is
+    /// clamped *and* returned as [`Issue::OutOfRange`].
     pub fn set<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
         requires
             old(self).wf(),
@@ -386,33 +382,219 @@ impl Config {
         Err(Issue::UnknownKey(key))
     }
 
-    /// The [`TABLE`] entry's parser for `key`, `None` when no entry is
-    /// named `key`. Trusted: the table holds function pointers. The three
-    /// fields of [`Config::wf`] are written only by their own parsers,
-    /// through `num` with the `wf` range as its bounds; the guard slab
-    /// interval's then lifts 1 to 2 and rounds a value that is not a power
-    /// of two up to the next, which stays within the bound (itself a power
-    /// of two). The config must be well formed: on a value that does not
-    /// parse the interval keeps its old value, which that rounding would
-    /// overflow past `2^31`.
-    #[verifier::external_body]
+    /// The parser of the [`KEYS`] entry named `key`, `None` (the config
+    /// unchanged) when no entry is.
     #[inline(always)]
     fn set_listed<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Option<Result<(), Issue<'a>>>)
         requires
             old(self).wf(),
         ensures
             final(self).wf(),
+            r is None <==> !listed(key@),
+            r is None ==> *final(self) == *old(self),
     {
-        Key::find(key).map(|k| (k.parse.0)(self, key, value))
+        let i = find(key)?;
+        Some(self.set_at(i, key, value))
     }
 
-    /// The value of a key by name, for `mallctl("opt.<key>")`: the
-    /// [`TABLE`] entry's reader. `None` for keys that are only accepted
-    /// and ignored, for inert keys and for unknown keys. Trusted: the
-    /// table holds function pointers; nothing is claimed about the value.
-    #[verifier::external_body]
-    pub fn get(&self, key: &[u8]) -> Option<Value> {
-        Key::find(key).map(|k| (k.read.0)(self))
+    /// The value of a key by name, for `mallctl("opt.<key>")`: the reader
+    /// of the [`KEYS`] entry named `key`. `None` for keys that are only
+    /// accepted and ignored, for inert keys and for unknown keys.
+    pub fn get(&self, key: &[u8]) -> (r: Option<Value>)
+        ensures
+            r is None <==> !listed(key@),
+    {
+        let i = find(key)?;
+        Some(self.read_at(i))
+    }
+
+    /// Parse `value` into the tunable `KEYS[i]` names. The fields of
+    /// [`Config::wf`] are written only by their own arms, clamped to the
+    /// `wf` range; the guard slab interval's then lifts 1 to 2 and rounds
+    /// a value that is not a power of two up to the next, which stays
+    /// within the bound (itself a power of two). The config must be well
+    /// formed: on a value that does not parse the interval keeps its old
+    /// value, which that rounding would overflow past `2^31`.
+    fn set_at<'a>(&mut self, i: usize, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+            i < NAMES@.len(),
+        ensures
+            final(self).wf(),
+    {
+        match i {
+            0 => {
+                // background_thread: unset it starts lazily
+                // (`purge::background::configure`) and reads back
+                // `false`, jemalloc's default: no thread was asked for.
+                self.background_thread = Some(parse_bool(value).ok_or(Issue::BadValue { key, value })?);
+                Ok(())
+            },
+            1 => {
+                let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
+                self.dirty_decay_ms = v;
+                range(cut, key, value)
+            },
+            2 => {
+                let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
+                self.muzzy_decay_ms = v;
+                range(cut, key, value)
+            },
+            3 => {
+                let (v, cut) = clamped(key, value, 0, u32::MAX as i64)?;
+                self.narenas = v as u32;
+                range(cut, key, value)
+            },
+            4 => {
+                self.percpu_arena = pick(
+                    &[
+                        ("disabled", PercpuArena::Disabled),
+                        ("percpu", PercpuArena::Percpu),
+                        ("phycpu", PercpuArena::Phycpu),
+                    ],
+                    key,
+                    value,
+                )?;
+                Ok(())
+            },
+            5 => bool_into(&mut self.tcache, key, value),
+            6 => {
+                let (v, cut) = clamped(key, value, 0, crate::layout::MEDIUM_MAX as i64)?;
+                self.tcache_max = v as usize;
+                range(cut, key, value)
+            },
+            7 => {
+                let (v, cut) = clamped(key, value, MIN_CAP as i64, MAX_NSLOTS as i64)?;
+                self.tcache_nslots_small_max = v as u32;
+                range(cut, key, value)
+            },
+            8 => {
+                let (v, cut) = clamped(key, value, LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64)?;
+                self.lg_tcache_nslots_mul = v as i32;
+                range(cut, key, value)
+            },
+            9 => {
+                // thp: `default` is jemalloc's spelling of `never`.
+                self.thp = pick(
+                    &[
+                        ("never", Thp::Never),
+                        ("default", Thp::Never),
+                        ("auto", Thp::Auto),
+                        ("always", Thp::Always),
+                    ],
+                    key,
+                    value,
+                )?;
+                Ok(())
+            },
+            10 => bool_into(&mut self.lazy_band, key, value),
+            11 => bool_into(&mut self.guards, key, value),
+            12 => self.set_guard_slab_interval(key, value),
+            13 => {
+                proof {
+                    assert(MAX_HUGE_RETAIN_MAX == 0x100_0000_0000) by (compute);
+                }
+                let (v, cut) = clamped(key, value, 0, MAX_HUGE_RETAIN_MAX as i64)?;
+                self.huge_retain_max = v as usize;
+                range(cut, key, value)
+            },
+            14 => {
+                // huge_dirty_decay_ms: unset it follows `dirty_decay_ms`,
+                // which is what it reads back.
+                let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
+                self.huge_dirty_decay_ms = Some(v);
+                range(cut, key, value)
+            },
+            15 => bool_into(&mut self.zero_on_free, key, value),
+            16 => bool_into(&mut self.pac_pointers, key, value),
+            17 => bool_into(&mut self.slot_randomize, key, value),
+            18 => bool_into(&mut self.double_free_scan, key, value),
+            19 => bool_into(&mut self.exact_sized_free, key, value),
+            20 => bool_into(&mut self.abort_conf, key, value),
+            21 => bool_into(&mut self.cgroup, key, value),
+            _ => bool_into(&mut self.check_zero, key, value),
+        }
+    }
+
+    /// `guard_slab_interval`: 0 is off and N >= 2 is one guard per
+    /// N x 64 KiB; 1 would make every slab a guard and leave nothing to
+    /// allocate (`SlabTable::new` refuses it), so it is out of range and
+    /// clamps to the smallest interval with any slabs, 2. The interval
+    /// must be a power of two (the sized fast path's guard test is a
+    /// mask): anything else rounds up and is reported, so `abort_conf`
+    /// refuses it and a plain run says what it got. The maximum is a
+    /// power of two, so a clamped value needs no rounding.
+    fn set_guard_slab_interval<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+    {
+        proof {
+            vstd::arithmetic::power2::lemma2_to64();
+            assert(MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
+        }
+        let r = match clamped(key, value, 0, MAX_GUARD_SLAB_INTERVAL as i64) {
+            Ok((v, cut)) => {
+                self.guard_slab_interval = v as u32;
+                range(cut, key, value)
+            },
+            Err(e) => Err(e),
+        };
+        if self.guard_slab_interval == 1 {
+            self.guard_slab_interval = 2;
+            proof {
+                assert(2usize as nat == pow2(1));
+            }
+            return Err(Issue::OutOfRange { key, value });
+        }
+        if self.guard_slab_interval != 0 && !self.guard_slab_interval.is_power_of_two() {
+            let x = self.guard_slab_interval;
+            proof {
+                // Not a power of two, so not 2.
+                assert(2u32 as nat == pow2(1));
+            }
+            let p = (x as usize).next_power_of_two();
+            proof {
+                lemma_round_within(x as usize, p);
+            }
+            self.guard_slab_interval = p as u32;
+            return Err(Issue::Rounded { key, value, to: self.guard_slab_interval as u64 });
+        }
+        r
+    }
+
+    /// The value of the tunable `KEYS[i]` names, as [`Config::get`]
+    /// answers it.
+    fn read_at(&self, i: usize) -> (r: Value)
+        requires
+            i < NAMES@.len(),
+    {
+        match i {
+            0 => Value::Bool(self.background_thread == Some(true)),
+            1 => Value::Int(self.dirty_decay_ms),
+            2 => Value::Int(self.muzzy_decay_ms),
+            3 => Value::Uint(self.narenas as u64),
+            4 => Value::Str(Name::PercpuArena(self.percpu_arena)),
+            5 => Value::Bool(self.tcache),
+            6 => Value::Size(self.tcache_max),
+            7 => Value::Uint(self.tcache_nslots_small_max as u64),
+            8 => Value::Int(self.lg_tcache_nslots_mul as i64),
+            9 => Value::Str(Name::Thp(self.thp)),
+            10 => Value::Bool(self.lazy_band),
+            11 => Value::Bool(self.guards),
+            12 => Value::Uint(self.guard_slab_interval as u64),
+            13 => Value::Size(self.huge_retain_max),
+            14 => Value::Int(self.huge_decay_ms()),
+            15 => Value::Bool(self.zero_on_free),
+            16 => Value::Bool(self.pac_pointers),
+            17 => Value::Bool(self.slot_randomize),
+            18 => Value::Bool(self.double_free_scan),
+            19 => Value::Bool(self.exact_sized_free),
+            20 => Value::Bool(self.abort_conf),
+            21 => Value::Bool(self.cgroup),
+            _ => Value::Bool(self.check_zero),
+        }
     }
 
     /// Whether `class` is a *shared* class: larger than `tcache_max`, so no
@@ -545,64 +727,74 @@ const _: () = assert!(
         && matches!(PERCPU_ARENA_NAMES[2].to_bytes(), b"phycpu")
 );
 
-/// A key's parser: `(config, key, value)`; the key is passed so the issue
-/// can name it. A newtype, so the verifier, which rejects function
-/// pointer types, can take it as an opaque type.
-// The newtype is the opaque type the verifier needs (above).
-#[allow(clippy::type_complexity)]
-struct Parse(for<'a> fn(&mut Config, &'a [u8], &'a [u8]) -> Result<(), Issue<'a>>);
-
-/// A key's reader, the value [`Config::get`] answers with; opaque, as
-/// [`Parse`].
-struct Read(fn(&Config) -> Value);
-
 verus! {
 
-#[verifier::external_type_specification]
-#[verifier::external_body]
-// Never constructed: it only names `Parse` to the verifier.
-#[allow(dead_code)]
-struct ExParse(Parse);
-
-#[verifier::external_type_specification]
-#[verifier::external_body]
-// Never constructed: it only names `Read` to the verifier.
-#[allow(dead_code)]
-struct ExRead(Read);
-
-/// One tunable of design 12: its name (`opt.<name>`), the parser
-/// [`Config::set`] runs on its value and the reader [`Config::get`]
-/// answers with. The entries are [`TABLE`]; [`KEYS`] is their names.
-pub struct Key {
-    pub name: &'static str,
-    parse: Parse,
-    read: Read,
+/// Whether some [`KEYS`] entry is named `key`.
+pub closed spec fn listed(key: Seq<u8>) -> bool {
+    exists|j: int| 0 <= j < NAMES@.len() && #[trigger] NAMES@[j].spec_bytes() == key
 }
 
-impl Key {
-    /// The entry named `key`, if any.
-    fn find(key: &[u8]) -> (r: Option<&'static Key>)
-        ensures
-            r matches Some(k) ==> k.name.spec_bytes() == key@,
+/// The index of the [`KEYS`] entry named `key`, if any.
+fn find(key: &[u8]) -> (r: Option<usize>)
+    ensures
+        r matches Some(i) ==> i < NAMES@.len() && NAMES@[i as int].spec_bytes() == key@,
+        r is None <==> !listed(key@),
+{
+    // `KEYS.iter().position(|k| k.as_bytes() == key)`, with an index:
+    // the loop's invariant is what `r is None` needs.
+    let mut i = 0;
+    while i < NAMES.len()
+        invariant
+            i <= NAMES@.len(),
+            forall|j: int| 0 <= j < i ==> #[trigger] NAMES@[j].spec_bytes() != key@,
+        decreases NAMES@.len() - i,
     {
-        // `TABLE.iter().find(|k| k.name.as_bytes() == key)`, with an
-        // index: Verus does not specify `Iterator::find`.
-        let table = TABLE;
-        let mut i = 0;
-        while i < table.len()
-            invariant
-                i <= table@.len(),
-            decreases table@.len() - i,
-        {
-            if table[i].name.as_bytes() == key {
-                proof {
-                    assert(table@[i as int].name.spec_bytes() =~= key@);
-                }
-                return Some(&table[i]);
+        if NAMES[i].as_bytes() == key {
+            proof {
+                assert(NAMES@[i as int].spec_bytes() =~= key@);
             }
-            i += 1;
+            return Some(i);
         }
-        None
+        i += 1;
+    }
+    None
+}
+
+/// `Ok(())`, or [`Issue::OutOfRange`] when the value was clamped (`cut`).
+fn range<'a>(cut: bool, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+    ensures
+        r == if cut { Err::<(), Issue<'a>>(Issue::OutOfRange { key, value }) } else { Ok(()) },
+{
+    if cut {
+        Err(Issue::OutOfRange { key, value })
+    } else {
+        Ok(())
+    }
+}
+
+/// The guard slab interval's round-up stays well formed: the next power
+/// of two `p` of an interval `x` in `(2, MAX_GUARD_SLAB_INTERVAL]` is
+/// below `2x` (`usize::next_power_of_two`), so below
+/// `2 * MAX_GUARD_SLAB_INTERVAL`, and a power of two below twice a power
+/// of two is at most it.
+proof fn lemma_round_within(x: usize, p: usize)
+    requires
+        2 < x <= MAX_GUARD_SLAB_INTERVAL,
+        exists|k: nat| k < 64 && p as nat == #[trigger] pow2(k),
+        x <= p < 2 * x,
+    ensures
+        2 <= p <= MAX_GUARD_SLAB_INTERVAL,
+        crate::meta::is_pow2(p),
+        (p as u32) as usize == p,
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    assert(MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
+    let k = choose|k: nat| k < 64 && p as nat == #[trigger] pow2(k);
+    if k > 23 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(23, k);
+    }
+    if k < 22 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(k, 22);
     }
 }
 
@@ -616,33 +808,6 @@ fn bool_into<'a>(slot: &mut bool, key: &'a [u8], value: &'a [u8]) -> (r: Result<
 {
     *slot = parse_bool(value).ok_or(Issue::BadValue { key, value })?;
     Ok(())
-}
-
-/// A numeric key: parse, clamp into `[min, max]`, assign through `store`,
-/// then report a clamp as [`Issue::OutOfRange`].
-fn num<'a>(
-    cfg: &mut Config,
-    key: &'a [u8],
-    value: &'a [u8],
-    min: i64,
-    max: i64,
-    store: impl FnOnce(&mut Config, i64),
-) -> (r: Result<(), Issue<'a>>)
-    requires
-        min <= max,
-        forall|c: &mut Config, v: i64| min <= v <= max ==> call_requires(store, (c, v)),
-    ensures
-        parse_int_spec(value@) is None ==> r == Err::<(), Issue<'a>>(Issue::BadValue { key, value }),
-        parse_int_spec(value@) matches Some(v) ==> (r is Ok <==> min <= v <= max),
-        r is Err && parse_int_spec(value@) is Some ==> r == Err::<(), Issue<'a>>(Issue::OutOfRange { key, value }),
-{
-    let (v, clamped) = clamped(key, value, min, max)?;
-    store(cfg, v);
-    if clamped {
-        Err(Issue::OutOfRange { key, value })
-    } else {
-        Ok(())
-    }
 }
 
 /// A named-value key: `value` looked up in `names` (aliases are extra
@@ -673,190 +838,47 @@ fn pick<'a, T: Copy>(names: &[(&str, T)], key: &'a [u8], value: &'a [u8]) -> (r:
     Err(Issue::BadValue { key, value })
 }
 
-} // verus!
-
-/// A [`TABLE`] entry for a bool key stored in `field`.
-macro_rules! bool_key {
-    ($name:literal, $field:ident) => {
-        Key {
-            name: $name,
-            parse: Parse(|c, k, v| bool_into(&mut c.$field, k, v)),
-            read: Read(|c| Value::Bool(c.$field)),
-        }
-    };
-}
-
-/// A [`TABLE`] entry for a numeric key: `field` of type `$t`, parsed by
-/// [`num`] in `[$min, $max]` and read back as `Value::$kind` of `$u`.
-macro_rules! num_key {
-    ($name:literal, $field:ident: $t:ty, [$min:expr, $max:expr] => $kind:ident($u:ty)) => {
-        Key {
-            name: $name,
-            parse: Parse(|c, k, v| num(c, k, v, $min, $max, |c, v| c.$field = v as $t)),
-            read: Read(|c| Value::$kind(c.$field as $u)),
-        }
-    };
-}
-
-/// Every tunable, in table order (the order of the `opt.` namespace, the
-/// report and `KEYS`). A new key is one entry here plus its field; the
+/// Every tunable's name, in table order: the order of the `opt.`
+/// namespace (`mallctl` builds its `opt.` nodes from this slice at
+/// compile time, by position), of the report, and of the arms of
+/// [`Config::set_at`] and [`Config::read_at`], which index it. A new key
+/// is its name here, its field, and an arm in each of those two; the
 /// tests check that every entry reads back, round-trips through `set`
-/// and is in no other table. Kept apart from [`TABLE`], so the verifier
-/// can take the table, whose entries hold closures, as one trusted
-/// constant.
-const ENTRIES: &[Key] = &[
-    Key {
-        // Unset it starts lazily (`purge::background::configure`) and
-        // reads back `false`, jemalloc's default: no thread was asked for.
-        name: "background_thread",
-        parse: Parse(|c, k, v| {
-            c.background_thread = Some(parse_bool(v).ok_or(Issue::BadValue { key: k, value: v })?);
-            Ok(())
-        }),
-        read: Read(|c| Value::Bool(c.background_thread == Some(true))),
-    },
-    num_key!("dirty_decay_ms", dirty_decay_ms: i64, [-1, MAX_INTERVAL_MS] => Int(i64)),
-    num_key!("muzzy_decay_ms", muzzy_decay_ms: i64, [-1, MAX_INTERVAL_MS] => Int(i64)),
-    num_key!("narenas", narenas: u32, [0, u32::MAX as i64] => Uint(u64)),
-    Key {
-        name: "percpu_arena",
-        parse: Parse(|c, k, v| {
-            c.percpu_arena = pick(
-                &[
-                    ("disabled", PercpuArena::Disabled),
-                    ("percpu", PercpuArena::Percpu),
-                    ("phycpu", PercpuArena::Phycpu),
-                ],
-                k,
-                v,
-            )?;
-            Ok(())
-        }),
-        read: Read(|c| Value::Str(Name::PercpuArena(c.percpu_arena))),
-    },
-    bool_key!("tcache", tcache),
-    num_key!("tcache_max", tcache_max: usize, [0, crate::layout::MEDIUM_MAX as i64] => Size(usize)),
-    num_key!("tcache_nslots_small_max", tcache_nslots_small_max: u32,
-        [MIN_CAP as i64, MAX_NSLOTS as i64] => Uint(u64)),
-    num_key!("lg_tcache_nslots_mul", lg_tcache_nslots_mul: i32,
-        [LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64] => Int(i64)),
-    Key {
-        // `default` is jemalloc's spelling of `never`.
-        name: "thp",
-        parse: Parse(|c, k, v| {
-            c.thp = pick(
-                &[
-                    ("never", Thp::Never),
-                    ("default", Thp::Never),
-                    ("auto", Thp::Auto),
-                    ("always", Thp::Always),
-                ],
-                k,
-                v,
-            )?;
-            Ok(())
-        }),
-        read: Read(|c| Value::Str(Name::Thp(c.thp))),
-    },
-    bool_key!("lazy_band", lazy_band),
-    bool_key!("guards", guards),
-    Key {
-        name: "guard_slab_interval",
-        parse: Parse(|c, k, v| {
-            // 0 is off and N >= 2 is one guard per N x 64 KiB; 1 would
-            // make every slab a guard and leave nothing to allocate
-            // (`SlabTable::new` refuses it), so it is out of range and
-            // clamps to the smallest interval with any slabs, 2. The
-            // interval must be a power of two (the sized fast path's
-            // guard test is a mask): anything else rounds up and is
-            // reported, so `abort_conf` refuses it and a plain run says
-            // what it got. The maximum is a power of two, so a clamped
-            // value needs no rounding.
-            let r = num(c, k, v, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| {
-                c.guard_slab_interval = v as u32
-            });
-            if c.guard_slab_interval == 1 {
-                c.guard_slab_interval = 2;
-                return Err(Issue::OutOfRange { key: k, value: v });
-            }
-            if c.guard_slab_interval != 0 && !c.guard_slab_interval.is_power_of_two() {
-                c.guard_slab_interval = c.guard_slab_interval.next_power_of_two();
-                return Err(Issue::Rounded {
-                    key: k,
-                    value: v,
-                    to: c.guard_slab_interval as u64,
-                });
-            }
-            r
-        }),
-        read: Read(|c| Value::Uint(c.guard_slab_interval as u64)),
-    },
-    num_key!("huge_retain_max", huge_retain_max: usize,
-        [0, MAX_HUGE_RETAIN_MAX as i64] => Size(usize)),
-    Key {
-        // Unset it follows `dirty_decay_ms`, which is what it reads back.
-        name: "huge_dirty_decay_ms",
-        parse: Parse(|c, k, v| {
-            num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| {
-                c.huge_dirty_decay_ms = Some(v)
-            })
-        }),
-        read: Read(|c| Value::Int(c.huge_decay_ms())),
-    },
-    bool_key!("zero_on_free", zero_on_free),
-    bool_key!("pac_pointers", pac_pointers),
-    bool_key!("slot_randomize", slot_randomize),
-    bool_key!("double_free_scan", double_free_scan),
-    bool_key!("exact_sized_free", exact_sized_free),
-    bool_key!("abort_conf", abort_conf),
-    bool_key!("cgroup", cgroup),
-    bool_key!("check_zero", check_zero),
-];
-
-verus! {
-
-/// [`ENTRIES`], the tunables. Trusted: the verifier cannot see the
-/// entries (they hold closures); nothing is claimed about them.
-// The lifetimes are spelled out: `verus!` builds an `exec const` as a
-// function in the verifier's view, where `&[Key]` would have none.
-#[allow(clippy::redundant_static_lifetimes)]
-#[verifier::external_body]
-pub exec const TABLE: &'static [Key] = ENTRIES;
-
-/// The names of [`TABLE`], in its order. The loop also tests `out`'s
-/// length, which is `TABLE.len()` by its type: the verifier does not
-/// evaluate the array length.
-const fn names() -> [&'static str; TABLE.len()] {
-    let table = TABLE;
-    let mut out = [""; TABLE.len()];
-    let mut i = 0;
-    while i < table.len() && i < out.len()
-        invariant
-            i <= table@.len(),
-        decreases table@.len() - i,
-    {
-        out[i] = table[i].name;
-        i += 1;
-    }
-    out
-}
-
-} // verus!
-
-const NAMES: [&str; TABLE.len()] = names();
-
-verus! {
-
-/// Every key readable through [`Config::get`], in table order, for the
-/// `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at
-/// compile time, by position) and the tests: the names of [`TABLE`].
-/// Trusted only as a value of its type: `NAMES` is built from `TABLE`,
-/// which holds function pointers; nothing is claimed about the names.
+/// and is in no other table.
 // The lifetimes are spelled out: `verus!` builds an `exec const` as a
 // function in the verifier's view, where `&[&str]` would have none.
 #[allow(clippy::redundant_static_lifetimes)]
-#[verifier::external_body]
 pub exec const KEYS: &'static [&'static str] = &NAMES;
+
+/// [`KEYS`] as an array, the form the proofs read: a slice constant is
+/// exec only.
+// The lifetime is spelled out for `verus!`, as for `KEYS`.
+#[allow(clippy::redundant_static_lifetimes)]
+const NAMES: [&'static str; 23] = [
+    "background_thread",
+    "dirty_decay_ms",
+    "muzzy_decay_ms",
+    "narenas",
+    "percpu_arena",
+    "tcache",
+    "tcache_max",
+    "tcache_nslots_small_max",
+    "lg_tcache_nslots_mul",
+    "thp",
+    "lazy_band",
+    "guards",
+    "guard_slab_interval",
+    "huge_retain_max",
+    "huge_dirty_decay_ms",
+    "zero_on_free",
+    "pac_pointers",
+    "slot_randomize",
+    "double_free_scan",
+    "exact_sized_free",
+    "abort_conf",
+    "cgroup",
+    "check_zero",
+];
 
 /// jemalloc keys that are accepted and ignored.
 #[allow(clippy::redundant_static_lifetimes)]
@@ -2089,150 +2111,14 @@ mod tests;
 mod linux_tests;
 
 /// Kani harnesses for this file's seams that Kani can run
-/// (`verus/ledger/src/config.rs.md`): `Config::set_listed`, `Config::get`
-/// and `KEYS`; and the `Display` of `Issue` and `Bytes` that `parse_from`
-/// prints each problem with, run under the real `core::fmt` (Verus checks
-/// it against the `Formatter` specifications of `vspec/fmt.rs`).
+/// (`verus/ledger/src/config.rs.md`): the `Display` of `Issue` and
+/// `Bytes` that `parse_from` prints each problem with, run under the real
+/// `core::fmt` (Verus checks it against the `Formatter` specifications of
+/// `vspec/fmt.rs`).
 #[cfg(kani)]
 mod kani_config {
     use super::*;
     use crate::kani_proofs::fmt::formats;
-
-    /// `listed(key)`: some entry of `TABLE` is named `key`.
-    fn listed(key: &[u8]) -> bool {
-        let mut i = 0;
-        while i < TABLE.len() {
-            if TABLE[i].name.as_bytes() == key {
-                return true;
-            }
-            i += 1;
-        }
-        false
-    }
-
-    /// `Config::wf`, `is_pow2` read as `is_power_of_two` (checked against
-    /// the spec in `kani_proofs::core_int::usize_is_power_of_two`).
-    fn wf(c: &Config) -> bool {
-        MIN_CAP <= c.tcache_nslots_small_max
-            && c.tcache_nslots_small_max <= MAX_NSLOTS
-            && LG_NSLOTS_MUL_MIN <= c.lg_tcache_nslots_mul
-            && c.lg_tcache_nslots_mul <= LG_NSLOTS_MUL_MAX
-            && (c.guard_slab_interval == 0
-                || (2 <= c.guard_slab_interval
-                    && c.guard_slab_interval <= MAX_GUARD_SLAB_INTERVAL
-                    && (c.guard_slab_interval as usize).is_power_of_two()))
-    }
-
-    /// A `Config` with every field arbitrary.
-    fn any_config() -> Config {
-        Config {
-            background_thread: kani::any(),
-            dirty_decay_ms: kani::any(),
-            muzzy_decay_ms: kani::any(),
-            narenas: kani::any(),
-            percpu_arena: match kani::any::<u8>() % 3 {
-                0 => PercpuArena::Disabled,
-                1 => PercpuArena::Percpu,
-                _ => PercpuArena::Phycpu,
-            },
-            tcache: kani::any(),
-            tcache_max: kani::any(),
-            tcache_nslots_small_max: kani::any(),
-            lg_tcache_nslots_mul: kani::any(),
-            thp: match kani::any::<u8>() % 3 {
-                0 => Thp::Never,
-                1 => Thp::Auto,
-                _ => Thp::Always,
-            },
-            lazy_band: kani::any(),
-            guards: kani::any(),
-            guard_slab_interval: kani::any(),
-            huge_retain_max: kani::any(),
-            huge_dirty_decay_ms: if kani::any() { Some(kani::any()) } else { None },
-            zero_on_free: kani::any(),
-            pac_pointers: kani::any(),
-            slot_randomize: kani::any(),
-            double_free_scan: kani::any(),
-            exact_sized_free: kani::any(),
-            abort_conf: kani::any(),
-            cgroup: kani::any(),
-            check_zero: kani::any(),
-        }
-    }
-
-    /// The longest value checked: 8 bytes reach past every bound a
-    /// `Config::wf` field is clamped to (`0x` and six hex digits is
-    /// 16 Mi, above `MAX_GUARD_SLAB_INTERVAL`).
-    const VALUE_MAX: usize = 8;
-    /// The longest arbitrary key checked.
-    const KEY_MAX: usize = 4;
-
-    /// The name of an arbitrary `TABLE` entry, or arbitrary bytes up to
-    /// `KEY_MAX` long (mostly unlisted; `thp` is one of them).
-    fn any_key(buf: &[u8; KEY_MAX]) -> &[u8] {
-        if kani::any() {
-            let i: usize = kani::any();
-            kani::assume(i < TABLE.len());
-            TABLE[i].name.as_bytes()
-        } else {
-            let n: usize = kani::any();
-            kani::assume(n <= KEY_MAX);
-            &buf[..n]
-        }
-    }
-
-    /// `Config::set_listed`, `requires old(self).wf()`, `ensures
-    /// final(self).wf()`: under it the call returns and keeps `wf`, for
-    /// every well-formed config, every entry's name and every key up to
-    /// `KEY_MAX` bytes, and every value up to `VALUE_MAX` bytes. Also `None`
-    /// when no entry is named `key`, as its comment says, and beyond the
-    /// comment, `Some` for every listed key and the config unchanged on
-    /// `None`.
-    #[kani::proof]
-    #[kani::unwind(25)]
-    #[kani::solver(kissat)]
-    fn set_listed_contract() {
-        let kbuf: [u8; KEY_MAX] = kani::any();
-        let key = any_key(&kbuf);
-        let vbuf: [u8; VALUE_MAX] = kani::any();
-        let n: usize = kani::any();
-        kani::assume(n <= VALUE_MAX);
-        let value = &vbuf[..n];
-        let old = any_config();
-        kani::assume(wf(&old));
-        let mut c = old;
-        let r = c.set_listed(key, value);
-        assert_eq!(r.is_none(), !listed(key));
-        if r.is_none() {
-            assert!(c == old);
-        }
-        assert!(wf(&c));
-    }
-
-    /// `Config::get`, no `requires`, no `ensures`: the call returns for
-    /// every config and every key `any_key` gives, and (its comment) is
-    /// `Some` exactly when an entry is named `key`.
-    #[kani::proof]
-    #[kani::unwind(25)]
-    fn get_contract() {
-        let kbuf: [u8; KEY_MAX] = kani::any();
-        let key = any_key(&kbuf);
-        let c = any_config();
-        assert_eq!(c.get(key).is_some(), listed(key));
-    }
-
-    /// `KEYS`, trusted as a value of its type: it is also what its
-    /// comment says, the names of `TABLE` in table order.
-    #[kani::proof]
-    #[kani::unwind(25)]
-    fn keys_are_the_table_names() {
-        assert_eq!(KEYS.len(), TABLE.len());
-        let mut i = 0;
-        while i < KEYS.len() {
-            assert!(KEYS[i] == TABLE[i].name);
-            i += 1;
-        }
-    }
 
     /// `Issue`'s `Display`, which `parse_from` prints each problem with
     /// (its `fmt_req` is `true`), returns without a panic

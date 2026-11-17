@@ -1475,9 +1475,9 @@ discarded before it stopped). `malloc_stats_print` prints `cgroup:`,
 ## 12. Configuration
 
 `src/config.rs` is the source of truth for the key list, the defaults and
-the value grammar: one table (`TABLE`) holds every tunable with its
-name, parser and reader, and `KEYS` (the `opt.` namespace), `Config::set`
-and `Config::get` all come from it. [tuning.md](tuning.md) is the
+the value grammar: `KEYS` (the `opt.` namespace) names every tunable in
+table order, and `Config::set` and `Config::get` find a key's index there
+and run that index's parser or reader. [tuning.md](tuning.md) is the
 operator's reading: one row per key with its values, when to change it
 and what it costs.
 
@@ -1492,7 +1492,7 @@ Sources, in increasing priority (`config::load`):
 4. `MALLOC_CONF`, then `CHALLOC_CONF`, read from `environ` without
    `getenv`; both skipped when the process is `AT_SECURE`.
 
-Format is jemalloc's `key:value,key:value`. The keys, in `TABLE` order:
+Format is jemalloc's `key:value,key:value`. The keys, in `KEYS` order:
 
 | Key                       | Default | Notes                                   |
 |---------------------------|---------|-----------------------------------------|
@@ -2331,7 +2331,7 @@ src/purge/background.rs   the background thread (8.1)
 src/purge/tests.rs, src/purge/linux_tests.rs   purge tests
 src/policy.rs         the cgroup policy (section 11): bands, retention cap, full purge, Advice
 src/arena.rs          arenas and the arena registry
-src/config.rs         malloc_conf parsing: one key table (TABLE) behind set, get and KEYS
+src/config.rs         malloc_conf parsing: one key list (KEYS) behind set and get
 src/stats.rs          counters and the epoch merge
 src/stats/ledger.rs   ghost model of what the exact-stats counters count and where those blocks are
 src/thp.rs            the thp key against the sysfs table: reservation advice, folios, chunks, huge runs, force_never

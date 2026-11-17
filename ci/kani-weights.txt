@@ -27,7 +27,6 @@ sys::cgroup::kani_fmt::display_cgroup 355
 kani_proofs::slice::select_ptrs_short 349
 config::kani_config::display_bytes 342
 kani_proofs::slice::select_ptrs_by_key_short 322
-config::kani_config::set_listed_contract 304
 kani_proofs::slice::slice_is_sorted 249
 kani_proofs::slice::select_ptrs_by_key_11 195
 kani_proofs::slice::select_ptrs_11 140
@@ -43,7 +42,6 @@ heap::others::kani_view::caches_array_view 55
 kani_proofs::stats::fig_mul_exact 54
 heap::cache::kani_cache::home_ptr_at_is_the_home_header 28
 config::kani_config::display_issue_unknown_key 26
-config::kani_config::get_contract 25
 heap::slotstate::kani_arrays::no_arrays_are_zero 10
 heap::fresh::kani_assemble::writers_store_the_assembled_fields 7
 stats::kani_records::zero_records_zeroes 6

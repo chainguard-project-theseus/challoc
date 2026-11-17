@@ -8,7 +8,7 @@
 # The kani package is pinned to the release the harnesses were checked
 # with. It brings the rust stream its kani-compiler is built against
 # (rust-1.99, so this file installs no rust-1.98) and kissat, the solver
-# `fig_mul_exact` and `set_listed_contract` select; cbmc is pinned to the
+# `fig_mul_exact` selects; cbmc is pinned to the
 # release Kani 0.68.0 was tested with. theseus-proved-port is the kit,
 # pinned to the Makefile's PROVED_PORT_VERSION as verus.yaml pins it.
 # build-base is build.rs's C++ compiler, make runs the Makefile.

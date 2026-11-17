@@ -1,7 +1,7 @@
 # challoc tuning: the operator's guide
 
 This is the operator's view of challoc's tunables and of its cgroup and
-THP behaviour. `src/config.rs` (`TABLE`, `Config::DEFAULT`) is the source
+THP behaviour. `src/config.rs` (`KEYS`, `Config::DEFAULT`) is the source
 of truth for the key list, the defaults and the value grammar; the design
 behind each key is in [design.md](design.md) (cited as "design N").
 
@@ -92,7 +92,7 @@ thread is already creating it; Valkey does this at startup),
 
 ## 2. The keys
 
-One row per key, in `TABLE` order. "Values" is the grammar
+One row per key, in `KEYS` order. "Values" is the grammar
 `Config::set` accepts; ranges are inclusive.
 
 | key | values | default | what it does | change it when | cost or risk |

@@ -226,7 +226,7 @@ both quanta; locally, with Kani 0.68.0 and CBMC 6.11.0 (Wolfi's `kani` and
 ```sh
 make kani                     # every harness at quantum 16 (QUANTUM=8 for quantum 8)
 make kani KANI_HARNESS=kani_proofs::stats::fig_add_exact   # one harness
-make kani KANI_HARNESS=config::kani_config::get_contract   # one in a file
+make kani KANI_HARNESS=config::kani_config::display_bytes  # one in a file
 make kani-list                # the harnesses
 ```
 

@@ -717,79 +717,99 @@ fn set_knows_exactly_the_tabled_keys() {
     }
 }
 
-/// `KEYS` is `TABLE`'s names in `TABLE`'s order (what `mallctl`
-/// indexes the `opt.` MIB by), every name is unique, and every entry's
-/// reader and parser are the field's: reading an entry, setting a
-/// different value of its type through `set` and reading it back
-/// changes that entry and no other. Replaces a hand-kept count: a new
-/// key is one `TABLE` entry, and it is checked here whatever its name.
+/// The value of the field `name` stores, read straight from the field by
+/// its name, apart from `KEYS`' order: what `Config::get` must answer
+/// for `name`, so an arm of `set_at` or `read_at` at the wrong index
+/// fails the test below.
+fn field(c: &Config, name: &str) -> Value {
+    match name {
+        "background_thread" => Value::Bool(c.background_thread == Some(true)),
+        "dirty_decay_ms" => Value::Int(c.dirty_decay_ms),
+        "muzzy_decay_ms" => Value::Int(c.muzzy_decay_ms),
+        "narenas" => Value::Uint(c.narenas as u64),
+        "percpu_arena" => Value::Str(Name::PercpuArena(c.percpu_arena)),
+        "tcache" => Value::Bool(c.tcache),
+        "tcache_max" => Value::Size(c.tcache_max),
+        "tcache_nslots_small_max" => Value::Uint(c.tcache_nslots_small_max as u64),
+        "lg_tcache_nslots_mul" => Value::Int(c.lg_tcache_nslots_mul as i64),
+        "thp" => Value::Str(Name::Thp(c.thp)),
+        "lazy_band" => Value::Bool(c.lazy_band),
+        "guards" => Value::Bool(c.guards),
+        "guard_slab_interval" => Value::Uint(c.guard_slab_interval as u64),
+        "huge_retain_max" => Value::Size(c.huge_retain_max),
+        "huge_dirty_decay_ms" => Value::Int(c.huge_dirty_decay_ms.unwrap_or(c.dirty_decay_ms)),
+        "zero_on_free" => Value::Bool(c.zero_on_free),
+        "pac_pointers" => Value::Bool(c.pac_pointers),
+        "slot_randomize" => Value::Bool(c.slot_randomize),
+        "double_free_scan" => Value::Bool(c.double_free_scan),
+        "exact_sized_free" => Value::Bool(c.exact_sized_free),
+        "abort_conf" => Value::Bool(c.abort_conf),
+        "cgroup" => Value::Bool(c.cgroup),
+        "check_zero" => Value::Bool(c.check_zero),
+        _ => panic!("{name}: a key with no field here"),
+    }
+}
+
+/// Every name in `KEYS` (what `mallctl` indexes the `opt.` MIB by) is
+/// unique, and its parser and reader are its own field's: `get` reads
+/// the field `field` names, and setting a different value of its type
+/// through `set` changes that field's reading and no other. Replaces a
+/// hand-kept count: a new key is checked here whatever its name.
 #[test]
 fn the_table_is_the_one_spelling_of_every_key() {
-    assert_eq!(KEYS.len(), TABLE.len());
-    for (i, key) in TABLE.iter().enumerate() {
-        assert_eq!(KEYS[i], key.name);
+    let d = Config::DEFAULT;
+    for key in KEYS {
         assert_eq!(
-            KEYS.iter().filter(|k| **k == key.name).count(),
+            KEYS.iter().filter(|k| *k == key).count(),
             1,
-            "{} is named once",
-            key.name
+            "{key} is named once"
         );
         assert!(
-            !IGNORED_KEYS.contains(&key.name) && !INERT_KEYS.contains(&key.name),
-            "{}",
-            key.name
+            !IGNORED_KEYS.contains(key) && !INERT_KEYS.contains(key),
+            "{key}"
         );
+        assert_eq!(d.get(key.as_bytes()), Some(field(&d, key)), "{key}");
         // A value of the key's type that differs from the default.
-        let d = Config::DEFAULT;
-        let other = match (key.read.0)(&d) {
+        let other = match field(&d, key) {
             Value::Bool(b) => std::format!("{}", !b),
             Value::Int(i) => std::format!("{}", if i == 0 { 1 } else { 0 }),
             // Doubling stays in every unsigned key's range and keeps
             // `guard_slab_interval` a power of two.
             Value::Uint(u) => std::format!("{}", if u == 0 { 2 } else { u * 2 }),
             Value::Size(n) => std::format!("{}", if n == 0 { 2 } else { n * 2 }),
-            Value::Str(s) => match key.name {
+            Value::Str(s) => match *key {
                 "percpu_arena" => "percpu".into(),
                 "thp" => "always".into(),
-                _ => panic!("{}: a string key with no test value ({s:?})", key.name),
+                _ => panic!("{key}: a string key with no test value ({s:?})"),
             },
         };
         let mut cfg = d;
         assert_eq!(
-            cfg.set(key.name.as_bytes(), other.as_bytes()),
+            cfg.set(key.as_bytes(), other.as_bytes()),
             Ok(()),
-            "{}:{other}",
-            key.name
+            "{key}:{other}"
         );
         assert_ne!(
-            (key.read.0)(&cfg),
-            (key.read.0)(&d),
-            "{}:{other} read back through its own entry",
-            key.name
+            field(&cfg, key),
+            field(&d, key),
+            "{key}:{other} set its own field"
         );
-        assert_eq!(
-            cfg.get(key.name.as_bytes()),
-            Some((key.read.0)(&cfg)),
-            "{}",
-            key.name
-        );
-        for o in TABLE.iter().filter(|o| o.name != key.name) {
-            if key.name == "dirty_decay_ms" && o.name == "huge_dirty_decay_ms" {
+        assert_eq!(cfg.get(key.as_bytes()), Some(field(&cfg, key)), "{key}");
+        for o in KEYS.iter().filter(|o| *o != key) {
+            if *key == "dirty_decay_ms" && *o == "huge_dirty_decay_ms" {
                 // Unset, the huge period reads as the slab period
                 // (design 7): the one reading that moves with another key.
                 assert_eq!(
-                    (o.read.0)(&cfg),
-                    (key.read.0)(&cfg),
+                    cfg.get(o.as_bytes()),
+                    cfg.get(key.as_bytes()),
                     "huge_dirty_decay_ms follows dirty_decay_ms"
                 );
                 continue;
             }
             assert_eq!(
-                (o.read.0)(&cfg),
-                (o.read.0)(&d),
-                "{}:{other} changed {}",
-                key.name,
-                o.name
+                cfg.get(o.as_bytes()),
+                d.get(o.as_bytes()),
+                "{key}:{other} changed {o}"
             );
         }
     }
