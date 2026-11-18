@@ -450,6 +450,7 @@ fn text_report_line_set_is_pinned() {
             "cgroup:",
             "cgroup policy:",
             "purge advice:",
+            "fork epochs:",
             "thp:",
         ]
         .map(String::from),

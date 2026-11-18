@@ -6788,7 +6788,8 @@ verus! {
 /// (`ClassState::plan_at`, `reopen`, `on_live_zero`, `bin_stats`,
 /// `lowest_partial`, `is_partial`, `decay.rs`'s `empty_bytes`,
 /// `purge_empty` and `purge_curve`, `pages.rs`'s `close_pages`, and
-/// `cow.rs`'s `cow_mark`, which only reads `group_next`) ends with
+/// `cow.rs`'s `cow_mark` and `cow_settle`, which only read `group_next`)
+/// ends with
 /// `LockGuard::unlock`, which
 /// requires both, on every path to a return
 /// (`api::tests::guards_end_in_unlock`). A panic aborts
