@@ -8,8 +8,9 @@ made during [#138](https://github.com/chainguard-project-theseus/challoc/pull/13
 audit. It machine-checked two derivations of `false`, through
 `from_raw` and `Lock::get_unlocked`, whose contracts it fixed.*
 
-*This file lists the 37 of those seams that the ledger at `26f535a9`
-still lists. The others are verified at `26f535a9` or no longer exist,
+*This file lists the 36 of those seams that the ledger still lists: the
+37 the ledger at `26f535a9` listed, less `addr_mix`, which is verified
+since. The others are verified at `26f535a9` or no longer exist,
 so their rows are left out; among them are `Heap::destroy`,
 `LockGuard::deref_mut`, `SlabDesc::at`, `Set::ensure`, `Arenas::init`,
 `save_sigmask`, `from_raw` and `Lock::get_unlocked`, all verified there.
@@ -38,7 +39,7 @@ found the contract false or unsound and corrected it; the reason gives
 the corrected contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 37 seams listed: 33 sound, 4 fixed.
+Totals for the 36 seams listed: 32 sound, 4 fixed.
 
 | seam | ledger file | status | verdict | reason |
 |---|---|---|---|---|
@@ -46,7 +47,6 @@ Totals for the 37 seams listed: 33 sound, 4 fixed.
 | `shared_storage_ptr` | `api/mod.rs` | discharged | sound | `Shared::storage()` is one uninterpreted constant; the body returns the static's address. |
 | `axiom_arena_assemble` | `arena.rs` | trusted | fixed | Consumes the field permissions and the padding (`pad_covers`), so the assembled `PointsTo<Arena>` covers exactly the bytes it is given (see details). |
 | `Heap::home_ptr_at` | `heap/cache.rs` | trusted (partly checked) | sound | Ensures the home header's address, `heap + 128 + 64 * class`. True while the heap's ghost record names the headers at its own address (`Heap::home_at`); the Kani harness checks the arithmetic, not that premise. |
-| `addr_mix` | `heap/flush.rs` | discharged | sound | No `ensures`. |
 | `Heap::arena_volatile` | `heap/mod.rs` | discharged | sound | No `ensures`. |
 | `axiom_shared_built` | `heap/shared.rs` | trusted | sound | Consumes its permissions and returns none, so padding does not matter. A second call needs a second set of field permissions, which only `Shared::begin` mints, once per process. |
 | `axiom_shared_regions` | `heap/shared.rs` | trusted | sound | The permission is frozen behind `&'static`; two calls give the same value. |

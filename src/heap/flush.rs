@@ -108,8 +108,8 @@ impl Heap {
     /// from `getrandom` (mixed with the heap's address and thread id so two
     /// heaps seeded in the same instant differ even if the kernel returned
     /// the same bytes, and never zero, which xorshift cannot leave).
-    /// Only `rng` changes; the address mix ([`addr_mix`], trusted) and
-    /// `seed` (verified, a syscall) may return anything.
+    /// Only `rng` changes; the address mix ([`addr_mix`]) and `seed` (both
+    /// verified, `seed` a syscall) may return anything.
     #[cold]
     #[inline(never)]
     pub(super) fn rng(&mut self) -> (r: &mut u64)
@@ -1889,33 +1889,27 @@ fn slot_randomize(shared: &Shared) -> bool {
 }
 
 /// `rng`'s mix of the heap's address into its seed: the address of `h`,
-/// rotated left by 17 bits.
-///
-/// Trusted: Verus rejects the reference-to-integer cast; claims nothing
-/// about the value.
+/// rotated left by 17 bits (right by 47).
 #[inline(always)]
-#[verifier::external_body]
 fn addr_mix(h: &Heap) -> u64 {
-    (h as *const Heap as u64).rotate_left(17)
+    crate::layout::rotate_right64(ptr::from_ref(h).addr() as u64, 47)
 }
 
 } // verus!
 
-/// Kani check of `addr_mix` (`verus/ledger/src/heap/flush.rs.md`;
-/// `cfg(kani)` only, see `verus/README.md`, "Kani").
-#[cfg(kani)]
-mod kani_flush {
+#[cfg(test)]
+mod addr_mix_tests {
     use super::Heap;
 
-    /// `addr_mix` has no `ensures`, so Verus assumes only that it
-    /// returns. The harness checks more: for a `Heap` on the stack, at
-    /// the address Kani gives it, the call returns that address rotated
-    /// left by 17 bits. The fields (zeroed here) do not enter the result.
-    #[kani::proof]
-    fn addr_mix_returns() {
-        // SAFETY: every field of `Heap` is valid all-zero.
-        let h: Heap = unsafe { core::mem::zeroed() };
-        let a = &h as *const Heap as u64;
-        assert_eq!(super::addr_mix(&h), a.rotate_left(17));
+    /// `addr_mix` is the heap's address rotated left by 17 bits, as
+    /// `rotate_left` gives it. The fields (zeroed here) do not enter it.
+    #[test]
+    fn addr_mix_is_the_address_rotated_left_17() {
+        let h = core::mem::MaybeUninit::<Heap>::zeroed();
+        // SAFETY: every field of `Heap` is valid all-zero; the `Heap` is
+        // never dropped.
+        let h = unsafe { h.assume_init_ref() };
+        let a = h as *const Heap as u64;
+        assert_eq!(super::addr_mix(h), a.rotate_left(17));
     }
 }
