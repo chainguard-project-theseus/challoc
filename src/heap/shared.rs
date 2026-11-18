@@ -606,7 +606,7 @@ impl ClassLine {
             tz: cls.tz,
             lg_slab: cls.lg_slab,
             lg_group: table.lg_group(),
-            lg_guard: cls.lg_slab + table.slabs_per_page().trailing_zeros() as u8,
+            lg_guard: cls.lg_slab + crate::layout::trailing_zeros(table.slabs_per_page()) as u8,
             _pad: [0; 2],
             committed_inv,
         };
@@ -4184,7 +4184,7 @@ const fn inverse_of_odd_part_u64(size: usize) -> (r: u64)
         assert(t < 64 && (w >> t) & 1 == 1) by (bit_vector)
             requires 1 <= w <= 0x4_0000u64, t <= 64, t < 64 ==> (w >> t) & 1u64 == 1u64, w == 0 <==> t == 64;
     }
-    let d = (size as u64) >> size.trailing_zeros();
+    let d = (size as u64) >> crate::layout::trailing_zeros(size);
     let mut x = d;
     let mut i = 0;
     proof {

@@ -1774,7 +1774,7 @@ fn init(
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
-    unsafe { layout::adopt_page_geometry(crate::sys::features::page_size().trailing_zeros(), Tracked(&mut classes)) };
+    unsafe { layout::adopt_page_geometry(layout::trailing_zeros(crate::sys::features::page_size()), Tracked(&mut classes)) };
     // Frozen now: every later reader, here and from `READY` on, reads the
     // table through this one shared permission.
     let tracked classes = vstd::modes::tracked_static_ref(classes);

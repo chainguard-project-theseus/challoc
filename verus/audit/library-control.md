@@ -4,13 +4,14 @@
 library, function pointer, panic/abort and termination, made during
 [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
-*This file lists the 103 of those seams that the ledger still lists:
+*This file lists the 102 of those seams that the ledger still lists:
 the 116 the ledger at `26f535a9` listed, less the three statistics
 figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`),
 `assert_not_home`, the five byte, digit and negation specs
 (`u8::is_ascii_digit`, `u8::is_ascii_whitespace`, `char::to_digit`,
-`i64::wrapping_neg`, `isize::wrapping_neg`) and `u32::rotate_right`,
-`Option::or_else` and `Result::unwrap_or`, which are verified since or
+`i64::wrapping_neg`, `isize::wrapping_neg`), `u32::rotate_right`,
+`Option::or_else`, `Result::unwrap_or` and `usize::trailing_zeros`,
+which are verified since or
 replaced by verified code, and
 `Option::as_deref_mut`, which no code calls and whose seam is gone.
 The others are verified at `26f535a9` or no longer exist
@@ -35,7 +36,7 @@ false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 103 seams listed: 98 sound and 5 fixed; 71 discharged,
+Totals for the 102 seams listed: 97 sound and 5 fixed; 70 discharged,
 9 partly checked and 23 trusted. The category column is
 the ledger's; a few seams of this audit sit in another category there.
 
@@ -94,7 +95,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `core::ffi::CStr` | `vspec/config.rs` | core library | trusted | sound | Opaque type; nothing claimed. |
 | `core::ffi::CStr::as_ptr` | `vspec/config.rs` | core library | discharged | sound | No `ensures`. |
 | `usize::ilog2` | `vspec/core_int.rs` | core library | discharged | sound | `r < 64`, `2^r <= x < 2^(r+1)` for `x > 0` (Kani checks every input). |
-| `usize::trailing_zeros` | `vspec/core_int.rs` | core library | discharged | sound | Vstd's recursion, 64 for 0 (Kani checks every input). |
 | `usize::leading_zeros` | `vspec/core_int.rs` | core library | discharged | sound | Vstd's `u64_leading_zeros` (Kani checks every input). |
 | `u64::count_ones` | `vspec/core_int.rs` | core library | discharged | sound | `popcount` (Kani checks every input). |
 | `usize::is_power_of_two` | `vspec/core_int.rs` | core library | discharged | sound | Powers of two below `2^64` (Kani checks every input). |

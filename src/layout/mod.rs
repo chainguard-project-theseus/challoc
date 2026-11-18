@@ -1100,7 +1100,7 @@ pub const fn lg_slab_for(size: usize) -> (r: u32)
         return lg;
     }
     let want = (16 * size).next_power_of_two();
-    let lg = want.trailing_zeros();
+    let lg = trailing_zeros(want);
     proof {
         assert(16 * size <= 0x40_0000);
         let k = choose|k: nat| k < 64 && want as nat == #[trigger] vstd::arithmetic::power2::pow2(k);
@@ -1236,7 +1236,7 @@ const fn inverse_of_odd_part(size: usize) -> (r: u32)
     proof {
         lemma_odd_part(size);
     }
-    let d = (size as u32) >> size.trailing_zeros();
+    let d = (size as u32) >> trailing_zeros(size);
     let mut x = d;
     let mut i = 0;
     proof {
@@ -1509,7 +1509,7 @@ pub const fn classes_for_page(lg_page: u32) -> (out: [Class; NCLASSES])
             nslots: nslots as u32,
             slab_mask: ((1usize << lg_slab) - 1) as u32,
             inv_odd: inverse_of_odd_part(size),
-            tz: size.trailing_zeros() as u8,
+            tz: trailing_zeros(size) as u8,
             slab_bits: slab_bits as u16,
         };
         i += 1;
@@ -1901,6 +1901,16 @@ pub const fn rotate_right32(x: u32, n: u32) -> (r: u32)
                 r == (x >> k) | (x << s);
     }
     r
+}
+
+/// `x.trailing_zeros()`, through `u64`, which vstd specifies (`usize` is
+/// 64 bits wide on every target challoc builds for).
+#[inline(always)]
+pub const fn trailing_zeros(x: usize) -> (r: u32)
+    ensures
+        r == vstd::std_specs::bits::u64_trailing_zeros(x as u64),
+{
+    (x as u64).trailing_zeros()
 }
 
 /// `x.rotate_right(n)` for `u64`, spelled as [`rotate_right32`] is.

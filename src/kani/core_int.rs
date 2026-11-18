@@ -5,20 +5,6 @@
 //! functions the contracts name, in the same recursion, over `u128`
 //! where the spec's `int` arithmetic could leave 64 bits.
 
-/// vstd's `u64_trailing_zeros`: 64 for 0, else the count of low zero bits,
-/// by its recursion on `i / 2`.
-fn spec_u64_trailing_zeros(mut i: u64) -> u32 {
-    if i == 0 {
-        return 64;
-    }
-    let mut r = 0;
-    while i & 1 == 0 {
-        r += 1;
-        i /= 2;
-    }
-    r
-}
-
 /// vstd's `u64_leading_zeros`: 64 for 0, else one less than that of
 /// `i / 2`.
 fn spec_u64_leading_zeros(mut i: u64) -> i64 {
@@ -50,14 +36,6 @@ fn spec_is_pow2_below(x: u128, bits: u32) -> bool {
         k += 1;
     }
     false
-}
-
-/// `usize::trailing_zeros`: `r == u64_trailing_zeros(x as u64)`.
-#[kani::proof]
-#[kani::unwind(66)]
-fn usize_trailing_zeros() {
-    let x: usize = kani::any();
-    assert_eq!(x.trailing_zeros(), spec_u64_trailing_zeros(x as u64));
 }
 
 /// `usize::leading_zeros`: `r as int == u64_leading_zeros(x as u64)`.

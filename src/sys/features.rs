@@ -445,7 +445,7 @@ impl Features {
         let page_size = page_size();
         Features {
             page_size,
-            page_shift: page_size.trailing_zeros(),
+            page_shift: crate::layout::trailing_zeros(page_size),
             guard_install: probe_guard_install(page_size),
             mseal: probe_mseal(page_size),
             anon_name: probe_anon_name(page_size),

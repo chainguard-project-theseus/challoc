@@ -8,7 +8,6 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `u64::count_ones` | assume_spec | core library | Kani | discharged |
-| `usize::trailing_zeros` | assume_spec | core library | Kani | discharged |
 | `usize::leading_zeros` | assume_spec | core library | Kani | discharged |
 | `usize::is_power_of_two` | assume_spec | core library | Kani | discharged |
 | `u64::is_power_of_two` | assume_spec | core library | Kani | discharged |
@@ -32,23 +31,12 @@ pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
 ;
 ```
 
-## `usize::trailing_zeros`
-
-src/vspec/core_int.rs:23. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_trailing_zeros).
-
-Hashes: contract 164998548, body none.
-
-```rust
-pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
-    ensures r == u64_trailing_zeros(x as u64),
-;
-```
-
 ## `usize::leading_zeros`
 
-src/vspec/core_int.rs:27. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:25. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_leading_zeros).
+
+> vstd specifies `u64::leading_zeros` with the default invariant mask, so an `opens_invariants none` caller cannot reach it through a cast.
 
 Hashes: contract 3297159394, body none.
 
@@ -61,7 +49,7 @@ pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
 
 ## `usize::is_power_of_two`
 
-src/vspec/core_int.rs:32. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:30. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_is_power_of_two).
 
 Hashes: contract 2270565661, body none.
@@ -74,7 +62,7 @@ pub assume_specification[ usize::is_power_of_two ](x: usize) -> (r: bool)
 
 ## `u64::is_power_of_two`
 
-src/vspec/core_int.rs:36. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:34. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_is_power_of_two).
 
 Hashes: contract 238422297, body none.
@@ -87,7 +75,7 @@ pub assume_specification[ u64::is_power_of_two ](x: u64) -> (r: bool)
 
 ## `u32::is_power_of_two`
 
-src/vspec/core_int.rs:41. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:39. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_is_power_of_two).
 
 > `u32::is_power_of_two`.
@@ -102,7 +90,7 @@ pub assume_specification[ u32::is_power_of_two ](x: u32) -> (r: bool)
 
 ## `usize::next_power_of_two`
 
-src/vspec/core_int.rs:47. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:45. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_next_power_of_two).
 
 > `next_power_of_two` panics (debug) or wraps (release) above `2^63`; challoc never asks for that.
@@ -122,7 +110,7 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
 
 ## `usize::ilog2`
 
-src/vspec/core_int.rs:57. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:55. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_ilog2).
 
 > `usize::ilog2`: the position of the highest set bit; panics for 0.
@@ -138,7 +126,7 @@ pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
 
 ## `core::hint::spin_loop`
 
-src/vspec/core_int.rs:88. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:86. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.

@@ -4,7 +4,7 @@
 
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
-use vstd::std_specs::bits::{u64_leading_zeros, u64_trailing_zeros};
+use vstd::std_specs::bits::u64_leading_zeros;
 
 verus! {
 
@@ -20,10 +20,8 @@ pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
     ensures r as nat == popcount(x),
 ;
 
-pub assume_specification[ usize::trailing_zeros ](x: usize) -> (r: u32)
-    ensures r == u64_trailing_zeros(x as u64),
-;
-
+/// vstd specifies `u64::leading_zeros` with the default invariant mask, so
+/// an `opens_invariants none` caller cannot reach it through a cast.
 pub assume_specification[ usize::leading_zeros ](x: usize) -> (r: u32)
     ensures r as int == u64_leading_zeros(x as u64),
     opens_invariants none

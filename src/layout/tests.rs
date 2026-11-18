@@ -320,6 +320,21 @@ fn rotate_right_is_core_rotate_right() {
     assert_eq!(rotate_right32(1, u32::MAX), 1u32.rotate_right(u32::MAX));
 }
 
+/// `layout::trailing_zeros` is `usize::trailing_zeros` on every
+/// single-bit value, every value one below a power of two, pseudo-random
+/// values and the ends.
+#[test]
+fn trailing_zeros_is_core_trailing_zeros() {
+    let mut s = 0x9E37_79B9_7F4A_7C15u64;
+    let mut values: Vec<usize> = (0..64).map(|b| 1usize << b).collect();
+    values.extend((1..64).map(|b| (1usize << b) - 1));
+    values.extend((0..256).map(|_| xorshift(&mut s) as usize));
+    values.extend([0, usize::MAX]);
+    for &x in &values {
+        assert_eq!(super::trailing_zeros(x), x.trailing_zeros(), "x = {x:#x}");
+    }
+}
+
 /// Design 3: the geometry a kernel with pages
 /// above 4 KiB adopts. Every class's slab is at least the page (up to
 /// 64 KiB), only the 512..1024-byte classes change, and for those the

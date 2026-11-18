@@ -2827,7 +2827,7 @@ mod linux {
             if !(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)) {
                 bad_page_size();
             }
-            let lg_page = page_size.trailing_zeros();
+            let lg_page = crate::layout::trailing_zeros(page_size);
             proof {
                 crate::sys::pac::axiom_user_va_limit();
                 let k = choose|k: nat| k < 64 && page_size as nat == #[trigger] pow2(k);

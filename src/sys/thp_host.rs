@@ -225,7 +225,7 @@ impl Thp {
         } else {
             parse_thp_setting(&buf[..n])
         };
-        let lg_page = page.trailing_zeros() as u8;
+        let lg_page = crate::layout::trailing_zeros(page) as u8;
         proof {
             let p = page as u64;
             vstd::std_specs::bits::axiom_u64_trailing_zeros(p);
