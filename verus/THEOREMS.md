@@ -6815,8 +6815,12 @@ carries and which `set_arena`'s and `destroy`'s `may_abort()` and
 `try_rehome`'s `valid_aborts()` each imply.
 
 Machine code: the counter wrappers are `#[inline(always)]` around the
-`core` calls, the tickets, the tokens and the snapshot are zero-sized,
-and the tuple comparison stays `core`'s (`key_less`, trusted, below).
+`core` calls, and the tickets, the tokens and the snapshot are
+zero-sized. `key_less` is verified: it spells out the tuple order
+(`a.0 < b.0 || (a.0 == b.0 && !a.1 && b.1)`, which is `key_lt`) because
+vstd specifies no order on `bool`, and the branch layout of `assign`'s
+scan loop in `create_heap_for_thread` (once per new thread) follows that
+spelling.
 
 **How it is proved.** The loop of `assign` carries `least_of(snap,
 best)` and `best_key == snap[best]` once a key is read, with `snap.len()`
@@ -6864,11 +6868,6 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   `PAtomicPtr`, whose permission vstd mints, and holds no bound count.
   Nothing writes a bound count outside the wrappers afterwards (by
   inspection).
-- `key_less` (`arena.rs`, `external_body`, discharged by Kani,
-  `verus/ledger/src/arena.rs.md`): `core`'s `<` on `(u32,
-  bool)` is lexicographic with `false < true`. vstd specifies no order on
-  `bool`; a verified spelling of the comparison changes
-  `create_heap_for_thread`'s machine code.
 - The fresh heap's fields, read back: one linear ghost token,
   `FreshHeap` (`heap/fresh.rs`, a tracked struct, not `Copy`), holds the
   permission to the heap's

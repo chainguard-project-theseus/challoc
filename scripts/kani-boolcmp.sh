@@ -24,8 +24,8 @@
 #   - `.lt(`, `.le(`, `.gt(` or `.ge(` called on such a name;
 #   - `#[derive(PartialOrd)]` or `Ord` on a struct or enum holding a bool.
 # Everywhere in src/ it also flags a function with a bool or
-# bool-tuple parameter that orders that parameter (`key_less`), since a
-# harness reaches the code it calls.
+# bool-tuple parameter that orders that parameter (`a < b` on two
+# `(u32, bool)`s), since a harness reaches the code it calls.
 #
 # A reviewed exception carries `kani-boolcmp: allow (<reason>)` in a
 # comment on the flagged line or in the comment block just above it. The scan does not see

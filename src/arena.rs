@@ -2085,21 +2085,15 @@ pub open spec fn picks_least(snap: Seq<(u32, bool)>, auto: int, r: int) -> bool 
     &&& snap.len() < auto ==> snap[r] == (0u32, false)
 }
 
-/// `a < b` on `(u32, bool)`: [`key_lt`]. Trusted: `core`'s tuple
-/// `PartialOrd` is lexicographic and `false < true`, as `core` documents;
-/// vstd specifies neither `bool`'s order nor, so, this tuple's. The body
-/// is the bare comparison (a verified spelling of it,
-/// `if a.0 != b.0 { a.0 < b.0 } else { ... }`, changed
-/// `create_heap_for_thread`'s machine code on x86_64).
+/// `a < b` on `(u32, bool)`: [`key_lt`], `core`'s lexicographic tuple order
+/// with `false < true`, spelled out because vstd specifies no order on
+/// `bool`.
 #[inline(always)]
-#[verifier::external_body]
 fn key_less(a: (u32, bool), b: (u32, bool)) -> (r: bool)
     ensures
         r == key_lt(a, b),
 {
-    // kani-boolcmp: allow (kani_key_less passes literal bools, which fold).
-    // With symbolic bools, CBMC 6.11 would ignore this comparison.
-    a < b
+    a.0 < b.0 || (a.0 == b.0 && !a.1 && b.1)
 }
 
 // Byte offsets of `Arenas`'s fields, opaque to Verus as `Arena`'s are;
@@ -4292,36 +4286,29 @@ mod kani_put_stats {
     }
 }
 
-/// Kani check of `key_less` (`verus/ledger/src/arena.rs.md`; `cfg(kani)`
-/// only, see `verus/README.md`, "Kani").
-#[cfg(kani)]
-mod kani_key_less {
+#[cfg(test)]
+mod key_less_tests {
     use super::key_less;
 
-    /// A `(u32, bool)` key as the integer `2 * k.0 + k.1`: the integers
-    /// compare as `key_lt` orders the keys (lexicographic, and
-    /// `false < true`).
-    fn key(k: (u32, bool)) -> u64 {
-        ((k.0 as u64) << 1) | k.1 as u64
-    }
-
-    /// `key_less`, `ensures r == key_lt(a, b)`: for every pair of keys.
-    /// The counts are symbolic and the two `bool`s run over their four
-    /// values as literals; the expected value compares the keys as
-    /// integers. Kani 0.68 emits `bool < bool` as an ordering comparison
-    /// of two CBMC `bool`s, which CBMC 6.11 cannot encode: it warns
-    /// "ignoring" and gives the comparison a fresh value, so with symbolic
-    /// `bool`s even a correct body fails. Literal `bool`s are folded
-    /// before that.
-    #[kani::proof]
-    fn key_less_is_key_lt() {
-        let a0: u32 = kani::any();
-        let b0: u32 = kani::any();
-        kani::cover!(a0 == b0);
-        kani::cover!(a0 < b0);
-        kani::cover!(a0 > b0);
-        for (x, y) in [(false, false), (false, true), (true, false), (true, true)] {
-            assert_eq!(key_less((a0, x), (b0, y)), key((a0, x)) < key((b0, y)));
+    /// `key_less` is `core`'s `<` on the tuple: for equal, smaller and
+    /// larger counts (the ends of `u32` included) and every pair of
+    /// `bool`s.
+    #[test]
+    fn key_less_is_the_tuple_order() {
+        let counts = [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (7, 7),
+            (u32::MAX - 1, u32::MAX),
+            (u32::MAX, u32::MAX - 1),
+            (u32::MAX, u32::MAX),
+        ];
+        for (a0, b0) in counts {
+            for (x, y) in [(false, false), (false, true), (true, false), (true, true)] {
+                let (a, b) = ((a0, x), (b0, y));
+                assert_eq!(key_less(a, b), a < b, "key_less({a:?}, {b:?})");
+            }
         }
     }
 }
