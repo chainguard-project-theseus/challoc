@@ -372,9 +372,9 @@ pub fn drain_floors(shared: &Shared) -> u64 {
 }
 
 /// `(arena, class)` pairs still draining: a drain floor set, the drain
-/// window open, and a slab below the floor with a free slot to move a
-/// block into. A pair with none ends its drain here, as [`drain_move`]
-/// would. 0 once the window closed.
+/// window open, a slab below the floor with a free slot to move a block
+/// into, and a live block above it to move. A pair with no hole or no
+/// block left ends its drain here. 0 once the window closed.
 fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     requires
         crate::sys::may_syscall(),
@@ -408,11 +408,14 @@ fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
                 let cs: &ClassState = a.class(c);
                 let f = cs.drain_floor();
                 if f != 0 {
-                    match cs.lowest_partial(Tracked(&mut *ord)) {
-                        Some(s) if s < f => {
-                            k = k.saturating_add(1);
-                        },
-                        _ => cs.drain_done(),
+                    let holes = match cs.lowest_partial(Tracked(&mut *ord)) {
+                        Some(s) => s < f,
+                        None => false,
+                    };
+                    if holes && cs.live_at_or_above(f) {
+                        k = k.saturating_add(1);
+                    } else {
+                        cs.drain_done();
                     }
                 }
                 c += 1;

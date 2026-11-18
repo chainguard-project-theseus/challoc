@@ -22,6 +22,9 @@ use vstd::prelude::*;
 
 verus! {
 
+/// The most slabs [`ClassState::live_at_or_above`] reads.
+pub const MAX_DRAIN_WALK: usize = 65536;
+
 impl ClassState {
     /// The floor a refill honours: this pair's floor while an epoch is in
     /// force ([`crate::cow::in_force`]), else 0 (none).
@@ -94,8 +97,37 @@ impl ClassState {
         self.drain_floor.load(Ordering::Relaxed) as usize
     }
 
+    /// Whether a committed slab of this pair's arena at or above `f`
+    /// holds a live slot, read without the lock from the descriptors (the
+    /// drain's check that blocks of the epoch are left to move). Walks at
+    /// most [`MAX_DRAIN_WALK`] slabs and answers true past them.
+    pub fn live_at_or_above(&self, f: usize) -> bool {
+        let n = self.committed_slabs();
+        let t = self.table();
+        let mut s = f;
+        let mut walked: usize = 0;
+        while s < n
+            invariant
+                n <= self.spec_nslabs(),
+                *t == self.spec_table(),
+            decreases n - s,
+        {
+            if walked >= MAX_DRAIN_WALK {
+                return true;
+            }
+            walked += 1;
+            if let Some(d) = t.desc_if_committed(s) {
+                if d.live() > 0 && d.arena_unheld(self.desc_inv(s)) == self.arena {
+                    return true;
+                }
+            }
+            s += 1;
+        }
+        false
+    }
+
     /// The drain of this pair is over: no slab below its drain floor has
-    /// a free slot left to move a block into.
+    /// a free slot left to move a block into, or no block above it.
     pub fn drain_done(&self) {
         self.drain_floor.store(0, Ordering::Relaxed);
     }
