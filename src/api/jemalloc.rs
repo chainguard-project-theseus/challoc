@@ -842,7 +842,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
                 h,
                 p,
                 hint,
-                shared.free_flags(),
+                shared.push_flags(),
                 Tracked(&mut blk),
             ) {
                 return;

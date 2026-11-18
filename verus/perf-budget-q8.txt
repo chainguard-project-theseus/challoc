@@ -30,19 +30,19 @@ paths  free                 free_flags=0   51/18/2/7/7
 budget free                 free_flags=0      51    18      2        7     7
 paths  free                 free_flags=8   62/22/2/9/9
 budget free                 free_flags=8      62    22      2        9     9
-paths  free                 -              51/18/2/7/7 57/18/2/10/7 60/18/2/11/7 62/22/2/9/9 64/22/2/11/9 67/22/2/12/9
-budget free                 -                 67    22      2       12     9
-paths  free_sized           push_flags=0   40/13/2/6/7
-budget free_sized           push_flags=0      40    13      2        6     7
-paths  free_sized           -              40/13/2/6/7 42/13/2/7/7
-budget free_sized           -                 42    13      2        7     7
-paths  sdallocx             push_flags=0   42/13/2/7/7
-budget sdallocx             push_flags=0      42    13      2        7     7
-paths  sdallocx             -              42/13/2/7/7 44/13/2/8/7
-budget sdallocx             -                 44    13      2        8     7
+paths  free                 -              51/18/2/7/7 59/18/2/11/7 62/18/2/12/7 62/22/2/9/9 66/22/2/12/9 69/22/2/13/9
+budget free                 -                 69    22      2       13     9
+paths  free_sized           free_flags=0   42/13/2/7/7
+budget free_sized           free_flags=0      42    13      2        7     7
+paths  free_sized           -              42/13/2/7/7 44/13/2/8/7
+budget free_sized           -                 44    13      2        8     7
+paths  sdallocx             free_flags=0   44/13/2/8/7
+budget sdallocx             free_flags=0      44    13      2        8     7
+paths  sdallocx             -              44/13/2/8/7 46/13/2/9/7
+budget sdallocx             -                 46    13      2        9     7
 paths  challoc_free_usable  free_flags=0   4/0/0/1/0 56/19/2/8/8
 budget challoc_free_usable  free_flags=0      56    19      2        8     8
 paths  challoc_free_usable  free_flags=8   4/0/0/1/0 67/23/2/10/10
 budget challoc_free_usable  free_flags=8      67    23      2       10    10
-paths  challoc_free_usable  -              4/0/0/1/0 56/19/2/8/8 63/19/2/11/8 65/19/2/12/8 67/23/2/10/10 70/23/2/12/10 72/23/2/13/10
-budget challoc_free_usable  -                 72    23      2       13    10
+paths  challoc_free_usable  -              4/0/0/1/0 56/19/2/8/8 65/19/2/12/8 67/19/2/13/8 67/23/2/10/10 72/23/2/13/10 74/23/2/14/10
+budget challoc_free_usable  -                 74    23      2       14    10

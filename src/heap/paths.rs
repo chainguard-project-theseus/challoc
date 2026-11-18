@@ -1069,11 +1069,12 @@ proof fn lemma_free_route_bits(flags: u8)
 /// and a declined push gives `blk` back the token with a fresh permission
 /// to the slot, its bytes unknown.
 ///
-/// `flags` is `Shared::free_flags`, read in place of `push_flags` on the
-/// same line: during a fork epoch ([`FREE_EPOCH`], `crate::cow`) every
-/// sized free is declined, since the push skips the slot's owner and
-/// floor tests and would put a slot below its arena's floor in the cache
-/// `malloc` pops; the exact `free` then keeps it out.
+/// The push reads `Shared::free_flags` in place of `flags`
+/// (`push_flags`, the same bits but the dynamic ones, on the same line),
+/// where `push_flags` was read: during a fork epoch ([`FREE_EPOCH`],
+/// `crate::cow`) every sized free is declined, since the push skips the
+/// slot's owner and floor tests and would put a slot below its arena's
+/// floor in the cache `malloc` pops; the exact `free` then keeps it out.
 #[inline(always)]
 pub fn free_sized_fast(
     shared: &Shared,
@@ -1085,7 +1086,7 @@ pub fn free_sized_fast(
 ) -> (r: bool)
     requires
         shared.wf(),
-        flags & !FREE_DYN == shared.route_fixed(),
+        flags == shared.flags(),
         hint matches Some(c) ==> c < NCLASSES,
         old(h).wf(),
         old(blk).claims(p),
@@ -1101,15 +1102,16 @@ pub fn free_sized_fast(
         !r ==> *final(blk) == *old(blk) || old(blk).block(p),
         r ==> old(blk).block(p),
 {
-    if flags & FREE_EPOCH != 0 {
-        return false;
-    }
-    proof {
-        lemma_free_route_bits(flags);
-        shared.lemma_route_flags(flags);
-    }
     match shared.sized_slot(p, hint) {
         Some(class) => {
+            let ff = shared.free_flags();
+            if ff & FREE_EPOCH != 0 {
+                return false;
+            }
+            proof {
+                lemma_free_route_bits(ff);
+                shared.lemma_route_flags(ff);
+            }
             let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
             let ghost orig = *blk;
             proof {
@@ -1118,7 +1120,7 @@ pub fn free_sized_fast(
                 lend_slot(blk, &mut tk, class as int, p);
                 assert(process_regions().is_slot(class as int, p@.addr));
             }
-            let r = h.push_fast(class, p, flags & !FREE_DYN, Tracked(&mut tk));
+            let r = h.push_fast(class, p, ff & !FREE_DYN, Tracked(&mut tk));
             proof {
                 if !r {
                     blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
@@ -1478,7 +1480,7 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         blk.lemma_claims(p);
     }
     if hint.is_some() {
-        if free_sized_fast(shared, h, p, hint, shared.free_flags(), Tracked(&mut blk)) {
+        if free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk)) {
             return;
         }
     }
@@ -1559,7 +1561,7 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
     let tracked mut blk = blk;
     let ghost (h0, b0) = (*h, blk);
     if hint.is_some() {
-        let pushed = free_sized_fast(shared, h, p, hint, shared.free_flags(), Tracked(&mut blk));
+        let pushed = free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk));
         assert(!pushed && *h == h0 && blk == b0);
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));

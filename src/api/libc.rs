@@ -743,7 +743,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
                     // SAFETY: as in `free_block`.
                     let s = unsafe { super::shared_deref(sp) };
                     let tracked mut b = heap::live::axiom_c_claim(claim);
-                    let _ = heap::free_sized_fast(s, h, p, Some(c), s.free_flags(), Tracked(&mut b));
+                    let _ = heap::free_sized_fast(s, h, p, Some(c), s.push_flags(), Tracked(&mut b));
                 }
             }
         },
@@ -894,7 +894,7 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
         }
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_deref(sp) };
-        if heap::free_sized_fast(shared, h, p, Some(c), shared.free_flags(), Tracked(&mut blk)) {
+        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags(), Tracked(&mut blk)) {
             return;
         }
     }

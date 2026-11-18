@@ -419,18 +419,22 @@ the call does not return (theorem 3, which is not voided for it).
   ensures `r & !FREE_ROUTE == self.route_fixed()`): a `RouteByte`, whose
   vstd `PAtomicU8` and the atomic invariant over its permission
   (namespace `flags_ns`) are private to `vspec/flags.rs`, so the wrappers
-  `new`, `load` and `fetch_or` are its only operations. Each is verified:
-  it opens the invariant around its one `SeqCst` operation, and the
-  invariant holds the byte's bits other than `ROUTE` (`FREE_ROUTE`) at
-  its constant, the value `new` made (`flags::fixed`); `fetch_or`'s proof
-  shows an or of bits within `ROUTE` keeps them. The loom models of
+  `new`, `load`, `fetch_or` and `fetch_and` are its only operations. Each
+  is verified: it opens the invariant around its one `SeqCst` operation,
+  and the invariant holds the byte's bits other than `DYN` (`FREE_ROUTE`
+  and `FREE_EPOCH`) at its constant, the value `new` made
+  (`flags::fixed`); `fetch_or`'s and `fetch_and`'s proofs show that an or
+  of bits within `DYN`, and an and that clears only bits within it, keep
+  them. The loom models of
   `tests/loom/src/flags.rs` run the wrappers on copies of the protocol.
   `Shared::wf` ties `flags::fixed` to `push_flags`: `init` makes the
-  byte from `push_flags` (`put_flags`), and the only other write is
-  `set_multi_arena`'s `fetch_or(FREE_ROUTE)`, whose `requires` Verus
-  checks. So one load is `push_flags` up to the `FREE_ROUTE`
-  bit (`r & !FREE_ROUTE == route_fixed()`, which `Shared::wf` makes
-  `flags() & !FREE_ROUTE`), for a reader that
+  byte from `push_flags` (`put_flags`), and the only other writes are
+  `set_multi_arena`'s `fetch_or(FREE_ROUTE)` and `set_epoch`'s
+  `fetch_or(FREE_EPOCH)` and `fetch_and(!FREE_EPOCH)` (a fork epoch,
+  `crate::cow`), whose `requires` Verus checks. So one load is
+  `push_flags` up to the `FREE_DYN` bits (`r & !FREE_DYN ==
+  route_fixed()`, which `Shared::wf` makes `flags() & !FREE_DYN`), for a
+  reader that
   happens after `init` (what the `api::ready()` in `Shared::wf` stands
   for, under "One process, one `Shared`" above). With `Shared::wf` the
   byte's `PUSH_PAC` bit is `pac_mode()` and its `PUSH_ZERO` bit is
@@ -1745,7 +1749,9 @@ entry points call them:
   over `class_index`), through `free_sized_with`, which `sdallocx` with
   no flags calls too; then `shared_base`, `existing_heap`,
   `shared_deref`, `Shared::push_flags` and `heap::free_sized_fast`
-  (`heap/paths.rs`), whose `Shared::sized_slot` reads the class's line
+  (`heap/paths.rs`), which declines during a fork epoch on the
+  `free_flags` byte it reads for the push, and whose `Shared::sized_slot`
+  reads the class's line
   (`ClassLine::sized_ok`, over the guard word `ClassLine::guard_word`
   and `is_guard`).
 - `challoc_free_usable`: `tls_heap_slot`, `shared_base`,
