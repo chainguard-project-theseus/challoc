@@ -191,8 +191,10 @@ update) with the allocator switched from the bundled jemalloc to challoc.
 `valkey/valkey-9.1/` holds Wolfi's own `0000-Disable-protected-mode.patch`
 (Wolfi keeps patches in a directory named after the package); the
 `MALLOC=challoc` patches, `contrib/valkey/0001-Add-MALLOC-challoc.patch`
-and `0002-zmalloc-use-challoc-usable-size-entry-points.patch`, are applied
-from the challoc checkout, so there is one copy of them.
+and `0002-zmalloc-use-challoc-usable-size-entry-points.patch`, and the fork
+epoch's, `0003-db-no-value-write-on-unlink-without-module-observers.patch`
+and `0004-serverFork-challoc-fork-epoch-and-drain.patch`, are applied from
+the challoc checkout, so there is one copy of them.
 
 ### Two libraries, one soname
 

@@ -120,10 +120,14 @@ pipeline:
   # challoc, in glibc under the je_-prefixed bundled jemalloc). The
   # package build does not run the suite; the hunk is carried so the patch
   # is the one the suite was passed with. 0002 routes zmalloc.c through
-  # challoc's usable-size entry points.
+  # challoc's usable-size entry points. 0003 stops an overwrite or delete
+  # from writing the old value's refcount when no module observes the key
+  # event (a page copy while a fork child runs); 0004 opens challoc's fork
+  # epoch around serverFork and drains it in the defrag cron (challoc
+  # design 5, "Fork epochs").
   - uses: patch
     with:
-      patches: 0000-Disable-protected-mode.patch challoc/contrib/valkey/0001-Add-MALLOC-challoc.patch challoc/contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch
+      patches: 0000-Disable-protected-mode.patch challoc/contrib/valkey/0001-Add-MALLOC-challoc.patch challoc/contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch challoc/contrib/valkey/0003-db-no-value-write-on-unlink-without-module-observers.patch challoc/contrib/valkey/0004-serverFork-challoc-fork-epoch-and-drain.patch
 
   - name: Build the private challoc (quantum8, soname libchalloc.so.0)
     working-directory: challoc
