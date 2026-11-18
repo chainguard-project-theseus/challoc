@@ -524,9 +524,13 @@ fn extents_whose_discard_fails_stay_empty() {
 /// back, so after every run is freed the reservation is back to a few
 /// VMAs; under `guards:false` no guard is placed and runs never split it.
 /// Aligned runs leave no `PROT_NONE` hole below the mark either.
+///
+/// The bounds count what the kernel merges, so a failure prints the
+/// figures of the modes before it and the reservation's maps lines (#810).
 #[test]
 fn guard_vmas_are_bounded_by_live_runs() {
     const N: usize = 64;
+    let mut figures = Vec::new();
     for (guard_install, guards) in [
         (false, true),
         (false, false),
@@ -535,7 +539,8 @@ fn guard_vmas_are_bounded_by_live_runs() {
     ] {
         let env = Env::new();
         let h = env.huge_with(guard_install, guards);
-        let base = env.huge_vmas();
+        let base_maps = env.huge_maps();
+        let base = base_maps.len();
         let mut ps = Vec::new();
         for i in 0..N {
             // Every fourth run asks for 16-page alignment, leaving a hole.
@@ -549,22 +554,39 @@ fn guard_vmas_are_bounded_by_live_runs() {
         for p in &ps {
             fill(*p, 3 * page_size(), 0x5A);
         }
-        let live = env.huge_vmas();
+        let live_maps = env.huge_maps();
+        let live = live_maps.len();
         if guards && !guard_install {
-            assert!(live >= N, "fallback: {live} VMAs for {N} guarded runs");
+            assert!(
+                live >= N,
+                "fallback: {live} VMAs for {N} guarded runs (base {base})\n\
+                 earlier modes (guard_install, guards, base, live, after, again): {figures:?}\n\
+                 live maps:\n{}",
+                live_maps.join("\n")
+            );
         } else {
             assert!(
                 live <= base + 2,
-                "mode ({guard_install}, {guards}): {live} VMAs with {N} live runs"
+                "mode ({guard_install}, {guards}): {live} VMAs with {N} live runs (base {base})\n\
+                 earlier modes (guard_install, guards, base, live, after, again): {figures:?}\n\
+                 base maps:\n{}\nlive maps:\n{}",
+                base_maps.join("\n"),
+                live_maps.join("\n")
             );
         }
         for p in &ps {
             env.free(&h, *p);
         }
-        let after = env.huge_vmas();
+        let after_maps = env.huge_maps();
+        let after = after_maps.len();
         assert!(
             after <= base + 2,
-            "mode ({guard_install}, {guards}): {after} VMAs after freeing every run (base {base})"
+            "mode ({guard_install}, {guards}): {after} VMAs after freeing every run \
+             (base {base}, live {live})\n\
+             earlier modes (guard_install, guards, base, live, after, again): {figures:?}\n\
+             base maps:\n{}\nafter maps:\n{}",
+            base_maps.join("\n"),
+            after_maps.join("\n")
         );
         // Reuse puts the guards back and freeing takes them away again.
         for p in ps.iter_mut() {
@@ -575,11 +597,18 @@ fn guard_vmas_are_bounded_by_live_runs() {
         for p in &ps {
             env.free(&h, *p);
         }
-        let again = env.huge_vmas();
+        let again_maps = env.huge_maps();
+        let again = again_maps.len();
         assert!(
             again <= base + 2,
-            "mode ({guard_install}, {guards}): {again} VMAs after reuse"
+            "mode ({guard_install}, {guards}): {again} VMAs after reuse \
+             (base {base}, live {live}, after {after})\n\
+             earlier modes (guard_install, guards, base, live, after, again): {figures:?}\n\
+             base maps:\n{}\nagain maps:\n{}",
+            base_maps.join("\n"),
+            again_maps.join("\n")
         );
+        figures.push((guard_install, guards, base, live, after, again));
     }
 }
 

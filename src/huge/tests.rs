@@ -9,6 +9,7 @@ use super::*;
 use crate::layout::{Kind, MAX_SLAB};
 use crate::meta;
 use crate::testutil::{META_LEN, Reservation, regions_at};
+use std::string::String;
 use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
@@ -82,6 +83,12 @@ impl Env {
 
     /// The VMAs that overlap this environment's huge reservation.
     pub fn huge_vmas(&self) -> usize {
+        self.huge_maps().len()
+    }
+
+    /// The `/proc/self/maps` lines of the VMAs [`Env::huge_vmas`] counts,
+    /// for a failure message to show which ones the kernel left unmerged.
+    pub fn huge_maps(&self) -> Vec<String> {
         let (lo, len) = self.huge.mapping();
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         maps.lines()
@@ -92,7 +99,8 @@ impl Env {
                 let b = usize::from_str_radix(b, 16).unwrap();
                 a < lo + len && lo < b
             })
-            .count()
+            .map(String::from)
+            .collect()
     }
 
     /// [`Huge::alloc`] plus an audit and a check that the run's pages
