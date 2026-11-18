@@ -211,6 +211,23 @@ freed. With `lazy_band:true`, purges below 70% of the limit are
 the kernel reclaims them; leave it off where they drive alerting or an
 autoscaler.
 
+Fork epochs (design 5, "Fork epochs"): with
+`contrib/valkey/0004` (and `0003`, without which an overwrite of an
+embedded string writes the old value anyway), a `BGSAVE`, AOF rewrite or
+full sync runs inside an epoch: the writes the server takes while the
+child runs land on pages the child does not share, so the child's
+copy-on-write (`rdb_last_cow_size`, the fork's peak memory) falls with the
+write rate instead of rising to the dataset size. The price is the bytes
+written during the epoch, held above the old data until the defragmenter
+moves them back: with `activedefrag yes` the patch runs a defrag cycle
+at `active-defrag-cycle-max` while challoc reports a drain, whatever the
+thresholds, and the memory returns within seconds of the child's exit;
+with it off, it returns as those keys are overwritten or deleted. An
+epoch stops steering once it has allocated as much as the heap held when
+it began (`challoc_cow_stat(CHALLOC_COW_EXPIRED)`), and `cow_epoch:false`
+turns it off. `MEMORY MALLOC-STATS` prints the figures on its
+`fork epochs:` line.
+
 THP: Valkey warns about THP `always` because of fork copy-on-write cost.
 challoc's default `never` keeps the class and metadata regions off huge
 pages on every host; the huge runs take what the host gives (section 5).

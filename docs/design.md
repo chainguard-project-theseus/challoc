@@ -449,6 +449,72 @@ slab for good, as slabs are never decommitted: at most two VMAs per
 bounded by the region's peak footprint, not by live blocks (14.1). A guard slab inside a
 `thp:always` chunk is left unused but unguarded (section 17.1).
 
+### Fork epochs
+
+A child made by `fork(2)` shares every page of the parent until one of
+them writes it, and a write of the parent to a shared page copies it. A
+snapshotting server (Valkey's and Redis's `BGSAVE`, an AOF rewrite, a
+full resynchronisation) keeps taking writes while its child runs, and
+each new value is an allocation that address-ordered first fit and the
+LIFO cache serve from the slot an overwrite just freed: a page the child
+shares, so a 64-byte value copies 4 KiB. A fork epoch
+(`challoc_cow_begin` before the fork, `challoc_cow_end` once the child
+is reaped; 13.7, `cow.rs`, `class/cow.rs`) moves those allocations to
+pages the child never had:
+
+- **Floors.** `cow::begin` sets every `(arena, class)`'s floor to the
+  arena's commit cursor (`group_next`, read under the class lock,
+  `ClassState::cow_mark`): every slab of the arena below it may share
+  pages with the child, none at or above it does (a slab's pages are
+  untouched until a refill hands it out, from the cursor up). While the
+  floors are in force, `plan` scans the partial set from the floor
+  (`lowest_set_from`) and `next_slab` takes an `Empty` slab only at or
+  above it, a `Purged` one anywhere (an eager discard left the child the
+  only copy; after a lazy one, `purged_is_zero` false, only above), else
+  a fresh slab. Should that find nothing (the region above the floor is
+  spent), `plan` plans again without the floor: an epoch never fails an
+  allocation. `plan_at` carries the floor; `plan_at(0)` is the planning
+  of every other refill, and its claim-completeness postcondition
+  (`exhausted`) is stated for floor 0 only, which the fallback keeps
+  for `plan`.
+- **Frees.** `cow::begin` sets `FREE_EPOCH` in the `free` dispatch byte
+  (`free_flags`, whose dynamic bits are now `FREE_ROUTE` and
+  `FREE_EPOCH`, `vspec::flags::DYN`). The `free` fast path's
+  general arm and the sized fast path decline under it; the slow path
+  (`Heap::free`) sends a slot of the home arena below its floor
+  (`Shared::cow_deflects`) to the flush-only `FOREIGN` cache, as it does
+  another arena's slot, so it returns to its slab's bitmap and no
+  refill takes it while the floor holds. Outside an epoch the
+  default configurations' dispatch is unchanged (6.3).
+- **Caches.** The caller's caches are flushed at `begin`, and every
+  `Empty` slab is purged (so the child pins no free page of the
+  parent's); every other heap flushes all its caches at its next slow
+  path (`Heap::tick`, against `cow::flush_after`). A thread that never
+  takes a slow path during the epoch can still hand out the slots it
+  had cached.
+- **Cap.** The bytes refills reserve under the floors are counted
+  (`cow::note_claimed`); past the slab bytes that were out when the
+  epoch began (at least 64 MiB; beyond it an epoch costs more than
+  copying every page would), the floors stop holding until `end`, so a
+  child that never exits cannot grow the heap without bound.
+- **Compaction** (6.4) enters no compact mode while an epoch is open, and
+  a young heap does not rehome on a free.
+- **Drain.** `cow::end` turns each floor into a drain floor where the
+  arena's cursor moved past it (`cow_settle`). The blocks written during
+  the epoch sit above it and the holes it left below; for
+  `DRAIN_WINDOW_NS` (300 s) after the epoch, the utilisation queries
+  (13.4) report a block of a slab at or above a drain floor as one region
+  in use, and `get_defrag_hint` (13.5) answers 1 for it, while the class
+  has a partial slab below the floor (`cow::drain_move`): a
+  defragmenter moves it into the lowest partial slab, below the floor.
+  `challoc_cow_stat(CHALLOC_COW_DRAINING)` counts the pairs with holes
+  below and live blocks above (`live_at_or_above`, from the
+  descriptors); a pair with neither ends its drain.
+
+The protocol model (`model/`, scenario `cow_epoch`) checks that no refill
+under a floor takes a slot of a slab whose pages the child shares, but in
+the fallback, and finds the reuse with the floor off.
+
 ## 6. Thread heaps and caches
 
 ### 6.1 Thread-local access
@@ -1162,6 +1228,11 @@ and nice value, as far as the kernel allows (lowering a nice value needs
 it inherited).
 
 ## 9. Fork
+
+The fork handlers below keep the allocator usable in the child; they do
+not open a fork epoch (section 5): that is the program's to ask for,
+since only it knows which children live long enough for their shared
+pages to matter (`challoc_cow_begin`, 13.7).
 
 `pthread_atfork` handlers registered by the library's constructor
 (`api::REGISTER_EARLY`, which does not initialise the allocator: the
@@ -1878,6 +1949,26 @@ they are `malloc`'s pop and `free`'s check and push plus the class size:
 points' machine code is unchanged by them (`scripts/codegen-diff.sh`).
 Valkey uses them under `USE_CHALLOC`
 (`contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch`).
+
+Fork epochs (section 5, "Fork epochs") are the other part of the
+surface, for a server that forks a snapshot child while it keeps taking
+writes:
+
+```c
+int challoc_cow_begin(unsigned flags);   /* 0 before fork(2); EINVAL, ENOTSUP */
+int challoc_cow_end(void);               /* once the child is reaped */
+unsigned long long challoc_cow_stat(unsigned which);  /* CHALLOC_COW_* */
+```
+
+`<challoc/challoc.h>` also defines `challoc_cow_stats()`, an inline that
+reads every figure into a struct. `begin` flushes the caller's caches,
+purges, and sets the floors; epochs nest; `cow_epoch:false` makes `begin`
+return `ENOTSUP`. `bench/cow/` measures it on Valkey. Outside an epoch, the plain `free` fast path of
+the default configurations is unchanged; the sized fast path reads
+`free_flags` in place of `push_flags` and tests `FREE_EPOCH`, two
+instructions and one predicted branch (`verus/perf-budget.txt`).
+Valkey's hook is `contrib/valkey/0004-serverFork-challoc-fork-epoch-and-drain.patch`:
+the epoch around `serverFork` and the drain in its defrag cron.
 
 ### 13.8 Stack use
 

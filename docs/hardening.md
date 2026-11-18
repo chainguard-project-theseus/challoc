@@ -23,6 +23,11 @@ exact windows the defaults leave open. The design view is
 
 ## (1) Invalid and double frees
 
+A fork epoch (design 5, "Fork epochs") changes no check: every free
+during it takes the slow path's exact test (the fast paths decline), and
+a slot kept from the cache goes through the `FOREIGN` cache and its
+flush, which test it as they test another arena's.
+
 Through `free`: an invalid pointer aborts at the call, unless it is a
 slot start some thread cache holds (a refill claimed it, setting its
 bit, and `malloc` has not handed it out yet: that free is accepted and

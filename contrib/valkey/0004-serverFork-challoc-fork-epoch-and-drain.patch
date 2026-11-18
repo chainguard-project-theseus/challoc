@@ -1,0 +1,114 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH] serverFork: challoc's fork epoch around a snapshot child,
+ and the drain after it
+
+Valkey 9.1.2 (tag 9.1.2, commit 7f1dffedff6de73058b2c2a389422b6ecd56c8fb),
+on top of 0001 (MALLOC=challoc) and 0002, and, for embedded strings, 0003
+(no write to an overwritten value's refcount when no module observes the
+key event).
+
+serverFork opens challoc's fork epoch (challoc_cow_begin, <challoc/challoc.h>)
+just before forking a mutually exclusive child (RDB, AOF rewrite, full
+sync, module fork) and resetChildState closes it (challoc_cow_end) once
+the child is reaped, as does the fork's failure path. While the epoch is
+open, challoc serves the parent's allocations from pages the child does
+not share and hands out no block freed during it that the child may still
+share, so the values written while the child runs copy no page.
+
+The blocks written during the epoch then sit above the holes it left.
+updateDefragCpuPercent runs a defrag cycle while challoc reports a size
+class still draining (challoc_cow_stat(CHALLOC_COW_DRAINING)), at
+active-defrag-cycle-max, whatever the fragmentation thresholds: challoc's
+utilisation query tells the defragmenter to move those blocks back, and
+the memory the epoch used returns within seconds. With activedefrag off
+nothing moves them, and they return as the keys are overwritten or
+deleted.
+
+Both are compiled only under challoc (CHALLOC_COW, which <challoc/challoc.h>
+defines).
+
+---
+ src/defrag.c | 15 ++++++++++++++-
+ src/server.c | 21 +++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/src/defrag.c b/src/defrag.c
+index ce5e6f7..e3baf8b 100644
+--- a/src/defrag.c
++++ b/src/defrag.c
+@@ -1265,7 +1265,17 @@ static void beginDefragCycle(void) {
+ static void updateDefragCpuPercent(void) {
+     size_t frag_bytes;
+     float frag_pct = getAllocatorFragmentation(&frag_bytes);
+-    if (server.active_defrag_cpu_percent == 0) {
++#ifdef CHALLOC_COW
++    /* challoc's fork epoch drain: the values written while a fork child ran
++     * sit above the holes the epoch left. While challoc reports a size class
++     * still draining, a defrag cycle runs whatever the fragmentation
++     * thresholds, and challoc's utilization query has it move those values
++     * back. */
++    int cow_drain = challoc_cow_stat(CHALLOC_COW_DRAINING) > 0;
++#else
++    int cow_drain = 0;
++#endif
++    if (server.active_defrag_cpu_percent == 0 && !cow_drain) {
+         if (frag_pct < server.active_defrag_threshold_lower ||
+             frag_bytes < server.active_defrag_ignore_bytes) return;
+     }
+@@ -1275,6 +1285,9 @@ static void updateDefragCpuPercent(void) {
+     int cpu_pct = INTERPOLATE(frag_pct, server.active_defrag_threshold_lower, server.active_defrag_threshold_upper,
+                               server.active_defrag_cpu_min, server.active_defrag_cpu_max);
+     cpu_pct = LIMIT(cpu_pct, server.active_defrag_cpu_min, server.active_defrag_cpu_max);
++    /* The drain is the fork epoch's memory coming back: run it at the most
++     * effort configured, so that it is over within a snapshot or two. */
++    if (cow_drain) cpu_pct = server.active_defrag_cpu_max;
+ 
+     /* Normally we allow increasing the aggressiveness during a scan, but don't
+      * reduce it, since we should not lower the aggressiveness when fragmentation
+diff --git a/src/server.c b/src/server.c
+index a14693c..3f18378 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -844,7 +844,19 @@ int hasActiveChildProcess(void) {
+     return server.child_pid != -1;
+ }
+ 
++#ifdef CHALLOC_COW
++/* challoc's fork epoch (contrib/valkey 0004): open from just before the
++ * fork of a mutually exclusive child until resetChildState. */
++static int cow_epoch_open = 0;
++#endif
++
+ void resetChildState(void) {
++#ifdef CHALLOC_COW
++    if (cow_epoch_open) {
++        challoc_cow_end();
++        cow_epoch_open = 0;
++    }
++#endif
+     server.child_type = CHILD_TYPE_NONE;
+     server.child_pid = -1;
+     server.stat_current_cow_peak = 0;
+@@ -7081,6 +7093,9 @@ int serverFork(int purpose) {
+ 
+     int childpid;
+     ustime_t start = ustime();
++#ifdef CHALLOC_COW
++    if (isMutuallyExclusiveChildType(purpose) && challoc_cow_begin(0) == 0) cow_epoch_open = 1;
++#endif
+     if ((childpid = valkey_fork()) == 0) {
+         /* Child.
+          *
+@@ -7102,6 +7117,12 @@ int serverFork(int purpose) {
+         /* Parent */
+         if (childpid == -1) {
+             int fork_errno = errno;
++#ifdef CHALLOC_COW
++            if (cow_epoch_open) {
++                challoc_cow_end();
++                cow_epoch_open = 0;
++            }
++#endif
+             if (isMutuallyExclusiveChildType(purpose)) closeChildInfoPipe();
+             errno = fork_errno;
+             return -1;
