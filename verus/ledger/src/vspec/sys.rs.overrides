@@ -1,8 +1,4 @@
 # Checked by the Kani harnesses the status names (verus/README.md, "Kani").
-u8::is_ascii_digit	core library	Kani	discharged (Kani: kani_proofs::core_int::u8_is_ascii_digit)	contract 3326735236, body none
-u8::is_ascii_whitespace	core library	Kani	discharged (Kani: kani_proofs::core_int::u8_is_ascii_whitespace)	contract 3673945350, body none
-u8::is_ascii_graphic	core library	Kani	discharged (Kani: kani_proofs::core_int::u8_is_ascii_graphic)	contract 1906044922, body none
-isize::wrapping_neg	core library	Kani	discharged (Kani: kani_proofs::core_int::isize_wrapping_neg)	contract 2978194794, body none
 <[T]>::as_mut_ptr	core library	Kani	discharged (Kani: kani_proofs::slice::slice_as_ptr)	contract 250737599, body none
 <[T]>::as_ptr	core library	Kani	discharged (Kani: kani_proofs::slice::slice_as_ptr)	contract 2609362740, body none
 Option::<T>::map_or	core library	Kani	discharged (Kani: kani_proofs::misc::option_map_or)	contract 385626731, body none

@@ -226,6 +226,21 @@ fn every_numeric_key_parses_and_clamps() {
     }
 }
 
+/// `digit_value` is `core`'s `char::to_digit` on every byte, in every
+/// radix `to_digit` takes.
+#[test]
+fn digit_value_is_to_digit() {
+    for radix in 2..=36u32 {
+        for b in 0..=u8::MAX {
+            assert_eq!(
+                digit_value(b, radix),
+                (b as char).to_digit(radix),
+                "{b} in {radix}"
+            );
+        }
+    }
+}
+
 #[test]
 fn integers_accept_hex_octal_and_signs() {
     assert_eq!(parse_int(b"0"), Some(0));

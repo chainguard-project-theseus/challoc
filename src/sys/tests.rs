@@ -1069,3 +1069,11 @@ fn syscall_numbers_match_kernel_headers() {
         );
     }
 }
+
+/// `ascii_digit` is `u8::is_ascii_digit` on every byte.
+#[test]
+fn ascii_digit_is_is_ascii_digit() {
+    for b in 0..=u8::MAX {
+        assert_eq!(ascii_digit(b), b.is_ascii_digit(), "{b}");
+    }
+}

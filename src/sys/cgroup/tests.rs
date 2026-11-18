@@ -768,3 +768,29 @@ fn untracked_states_display() {
     assert_eq!(cg.state(), State::Disabled);
     assert!(!cg.sample(u64::MAX));
 }
+
+/// `ascii_ws` is `u8::is_ascii_whitespace` on every byte.
+#[test]
+fn ascii_ws_is_is_ascii_whitespace() {
+    for b in 0..=u8::MAX {
+        assert_eq!(ascii_ws(b), b.is_ascii_whitespace(), "{b}");
+    }
+}
+
+/// `PathBytes` shows a space or an `is_ascii_graphic` byte as itself and
+/// every other byte as `?`.
+#[test]
+fn path_bytes_shows_printable_ascii() {
+    let all: Vec<u8> = (0..=u8::MAX).collect();
+    let want: String = all
+        .iter()
+        .map(|&b| {
+            if b == b' ' || b.is_ascii_graphic() {
+                b as char
+            } else {
+                '?'
+            }
+        })
+        .collect();
+    assert_eq!(std::format!("{}", PathBytes(&all)), want);
+}

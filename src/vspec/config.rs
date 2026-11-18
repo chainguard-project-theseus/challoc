@@ -1,9 +1,7 @@
-//! Specifications for `config.rs`: `c_void`, `CStr`, `<*const T>::cast`,
-//! `<*const T>::wrapping_add` and `char::to_digit`.
+//! Specifications for `config.rs`: `c_void`, `CStr`, `<*const T>::cast`
+//! and `<*const T>::wrapping_add`.
 
 use vstd::prelude::*;
-
-use crate::config::to_digit_spec;
 
 verus! {
 
@@ -31,15 +29,5 @@ pub assume_specification<T>[ <*const T>::wrapping_add ](p: *const T, count: usiz
 /// `CStr::as_ptr`: the address of the string; nothing is claimed about
 /// it.
 pub assume_specification[ core::ffi::CStr::as_ptr ](s: &core::ffi::CStr) -> *const core::ffi::c_char;
-
-/// `char::to_digit` (`core` documentation): the digits are `0`..`9`, then
-/// `a`..`z` and `A`..`Z` for 10..35, and only those below `radix` count;
-/// panics for a radix outside `2..=36`.
-pub assume_specification[ char::to_digit ](c: char, radix: u32) -> (r: Option<u32>)
-    requires
-        2 <= radix <= 36,
-    ensures
-        r == to_digit_spec(c as u32, radix),
-;
 
 } // verus!

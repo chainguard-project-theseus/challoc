@@ -338,6 +338,19 @@ pub open spec fn is_digit(b: u8) -> bool {
     48 <= b <= 57
 }
 
+/// `b.is_ascii_digit()`, as `core` defines it. verus-lang/verus#3517
+/// gives vstd specifications of the `u8::is_ascii_*` methods; once a
+/// pinned vstd release has them, callers can call the method instead.
+// Verus specifies the comparisons, not `RangeInclusive::contains`.
+#[allow(clippy::manual_range_contains)]
+#[inline(always)]
+fn ascii_digit(b: u8) -> (r: bool)
+    ensures
+        r == is_digit(b),
+{
+    b'0' <= b && b <= b'9'
+}
+
 /// The number of leading decimal digits of `s`.
 pub open spec fn digit_run(s: Seq<u8>) -> nat
     decreases s.len(),
@@ -427,7 +440,7 @@ pub fn leading_digits(bytes: &[u8]) -> (k: usize)
         forall|j: int| 0 <= j < k ==> is_digit(#[trigger] bytes@[j]),
 {
     let mut k = 0;
-    while k < bytes.len() && bytes[k].is_ascii_digit()
+    while k < bytes.len() && ascii_digit(bytes[k])
         invariant
             k <= bytes@.len(),
             forall|j: int| 0 <= j < k ==> is_digit(#[trigger] bytes@[j]),

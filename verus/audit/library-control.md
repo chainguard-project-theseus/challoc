@@ -4,10 +4,13 @@
 library, function pointer, panic/abort and termination, made during
 [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
-*This file lists the 111 of those seams that the ledger still lists:
+*This file lists the 106 of those seams that the ledger still lists:
 the 116 the ledger at `26f535a9` listed, less the three statistics
-figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`) and
-`assert_not_home`, which are verified since, and
+figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`),
+`assert_not_home` and the five byte, digit and negation specs
+(`u8::is_ascii_digit`, `u8::is_ascii_whitespace`, `char::to_digit`,
+`i64::wrapping_neg`, `isize::wrapping_neg`), which are verified since or
+replaced by verified code, and
 `Option::as_deref_mut`, which no code calls and whose seam is gone.
 The others are verified at `26f535a9` or no longer exist
 (among them `parse_from` and the `Display` spec of `sys::cgroup::Cgroup`,
@@ -31,7 +34,7 @@ false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 111 seams listed: 106 sound and 5 fixed; 79 discharged,
+Totals for the 106 seams listed: 101 sound and 5 fixed; 74 discharged,
 9 partly checked and 23 trusted. The category column is
 the ledger's; a few seams of this audit sit in another category there.
 
@@ -89,8 +92,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `core::mem::drop` | `vspec/class.rs` | core library | discharged | sound | No `ensures`; runs the destructor. |
 | `core::ffi::CStr` | `vspec/config.rs` | core library | trusted | sound | Opaque type; nothing claimed. |
 | `core::ffi::CStr::as_ptr` | `vspec/config.rs` | core library | discharged | sound | No `ensures`. |
-| `char::to_digit` | `vspec/config.rs` | core library | discharged | sound | `to_digit_spec` matches `core` for every `char` and radix in `2..=36` (Kani checks every input). |
-| `i64::wrapping_neg` | `vspec/core_int.rs` | core library | discharged | sound | `i64::MIN` is its own negation (Kani checks every input). |
 | `usize::ilog2` | `vspec/core_int.rs` | core library | discharged | sound | `r < 64`, `2^r <= x < 2^(r+1)` for `x > 0` (Kani checks every input). |
 | `usize::trailing_zeros` | `vspec/core_int.rs` | core library | discharged | sound | Vstd's recursion, 64 for 0 (Kani checks every input). |
 | `usize::leading_zeros` | `vspec/core_int.rs` | core library | discharged | sound | Vstd's `u64_leading_zeros` (Kani checks every input). |
@@ -138,9 +139,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `<[T; N] as core::iter::IntoIterator>::into_iter` | `vspec/slice.rs` | core library | discharged | sound | `array_iter_rest` uninterpreted; the iterator starts with the array (Kani checks N = 0 and 3). |
 | `<core::array::IntoIter<T, N> as core::iter::Iterator>::next` | `vspec/slice.rs` | core library | discharged | sound | Front element or `None` (Kani checks N = 0 and 3). |
 | `array_get_unchecked` | `vspec/slice.rs` | core library | discharged | sound | `i < N`: the element at `i`. |
-| `u8::is_ascii_digit` | `vspec/sys.rs` | core library | discharged | sound | `0`..`9` (Kani checks every input). |
-| `u8::is_ascii_whitespace` | `vspec/sys.rs` | core library | discharged | sound | Space, tab, LF, FF, CR (Kani checks every input). |
-| `isize::wrapping_neg` | `vspec/sys.rs` | core library | discharged | sound | `isize::MIN` is its own negation (Kani checks every input). |
 | `<[T]>::as_mut_ptr` | `vspec/sys.rs` | core library | discharged | sound | No `ensures`. |
 | `<[T]>::as_ptr` | `vspec/sys.rs` | core library | discharged | sound | No `ensures`. |
 | `Result::<T, E>::map_or` | `vspec/sys.rs` | core library | discharged | sound | `default` for `Err`, `f`'s result for `Ok`. |

@@ -100,6 +100,18 @@ pub open spec fn is_ws(b: u8) -> bool {
     b == 32 || b == 9 || b == 10 || b == 12 || b == 13
 }
 
+/// `b.is_ascii_whitespace()`, as `core` defines it.
+/// verus-lang/verus#3517 gives vstd specifications of the
+/// `u8::is_ascii_*` methods; once a pinned vstd release has them, callers
+/// can call the method instead.
+#[inline(always)]
+fn ascii_ws(b: u8) -> (r: bool)
+    ensures
+        r == is_ws(b),
+{
+    b == b'\t' || b == b'\n' || b == b'\x0C' || b == b'\r' || b == b' '
+}
+
 /// The number of leading whitespace bytes of `s`.
 pub open spec fn ws_lead(s: Seq<u8>) -> nat
     decreases s.len(),
@@ -163,7 +175,7 @@ fn trim(b: &[u8]) -> (r: &[u8])
         r@ == trim_spec(b@),
 {
     let mut start = 0;
-    while start < b.len() && b[start].is_ascii_whitespace()
+    while start < b.len() && ascii_ws(b[start])
         invariant
             start <= b@.len(),
             forall|j: int| 0 <= j < start ==> is_ws(#[trigger] b@[j]),
@@ -172,7 +184,7 @@ fn trim(b: &[u8]) -> (r: &[u8])
         start += 1;
     }
     let mut end = b.len();
-    while end > start && b[end - 1].is_ascii_whitespace()
+    while end > start && ascii_ws(b[end - 1])
         invariant
             start <= end <= b@.len(),
             forall|j: int| end <= j < b@.len() ==> is_ws(#[trigger] b@[j]),
@@ -1345,9 +1357,11 @@ impl vstd::std_specs::fmt::DisplaySpecImpl for PathBytes<'_> {
 }
 
 impl fmt::Display for PathBytes<'_> {
+    // Verus specifies the comparisons, not `RangeInclusive::contains`.
+    #[allow(clippy::manual_range_contains)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for &b in self.0 {
-            f.write_str(if b == b' ' || b.is_ascii_graphic() {
+            f.write_str(if b' ' <= b && b <= b'~' {
                 unsafe_char(b)
             } else {
                 "?"

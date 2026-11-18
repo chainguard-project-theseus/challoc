@@ -1,10 +1,9 @@
-//! The integer and byte methods of `core` that `vspec/core_int.rs`,
-//! `vspec/config.rs` and `vspec/sys.rs` specify, each checked against
-//! its `assume_specification` for every input (no bound: the inputs are
-//! machine integers, and every loop below runs at most 65 times). The
-//! `spec_*` functions restate the Verus spec functions the contracts
-//! name, in the same recursion, over `u128` where the spec's `int`
-//! arithmetic could leave 64 bits.
+//! The integer methods of `core` that `vspec/core_int.rs` specifies,
+//! each checked against its `assume_specification` for every input (no
+//! bound: the inputs are machine integers, and every loop below runs at
+//! most 65 times). The `spec_*` functions restate the Verus spec
+//! functions the contracts name, in the same recursion, over `u128`
+//! where the spec's `int` arithmetic could leave 64 bits.
 
 /// vstd's `u64_trailing_zeros`: 64 for 0, else the count of low zero bits,
 /// by its recursion on `i / 2`.
@@ -69,20 +68,6 @@ fn spec_rotr64(x: u64, n: u32) -> u64 {
     } else {
         (x >> (n % 64)) | (x << (64 - n % 64))
     }
-}
-
-/// `config::to_digit_spec`.
-fn spec_to_digit(c: u32, radix: u32) -> Option<u32> {
-    let d = if 48 <= c && c <= 57 {
-        c - 48
-    } else if 97 <= c && c <= 122 {
-        c - 97 + 10
-    } else if 65 <= c && c <= 90 {
-        c - 65 + 10
-    } else {
-        36
-    };
-    if d < radix { Some(d) } else { None }
 }
 
 /// `usize::trailing_zeros`: `r == u64_trailing_zeros(x as u64)`.
@@ -169,30 +154,6 @@ fn u64_rotate_right() {
     assert_eq!(x.rotate_right(n), spec_rotr64(x, n));
 }
 
-/// `i64::wrapping_neg`: `-x`, and `i64::MIN` for `i64::MIN`.
-#[kani::proof]
-fn i64_wrapping_neg() {
-    let x: i64 = kani::any();
-    let r = x.wrapping_neg();
-    if x == i64::MIN {
-        assert_eq!(r, i64::MIN);
-    } else {
-        assert_eq!(r as i128, -(x as i128));
-    }
-}
-
-/// `isize::wrapping_neg`: `-x`, and `isize::MIN` for `isize::MIN`.
-#[kani::proof]
-fn isize_wrapping_neg() {
-    let x: isize = kani::any();
-    let r = x.wrapping_neg();
-    if x == isize::MIN {
-        assert_eq!(r, isize::MIN);
-    } else {
-        assert_eq!(r as i128, -(x as i128));
-    }
-}
-
 /// `usize::ilog2`: under `x > 0`, `r < 64` and
 /// `pow2(r) <= x < pow2(r + 1)`.
 #[kani::proof]
@@ -203,39 +164,4 @@ fn usize_ilog2() {
     assert!(r < 64);
     assert!(1u128 << r <= x as u128);
     assert!((x as u128) < 1u128 << (r + 1));
-}
-
-/// `char::to_digit`: under `2 <= radix <= 36`,
-/// `r == to_digit_spec(c as u32, radix)`, for every `char`.
-#[kani::proof]
-fn char_to_digit() {
-    let c: char = kani::any();
-    let radix: u32 = kani::any();
-    kani::assume(2 <= radix && radix <= 36);
-    assert_eq!(c.to_digit(radix), spec_to_digit(c as u32, radix));
-}
-
-/// `u8::is_ascii_digit`: `r <==> 48 <= b <= 57`.
-#[kani::proof]
-fn u8_is_ascii_digit() {
-    let b: u8 = kani::any();
-    assert_eq!(b.is_ascii_digit(), 48 <= b && b <= 57);
-}
-
-/// `u8::is_ascii_whitespace`: space, tab, line feed, form feed and
-/// carriage return.
-#[kani::proof]
-fn u8_is_ascii_whitespace() {
-    let b: u8 = kani::any();
-    assert_eq!(
-        b.is_ascii_whitespace(),
-        b == 32 || b == 9 || b == 10 || b == 12 || b == 13
-    );
-}
-
-/// `u8::is_ascii_graphic`: `r <==> 33 <= b <= 126`.
-#[kani::proof]
-fn u8_is_ascii_graphic() {
-    let b: u8 = kani::any();
-    assert_eq!(b.is_ascii_graphic(), 33 <= b && b <= 126);
 }

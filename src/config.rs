@@ -1335,6 +1335,25 @@ pub open spec fn to_digit_spec(c: u32, radix: u32) -> Option<u32> {
     if d < radix { Some(d as u32) } else { None }
 }
 
+/// `(b as char).to_digit(radix)`: the value of the digit `b` in `radix`.
+// Verus specifies the comparisons, not `RangeInclusive::contains`.
+#[allow(clippy::manual_range_contains)]
+fn digit_value(b: u8, radix: u32) -> (r: Option<u32>)
+    ensures
+        r == to_digit_spec(b as u32, radix),
+{
+    let d = if b'0' <= b && b <= b'9' {
+        (b - b'0') as u32
+    } else if b'a' <= b && b <= b'z' {
+        (b - b'a') as u32 + 10
+    } else if b'A' <= b && b <= b'Z' {
+        (b - b'A') as u32 + 10
+    } else {
+        36
+    };
+    if d < radix { Some(d) } else { None }
+}
+
 /// The value of the digits `s` in `radix`, most significant first; `None`
 /// when a byte is not a digit of `radix`.
 pub open spec fn digits_spec(s: Seq<u8>, radix: u32) -> Option<int>
@@ -1486,10 +1505,9 @@ pub fn parse_int(value: &[u8]) -> (r: Option<i64>)
         proof {
             assert(digits@.take(i + 1).drop_last() =~= digits@.take(i as int));
             assert(digits@.take(i + 1).last() == b);
-            assert((b as char) as u32 == b as u32);
             lemma_digits_prefix(digits@, i + 1, radix as u32);
         }
-        let d = (b as char).to_digit(radix as u32)? as u64;
+        let d = digit_value(b, radix as u32)? as u64;
         proof {
             assert(digits_spec(digits@.take(i + 1), radix as u32) == Some(magnitude * radix + d));
         }
@@ -1512,7 +1530,7 @@ pub fn parse_int(value: &[u8]) -> (r: Option<i64>)
         }
         #[cfg_attr(verus_keep_ghost, verifier::truncate)]
         let magnitude = magnitude as i64;
-        Some(magnitude.wrapping_neg())
+        Some(0i64.wrapping_sub(magnitude))
     } else {
         proof {
             assert(parse_int_spec(value@) == (if magnitude <= i64::MAX as u64 { Some(magnitude as i64) } else { None }));

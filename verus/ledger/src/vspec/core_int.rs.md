@@ -14,7 +14,6 @@ file.
 | `u64::is_power_of_two` | assume_spec | core library | Kani | discharged |
 | `u32::is_power_of_two` | assume_spec | core library | Kani | discharged |
 | `usize::next_power_of_two` | assume_spec | core library | Kani | discharged |
-| `i64::wrapping_neg` | assume_spec | core library | Kani | discharged |
 | `usize::ilog2` | assume_spec | core library | Kani | discharged |
 | `u32::rotate_right` | assume_spec | core library | Kani | discharged |
 | `u64::rotate_right` | assume_spec | core library | Kani | discharged |
@@ -123,24 +122,9 @@ pub assume_specification[ usize::next_power_of_two ](x: usize) -> (r: usize)
 ;
 ```
 
-## `i64::wrapping_neg`
-
-src/vspec/core_int.rs:57. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::i64_wrapping_neg).
-
-> `i64::wrapping_neg`: `-x`, except that `i64::MIN` is its own negation.
-
-Hashes: contract 269586973, body none.
-
-```rust
-pub assume_specification[ i64::wrapping_neg ](x: i64) -> (r: i64)
-    ensures r == if x == i64::MIN { i64::MIN as int } else { -x },
-;
-```
-
 ## `usize::ilog2`
 
-src/vspec/core_int.rs:62. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:57. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::usize_ilog2).
 
 > `usize::ilog2`: the position of the highest set bit; panics for 0.
@@ -156,7 +140,7 @@ pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
 
 ## `u32::rotate_right`
 
-src/vspec/core_int.rs:78. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:73. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_rotate_right).
 
 > `u32::rotate_right`: the bits shifted out at the bottom come back in at the top.
@@ -173,7 +157,7 @@ pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
 
 ## `u64::rotate_right`
 
-src/vspec/core_int.rs:96. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:91. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_rotate_right).
 
 > `u64::rotate_right`: the bits shifted out at the bottom come back in at the top (the count is taken modulo 64, as `core` documents).
@@ -190,7 +174,7 @@ pub assume_specification[ u64::rotate_right ](x: u64, n: u32) -> (r: u64)
 
 ## `core::hint::spin_loop`
 
-src/vspec/core_int.rs:107. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:102. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.

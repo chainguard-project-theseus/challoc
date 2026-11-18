@@ -46,7 +46,7 @@ const PERCPU_ARENA_NAMES: [&'static CStr; 3] = [c"disabled", c"percpu", c"phycpu
 
 ## `conf_ptr`
 
-src/config.rs:1674. Kind: external_body. Category: raw pointer (internal).
+src/config.rs:1692. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: config::linux::kani_conf_ptr::conf_ptr_is_conf_buf).
 
 > The storage of [`CONF_BUF`].
@@ -62,7 +62,7 @@ fn conf_ptr() -> (p: *mut [u8; CONF_LEN])
 
 ## `read_slot`
 
-src/config.rs:1809. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1827. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `const char *` at `slot` (a symbol, or an `environ` entry).
@@ -75,7 +75,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ## `malloc_conf_addr`
 
-src/config.rs:1822. Kind: external_body. Category: inline asm.
+src/config.rs:1840. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -88,7 +88,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ## `je_malloc_conf_addr`
 
-src/config.rs:1847. Kind: external_body. Category: inline asm.
+src/config.rs:1865. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -101,7 +101,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ## `byte_at`
 
-src/config.rs:1910. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1928. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The byte at `p + n`.
@@ -114,7 +114,7 @@ pub(crate) unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ## `bytes_at`
 
-src/config.rs:1922. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1940. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -129,7 +129,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ## `environ_array`
 
-src/config.rs:1934. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1952. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > glibc's `environ`, null before libc has set it up.
@@ -142,7 +142,7 @@ fn environ_array() -> *const *const c_char
 
 ## `env_var`
 
-src/config.rs:1957. Kind: no_decreases. Category: C-program contract.
+src/config.rs:1975. Kind: no_decreases. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.

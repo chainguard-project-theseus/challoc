@@ -118,7 +118,7 @@ pub const fn decode(ret: usize) -> (r: Result<usize, Errno>)
                     ret > 0xFFFF_FFFF_FFFF_F000usize,
             ;
         }
-        Err(Errno(word.wrapping_neg() as i32))
+        Err(Errno(0isize.wrapping_sub(word) as i32))
     } else {
         Ok(ret)
     }
