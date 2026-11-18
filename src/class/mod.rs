@@ -6785,10 +6785,11 @@ verus! {
 ///
 /// `ClassState::new` proves the invariant of the value it creates the
 /// lock with (`Lock::new` requires it). Each holder outside the tests
-/// (`ClassState::plan`, `reopen`, `on_live_zero`, `bin_stats`,
+/// (`ClassState::plan_at`, `reopen`, `on_live_zero`, `bin_stats`,
 /// `lowest_partial`, `is_partial`, `decay.rs`'s `empty_bytes`,
-/// `purge_empty` and `purge_curve`, and `pages.rs`'s `close_pages`) ends
-/// with `LockGuard::unlock`, which
+/// `purge_empty` and `purge_curve`, `pages.rs`'s `close_pages`, and
+/// `cow.rs`'s `cow_mark`, which only reads `group_next`) ends with
+/// `LockGuard::unlock`, which
 /// requires both, on every path to a return
 /// (`api::tests::guards_end_in_unlock`). A panic aborts
 /// (`panic = "abort"`) outside the tests, so it never releases. The other

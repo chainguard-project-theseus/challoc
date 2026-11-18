@@ -11,9 +11,15 @@ pub struct Variant {
     /// `claim_prefix`: a zero pick's bits are claimed in `take` under the
     /// lock. `false` replays the pre-fix order.
     pub prefix_claim: bool,
+    /// `plan` honours a fork epoch's floor. `false` plans as if no epoch
+    /// were open, and a refill reuses the child's shared pages.
+    pub cow_floor: bool,
 }
 
-pub const CURRENT: Variant = Variant { prefix_claim: true };
+pub const CURRENT: Variant = Variant {
+    prefix_claim: true,
+    cow_floor: true,
+};
 
 /// A scenario: the threads (arena and program) and the geometry.
 #[derive(Clone, Debug)]
@@ -98,5 +104,35 @@ pub fn three_way() -> Scenario {
             (0, vec![Op::Refill(3), Op::Write(1), Op::Release]),
         ],
         lg_group: 1,
+    }
+}
+
+/// A fork epoch (`crate::cow`): A fills slab 0 and writes a slot, opens an
+/// epoch (its floor is above slab 0, whose pages the child now shares),
+/// frees its slots and refills; B allocates, frees and purges around it,
+/// so that slab 0 is partial, `Empty` and `Purged` at some point of some
+/// interleaving. No refill under the floor may take a slot of slab 0
+/// while it is shared, and every other invariant holds.
+pub fn cow_epoch() -> Scenario {
+    Scenario {
+        name: "fork epoch over a shared slab",
+        threads: vec![
+            (
+                0,
+                vec![
+                    Op::Refill(3),
+                    Op::Write(0),
+                    Op::CowBegin,
+                    Op::Release,
+                    Op::Refill(2),
+                    Op::CowEnd,
+                ],
+            ),
+            (
+                0,
+                vec![Op::Refill(1), Op::Release, Op::Purge, Op::Refill(1)],
+            ),
+        ],
+        lg_group: 0,
     }
 }

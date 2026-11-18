@@ -321,7 +321,8 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
     (
         "class/mod.rs:ClassState.inner",
         &[
-            "class/mod.rs:plan",
+            "class/mod.rs:plan_at",
+            "class/cow.rs:cow_mark",
             "class/mod.rs:reopen",
             "class/mod.rs:on_live_zero",
             "class/mod.rs:bin_stats",
@@ -1945,7 +1946,8 @@ fn lock_holders_match_inv_docs() {
         (
             "class/mod.rs:ClassState.inner",
             &[
-                ("class/mod.rs:", "fn plan(", "inner"),
+                ("class/mod.rs:", "fn plan_at(", "inner"),
+                ("class/cow.rs:", "pub fn cow_mark(", "inner"),
                 ("class/mod.rs:", "fn reopen(", "inner"),
                 ("class/mod.rs:", "fn on_live_zero(", "inner"),
                 ("class/mod.rs:", "pub fn bin_stats(", "inner"),

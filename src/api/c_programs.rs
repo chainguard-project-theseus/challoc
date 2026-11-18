@@ -952,6 +952,16 @@ ctests! {
         CTest { prog: "usable_api", cflags: &["-Iinclude"],
             conf: Some("abort_conf:true,zero_on_free:true,double_free_scan:true,pac_pointers:true"), ..BASE },
     ];
+    /// challoc's fork epochs from C (`tests/c/cow_epoch.c`, design 5,
+    /// "Fork epochs", and 13.7): around a real `fork`, no block of before
+    /// the epoch is handed out again while it is open, plain and sized
+    /// frees alike; the drain answers the utilisation query and the
+    /// defrag hint after it; the cap expires the floors; with
+    /// `cow_epoch:false` begin is `ENOTSUP`.
+    c_cow_epoch => [
+        CTest { prog: "cow_epoch", cflags: &["-Iinclude"], ..BASE },
+        CTest { prog: "cow_epoch", cflags: &["-Iinclude"], args: &["off"], conf: Some("abort_conf:true,cow_epoch:false"), ..BASE },
+    ];
     /// Every nullable C export returns its Rust entry point's result
     /// (`tests/c/export_results.c`): NULL with the entry point's `errno`
     /// for a request nothing can serve, a block for a small one, across
@@ -1658,6 +1668,9 @@ fn jemalloc_symbols_in_release_so() {
         "challoc_calloc_usable",
         "challoc_realloc_usable",
         "challoc_free_usable",
+        "challoc_cow_begin",
+        "challoc_cow_end",
+        "challoc_cow_stat",
         "je_mallocx",
         "je_rallocx",
         "je_xallocx",

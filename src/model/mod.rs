@@ -148,6 +148,9 @@ fn explore_here(sc: &Scenario, v: Variant) -> Outcome {
         group_next: [0; NARENAS],
         group_end: [0; NARENAS],
         next_group: 0,
+        floor: [0; NARENAS],
+        shares: 0,
+        copied: 0,
     };
     let threads = sc.threads.iter().map(|(a, _)| Thread::new(*a)).collect();
     let mut m = Model {
@@ -236,6 +239,34 @@ mod tests {
             "{}",
             tr.render()
         );
+    }
+
+    #[test]
+    fn the_cow_floor_keeps_refills_off_the_childs_pages() {
+        let out = run(&cow_epoch(), CURRENT);
+        assert!(
+            out.violation.is_none(),
+            "{}",
+            out.violation.unwrap().1.render()
+        );
+        assert!(out.states > 100);
+    }
+
+    #[test]
+    // `..CURRENT`: the current variant with one rule changed.
+    #[allow(clippy::needless_update)]
+    fn without_the_floor_a_refill_reuses_the_childs_pages() {
+        let out = run(
+            &cow_epoch(),
+            Variant {
+                cow_floor: false,
+                ..CURRENT
+            },
+        );
+        let (msg, _) = out
+            .violation
+            .expect("planning without the floor must reuse a shared slab");
+        assert!(msg.contains("the child shares"), "{msg}");
     }
 
     #[test]

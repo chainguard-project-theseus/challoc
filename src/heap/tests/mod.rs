@@ -196,6 +196,7 @@ mod cache;
 mod class_lines;
 mod compaction;
 mod config_keys;
+mod cow;
 mod gc;
 mod hardening;
 mod zeroed_prefix;

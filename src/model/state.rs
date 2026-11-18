@@ -56,6 +56,16 @@ pub(super) struct Shared {
     pub(super) group_end: [u8; NARENAS],
     /// `SlabTable::inner.next_group`.
     pub(super) next_group: u8,
+    /// A fork epoch's floor per arena (`ClassState::cow_floor`; 0 for
+    /// none), and the slabs whose pages the fork child shares (bit `s`):
+    /// those holding data when the epoch began, until a purge discards
+    /// their pages.
+    pub(super) floor: [u8; NARENAS],
+    pub(super) shares: u8,
+    /// Slabs a refill took slots of while their pages were shared and the
+    /// floor held (not in the fallback): each a page the parent's next
+    /// write copies. The invariant wants none.
+    pub(super) copied: u8,
 }
 
 /// A program step of one thread.
@@ -70,6 +80,13 @@ pub enum Op {
     Release,
     /// `ClassState::purge_empty(u64::MAX)` on the thread's arena.
     Purge,
+    /// `cow::begin` and a `fork`: every arena's floor at its group cursor
+    /// (`ClassState::cow_mark`, under each arena's lock), and the slabs
+    /// with data become the child's shared pages.
+    CowBegin,
+    /// `cow::end` once the child is reaped: the floors go, and the child
+    /// shares nothing.
+    CowEnd,
 }
 
 /// A slot a thread holds: slab, slot, and whether the refill reported it
@@ -123,6 +140,9 @@ pub(super) struct Thread {
     /// (`release_routed`: the owner word's arena), whose lock
     /// `on_live_zero` and `reopen` take.
     pub(super) rel_arena: u8,
+    /// The plan in flight found nothing above its floor and planned again
+    /// without it (`ClassState::plan`'s fallback).
+    pub(super) fallback: bool,
 }
 
 /// The whole model state: the memoisation key.
@@ -192,6 +212,7 @@ impl Thread {
             was_full: 0,
             dec_pending: false,
             rel_arena: arena,
+            fallback: false,
         }
     }
 
