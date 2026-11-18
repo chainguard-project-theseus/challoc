@@ -101,7 +101,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `axiom_c_call`
 
-src/api/print.rs:1708. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1729. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
@@ -119,7 +119,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ## `malloc_stats_print`
 
-src/api/print.rs:1728. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1749. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -135,7 +135,7 @@ pub extern "C" fn malloc_stats_print (verified_export_pair!)
 
 ## `je_malloc_stats_print`
 
-src/api/print.rs:1728. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1749. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -151,7 +151,7 @@ pub extern "C" fn je_malloc_stats_print (verified_export_pair!)
 
 ## `malloc_info`
 
-src/api/print.rs:1736. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1757. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -166,7 +166,7 @@ pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int 
 
 ## `malloc_stats`
 
-src/api/print.rs:1748. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1769. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
