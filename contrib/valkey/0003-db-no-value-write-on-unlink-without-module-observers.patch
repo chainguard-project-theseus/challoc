@@ -1,0 +1,226 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH] db: don't write to a key's value on unlink when no module
+ observes it
+
+Valkey 9.1.2 (tag 9.1.2, commit 7f1dffedff6de73058b2c2a389422b6ecd56c8fb).
+Independent of patches 1/2 and 2/2 and of the allocator: it applies to
+stock 9.1.2 and helps with the bundled jemalloc too. The same change,
+against Valkey unstable (06cded9e4), is prepared for upstream.
+
+dbSetValue (on overwrite) and dbGenericDeleteWithDictIndex pin the old
+value with incrRefCount/decrRefCount around moduleNotifyKeyUnlink, because
+a module's key event callback may call VM_StringDMA, whose
+dbUnshareStringValue can free the value (Redis #9406). The pin is taken on
+every overwrite and every delete, also with no module listening, so every
+SET over an existing embedded string and every DEL, UNLINK, expiration and
+eviction writes the old value's refcount. While a fork child is alive
+(BGSAVE, BGREWRITEAOF, full sync) that write copies the page holding the
+value.
+
+The pin moves into moduleNotifyKeyUnlink, which now returns at once when
+no module subscribes to the key event (a listener count kept like the
+command result listener counts) and the value is not a module type.
+
+Measured in a develop session (4 vCPU, 15 GiB, kernel 6.18), Valkey 9.1.2,
+10M keys with 64-byte values, 1M random keys changed during a 60 s BGSAVE,
+rdb_last_cow_size in MiB (n=2, spread under 1%):
+
+                     jemalloc  +this   challoc  +this   challoc cow_epoch  +this
+  DEL                1069      166     1061     158     1061               158
+  SET (embstr)       1060      1062    1059     1059    1061               157
+
+On deletes this alone cuts the copy 6.4x with either allocator. On
+overwrites it is a prerequisite for challoc's cow_epoch, which without it
+saves nothing on embedded strings. 1 KiB (raw) values are unaffected: the
+raw path swaps the value into the old object in place.
+
+---
+ src/db.c                       | 15 +++-------
+ src/module.c                   | 26 ++++++++++++++++-
+ tests/unit/moduleapi/hooks.tcl | 51 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 80 insertions(+), 12 deletions(-)
+
+diff --git a/src/db.c b/src/db.c
+index fe8972feb..fb43f4cec 100644
+--- a/src/db.c
++++ b/src/db.c
+@@ -327,16 +327,13 @@ static void dbSetValue(serverDb *db, robj *key, robj **valref, int overwrite, vo
+     robj *new;
+ 
+     if (overwrite) {
+-        /* VM_StringDMA may call dbUnshareStringValue which may free val, so we
+-         * need to incr to retain old */
+-        incrRefCount(old);
++        int old_type = old->type;
+         /* Although the key is not really deleted from the database, we regard
+          * overwrite as two steps of unlink+add, so we still need to call the unlink
+          * callback of the module. */
+         moduleNotifyKeyUnlink(key, old, db->id, DB_FLAG_KEY_OVERWRITE);
+         /* We want to try to unblock any module clients or clients using a blocking XREADGROUP */
+-        signalDeletedKeyAsReady(db, key, old->type);
+-        decrRefCount(old);
++        signalDeletedKeyAsReady(db, key, old_type);
+         /* Because of VM_StringDMA, old may be changed, so we need get old again */
+         old = *oldref;
+     }
+@@ -477,15 +474,11 @@ int dbGenericDeleteWithDictIndex(serverDb *db, robj *key, int async, int flags,
+     void **ref = kvstoreHashtableTwoPhasePopFindRef(db->keys, dict_index, objectGetVal(key), &pos);
+     if (ref != NULL) {
+         robj *val = *ref;
+-        /* VM_StringDMA may call dbUnshareStringValue which may free val, so we
+-         * need to incr to retain val */
+-        incrRefCount(val);
++        int type = val->type;
+         /* Tells the module that the key has been unlinked from the database. */
+         moduleNotifyKeyUnlink(key, val, db->id, flags);
+         /* We want to try to unblock any module clients or clients using a blocking XREADGROUP */
+-        signalDeletedKeyAsReady(db, key, val->type);
+-        /* Match the incrRefCount above. */
+-        decrRefCount(val);
++        signalDeletedKeyAsReady(db, key, type);
+         /* Because of dbUnshareStringValue, the val in de may change. */
+         val = *ref;
+ 
+diff --git a/src/module.c b/src/module.c
+index cbc44bc15..b8e9af2b6 100644
+--- a/src/module.c
++++ b/src/module.c
+@@ -423,6 +423,7 @@ static int commandResultSuccessListeners = 0;     /* Count of modules listening
+ static int commandResultFailureListeners = 0;     /* Count of modules listening for command result failure. */
+ static int commandResultRejectedListeners = 0;    /* Count of modules listening for command result rejected. */
+ static int commandResultACLRejectedListeners = 0; /* Count of modules listening for command result ACL rejected. */
++static int keyEventListeners = 0;                 /* Count of modules listening for the key event. */
+ 
+ /* Data structures related to the module users */
+ 
+@@ -12740,6 +12741,8 @@ int VM_SubscribeToServerEvent(ValkeyModuleCtx *ctx, ValkeyModuleEvent event, Val
+                 commandResultRejectedListeners--;
+             else if (event.id == VALKEYMODULE_EVENT_COMMAND_RESULT_ACL_REJECTED)
+                 commandResultACLRejectedListeners--;
++            else if (event.id == VALKEYMODULE_EVENT_KEY)
++                keyEventListeners--;
+         } else {
+             el->callback = callback; /* Update the callback with the new one. */
+         }
+@@ -12762,6 +12765,8 @@ int VM_SubscribeToServerEvent(ValkeyModuleCtx *ctx, ValkeyModuleEvent event, Val
+         commandResultRejectedListeners++;
+     else if (event.id == VALKEYMODULE_EVENT_COMMAND_RESULT_ACL_REJECTED)
+         commandResultACLRejectedListeners++;
++    else if (event.id == VALKEYMODULE_EVENT_KEY)
++        keyEventListeners++;
+     return VALKEYMODULE_OK;
+ }
+ 
+@@ -12920,6 +12925,8 @@ void moduleUnsubscribeAllServerEvents(ValkeyModule *module) {
+                 commandResultRejectedListeners--;
+             else if (el->event.id == VALKEYMODULE_EVENT_COMMAND_RESULT_ACL_REJECTED)
+                 commandResultACLRejectedListeners--;
++            else if (el->event.id == VALKEYMODULE_EVENT_KEY)
++                keyEventListeners--;
+             listDelNode(ValkeyModule_EventListeners, ln);
+             zfree(el);
+         }
+@@ -12943,8 +12950,24 @@ void processModuleLoadingProgressEvent(int is_aof) {
+ }
+ 
+ /* When a key is deleted (in dbAsyncDelete/dbSyncDelete/setKey), it
+- *  will be called to tell the module which key is about to be released. */
++ *  will be called to tell the module which key is about to be released.
++ *
++ * The module code called here may replace the value in the keyspace and
++ * release 'val' (VM_StringDMA on an encoded string calls
++ * dbUnshareStringValue), so the caller must not dereference 'val' after
++ * this call, and must look the value up again if it needs it.
++ *
++ * When no module listens for the key event and 'val' is not a module type,
++ * no module code runs and 'val' is not written to. The latter matters: a
++ * write to the value's refcount, on every overwrite and delete, would copy
++ * the page holding it while a fork child (BGSAVE, AOF rewrite, full sync)
++ * shares it. */
+ void moduleNotifyKeyUnlink(robj *key, robj *val, int dbid, int flags) {
++    if (keyEventListeners == 0 && val->type != OBJ_MODULE) return;
++
++    /* Retain 'val' while module code runs, since it may be freed by
++     * dbUnshareStringValue (see above). */
++    incrRefCount(val);
+     server.lazy_expire_disabled++;
+     int subevent = VALKEYMODULE_SUBEVENT_KEY_DELETED;
+     if (flags & DB_FLAG_KEY_EXPIRED) {
+@@ -12969,6 +12992,7 @@ void moduleNotifyKeyUnlink(robj *key, robj *val, int dbid, int flags) {
+         }
+     }
+     server.lazy_expire_disabled--;
++    decrRefCount(val);
+ }
+ 
+ /* Return the free_effort of the module, it will automatically choose to call
+diff --git a/tests/unit/moduleapi/hooks.tcl b/tests/unit/moduleapi/hooks.tcl
+index 241dabb27..6efbe8cd6 100644
+--- a/tests/unit/moduleapi/hooks.tcl
++++ b/tests/unit/moduleapi/hooks.tcl
+@@ -218,6 +218,28 @@ tags "modules" {
+             r config set maxmemory 0
+         } {OK} {needs:debug}
+ 
++        test {Test removed key event when an encoded string is overwritten or deleted} {
++            # The callback reads string values with StringDMA, which replaces
++            # an int or embstr encoded value in the keyspace and frees it while
++            # the server is still notifying about it.
++            r set intstr 1234
++            r set intstr 5678
++            assert_equal {1234 overwritten} [r hooks.is_key_removed intstr]
++            assert_equal 5678 [r get intstr]
++            r set intstr abcd
++            assert_equal {5678 overwritten} [r hooks.is_key_removed intstr]
++            r set intstr [string repeat x 100]
++            assert_equal {abcd overwritten} [r hooks.is_key_removed intstr]
++            assert_equal [string repeat x 100] [r get intstr]
++
++            r set embstr abcd
++            r getset embstr 1234
++            assert_equal {abcd overwritten} [r hooks.is_key_removed embstr]
++            r unlink embstr
++            assert_equal {1234 deleted} [r hooks.is_key_removed embstr]
++            assert_equal 0 [r exists embstr]
++        }
++
+         test {Test flushdb hooks} {
+             r flushdb
+             assert_equal [r hooks.event_last flush-start] 9
+@@ -466,4 +488,33 @@ tags "modules" {
+             assert_equal [R 2 hooks.event_last atomic-slot-migration-export-complete-jobname] $job_name
+         }
+     }
++
++    start_server {} {
++        test {Key event listener is dropped on unload and restored on load} {
++            r module load $testmodule
++            r set k1 v1
++            r set k1 v2
++            assert_equal {v1 overwritten} [r hooks.is_key_removed k1]
++
++            # Without a listener, overwrites and deletes of every encoding
++            # still work.
++            r module unload testhook
++            r set k1 123
++            r set k1 v3
++            r set k2 [string repeat x 100]
++            r set k2 456
++            r del k1 k2
++            r set k3 abcd px 1
++            after 10
++            assert_equal 0 [r exists k1 k2 k3]
++
++            r module load $testmodule
++            r set k1 v1
++            r set k1 789
++            assert_equal {v1 overwritten} [r hooks.is_key_removed k1]
++            r del k1
++            assert_equal {789 deleted} [r hooks.is_key_removed k1]
++            r module unload testhook
++        }
++    }
+ }
+-- 
+2.56.1
+
