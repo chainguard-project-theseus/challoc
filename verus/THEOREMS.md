@@ -648,7 +648,7 @@ run's permission from the run token `take` just made
 permission dropped (`Live::into_run`).
 
 **`core` and `vstd`.** The `assume_specification`s in `src/vspec/`
-(64, mostly `vspec/core_int.rs`, `ptr.rs` and `slice.rs`; one of
+(60, mostly `vspec/slice.rs`, `ptr.rs` and `core_int.rs`; one of
 them, `<*const T>::wrapping_add` in `vspec/config.rs`, claims nothing
 about the pointer, for `env_var`'s walk of `environ`),
 `getauxval`'s in `sys/auxv.rs`, and vstd's
@@ -2115,11 +2115,12 @@ no mask.
   stands for `get_unchecked` on an array.
 - **Masks on existing specifications.**
   - `opens_invariants none` on the `vspec` specifications the paths use:
-    `usize::leading_zeros`, `u32::rotate_right` and `u64::rotate_right`
-    (`vspec/core_int.rs`), `<*mut T>::add` (`vspec/ptr.rs`) and
-    `core::hint::assert_unchecked` (`vspec/misc.rs`).
+    `usize::leading_zeros` (`vspec/core_int.rs`), `<*mut T>::add`
+    (`vspec/ptr.rs`) and `core::hint::assert_unchecked`
+    (`vspec/misc.rs`).
   - Also declared: `vspec::word::load` (`vspec/word.rs`, the bit test's
-    load), `<*mut T>::is_null` (`vspec/addr.rs`), and vstd's `ptr_ref`,
+    load), `<*mut T>::is_null` (`vspec/addr.rs`), the verified rotates
+    `layout::rotate_right32` and `rotate_right64`, and vstd's `ptr_ref`,
     `ptr_mut_ref`, `ptr_mut_write` and `wrapping_*`.
 - **Destructors.** Verus requires every `Drop` impl to declare
   `opens_invariants none`, so the masks cannot exclude a lock taken in a

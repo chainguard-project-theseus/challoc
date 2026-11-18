@@ -13,7 +13,7 @@ file.
 
 ## `ClassTable`
 
-src/layout/mod.rs:1572. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1570. Kind: external_body type. Category: UnsafeCell/volatile/transmute.
 Tool: none (assumption). Status: trusted.
 
 > The size-class table in use, indexed by class number: [`BASE_CLASSES`] with the slab geometry of the classes below the kernel page raised to the page by [`adopt_page_geometry`] once at init.
@@ -26,7 +26,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ## `ClassTable::new`
 
-src/layout/mod.rs:1770. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1768. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::class_table_new).
 
 Hashes: contract 3932435869, body 785407001.
@@ -37,7 +37,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ## `classes_ptr`
 
-src/layout/mod.rs:1869. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1867. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.

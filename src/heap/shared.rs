@@ -636,9 +636,10 @@ impl ClassLine {
             }),
         opens_invariants none
     {
-        let slot = ((rel as u32) & self.slab_mask)
-            .wrapping_mul(self.inv as u32)
-            .rotate_right(self.tz as u32);
+        let slot = crate::layout::rotate_right32(
+            ((rel as u32) & self.slab_mask).wrapping_mul(self.inv as u32),
+            self.tz as u32,
+        );
         if slot < self.nslots as u32 {
             Some(slot)
         } else {
@@ -724,8 +725,8 @@ impl ClassLine {
     {
         let gw = self.guard_word();
         let x = (rel & (self.slab_mask as usize | region_hi)) as u64;
-        // `rotate_right` takes its count modulo 64: `tz`, the low byte.
-        let q = x.wrapping_mul(self.inv).rotate_right((gw >> 32) as u32);
+        // The rotate takes its count modulo 64: `tz`, the low byte.
+        let q = crate::layout::rotate_right64(x.wrapping_mul(self.inv), (gw >> 32) as u32);
         q < self.nslots && !Self::is_guard(rel, gw)
     }
 

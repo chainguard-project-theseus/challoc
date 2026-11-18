@@ -15,8 +15,6 @@ file.
 | `u32::is_power_of_two` | assume_spec | core library | Kani | discharged |
 | `usize::next_power_of_two` | assume_spec | core library | Kani | discharged |
 | `usize::ilog2` | assume_spec | core library | Kani | discharged |
-| `u32::rotate_right` | assume_spec | core library | Kani | discharged |
-| `u64::rotate_right` | assume_spec | core library | Kani | discharged |
 | `hint::spin_loop` | assume_spec | core library | Kani | trusted |
 
 ## `u64::count_ones`
@@ -138,43 +136,9 @@ pub assume_specification[ usize::ilog2 ](x: usize) -> (r: u32)
 ;
 ```
 
-## `u32::rotate_right`
-
-src/vspec/core_int.rs:73. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u32_rotate_right).
-
-> `u32::rotate_right`: the bits shifted out at the bottom come back in at the top.
-
-Hashes: contract 1134367200, body none.
-
-```rust
-pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
-    ensures
-        r == rotr32(x, n),
-    opens_invariants none
-;
-```
-
-## `u64::rotate_right`
-
-src/vspec/core_int.rs:91. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_rotate_right).
-
-> `u64::rotate_right`: the bits shifted out at the bottom come back in at the top (the count is taken modulo 64, as `core` documents).
-
-Hashes: contract 2671721552, body none.
-
-```rust
-pub assume_specification[ u64::rotate_right ](x: u64, n: u32) -> (r: u64)
-    ensures
-        r == rotr64(x, n),
-    opens_invariants none
-;
-```
-
 ## `core::hint::spin_loop`
 
-src/vspec/core_int.rs:102. Kind: assume_spec. Category: core library.
+src/vspec/core_int.rs:88. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted.
 
 > A spin-wait hint to the CPU (`pause`, `isb`); no effect on memory.

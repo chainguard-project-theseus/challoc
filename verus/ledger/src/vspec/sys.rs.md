@@ -13,7 +13,6 @@ file.
 | `ptr::from_mut` | assume_spec | core library | Kani | discharged |
 | `Option::<T>::map_or` | assume_spec | core library | Kani | discharged |
 | `Result::<T, E>::map_or` | assume_spec | core library | Kani | discharged |
-| `Result::<T,...:unwrap_or` | assume_spec | core library | Kani | discharged |
 | `str::Utf8Error` | ext_type_spec | core library | none (assumption) | trusted |
 | `str::from_utf8` | assume_spec | core library | Kani | trusted |
 
@@ -114,28 +113,9 @@ pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
 ;
 ```
 
-## `Result::<T, E>::unwrap_or`
-
-src/vspec/sys.rs:54. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: discharged (Kani: kani_proofs::misc::result_unwrap_or).
-
-> `Result::unwrap_or`: the `Ok` value, else `default`.
-
-Hashes: contract 920930093, body none.
-
-```rust
-pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>, default: T) -> (r: T)
-    ensures
-        r == match result {
-            Ok(v) => v,
-            Err(_) => default,
-        },
-;
-```
-
 ## `core::str::Utf8Error`
 
-src/vspec/sys.rs:64. Kind: ext_type_spec. Category: core library.
+src/vspec/sys.rs:55. Kind: ext_type_spec. Category: core library.
 Tool: none (assumption). Status: trusted (claims nothing: an opaque type; Verus sees no field, invariant or specification of it).
 
 Hashes: contract 2656431228, body none.
@@ -146,7 +126,7 @@ pub struct ExUtf8Error(core::str::Utf8Error);
 
 ## `core::str::from_utf8`
 
-src/vspec/sys.rs:67. Kind: assume_spec. Category: core library.
+src/vspec/sys.rs:58. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::misc::str_from_utf8; not checked: the harness checks byte strings up to 4 bytes; `core`'s word-at-a-time ASCII path (16 bytes and longer) is not reached).
 
 > `core::str::from_utf8`: the bytes as a `str` when they are UTF-8.

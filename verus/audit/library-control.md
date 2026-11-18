@@ -4,12 +4,13 @@
 library, function pointer, panic/abort and termination, made during
 [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
-*This file lists the 106 of those seams that the ledger still lists:
+*This file lists the 103 of those seams that the ledger still lists:
 the 116 the ledger at `26f535a9` listed, less the three statistics
 figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`),
-`assert_not_home` and the five byte, digit and negation specs
+`assert_not_home`, the five byte, digit and negation specs
 (`u8::is_ascii_digit`, `u8::is_ascii_whitespace`, `char::to_digit`,
-`i64::wrapping_neg`, `isize::wrapping_neg`), which are verified since or
+`i64::wrapping_neg`, `isize::wrapping_neg`) and `u32::rotate_right`,
+`Option::or_else` and `Result::unwrap_or`, which are verified since or
 replaced by verified code, and
 `Option::as_deref_mut`, which no code calls and whose seam is gone.
 The others are verified at `26f535a9` or no longer exist
@@ -34,7 +35,7 @@ false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 106 seams listed: 101 sound and 5 fixed; 74 discharged,
+Totals for the 103 seams listed: 98 sound and 5 fixed; 71 discharged,
 9 partly checked and 23 trusted. The category column is
 the ledger's; a few seams of this audit sit in another category there.
 
@@ -100,7 +101,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `u32::is_power_of_two` | `vspec/core_int.rs` | core library | discharged | sound | Powers of two below `2^32` (Kani checks every input). |
 | `usize::next_power_of_two` | `vspec/core_int.rs` | core library | discharged | sound | `x <= 2^63`: `r = 2^63` at the top, `1` for `0` and `1` (Kani checks every input). |
 | `usize::div_ceil` | `vspec/core_int.rs` | core library | trusted | sound | `(x + d - 1) / d` in `int` is the ceiling for `d > 0`; core never overflows here. |
-| `u32::rotate_right` | `vspec/core_int.rs` | core library | discharged | sound | `rotr32` reduces `n` mod 32 (Kani checks every input). |
 | `<[T]>::get_unchecked::<I>` | `vspec/core_int.rs` | core library | discharged | sound | `index`'s own vstd contract (requires in bounds). |
 | `core::hint::spin_loop` | `vspec/core_int.rs` | core library | trusted | sound | No contract. |
 | `ExWrite` | `vspec/fmt.rs` | core library | trusted | sound | Trait methods without contracts. |
@@ -109,7 +109,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `DisplaySpecImpl for sys::Errno` | `vspec/fmt.rs` | core library | discharged | sound | `fmt_req` true; no `ensures` on output. |
 | `DebugSpecImpl for slab::State` | `vspec/fmt.rs` | core library | discharged | sound | `fmt_req` true. |
 | `core::ffi::c_void` | `vspec/config.rs` | core library | trusted | sound | Opaque type. |
-| `Option::<T>::or_else` | `vspec/misc.rs` | core library | discharged | sound | `option` when `Some`, else `f`'s result. |
 | `Layout` | `vspec/layout.rs` | core library | trusted | sound | Opaque type; facts through `layout_size`/`layout_align`. |
 | `core::alloc::LayoutError` | `vspec/layout.rs` | core library | trusted | sound | Opaque type. |
 | `Layout::size` | `vspec/layout.rs` | core library | discharged | sound | `layout_ok` is `core`'s `Layout` invariant (power-of-two align, `size + align - 1 <= isize::MAX`). |
@@ -142,7 +141,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `<[T]>::as_mut_ptr` | `vspec/sys.rs` | core library | discharged | sound | No `ensures`. |
 | `<[T]>::as_ptr` | `vspec/sys.rs` | core library | discharged | sound | No `ensures`. |
 | `Result::<T, E>::map_or` | `vspec/sys.rs` | core library | discharged | sound | `default` for `Err`, `f`'s result for `Ok`. |
-| `Result::<T, E>::unwrap_or` | `vspec/sys.rs` | core library | discharged | sound | The `Ok` value, else `default`. |
 | `u64::is_power_of_two` | `vspec/core_int.rs` | core library | discharged | sound | Powers of two below `2^64` (Kani checks every input). |
 | `core::str::Utf8Error` | `vspec/sys.rs` | core library | trusted | sound | Opaque type. |
 | `core::str::from_utf8` | `vspec/sys.rs` | core library | trusted (partly checked) | sound | No `ensures`. |

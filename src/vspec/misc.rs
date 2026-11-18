@@ -113,17 +113,3 @@ pub assume_specification<T>[ core::hint::black_box ](dummy: T) -> (r: T)
 pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
 
 } // verus!
-
-verus! {
-
-/// `Option::or_else`: `option` itself when it is `Some`, else `f()`. Its
-/// caller is `heap::mallocx::alloc`'s arena choice.
-pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](option: Option<T>, f: F) -> (r: Option<T>)
-    requires
-        option is None ==> f.requires(()),
-    ensures
-        option is Some ==> r == option,
-        option is None ==> f.ensures((), r),
-;
-
-} // verus!

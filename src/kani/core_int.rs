@@ -52,24 +52,6 @@ fn spec_is_pow2_below(x: u128, bits: u32) -> bool {
     false
 }
 
-/// `vspec::core_int::rotr32`.
-fn spec_rotr32(x: u32, n: u32) -> u32 {
-    if n % 32 == 0 {
-        x
-    } else {
-        (x >> (n % 32)) | (x << (32 - n % 32))
-    }
-}
-
-/// `vspec::core_int::rotr64`.
-fn spec_rotr64(x: u64, n: u32) -> u64 {
-    if n % 64 == 0 {
-        x
-    } else {
-        (x >> (n % 64)) | (x << (64 - n % 64))
-    }
-}
-
 /// `usize::trailing_zeros`: `r == u64_trailing_zeros(x as u64)`.
 #[kani::proof]
 #[kani::unwind(66)]
@@ -134,24 +116,6 @@ fn usize_next_power_of_two() {
     } else {
         assert!((r as u128) < 2 * x as u128);
     }
-}
-
-/// `u32::rotate_right`: `r == rotr32(x, n)`, for every `n` (also
-/// `n >= 32`).
-#[kani::proof]
-fn u32_rotate_right() {
-    let x: u32 = kani::any();
-    let n: u32 = kani::any();
-    assert_eq!(x.rotate_right(n), spec_rotr32(x, n));
-}
-
-/// `u64::rotate_right`: `r == rotr64(x, n)`, for every `n` (also
-/// `n >= 64`).
-#[kani::proof]
-fn u64_rotate_right() {
-    let x: u64 = kani::any();
-    let n: u32 = kani::any();
-    assert_eq!(x.rotate_right(n), spec_rotr64(x, n));
 }
 
 /// `usize::ilog2`: under `x > 0`, `r < 64` and

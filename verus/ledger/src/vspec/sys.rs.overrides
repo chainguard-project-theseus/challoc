@@ -3,7 +3,6 @@
 <[T]>::as_ptr	core library	Kani	discharged (Kani: kani_proofs::slice::slice_as_ptr)	contract 2609362740, body none
 Option::<T>::map_or	core library	Kani	discharged (Kani: kani_proofs::misc::option_map_or)	contract 385626731, body none
 Result::<T, E>::map_or	core library	Kani	discharged (Kani: kani_proofs::misc::result_map_or)	contract 1857037741, body none
-Result::<T, E>::unwrap_or	core library	Kani	discharged (Kani: kani_proofs::misc::result_unwrap_or)	contract 920930093, body none
 core::str::from_utf8	core library	Kani	trusted (partly checked, Kani: kani_proofs::misc::str_from_utf8; not checked: the harness checks byte strings up to 4 bytes; `core`'s word-at-a-time ASCII path (16 bytes and longer) is not reached)	contract 2269075012, body none
 core::ptr::from_ref	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut)	contract 723909333, body none
 core::ptr::from_mut	core library	Kani	discharged (Kani: kani_proofs::ptr::ptr_from_ref_mut)	contract 595208146, body none

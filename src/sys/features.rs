@@ -255,12 +255,17 @@ impl FeatureLine {
     }
 
     /// The line without its NUL.
+    // A `match`, not `unwrap_or_default`, which vstd does not specify.
+    #[allow(clippy::manual_unwrap_or_default)]
     pub fn as_str(&self) -> &str {
         proof {
             use_type_invariant(self);
         }
         // Only `str` fragments were copied, cut at a fragment boundary.
-        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        match core::str::from_utf8(&self.buf[..self.len]) {
+            Ok(s) => s,
+            Err(_) => "",
+        }
     }
 
     /// The NUL-terminated line, for C callers.

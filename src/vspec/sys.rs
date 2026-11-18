@@ -50,15 +50,6 @@ pub assume_specification<T, E, U, F: FnOnce(T) -> U>[ Result::<T, E>::map_or ](
         result matches Ok(v) ==> f.ensures((v,), r),
 ;
 
-/// `Result::unwrap_or`: the `Ok` value, else `default`.
-pub assume_specification<T, E>[ Result::<T, E>::unwrap_or ](result: Result<T, E>, default: T) -> (r: T)
-    ensures
-        r == match result {
-            Ok(v) => v,
-            Err(_) => default,
-        },
-;
-
 #[verifier::external_type_specification]
 #[verifier::external_body]
 pub struct ExUtf8Error(core::str::Utf8Error);

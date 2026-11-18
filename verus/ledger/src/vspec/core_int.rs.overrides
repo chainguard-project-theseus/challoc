@@ -7,5 +7,3 @@ u64::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::
 u32::is_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::u32_is_power_of_two)	contract 4242205333, body none
 usize::next_power_of_two	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_next_power_of_two)	contract 1420529411, body none
 usize::ilog2	core library	Kani	discharged (Kani: kani_proofs::core_int::usize_ilog2)	contract 4120845868, body none
-u32::rotate_right	core library	Kani	discharged (Kani: kani_proofs::core_int::u32_rotate_right)	contract 1134367200, body none
-u64::rotate_right	core library	Kani	discharged (Kani: kani_proofs::core_int::u64_rotate_right)	contract 2671721552, body none

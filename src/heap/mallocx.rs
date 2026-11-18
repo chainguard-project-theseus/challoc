@@ -430,11 +430,13 @@ pub fn alloc(
             }
         }
         Tcache::None => {
-            let a = arena
-                .or_else(|| {
-                    crate::heap::existing_heap(crate::heap::shared_ptr(shared)).map(|h| h.arena())
-                })
-                .unwrap_or(0);
+            let a = match arena {
+                Some(a) => a,
+                None => match crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {
+                    Some(h) => h.arena(),
+                    None => 0,
+                },
+            };
             let (p, zero, z) = alloc_direct(shared, class, a, arena.is_none(), Tracked(blk), Tracked(ord));
             if !p.is_null() {
                 if let Some(h) = crate::heap::existing_heap(crate::heap::shared_ptr(shared)) {

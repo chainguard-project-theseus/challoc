@@ -27,29 +27,6 @@ fn any_result() -> Result<u64, u32> {
     }
 }
 
-/// `Option::<T>::or_else`: `option` itself when it is `Some` (and `f` not
-/// called), else what `f()` returned.
-#[kani::proof]
-fn option_or_else() {
-    let o = any_option();
-    let out = any_option();
-    let calls = Cell::new(0u32);
-    let r = o.or_else(|| {
-        calls.set(calls.get() + 1);
-        out
-    });
-    match o {
-        Some(_) => {
-            assert_eq!(r, o);
-            assert_eq!(calls.get(), 0);
-        }
-        None => {
-            assert_eq!(r, out);
-            assert_eq!(calls.get(), 1);
-        }
-    }
-}
-
 /// `Option::<T>::map_or`: `default` for `None` (and `f` not called),
 /// `f(v)` for `Some(v)`.
 #[kani::proof]
@@ -97,18 +74,6 @@ fn result_map_or() {
             assert_eq!(arg.get(), Some(v));
             assert_eq!(r, (v.wrapping_mul(m) ^ c) as u32);
         }
-    }
-}
-
-/// `Result::<T, E>::unwrap_or`: the `Ok` value, else `default`.
-#[kani::proof]
-fn result_unwrap_or() {
-    let res = any_result();
-    let default: u64 = kani::any();
-    let r = res.unwrap_or(default);
-    match res {
-        Ok(v) => assert_eq!(r, v),
-        Err(_) => assert_eq!(r, default),
     }
 }
 

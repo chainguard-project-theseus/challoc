@@ -408,9 +408,7 @@ impl Class {
             offset < self.slab_size(),
             "slot_of_offset: offset outside the slab"
         );
-        let q = (offset as u32)
-            .wrapping_mul(self.inv_odd)
-            .rotate_right(self.tz as u32);
+        let q = rotate_right32((offset as u32).wrapping_mul(self.inv_odd), self.tz as u32);
         proof {
             lemma_slot_test(*self, offset, q);
         }
@@ -1872,6 +1870,67 @@ fn classes_ptr() -> (p: *mut [Class; NCLASSES])
     opens_invariants none
 {
     CLASSES.0.get()
+}
+
+/// `x.rotate_right(n)`, spelled as the two shifts it is, which LLVM
+/// emits as the same rotate instruction.
+#[inline(always)]
+pub const fn rotate_right32(x: u32, n: u32) -> (r: u32)
+    ensures
+        r == crate::vspec::core_int::rotr32(x, n),
+    opens_invariants none
+{
+    let k = n & 31;
+    proof {
+        assert(k <= 31) by (bit_vector) requires k == n & 31;
+    }
+    let s = (32 - k) & 31;
+    proof {
+        assert(s <= 31) by (bit_vector) requires s == ((32 - k) as u32) & 31;
+    }
+    let r = (x >> k) | (x << s);
+    proof {
+        assert(r == if n % 32 == 0 {
+            x
+        } else {
+            (x >> (n % 32)) | (x << ((32 - n % 32) as u32))
+        }) by (bit_vector)
+            requires
+                k == n & 31,
+                s == ((32 - k) as u32) & 31,
+                r == (x >> k) | (x << s);
+    }
+    r
+}
+
+/// `x.rotate_right(n)` for `u64`, spelled as [`rotate_right32`] is.
+#[inline(always)]
+pub const fn rotate_right64(x: u64, n: u32) -> (r: u64)
+    ensures
+        r == crate::vspec::core_int::rotr64(x, n),
+    opens_invariants none
+{
+    let k = n & 63;
+    proof {
+        assert(k <= 63) by (bit_vector) requires k == n & 63;
+    }
+    let s = (64 - k) & 63;
+    proof {
+        assert(s <= 63) by (bit_vector) requires s == ((64 - k) as u32) & 63;
+    }
+    let r = (x >> k) | (x << s);
+    proof {
+        assert(r == if n % 64 == 0 {
+            x
+        } else {
+            (x >> ((n % 64) as u64)) | (x << ((64 - n % 64) as u64))
+        }) by (bit_vector)
+            requires
+                k == n & 63,
+                s == ((64 - k) as u32) & 63,
+                r == (x >> (k as u64)) | (x << (s as u64));
+    }
+    r
 }
 
 /// Raise the slab of every class whose table slab is smaller than the

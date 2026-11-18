@@ -18,7 +18,6 @@ file.
 | `hint::assert_unchecked` | assume_spec | core library | Kani | discharged |
 | `hint::black_box` | assume_spec | core library | Kani | discharged |
 | `Atomic::<u32>::as_ptr` | assume_spec | core library | Kani | discharged |
-| `Option::<T>::or_else` | assume_spec | core library | Kani | discharged |
 
 ## `core::marker::PhantomPinned`
 
@@ -206,23 +205,4 @@ Hashes: contract 2694889095, body none.
 
 ```rust
 pub assume_specification[ core::sync::atomic::Atomic::<u32>::as_ptr ](a: &core::sync::atomic::Atomic<u32>) -> *mut u32;
-```
-
-## `Option::<T>::or_else`
-
-src/vspec/misc.rs:121. Kind: assume_spec. Category: core library.
-Tool: Kani. Status: discharged (Kani: kani_proofs::misc::option_or_else).
-
-> `Option::or_else`: `option` itself when it is `Some`, else `f()`.
-
-Hashes: contract 3760740912, body none.
-
-```rust
-pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](option: Option<T>, f: F) -> (r: Option<T>)
-    requires
-        option is None ==> f.requires(()),
-    ensures
-        option is Some ==> r == option,
-        option is None ==> f.ensures((), r),
-;
 ```

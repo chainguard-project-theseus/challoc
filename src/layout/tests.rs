@@ -292,6 +292,34 @@ fn slot_of_offset_rejects_an_offset_past_the_slab() {
     cls.slot_of_offset(cls.slab_size());
 }
 
+/// `rotate_right32` and `rotate_right64` are `core`'s `rotate_right` for
+/// every count up to 4 * 64 (so also counts at and past the width), on
+/// pseudo-random values and every single-bit value.
+#[test]
+fn rotate_right_is_core_rotate_right() {
+    let mut s = 0x2545_F491_4F6C_DD1Du64;
+    let mut values: Vec<u64> = (0..64).map(|b| 1u64 << b).collect();
+    values.extend((0..64).map(|_| xorshift(&mut s)));
+    values.extend([0, u64::MAX]);
+    for &x in &values {
+        for n in 0..=256u32 {
+            assert_eq!(
+                rotate_right64(x, n),
+                x.rotate_right(n),
+                "x = {x:#x}, n = {n}"
+            );
+            let y = x as u32;
+            assert_eq!(
+                rotate_right32(y, n),
+                y.rotate_right(n),
+                "x = {y:#x}, n = {n}"
+            );
+        }
+    }
+    assert_eq!(rotate_right64(1, u32::MAX), 1u64.rotate_right(u32::MAX));
+    assert_eq!(rotate_right32(1, u32::MAX), 1u32.rotate_right(u32::MAX));
+}
+
 /// Design 3: the geometry a kernel with pages
 /// above 4 KiB adopts. Every class's slab is at least the page (up to
 /// 64 KiB), only the 512..1024-byte classes change, and for those the
