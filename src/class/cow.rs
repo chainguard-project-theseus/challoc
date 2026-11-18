@@ -53,13 +53,29 @@ impl ClassState {
         g.unlock();
     }
 
-    /// The end of an epoch (`cow::end`): this pair's floor becomes its
-    /// drain floor ([`ClassState::drain_floor`]) and the floor goes.
-    pub fn cow_settle(&self) {
+    /// The end of an epoch (`cow::end`): the floor goes, and becomes this
+    /// pair's drain floor ([`ClassState::drain_floor`]) when the arena's
+    /// cursor moved past it, i.e. a refill took a slab above it and blocks
+    /// of the epoch may sit there. `ord` is the caller's lock-order token
+    /// (ghost) for the class lock.
+    pub fn cow_settle(&self, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+        ensures
+            *final(ord) == *old(ord),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         let f = self.cow_floor.load(Ordering::Relaxed);
         self.cow_floor.store(0, Ordering::Relaxed);
         if f != 0 {
-            self.drain_floor.store(f, Ordering::Relaxed);
+            let g = self.inner.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
+            if g.group_next as u64 != f {
+                self.drain_floor.store(f, Ordering::Relaxed);
+            }
+            g.unlock();
         }
     }
 

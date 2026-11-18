@@ -3103,19 +3103,31 @@ pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
 /// called once the child has exited (and on a failed `fork`). The floors
 /// become drain floors (`crate::cow::drain_move`). 0, also with no epoch
 /// open.
-pub fn cow_end() -> (r: c_int) {
+pub fn cow_end(Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).top() == 0,
+    ensures
+        *final(ord) == *old(ord),
+{
     let Some(shared) = super::shared_if_ready() else { return 0 };
     if !crate::cow::open() {
         return 0;
     }
-    crate::cow::end(shared)
+    crate::cow::end(shared, Tracked(ord))
 }
 
 /// `challoc_cow_stat(which)`: one figure of the fork epochs
 /// ([`crate::cow::stat`]); 0 before init.
-pub fn cow_stat(which: u32) -> u64 {
+pub fn cow_stat(which: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> u64
+    requires
+        crate::sys::may_syscall(),
+        old(ord).top() == 0,
+    ensures
+        *final(ord) == *old(ord),
+{
     match super::shared_if_ready() {
-        Some(shared) => crate::cow::stat(shared, which),
+        Some(shared) => crate::cow::stat(shared, which, Tracked(ord)),
         None => 0,
     }
 }
@@ -3671,13 +3683,21 @@ mod exports {
     #[unsafe(no_mangle)]
     #[verifier::assume_unsupported_attributes]
     pub extern "C" fn challoc_cow_end() -> c_int {
-        super::cow_end()
+        proof {
+            crate::sys::grant_syscalls();
+        }
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::cow_end(Tracked(&mut ord))
     }
 
     #[unsafe(no_mangle)]
     #[verifier::assume_unsupported_attributes]
     pub extern "C" fn challoc_cow_stat(which: core::ffi::c_uint) -> u64 {
-        super::cow_stat(which)
+        proof {
+            crate::sys::grant_syscalls();
+        }
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::cow_stat(which, Tracked(&mut ord))
     }
 
     #[unsafe(no_mangle)]

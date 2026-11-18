@@ -45,7 +45,7 @@ fn refills_under_an_epoch_stay_above_the_floor() {
             );
             assert!(!all.contains(&p));
         }
-        assert_eq!(crate::cow::end(s), 0);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
         assert_eq!(floor0(s, c), 0, "no floor after the epoch");
         assert_eq!(
             s.arena0.class(c).drain_floor(),
@@ -82,7 +82,7 @@ fn frees_below_the_floor_stay_out_of_the_cache() {
             );
         }
         assert!(
-            crate::cow::stat(s, 6) >= 32,
+            crate::cow::stat(s, 6, Tracked::assume_new()) >= 32,
             "the deflected frees are counted"
         );
         for _ in 0..256 {
@@ -92,7 +92,7 @@ fn frees_below_the_floor_stay_out_of_the_cache() {
                 "{p:?} of before the epoch handed out again"
             );
         }
-        assert_eq!(crate::cow::end(s), 0);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
         assert!(
             s.free_flags() & FREE_EPOCH == 0,
             "the dispatch bit is cleared"
@@ -126,7 +126,7 @@ fn another_heaps_cache_is_flushed_at_its_next_slow_path() {
                 "{p:?}, cached before the epoch, handed out during it"
             );
         }
-        assert_eq!(crate::cow::end(s), 0);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
     });
 }
 
@@ -136,13 +136,21 @@ fn epochs_nest_and_cow_epoch_false_refuses_them() {
         let s = shared();
         assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
         assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
-        assert_eq!(crate::cow::stat(s, 1), 2);
-        assert_eq!(crate::cow::end(s), 0);
+        assert_eq!(crate::cow::stat(s, 1, Tracked::assume_new()), 2);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
         assert!(crate::cow::in_force(), "the outer epoch still holds");
-        assert_eq!(crate::cow::end(s), 0);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
         assert!(!crate::cow::in_force());
-        assert_eq!(crate::cow::end(s), crate::cow::EINVAL, "no epoch open");
-        assert_eq!(crate::cow::stat(s, 0), 1, "one outermost epoch");
+        assert_eq!(
+            crate::cow::end(s, Tracked::assume_new()),
+            crate::cow::EINVAL,
+            "no epoch open"
+        );
+        assert_eq!(
+            crate::cow::stat(s, 0, Tracked::assume_new()),
+            1,
+            "one outermost epoch"
+        );
         let off = TestShared::with(Config {
             cow_epoch: false,
             ..Config::DEFAULT

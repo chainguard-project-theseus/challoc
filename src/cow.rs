@@ -68,8 +68,16 @@ exec static DEFLECTED: AtomicU64 = AtomicU64::new(0);
 /// Blocks the utilisation queries told a defragmenter to move back below
 /// a drain floor.
 exec static DRAIN_MOVES: AtomicU64 = AtomicU64::new(0);
-/// Some `(arena, class)` may still have a drain floor.
-exec static DRAINING: AtomicBool = AtomicBool::new(false);
+/// Some `(arena, class)` may still have a drain floor, until this
+/// coarse monotonic time (ns; 0 for none): [`DRAIN_WINDOW_NS`] after the
+/// last [`end`].
+exec static DRAIN_UNTIL: AtomicU64 = AtomicU64::new(0);
+
+/// How long after an epoch its drain may run: a block above the floor
+/// that no defragmenter moves by then (it is not the defragmenter's to
+/// move, or none runs) stops counting, so a defragmenter does not run
+/// forever for it.
+pub const DRAIN_WINDOW_NS: u64 = 300_000_000_000;
 
 /// The smallest cap: an epoch begun over a nearly empty heap still has
 /// room for the writes of a short child.
@@ -98,10 +106,25 @@ pub fn flush_after() -> u64 {
     FLUSH_AFTER.load(Ordering::Relaxed)
 }
 
-/// Whether some `(arena, class)` may still drain.
+/// Whether some `(arena, class)` may still drain: an epoch ended less
+/// than [`DRAIN_WINDOW_NS`] ago. One load when none did; the clock is read
+/// only within a window, and the first read past it closes the window.
 #[inline(always)]
-pub fn draining() -> bool {
-    DRAINING.load(Ordering::Relaxed)
+pub fn draining() -> bool
+    requires
+        crate::sys::may_syscall(),
+{
+    let until = DRAIN_UNTIL.load(Ordering::Relaxed);
+    if until == 0 {
+        return false;
+    }
+    if crate::sys::now_coarse_ns() < until {
+        true
+    } else {
+        // A begin and end in between stored a later deadline: keep it.
+        let _ = DRAIN_UNTIL.compare_exchange(until, 0, Ordering::Relaxed, Ordering::Relaxed);
+        false
+    }
 }
 
 /// `bytes` were reserved by a refill under a floor: past the cap, the
@@ -163,21 +186,35 @@ fn each_class_mark(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (c
     bytes
 }
 
-/// [`end`]'s walk: every floor becomes a drain floor.
-fn each_class_settle(shared: &Shared) {
+/// [`end`]'s walk: every floor goes, and becomes a drain floor where a
+/// refill went above it (`ClassState::cow_settle`).
+fn each_class_settle(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     let n = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
     let mut i: usize = 0;
     while i < n
         invariant
+            crate::sys::may_syscall(),
+            ord.allows(rank_class(0, 0)),
+            *ord == *old(ord),
             n <= crate::arena::MAX_ARENAS,
         decreases n - i,
     {
         if let Some(a) = shared.arenas.get_existing(i as u16) {
             let mut c: usize = 0;
             while c < NCLASSES
+                invariant
+                    crate::sys::may_syscall(),
+                    ord.allows(rank_class(0, 0)),
+                    *ord == *old(ord),
                 decreases NCLASSES - c,
             {
-                a.class(c).cow_settle();
+                a.class(c).cow_settle(Tracked(&mut *ord));
                 c += 1;
             }
         }
@@ -217,11 +254,15 @@ pub fn begin(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
 }
 
 /// End the epoch (the outermost [`end`] acts): the floors go, each
-/// becoming a drain floor, and the `free` dispatch bit is cleared.
-/// `EINVAL` with no epoch open.
-pub fn end(shared: &Shared) -> (r: i32)
+/// becoming a drain floor where blocks of the epoch went above it, and the
+/// `free` dispatch bit is cleared. `EINVAL` with no epoch open.
+pub fn end(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     requires
+        crate::sys::may_syscall(),
         shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
 {
     let d = DEPTH.load(Ordering::Relaxed);
     if d == 0 {
@@ -234,8 +275,8 @@ pub fn end(shared: &Shared) -> (r: i32)
     IN_FORCE.store(false, Ordering::Relaxed);
     FLUSH_AFTER.store(0, Ordering::Relaxed);
     shared.set_epoch(false);
-    each_class_settle(shared);
-    DRAINING.store(true, Ordering::Relaxed);
+    each_class_settle(shared, Tracked(&mut *ord));
+    DRAIN_UNTIL.store(crate::sys::now_coarse_ns().saturating_add(DRAIN_WINDOW_NS), Ordering::Relaxed);
     0
 }
 
@@ -253,7 +294,7 @@ pub fn drain_move(cs: &ClassState, slab: usize, Tracked(ord): Tracked<&mut LockO
         *final(ord) == *old(ord),
 {
     let f = cs.drain_floor();
-    if f == 0 || slab < f {
+    if f == 0 || slab < f || !draining() {
         return false;
     }
     match cs.lowest_partial(Tracked(ord)) {
@@ -273,8 +314,15 @@ pub fn drain_move(cs: &ClassState, slab: usize, Tracked(ord): Tracked<&mut LockO
 /// force, 3 epochs the cap ended early, 4 bytes reserved under the floors
 /// of the current or last epoch, 5 its cap, 6 deflected frees, 7 drain
 /// moves suggested, 8 `(arena, class)` pairs still draining. 0 for any
-/// other `which`.
-pub fn stat(shared: &Shared, which: u32) -> u64 {
+/// other `which`. `ord` is the caller's lock-order token (ghost) for the
+/// class locks figure 8 takes.
+pub fn stat(shared: &Shared, which: u32, Tracked(ord): Tracked<&mut LockOrder>) -> u64
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
     match which {
         0 => EPOCHS.load(Ordering::Relaxed),
         1 => DEPTH.load(Ordering::Relaxed) as u64,
@@ -284,28 +332,54 @@ pub fn stat(shared: &Shared, which: u32) -> u64 {
         5 => CAP.load(Ordering::Relaxed),
         6 => DEFLECTED.load(Ordering::Relaxed),
         7 => DRAIN_MOVES.load(Ordering::Relaxed),
-        8 => draining_pairs(shared),
+        8 => draining_pairs(shared, Tracked(ord)),
         _ => 0,
     }
 }
 
-/// `(arena, class)` pairs whose drain floor is set.
-fn draining_pairs(shared: &Shared) -> u64 {
+/// `(arena, class)` pairs still draining: a drain floor set, the drain
+/// window open, and a slab below the floor with a free slot to move a
+/// block into. A pair with none ends its drain here, as [`drain_move`]
+/// would. 0 once the window closed.
+fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
+    requires
+        crate::sys::may_syscall(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    if !draining() {
+        return 0;
+    }
     let n = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
     let mut k: u64 = 0;
     let mut i: usize = 0;
     while i < n
         invariant
+            crate::sys::may_syscall(),
+            ord.allows(rank_class(0, 0)),
+            *ord == *old(ord),
             n <= crate::arena::MAX_ARENAS,
         decreases n - i,
     {
         if let Some(a) = shared.arenas.get_existing(i as u16) {
             let mut c: usize = 0;
             while c < NCLASSES
+                invariant
+                    crate::sys::may_syscall(),
+                    ord.allows(rank_class(0, 0)),
+                    *ord == *old(ord),
                 decreases NCLASSES - c,
             {
-                if a.class(c).drain_floor() != 0 {
-                    k = k.saturating_add(1);
+                let cs: &ClassState = a.class(c);
+                let f = cs.drain_floor();
+                if f != 0 {
+                    match cs.lowest_partial(Tracked(&mut *ord)) {
+                        Some(s) if s < f => {
+                            k = k.saturating_add(1);
+                        },
+                        _ => cs.drain_done(),
+                    }
                 }
                 c += 1;
             }
