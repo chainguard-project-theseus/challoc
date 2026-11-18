@@ -27,7 +27,9 @@ use super::{
     lemma_hint_ok, lemma_plain_stored, pac_mode, regions_ok, slot_ok, slot_ptr, slot_start,
     slot_token,
 };
-use super::{FOREIGN, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap};
+use super::{
+    FOREIGN, FREE_DYN, FREE_EPOCH, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap,
+};
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
 
@@ -268,7 +270,11 @@ impl Heap {
                     blk.lemma_claims_slot(p, class as int);
                 }
                 // The freed slot's token, with the permission to its bytes.
-                if arena == self.arena {
+                // During a fork epoch a slot below its arena's floor goes
+                // the way of another arena's: onto the flush-only
+                // `FOREIGN` cache, so that `malloc` does not hand it out
+                // again while a fork child may share its page (`crate::cow`).
+                if arena == self.arena && !shared.cow_deflects(arena, class, p) {
                     self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
                 } else {
                     self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
@@ -789,6 +795,7 @@ impl Heap {
         if arena == FOREIGN
             && self.rehome
             && !shared.double_free_scan()
+            && !crate::cow::open()
             && self.rehome_on_free(shared, class, p, Tracked(&mut blk), Tracked(&mut *ord), Tracked(&mut *errno), Tracked(&mut *cell))
         {
             return;
@@ -940,7 +947,10 @@ pub unsafe fn free_fast_slot(
 
 /// After the bit test: the heap from the slot value `t`, authenticated
 /// against `tp` when `flags` carries [`PUSH_PAC`], the owner-word test
-/// with [`FREE_ROUTE`], the push. `blk` as for [`free_fast_slot`].
+/// with [`FREE_ROUTE`], the push. With [`FREE_EPOCH`] (a fork epoch,
+/// `crate::cow`) it declines, and the slow path keeps a slot below its
+/// arena's floor out of the cache `malloc` pops. `blk` as for
+/// [`free_fast_slot`].
 ///
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`](super::thread::tls_heap_slot) on this
@@ -965,7 +975,7 @@ unsafe fn free_fast_tail(
         class < NCLASSES,
         process_regions().is_slot(class as int, p@.addr),
         slab < shared.tables[class as int].spec_nslabs(),
-        flags & !FREE_ROUTE == shared.route_fixed(),
+        flags & !FREE_DYN == shared.route_fixed(),
         old(blk).claims(p),
         slot_ok(old(tls).cell, old(tls).loan),
         t == old(tls).value(),
@@ -992,9 +1002,9 @@ unsafe fn free_fast_tail(
         shared.lemma_route_flags(flags);
     }
     // The two default configurations (one arena, several arenas) each get
-    // one compare and the plain push; the opt-in hardening takes the
-    // general dispatch. `flags` carries the process's `PUSH_PAC`, clear in
-    // both default configurations.
+    // one compare and the plain push; the opt-in hardening and a fork
+    // epoch take the general dispatch. `flags` carries the process's
+    // `PUSH_PAC`, clear in both default configurations.
     let pushed = match flags {
         // SAFETY: `(t, tp)` is this thread's slot (the caller's contract),
         // and `flags == 0` means `PUSH_PAC` is clear.
@@ -1012,8 +1022,12 @@ unsafe fn free_fast_tail(
         _ => {
             // SAFETY: as above; the `PUSH_PAC` bit passed is the process's.
             let h = unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0, Tracked(&tls.cell), Tracked(&mut tls.loan)) };
-            (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
-                && h.push_fast(class, p, flags & !FREE_ROUTE, Tracked(&mut tk))
+            // A fork epoch (`FREE_EPOCH`) declines every free: the slow
+            // path keeps a slot below its arena's floor out of the cache
+            // `malloc` pops (`Heap::free`, `Shared::cow_deflects`).
+            flags & FREE_EPOCH == 0
+                && (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))
+                && h.push_fast(class, p, flags & !FREE_DYN, Tracked(&mut tk))
         }
     };
     proof {
@@ -1025,17 +1039,17 @@ unsafe fn free_fast_tail(
 }
 
 /// The bits of a `free_flags` byte the dispatch of [`free_fast_tail`]
-/// passes on: the byte without [`FREE_ROUTE`] keeps its [`PUSH_PAC`] and
+/// passes on: the byte without [`FREE_DYN`] keeps its [`PUSH_PAC`] and
 /// [`PUSH_ZERO`] bits, and `0` and `FREE_ROUTE` have neither.
 proof fn lemma_free_route_bits(flags: u8)
     ensures
-        (flags & !FREE_ROUTE) & PUSH_PAC == flags & PUSH_PAC,
-        (flags & !FREE_ROUTE) & PUSH_ZERO == flags & PUSH_ZERO,
+        (flags & !FREE_DYN) & PUSH_PAC == flags & PUSH_PAC,
+        (flags & !FREE_DYN) & PUSH_ZERO == flags & PUSH_ZERO,
         flags == 0 || flags == FREE_ROUTE ==> flags & PUSH_PAC == 0 && flags & PUSH_ZERO == 0,
         0u8 & PUSH_PAC == 0,
 {
-    assert((flags & !8u8) & 4u8 == flags & 4u8) by (bit_vector);
-    assert((flags & !8u8) & 2u8 == flags & 2u8) by (bit_vector);
+    assert((flags & !24u8) & 4u8 == flags & 4u8) by (bit_vector);
+    assert((flags & !24u8) & 2u8 == flags & 2u8) by (bit_vector);
     assert(flags == 0u8 || flags == 8u8 ==> flags & 4u8 == 0u8 && flags & 2u8 == 0u8) by (bit_vector);
     assert(0u8 & 4u8 == 0u8) by (bit_vector);
 }
@@ -1054,6 +1068,12 @@ proof fn lemma_free_route_bits(flags: u8)
 /// no call. `blk` holds the token for `p`: a push takes its slot token,
 /// and a declined push gives `blk` back the token with a fresh permission
 /// to the slot, its bytes unknown.
+///
+/// `flags` is `Shared::free_flags`, read in place of `push_flags` on the
+/// same line: during a fork epoch ([`FREE_EPOCH`], `crate::cow`) every
+/// sized free is declined, since the push skips the slot's owner and
+/// floor tests and would put a slot below its arena's floor in the cache
+/// `malloc` pops; the exact `free` then keeps it out.
 #[inline(always)]
 pub fn free_sized_fast(
     shared: &Shared,
@@ -1065,8 +1085,7 @@ pub fn free_sized_fast(
 ) -> (r: bool)
     requires
         shared.wf(),
-        (flags & PUSH_PAC != 0) == pac_mode(),
-        (flags & PUSH_PAC != 0) ==> pac::pac_available(),
+        flags & !FREE_DYN == shared.route_fixed(),
         hint matches Some(c) ==> c < NCLASSES,
         old(h).wf(),
         old(blk).claims(p),
@@ -1082,6 +1101,13 @@ pub fn free_sized_fast(
         !r ==> *final(blk) == *old(blk) || old(blk).block(p),
         r ==> old(blk).block(p),
 {
+    if flags & FREE_EPOCH != 0 {
+        return false;
+    }
+    proof {
+        lemma_free_route_bits(flags);
+        shared.lemma_route_flags(flags);
+    }
     match shared.sized_slot(p, hint) {
         Some(class) => {
             let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
@@ -1092,7 +1118,7 @@ pub fn free_sized_fast(
                 lend_slot(blk, &mut tk, class as int, p);
                 assert(process_regions().is_slot(class as int, p@.addr));
             }
-            let r = h.push_fast(class, p, flags, Tracked(&mut tk));
+            let r = h.push_fast(class, p, flags & !FREE_DYN, Tracked(&mut tk));
             proof {
                 if !r {
                     blk.put_slot(tk.tracked_remove(0), orig, p, class as int);
@@ -1452,7 +1478,7 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         blk.lemma_claims(p);
     }
     if hint.is_some() {
-        if free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk)) {
+        if free_sized_fast(shared, h, p, hint, shared.free_flags(), Tracked(&mut blk)) {
             return;
         }
     }
@@ -1533,7 +1559,7 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
     let tracked mut blk = blk;
     let ghost (h0, b0) = (*h, blk);
     if hint.is_some() {
-        let pushed = free_sized_fast(shared, h, p, hint, shared.push_flags(), Tracked(&mut blk));
+        let pushed = free_sized_fast(shared, h, p, hint, shared.free_flags(), Tracked(&mut blk));
         assert(!pushed && *h == h0 && blk == b0);
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));

@@ -64,6 +64,7 @@ fn defaults_match_the_design_table() {
     );
     assert!(!d.pac_pointers, "signed pointers are opt-in");
     assert!(d.cgroup);
+    assert!(d.cow_epoch, "challoc_cow_begin opens epochs by default");
     assert_eq!(d.effective_guard_slab_interval(), 8);
 }
 
@@ -89,6 +90,7 @@ fn every_bool_key_parses_true_and_false() {
         "abort_conf",
         "cgroup",
         "check_zero",
+        "cow_epoch",
     ];
     for key in keys {
         for v in [true, false] {
@@ -761,6 +763,7 @@ fn field(c: &Config, name: &str) -> Value {
         "abort_conf" => Value::Bool(c.abort_conf),
         "cgroup" => Value::Bool(c.cgroup),
         "check_zero" => Value::Bool(c.check_zero),
+        "cow_epoch" => Value::Bool(c.cow_epoch),
         _ => panic!("{name}: a key with no field here"),
     }
 }

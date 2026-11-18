@@ -197,6 +197,10 @@ pub(crate) mod patomic {
             pub(crate) fn fetch_or(&self, _perm: Tracked<&mut PermissionU8>, v: u8) -> u8 {
                 self.ato.fetch_or(v, Ordering::SeqCst)
             }
+
+            pub(crate) fn fetch_and(&self, _perm: Tracked<&mut PermissionU8>, v: u8) -> u8 {
+                self.ato.fetch_and(v, Ordering::SeqCst)
+            }
         }
     }
 }

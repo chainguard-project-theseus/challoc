@@ -62,6 +62,75 @@ void *challoc_realloc_usable(void *ptr, size_t size, size_t *usable);
  * this). */
 size_t challoc_free_usable(void *ptr);
 
+/* Fork epochs (design 5, "Fork epochs", and 13.7). While a child made by
+ * fork(2) shares the parent's pages, every write of the parent to one of
+ * them copies the page, and the parent's new allocations land on shared
+ * pages: a snapshotting server (Valkey's or Redis's BGSAVE, an AOF rewrite,
+ * a full resync) copies a 4 KiB page for each small value it writes while
+ * the child runs. Between challoc_cow_begin() and challoc_cow_end() the
+ * allocations come from pages the child does not share, and frees of
+ * pre-fork blocks are not handed out again, so they copy nothing:
+ *
+ *     challoc_cow_begin(0);
+ *     pid_t pid = fork();
+ *     if (pid == -1) challoc_cow_end();
+ *     ...
+ *     waitpid(pid, ...);          // or wherever the child is reaped
+ *     challoc_cow_end();
+ *
+ * The bytes written during the epoch stay above the old allocations as
+ * new ones (they cost new memory instead of copies) until they are freed or
+ * a defragmenter moves them: after challoc_cow_end() the utilisation
+ * queries (experimental.utilization.*) and get_defrag_hint() report them as
+ * worth moving while the holes the epoch left below are not refilled.
+ * A cap ends the epoch's effect early: once the epoch has allocated as many
+ * slab bytes as were in use when it began (at least 64 MiB), past which it
+ * would cost more than copying every page, allocation returns to the usual
+ * address-ordered first fit until challoc_cow_end().
+ *
+ * challoc_cow_begin() is called by the thread that forks, just before
+ * fork(2): it returns that thread's cached blocks to their slabs and
+ * purges every free slab (as malloc_trim(0)), so the child pins none of the
+ * parent's free memory. Epochs nest; only the outermost begin and end act.
+ * Returns 0, EINVAL for flags other than 0, ENOTSUP with MALLOC_CONF
+ * cow_epoch:false. challoc_cow_end() returns 0, also when no epoch is open.
+ * Defining CHALLOC_COW is how this header announces them. */
+#define CHALLOC_COW 1
+int challoc_cow_begin(unsigned flags);
+int challoc_cow_end(void);
+
+/* One figure of the fork epochs, by index; 0 for an unknown index or
+ * before the allocator is initialised. challoc_cow_stats() reads them all. */
+enum {
+    CHALLOC_COW_EPOCHS = 0,     /* epochs begun */
+    CHALLOC_COW_OPEN = 1,       /* epochs open (nesting depth) */
+    CHALLOC_COW_IN_FORCE = 2,   /* 1 while the open epoch's floors hold */
+    CHALLOC_COW_EXPIRED = 3,    /* epochs whose cap ended the floors early */
+    CHALLOC_COW_CLAIMED = 4,    /* bytes allocated under the current or last epoch's floors */
+    CHALLOC_COW_CAP = 5,        /* that epoch's cap, in bytes */
+    CHALLOC_COW_DEFLECTED = 6,  /* frees kept from being handed out again */
+    CHALLOC_COW_DRAIN_MOVES = 7, /* moves the utilisation queries asked for */
+    CHALLOC_COW_DRAINING = 8,   /* (arena, size class) pairs still draining */
+    CHALLOC_COW_NSTATS = 9
+};
+unsigned long long challoc_cow_stat(unsigned which);
+
+typedef struct {
+    unsigned long long epochs, open, in_force, expired, claimed, cap, deflected, drain_moves, draining;
+} challoc_cow_stats_t;
+
+static inline void challoc_cow_stats(challoc_cow_stats_t *s) {
+    s->epochs = challoc_cow_stat(CHALLOC_COW_EPOCHS);
+    s->open = challoc_cow_stat(CHALLOC_COW_OPEN);
+    s->in_force = challoc_cow_stat(CHALLOC_COW_IN_FORCE);
+    s->expired = challoc_cow_stat(CHALLOC_COW_EXPIRED);
+    s->claimed = challoc_cow_stat(CHALLOC_COW_CLAIMED);
+    s->cap = challoc_cow_stat(CHALLOC_COW_CAP);
+    s->deflected = challoc_cow_stat(CHALLOC_COW_DEFLECTED);
+    s->drain_moves = challoc_cow_stat(CHALLOC_COW_DRAIN_MOVES);
+    s->draining = challoc_cow_stat(CHALLOC_COW_DRAINING);
+}
+
 #ifdef __cplusplus
 }
 #endif

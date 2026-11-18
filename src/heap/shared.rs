@@ -53,7 +53,9 @@ use super::live::Live;
 use super::tcaches::Tcaches;
 #[cfg(verus_keep_ghost)]
 use super::thread::reentry_benign;
-use super::{FREE_ROUTE, Heap, PUSH_PAC, PUSH_STATE, PUSH_ZERO, invalid_free};
+use super::{
+    FREE_DYN, FREE_EPOCH, FREE_ROUTE, Heap, PUSH_PAC, PUSH_STATE, PUSH_ZERO, invalid_free,
+};
 use crate::arena::Published;
 use crate::sys::tls::TlsCell;
 use crate::vspec::flags::RouteByte;
@@ -300,7 +302,7 @@ impl Shared {
         &&& self.huge.spec_base() == self.regions.huge_base
         &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
         &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
-        &&& crate::vspec::flags::fixed(&self.free_flags) == self.push_flags & !FREE_ROUTE
+        &&& crate::vspec::flags::fixed(&self.free_flags) == self.push_flags & !FREE_DYN
         &&& super::pac_mode() ==> crate::sys::pac::pac_available()
         &&& self.config.wf()
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
@@ -442,9 +444,28 @@ impl Shared {
     /// A second arena is being built (`Arenas::build`).
     pub fn set_multi_arena(&self) {
         proof {
-            assert(8u8 & !8u8 == 0) by (bit_vector);
+            assert(8u8 & !24u8 == 0) by (bit_vector);
         }
         crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE);
+    }
+
+    /// A fork epoch opens (`on`) or closes: [`FREE_EPOCH`] in the `free`
+    /// dispatch byte (`cow::begin`, `cow::end`).
+    pub fn set_epoch(&self, on: bool) {
+        proof {
+            assert(16u8 & !24u8 == 0) by (bit_vector);
+            assert(!16u8 | 24u8 == 0xffu8) by (bit_vector);
+        }
+        if on {
+            crate::vspec::flags::fetch_or(&self.free_flags, FREE_EPOCH);
+        } else {
+            crate::vspec::flags::fetch_and(&self.free_flags, !FREE_EPOCH);
+        }
+    }
+
+    /// The `cow_epoch` key: whether `challoc_cow_begin` opens epochs.
+    pub fn cow_enabled(&self) -> bool {
+        self.config.cow_epoch
     }
 
     /// The decay period new arenas start with (`dirty_decay_ms`).
@@ -1054,8 +1075,11 @@ impl ClassLine {
     }
 }
 
-// The route bit `vspec::flags::fetch_or` may set is `FREE_ROUTE`.
+// The bits `vspec::flags::fetch_or` may set are `FREE_ROUTE` and
+// `FREE_EPOCH`.
 const _: () = assert!(crate::vspec::flags::ROUTE == FREE_ROUTE);
+const _: () = assert!(crate::vspec::flags::EPOCH == FREE_EPOCH);
+const _: () = assert!(crate::vspec::flags::DYN == FREE_DYN);
 const _: () = assert!(
     core::mem::offset_of!(Shared, free_flags) / 128
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock))
@@ -1911,7 +1935,7 @@ impl Shared {
             final(ph).value() == region_hi,
             final(pa).ptr() == old(pa).ptr(),
             final(pa).is_init(),
-            crate::vspec::flags::fixed(&final(pa).value()) == flags & !FREE_ROUTE,
+            crate::vspec::flags::fixed(&final(pa).value()) == flags & !FREE_DYN,
             *r == pr.value(),
     {
         proof {
@@ -3773,7 +3797,7 @@ impl Shared {
     #[inline(always)]
     pub fn free_flags(&self) -> (r: u8)
         ensures
-            r & !FREE_ROUTE == self.route_fixed(),
+            r & !FREE_DYN == self.route_fixed(),
         opens_invariants [crate::vspec::flags::flags_ns()]
     {
         crate::vspec::flags::load(&self.free_flags)
@@ -3786,14 +3810,14 @@ impl Shared {
     pub proof fn lemma_route_flags(&self, f: u8)
         requires
             self.wf(),
-            f & !FREE_ROUTE == self.route_fixed(),
+            f & !FREE_DYN == self.route_fixed(),
         ensures
             (f & PUSH_PAC != 0) == super::pac_mode(),
             (f & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
             (f & PUSH_ZERO != 0) == (self.flags() & PUSH_ZERO != 0),
     {
         let pf = self.push_flags;
-        assert(f & !8u8 == pf & !8u8 ==> (f & 4u8 == pf & 4u8 && f & 2u8 == pf & 2u8)) by (bit_vector);
+        assert(f & !24u8 == pf & !24u8 ==> (f & 4u8 == pf & 4u8 && f & 2u8 == pf & 2u8)) by (bit_vector);
     }
 
     /// The flag byte both fast paths load: [`PUSH_STATE`], [`PUSH_ZERO`]
@@ -3964,6 +3988,29 @@ impl Shared {
                 slab,
                 crate::vspec::slice::array_get_unchecked(&self.tables, class),
             ) == home
+        }
+    }
+
+    /// Whether a free of slot `p` of `class`, a slot of `arena`, is to stay
+    /// out of the cache `malloc` pops: a fork epoch's floors are in force
+    /// and the slot's slab is below `arena`'s (`crate::cow`). Counts the
+    /// free when it is. Slow paths only.
+    pub(super) fn cow_deflects(&self, arena: u16, class: usize, p: *mut u8) -> bool
+        requires
+            class < NCLASSES,
+    {
+        if !crate::cow::in_force() {
+            return false;
+        }
+        match self.arenas.get_existing(arena) {
+            Some(a) => {
+                let below = a.class(class).cow_below(p);
+                if below {
+                    crate::cow::note_deflected();
+                }
+                below
+            },
+            None => false,
         }
     }
 

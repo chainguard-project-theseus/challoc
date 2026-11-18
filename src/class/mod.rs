@@ -105,6 +105,7 @@ use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSingleton, G
 
 mod abort;
 mod complete;
+mod cow;
 mod decay;
 mod fresh;
 mod pages;
@@ -1685,7 +1686,18 @@ pub struct ClassState {
     /// on, per class: docs/proposals/slab-pages.md, 7.1).
     hint_armed: AtomicU64,
     hint_due: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 88 + PAD_ALIGN],
+    /// The fork epoch's floor (design 5, "Fork epochs"; `crate::cow`):
+    /// while an epoch is in force, a refill takes no slot of a slab below
+    /// it that may share a page with a fork child (`plan`, `next_slab`).
+    /// Written under the class lock by `cow::begin`, read by every refill
+    /// (through [`ClassState::cow_floor`], 0 outside an epoch).
+    cow_floor: AtomicU64,
+    /// The last epoch's floor while its blocks drain back below it
+    /// (`cow::drain_move`): the utilisation queries steer a defragmenter
+    /// to move a block of a slab at or above it while a slab below it has
+    /// a free slot. 0 when nothing drains.
+    drain_floor: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 104 + PAD_ALIGN],
 }
 
 } // verus!
@@ -2811,7 +2823,9 @@ impl ClassState {
             pages_due: AtomicU64::new(0),
             hint_armed: AtomicU64::new(0),
             hint_due: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 88 + PAD_ALIGN],
+            cow_floor: AtomicU64::new(0),
+            drain_floor: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 104 + PAD_ALIGN],
         })
     }
 
@@ -4481,33 +4495,17 @@ impl ClassState {
         assert(!g.purged.map@.contains(s));
     }
 
-    /// One lock hold of a refill: reserve up to `want` slots across up to
-    /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
-    /// picks written. Zero picks means nothing more can be committed.
-    ///
-    /// `nslots - closed - live` is a lower bound on a slab's claimable
-    /// slots, `closed` the slots its closed pages hide
-    /// (docs/proposals/slab-pages.md, 3.4): every claimer reserves in
-    /// `live` under this lock before it sets bits, every releaser clears
-    /// bits before it subtracts, and pages close and open only under this
-    /// lock, a page closing only while `live + closed <= nslots` holds. So a reservation of
-    /// at most that many is always met (the claimer may have to rescan when
-    /// a concurrent claimer wins the bits it looked at), and a partial slab
-    /// whose bound is zero is either full (its bit is cleared here, the
-    /// only place a partial bit is cleared while the slab stays `Active`)
-    /// or has an in-flight claimer and is skipped. A slab with `live == 0` whose
-    /// every slot is reserved here leaves the partial set at once: nothing
-    /// in it can be released before this claim hands slots out, so no
-    /// release can race the clear.
-    ///
-    /// No picks for a non-zero `want` means the hold ran dry: `ex` is the
-    /// lock value it left and the `live` loads of its partial slabs, which
-    /// [`ClassState::exhausted`] describes (claim completeness).
+    /// A refill's lock hold ([`ClassState::plan_at`]) under the fork
+    /// epoch's floor ([`ClassState::cow_floor`]; design 5, "Fork epochs"):
+    /// above the floor first and, when that finds nothing (the class
+    /// region above the floor is spent), over the whole class, so that an
+    /// epoch never fails a refill that would succeed without it. The
+    /// slots it reserves while a floor is in force count towards the
+    /// epoch's cap ([`crate::cow::note_claimed`]). Outside an epoch it is
+    /// `plan_at(0, ..)`.
     // The last six arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
-    // Not isolated: the loops return while the guard borrows `ord`, whose
-    // value `Lock::lock` states before them.
-    #[verifier::loop_isolation(false)]
+    #[inline(always)]
     fn plan(
         &self,
         meta: &Meta,
@@ -4537,6 +4535,86 @@ impl ClassState {
             picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
             picks_sum(final(picks)@, np as int) <= want,
     {
+        let floor = self.cow_floor();
+        let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
+        if floor == 0 {
+            return np;
+        }
+        if np == 0 && want > 0 {
+            return self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
+        }
+        let mut slots: u64 = 0;
+        let mut i: usize = 0;
+        while i < np
+            invariant
+                i <= np,
+                np <= MAX_PICKS,
+            decreases np - i,
+        {
+            slots = slots.saturating_add(picks[i].n as u64);
+            i += 1;
+        }
+        crate::cow::note_claimed(slots.saturating_mul(self.class().size() as u64));
+        np
+    }
+
+    /// One lock hold of a refill: reserve up to `want` slots across up to
+    /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
+    /// picks written. Zero picks means nothing more can be committed.
+    ///
+    /// `nslots - closed - live` is a lower bound on a slab's claimable
+    /// slots, `closed` the slots its closed pages hide
+    /// (docs/proposals/slab-pages.md, 3.4): every claimer reserves in
+    /// `live` under this lock before it sets bits, every releaser clears
+    /// bits before it subtracts, and pages close and open only under this
+    /// lock, a page closing only while `live + closed <= nslots` holds. So a reservation of
+    /// at most that many is always met (the claimer may have to rescan when
+    /// a concurrent claimer wins the bits it looked at), and a partial slab
+    /// whose bound is zero is either full (its bit is cleared here, the
+    /// only place a partial bit is cleared while the slab stays `Active`)
+    /// or has an in-flight claimer and is skipped. A slab with `live == 0` whose
+    /// every slot is reserved here leaves the partial set at once: nothing
+    /// in it can be released before this claim hands slots out, so no
+    /// release can race the clear.
+    ///
+    /// No picks for a non-zero `want` means the hold ran dry: `ex` is the
+    /// lock value it left and the `live` loads of its partial slabs, which
+    /// [`ClassState::exhausted`] describes (claim completeness).
+    // The last six arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
+    // Not isolated: the loops return while the guard borrows `ord`, whose
+    // value `Lock::lock` states before them.
+    #[verifier::loop_isolation(false)]
+    fn plan_at(
+        &self,
+        floor: usize,
+        meta: &Meta,
+        want: usize,
+        picks: &mut [Pick; MAX_PICKS],
+        Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>,
+        Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
+        Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
+        Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        pubw: Tracked<&'static Published>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (np: usize)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
+            meta.is_process(),
+        ensures
+            *final(ord) == *old(ord),
+            np == 0 && want > 0 && floor == 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
+            picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
+            picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
+            picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
+            picks_toks(self.spec_table(), final(picks)@, 0, np as int, *final(ptoks)),
+            np <= MAX_PICKS,
+            picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
+            picks_sum(final(picks)@, np as int) <= want,
+    {
         let cls = self.class();
         proof {
             use_type_invariant(self);
@@ -4545,13 +4623,20 @@ impl ClassState {
         let mut g = self.inner.lock(Tracked(ord), Tracked(&mut under));
         let mut np = 0;
         let mut remaining = want;
-        let mut next = g.partial.map.lowest_set();
+        // A fork epoch's floor (design 5, "Fork epochs"): the scan starts
+        // at it, so no slab below it, which may share pages with a fork
+        // child, gives up a slot.
+        let mut next = if floor == 0 {
+            g.partial.map.lowest_set()
+        } else {
+            g.partial.map.lowest_set_from(floor)
+        };
         let ghost mut seen: Map<nat, usize> = Map::empty();
         while let Some(s) = next
             invariant
                 crate::sys::may_abort(),
                 under.allows(rank_table(0)),
-                np == 0 ==> self.seen_below(g@, seen, match next {
+                np == 0 && floor == 0 ==> self.seen_below(g@, seen, match next {
                     Some(x) => x as int,
                     None => self.spec_nslabs() as int,
                 }),
@@ -4664,10 +4749,10 @@ impl ClassState {
                 picks_zero(self.spec_table(), picks@, 0, np as int, *pz),
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
                 picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
-                np == 0 ==> self.seen_below(g@, seen, self.spec_nslabs() as int),
+                np == 0 && floor == 0 ==> self.seen_below(g@, seen, self.spec_nslabs() as int),
             decreases MAX_PICKS - np,
         {
-            let s = match self.next_slab(&mut g, meta, pubw, Tracked(&mut under)) {
+            let s = match self.next_slab(&mut g, floor, meta, pubw, Tracked(&mut under)) {
                 Some(s) => s,
                 None => {
                     proof {
@@ -4698,7 +4783,7 @@ impl ClassState {
             lemma_picks_sum(picks@, picks@, np as int);
             // Dry: the scan saw every partial slab and `next_slab` found
             // both idle sets empty.
-            if np == 0 && want > 0 {
+            if np == 0 && want > 0 && floor == 0 {
                 assert(dry);
             }
             *ex = Ghost((g@, seen));

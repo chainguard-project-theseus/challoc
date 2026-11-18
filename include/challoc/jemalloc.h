@@ -50,6 +50,11 @@ extern "C" {
  * includes behind this test. */
 #define JEMALLOC_CHALLOC_USABLE 1
 
+/* challoc's fork epochs (challoc_cow_begin, challoc_cow_end,
+ * challoc_cow_stat; design 13.7) exist: declared in <challoc/challoc.h>
+ * too. */
+#define JEMALLOC_CHALLOC_COW 1
+
 /* mallocx() / rallocx() / xallocx() / sallocx() / dallocx() / sdallocx() /
  * nallocx() flags, bit for bit jemalloc's. */
 #define MALLOCX_LG_ALIGN(la) ((int)(la))

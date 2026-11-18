@@ -743,7 +743,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
                     // SAFETY: as in `free_block`.
                     let s = unsafe { super::shared_deref(sp) };
                     let tracked mut b = heap::live::axiom_c_claim(claim);
-                    let _ = heap::free_sized_fast(s, h, p, Some(c), s.push_flags(), Tracked(&mut b));
+                    let _ = heap::free_sized_fast(s, h, p, Some(c), s.free_flags(), Tracked(&mut b));
                 }
             }
         },
@@ -894,7 +894,7 @@ pub fn free_sized_block(p: *mut u8, size: usize, hint: Option<usize>, Tracked(bl
         }
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_deref(sp) };
-        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags(), Tracked(&mut blk)) {
+        if heap::free_sized_fast(shared, h, p, Some(c), shared.free_flags(), Tracked(&mut blk)) {
             return;
         }
     }
@@ -3065,6 +3065,61 @@ proof fn lemma_user_block_shrink(p: usize, big: int, small: int)
     }
 }
 
+/// `challoc_cow_begin`: open a fork epoch (`crate::cow`; design 5, "Fork
+/// epochs", and 13.7), to be called just before `fork(2)` by the thread
+/// that forks. Returns the calling thread's cached slots to their slabs and
+/// purges every `Empty` slab and huge extent (as `malloc_trim`), so that
+/// the child pins none of the parent's free memory and the refills of the
+/// epoch can reuse those pages without copying; then sets the floors.
+/// Epochs nest. 0 on success (and before init, when nothing is allocated
+/// for a child to share), `EINVAL` for a `flags` other than 0, `ENOTSUP`
+/// with `cow_epoch:false`.
+pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        old(ord).top() == 0,
+    ensures
+        *final(ord) == *old(ord),
+{
+    if flags != 0 {
+        return EINVAL;
+    }
+    let Some(shared) = super::shared_if_ready() else { return 0 };
+    if !shared.cow_enabled() {
+        return crate::cow::ENOTSUP;
+    }
+    if !crate::cow::open() {
+        if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
+            h.flush_all(shared, Tracked(&mut *ord));
+        }
+        let tracked mut left = Ghost(crate::purge::Left::none());
+        crate::purge::purge_all(shared, Tracked(&mut left), Tracked(&mut *ord));
+    }
+    crate::cow::begin(shared, Tracked(&mut *ord))
+}
+
+/// `challoc_cow_end`: close the fork epoch [`cow_begin`] opened, to be
+/// called once the child has exited (and on a failed `fork`). The floors
+/// become drain floors (`crate::cow::drain_move`). 0, also with no epoch
+/// open.
+pub fn cow_end() -> (r: c_int) {
+    let Some(shared) = super::shared_if_ready() else { return 0 };
+    if !crate::cow::open() {
+        return 0;
+    }
+    crate::cow::end(shared)
+}
+
+/// `challoc_cow_stat(which)`: one figure of the fork epochs
+/// ([`crate::cow::stat`]); 0 before init.
+pub fn cow_stat(which: u32) -> u64 {
+    match super::shared_if_ready() {
+        Some(shared) => crate::cow::stat(shared, which),
+        None => 0,
+    }
+}
+
 /// `malloc_trim`: return the calling thread's cached slots to their slabs,
 /// then purge every `Empty` slab and huge extent whatever its age (design
 /// section 8). Returns 1 if anything was purged, 0 otherwise or before
@@ -3597,6 +3652,32 @@ mod exports {
             axiom_out_at_return(uout, usable);
         }
         r
+    }
+
+    // challoc's fork epochs (design 13.7, `crate::cow`), declared in
+    // <challoc/challoc.h>.
+
+    #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
+    pub extern "C" fn challoc_cow_begin(flags: core::ffi::c_uint) -> c_int {
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::cow_begin(flags, Tracked(&mut ord))
+    }
+
+    #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
+    pub extern "C" fn challoc_cow_end() -> c_int {
+        super::cow_end()
+    }
+
+    #[unsafe(no_mangle)]
+    #[verifier::assume_unsupported_attributes]
+    pub extern "C" fn challoc_cow_stat(which: core::ffi::c_uint) -> u64 {
+        super::cow_stat(which)
     }
 
     #[unsafe(no_mangle)]

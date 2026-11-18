@@ -842,7 +842,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
                 h,
                 p,
                 hint,
-                shared.push_flags(),
+                shared.free_flags(),
                 Tracked(&mut blk),
             ) {
                 return;
@@ -994,6 +994,10 @@ pub ghost struct HintRead {
     pub st: crate::class::ClassStats,
     pub curregs: int,
     pub cur_live: Option<int>,
+    /// A fork epoch's drain ([`crate::cow::drain_move`]) asked for the
+    /// move: the slab is at or above its pair's drain floor and a slab
+    /// below the floor has a free slot.
+    pub drain: bool,
 }
 
 /// The design 13.5 rule over the reads `rd`: `p` is a live slot (bit set,
@@ -1012,13 +1016,15 @@ pub open spec fn defrag_rule(rd: HintRead) -> bool {
             let curslabs = rd.st.committed - rd.st.empty - rd.st.purged;
             &&& rd.allocated
             &&& rd.committed
-            &&& rd.live < n
             &&& rd.found
             &&& rd.lowest != Some(slab as usize)
-            &&& match rd.cur_live {
-                Some(l) => rd.live * crate::api::mallctl::sat_sub(curslabs, 1) <= crate::api::mallctl::sat_sub(rd.curregs, l),
-                None => rd.live * curslabs <= rd.curregs,
-            }
+            &&& (rd.drain || {
+                &&& rd.live < n
+                &&& match rd.cur_live {
+                    Some(l) => rd.live * crate::api::mallctl::sat_sub(curslabs, 1) <= crate::api::mallctl::sat_sub(rd.curregs, l),
+                    None => rd.live * curslabs <= rd.curregs,
+                }
+            })
         },
         _ => false,
     }
@@ -1109,6 +1115,7 @@ pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (
         st: crate::class::ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0, closed_slots: 0, closed_pages: 0 },
         curregs: 0,
         cur_live: None,
+        drain: false,
     };
     let Some(shared) = super::shared_if_ready() else {
         proof {
@@ -1159,12 +1166,6 @@ pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (
         rd.committed = true;
         rd.live = live as int;
     }
-    if live >= cls.nslots() {
-        proof {
-            assert(hint_read(p as usize, rd, 0));
-        }
-        return 0;
-    }
     let Some(a) = shared.arenas.get_existing(d.arena_unheld(Tracked(t.desc_inv(slab)))) else {
         proof {
             assert(hint_read(p as usize, rd, 0));
@@ -1175,6 +1176,18 @@ pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (
         rd.found = true;
     }
     let cs = a.class(class);
+    // A fork epoch's drain (`crate::cow`): a block above the floor moves
+    // back into the holes the epoch left below it, full slab or not.
+    let drain = crate::cow::draining() && crate::cow::drain_move(cs, slab, Tracked(&mut *ord));
+    proof {
+        rd.drain = drain;
+    }
+    if live >= cls.nslots() && !drain {
+        proof {
+            assert(hint_read(p as usize, rd, 0));
+        }
+        return 0;
+    }
     // A defragmenter is at work on this class: its slab-pages walk runs at
     // once and closes what the moves left closable (lock-free, at most
     // once per 100 ms per class; docs/proposals/slab-pages.md, 7.1).
@@ -1188,6 +1201,12 @@ pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (
             assert(hint_read(p as usize, rd, 0));
         }
         return 0;
+    }
+    if drain {
+        proof {
+            assert(hint_read(p as usize, rd, 1));
+        }
+        return 1;
     }
     let (st, mut curregs) = cs.bin_stats(Tracked(&mut *ord));
     let mut curslabs = st.curslabs();

@@ -702,7 +702,7 @@ impl Heap {
     /// The compaction probe's gate (design 6.4) for the scheduled pops
     /// ([`Heap::pop_compact`]): the class's refill counter now (the caller stores it as the
     /// header's `probe_refilled`) and the verdict, given the counter at
-    /// the previous probe. Records the class's `note_gate_refill` and
+    /// the previous probe; `Dense` while a fork epoch is open. Records the class's `note_gate_refill` and
     /// `note_compact_mode(true)` statistics as it decides.
     pub(super) fn probe_verdict(
         shared: &Shared,
@@ -726,7 +726,12 @@ impl Heap {
         proof {
             crate::vspec::class::lemma_class_table_wf(class as int);
         }
-        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots() {
+        // During a fork epoch (`crate::cow`) the holes below the floors are
+        // the child's pages, which compaction must not fill: no class
+        // enters compact mode while one is open.
+        let verdict = if crate::cow::open() {
+            Verdict::Dense
+        } else if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots() {
             if Self::fragmented(shared, arena, class, Tracked(ord)) {
                 cs.note_gate_refill();
             }

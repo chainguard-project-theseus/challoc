@@ -39,7 +39,16 @@ impl ClassState {
     /// slabs inside a group are committed as guards and skipped. The
     /// commit lock nests inside the class lock. `None` when the region,
     /// the metadata region or a commit is exhausted.
-    pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+    ///
+    /// A fork epoch's `floor` (design 5, "Fork epochs"; 0 for none) keeps
+    /// it off the `Empty` slabs below the floor, whose pages a fork child
+    /// may share, and off the `Purged` ones there too once a lazy discard
+    /// may have left pages in place ([`purge::purged_is_zero`]): an eager
+    /// discard left the parent no page to share, so a refill's writes copy
+    /// none. With a floor, `None` may leave idle slabs below it.
+    ///
+    /// [`purge::purged_is_zero`]: crate::purge::purged_is_zero
+    pub(super) fn next_slab(&self, g: &mut Inner, floor: usize, meta: &Meta, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -61,7 +70,7 @@ impl ClassState {
             r matches Some(s) ==> s < self.spec_nslabs() && final(g).ready(s as nat),
             // `None` only once both idle sets are empty, with the partial
             // set as it was (claim completeness).
-            r is None ==> final(g).empty.map@ == vstd::set::Set::<nat>::empty()
+            r is None && floor == 0 ==> final(g).empty.map@ == vstd::set::Set::<nat>::empty()
                 && final(g).purged.map@ == vstd::set::Set::<nat>::empty()
                 && final(g).partial.map@ == old(g).partial.map@,
     {
@@ -69,7 +78,12 @@ impl ClassState {
         // inlined in `claim_with` (through `plan`), whose machine
         // code the helpers reorder (`scripts/codegen-diff.sh`); the
         // per-allocation path stays as measured.
-        if let Some(s) = g.empty.map.lowest_set() {
+        let empty = if floor == 0 {
+            g.empty.map.lowest_set()
+        } else {
+            g.empty.map.lowest_set_from(floor)
+        };
+        if let Some(s) = empty {
             let ghost g0 = *g;
             proof {
                 assert(g0.slab_ok(s as nat));
@@ -87,7 +101,12 @@ impl ClassState {
             }
             return Some(s);
         }
-        if let Some(s) = g.purged.map.lowest_set() {
+        let purged = if floor == 0 || crate::purge::purged_is_zero() {
+            g.purged.map.lowest_set()
+        } else {
+            g.purged.map.lowest_set_from(floor)
+        };
+        if let Some(s) = purged {
             let ghost g0 = *g;
             proof {
                 assert(g0.slab_ok(s as nat));
@@ -105,7 +124,20 @@ impl ClassState {
             }
             return Some(s);
         }
-        self.next_fresh_slab(g, meta, pubw, Tracked(ord))
+        let ghost g1 = *g;
+        let r = self.next_fresh_slab(g, meta, pubw, Tracked(ord));
+        proof {
+            // A slab committed fresh is in neither idle set, which the call
+            // left as they were (with a floor they need not be empty): it
+            // was not owned, or owned and `Fresh`, which neither set holds.
+            if let Some(s) = r {
+                assert(g1.slab_ok(s as nat));
+                if g1.owns(s as nat) {
+                    assert(g.st(s as nat) == g1.st(s as nat));
+                }
+            }
+        }
+        r
     }
 
     /// The fresh half of [`next_slab`], for an arena whose sets are empty:

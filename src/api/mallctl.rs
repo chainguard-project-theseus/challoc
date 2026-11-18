@@ -2173,6 +2173,10 @@ pub ghost struct UtilRead {
     pub lowest: Option<usize>,
     pub run: Option<crate::huge::RunInfo>,
     pub closed: int,
+    /// A fork epoch's drain ([`crate::cow::drain_move`]) asked for the
+    /// block to move: its slab is at or above its pair's drain floor and a
+    /// slab below the floor has a free slot.
+    pub drain: bool,
 }
 
 /// `a - b`, or 0 below zero (`saturating_sub`).
@@ -2213,7 +2217,9 @@ pub open spec fn util_from(rg: crate::layout::Regions, p: usize, verbose: bool, 
                 // Slab pages (docs/proposals/slab-pages.md, 3.6): the slab's
                 // open slots, and the bin's.
                 let nregs = c.nslots - rd.closed;
-                &&& triple_is(u, sat_sub(nregs, rd.live), nregs, nregs * c.size)
+                // A fork epoch's drain reports one region in use, below
+                // every defragmenter's threshold: move the block.
+                &&& triple_is(u, if rd.drain && nregs > 1 { nregs - 1 } else { sat_sub(nregs, rd.live) }, nregs, nregs * c.size)
                 &&& if verbose && rd.found {
                     &&& u.bin_nregs == curslabs * c.nslots - rd.st.closed_slots
                     &&& u.bin_nfree == u.bin_nregs - rd.curregs
@@ -2288,6 +2294,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool, Tracked(ord
         lowest: None,
         run: None,
         closed: 0,
+        drain: false,
     };
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
@@ -2359,6 +2366,20 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool, Tracked(ord
                 }
             }
             u.size = u.nregs * cls.size();
+            // A fork epoch's drain (`crate::cow`): a block above the floor
+            // reads as alone in its slab, so a defragmenter moves it back
+            // into the holes the epoch left below. As above, nested `if`s.
+            #[allow(clippy::collapsible_if)]
+            if crate::cow::draining() && u.nregs > 1 {
+                if let Some(a) = shared.arenas.get_existing(d.arena_unheld(Tracked(t.desc_inv(slab as usize)))) {
+                    if crate::cow::drain_move(a.class(class), slab as usize, Tracked(&mut *ord)) {
+                        u.nfree = u.nregs - 1;
+                        proof {
+                            rd.drain = true;
+                        }
+                    }
+                }
+            }
             // Two `if`s, not a let chain: Verus takes no let chain.
             #[allow(clippy::collapsible_if)]
             if verbose {

@@ -55,6 +55,7 @@ pub(crate) mod arena;
 pub(crate) mod bitmap;
 pub(crate) mod class;
 pub(crate) mod config;
+pub(crate) mod cow;
 pub(crate) mod heap;
 pub(crate) mod huge;
 pub(crate) mod layout;

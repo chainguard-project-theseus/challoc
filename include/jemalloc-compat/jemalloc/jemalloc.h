@@ -200,6 +200,15 @@ void *challoc_realloc_usable(void *ptr, size_t size, size_t *usable);
 size_t challoc_free_usable(void *ptr);
 const char *challoc_version(void);
 
+/* challoc's fork epochs (design 13.7; documented in <challoc/challoc.h>):
+ * challoc_cow_begin(0) just before fork(2), challoc_cow_end() once the
+ * child is reaped; challoc_cow_stat(i) reads figure i (CHALLOC_COW_* in
+ * <challoc/challoc.h>). */
+#define JEMALLOC_CHALLOC_COW 1
+int challoc_cow_begin(unsigned flags);
+int challoc_cow_end(void);
+unsigned long long challoc_cow_stat(unsigned which);
+
 #ifdef __cplusplus
 }
 #endif

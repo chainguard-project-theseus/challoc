@@ -4339,6 +4339,21 @@ impl SlabTable {
 }
 
 impl SlabTable {
+    /// The slab number of `p`'s offset from the region's base: `p`'s slab
+    /// when `p` is in this class's region, an arbitrary number otherwise
+    /// (wrapping arithmetic, no check). For a comparison with a fork
+    /// epoch's floor (`ClassState::cow_below`).
+    #[inline]
+    pub fn slab_index(&self, p: *mut u8) -> usize {
+        let lg = self.class().lg_slab as u32;
+        let rel = (p as usize).wrapping_sub(self.base);
+        if lg < 64 {
+            rel >> lg
+        } else {
+            0
+        }
+    }
+
     /// Slab and slot of a pointer that must be a slot start in this class's
     /// region. Aborts otherwise: never for a slot start (a guard slab's
     /// too).

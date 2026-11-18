@@ -192,6 +192,9 @@ pub struct Config {
     pub cgroup: bool,
     /// Check every known-zero slot or page handed out (slow paths only).
     pub check_zero: bool,
+    /// `challoc_cow_begin` opens fork epochs (`crate::cow`; design 5,
+    /// "Fork epochs"); `false` makes it return `ENOTSUP`.
+    pub cow_epoch: bool,
 }
 
 impl Config {
@@ -246,6 +249,7 @@ impl Config {
         abort_conf: false,
         cgroup: true,
         check_zero: false,
+        cow_epoch: true,
     };
 
     /// Apply one `key:value,key:value` string on top of `self`. Each problem
@@ -512,7 +516,8 @@ impl Config {
             19 => bool_into(&mut self.exact_sized_free, key, value),
             20 => bool_into(&mut self.abort_conf, key, value),
             21 => bool_into(&mut self.cgroup, key, value),
-            _ => bool_into(&mut self.check_zero, key, value),
+            22 => bool_into(&mut self.check_zero, key, value),
+            _ => bool_into(&mut self.cow_epoch, key, value),
         }
     }
 
@@ -593,7 +598,8 @@ impl Config {
             19 => Value::Bool(self.exact_sized_free),
             20 => Value::Bool(self.abort_conf),
             21 => Value::Bool(self.cgroup),
-            _ => Value::Bool(self.check_zero),
+            22 => Value::Bool(self.check_zero),
+            _ => Value::Bool(self.cow_epoch),
         }
     }
 
@@ -854,7 +860,7 @@ pub exec const KEYS: &'static [&'static str] = &NAMES;
 /// exec only.
 // The lifetime is spelled out for `verus!`, as for `KEYS`.
 #[allow(clippy::redundant_static_lifetimes)]
-const NAMES: [&'static str; 23] = [
+const NAMES: [&'static str; 24] = [
     "background_thread",
     "dirty_decay_ms",
     "muzzy_decay_ms",
@@ -878,6 +884,7 @@ const NAMES: [&'static str; 23] = [
     "abort_conf",
     "cgroup",
     "check_zero",
+    "cow_epoch",
 ];
 
 /// jemalloc keys that are accepted and ignored.
