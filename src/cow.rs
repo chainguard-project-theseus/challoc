@@ -324,6 +324,14 @@ pub fn stat(shared: &Shared, which: u32, Tracked(ord): Tracked<&mut LockOrder>) 
         *final(ord) == *old(ord),
 {
     match which {
+        8 => draining_pairs(shared, Tracked(ord)),
+        _ => stat_unlocked(which),
+    }
+}
+
+/// [`stat`]'s figures 0 to 7, which take no lock; 0 for any other.
+pub fn stat_unlocked(which: u32) -> u64 {
+    match which {
         0 => EPOCHS.load(Ordering::Relaxed),
         1 => DEPTH.load(Ordering::Relaxed) as u64,
         2 => IN_FORCE.load(Ordering::Relaxed) as u64,
@@ -332,9 +340,35 @@ pub fn stat(shared: &Shared, which: u32, Tracked(ord): Tracked<&mut LockOrder>) 
         5 => CAP.load(Ordering::Relaxed),
         6 => DEFLECTED.load(Ordering::Relaxed),
         7 => DRAIN_MOVES.load(Ordering::Relaxed),
-        8 => draining_pairs(shared, Tracked(ord)),
         _ => 0,
     }
+}
+
+/// `(arena, class)` pairs whose drain floor is set, without a lock (the
+/// stats report).
+pub fn drain_floors(shared: &Shared) -> u64 {
+    let n = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
+    let mut k: u64 = 0;
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            n <= crate::arena::MAX_ARENAS,
+        decreases n - i,
+    {
+        if let Some(a) = shared.arenas.get_existing(i as u16) {
+            let mut c: usize = 0;
+            while c < NCLASSES
+                decreases NCLASSES - c,
+            {
+                if a.class(c).drain_floor() != 0 {
+                    k = k.saturating_add(1);
+                }
+                c += 1;
+            }
+        }
+        i += 1;
+    }
+    k
 }
 
 /// `(arena, class)` pairs still draining: a drain floor set, the drain

@@ -557,6 +557,7 @@ fn text_general<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapshot
     cgroup_line(out, shared)?;
     policy_line(out, shared)?;
     advice_line(out)?;
+    cow_line(out, shared)?;
     thp_line(out)
 }
 
@@ -839,6 +840,26 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
         purge::purged_is_zero(),
         failed,
         failed_bytes,
+    )
+}
+
+/// The `fork epochs:` line (design 5, "Fork epochs"; `crate::cow`): the
+/// figures `challoc_cow_stat` reads, the drain's without its lock walk
+/// (`drain_floors` counts the pairs whose drain floor is still set).
+#[inline(never)]
+fn cow_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+    writeln!(
+        out,
+        "fork epochs: epochs {} open {} in_force {} expired {} claimed {} cap {} deflected {} drain_moves {} drain_floors {}",
+        crate::cow::stat_unlocked(0),
+        crate::cow::stat_unlocked(1),
+        crate::cow::stat_unlocked(2),
+        crate::cow::stat_unlocked(3),
+        crate::cow::stat_unlocked(4),
+        crate::cow::stat_unlocked(5),
+        crate::cow::stat_unlocked(6),
+        crate::cow::stat_unlocked(7),
+        crate::cow::drain_floors(shared),
     )
 }
 
