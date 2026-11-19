@@ -67,3 +67,30 @@ per op +0.0% to +1.9% (positive percentages are worse for the candidate).
 
 The harness tier (`make quick`, `make bench-launch SUITE=cow`) runs on GCE
 from a checkout with the internal cell overlay; these are not those.
+
+## Harness tier (cb launch, gate cells ref-amd64 and ref-arm64, base main)
+
+`cow` (one variant per VM, 3 replicas, head 986f766; challoc base vs head):
+
+| row | amd64 | arm64 |
+|---|---|---|
+| valkey-cow (64 B, 10%) | -85.1% (1060 -> 158 MiB), better | -85.1%, better |
+| valkey-cow.peak_mib | -37.9%, better | -37.9%, better |
+| valkey-cow-d1k (1 KiB, 10%) | -90.9% (876 -> 79 MiB), better | -90.9%, better |
+| valkey-cow-d1k.peak_mib | -16.3%, better | -16.3%, better |
+| valkey-cow-tput.set_inside_rps | +78% (423k -> 769k), better | +58% (326k -> 514k), better |
+| valkey-cow-tput (outside the save) | inconclusive [-20.7%, +13.0%] | inconclusive [-12.2%, +20.0%] |
+| valkey-cow.rss_after_mib (right after the save) | +8.1%, worse | +8.1%, worse |
+| valkey-cow-rec (RSS 120 s later, activedefrag) | -1.1%, sub-threshold | -1.2%, sub-threshold |
+| valkey-cow-rec.recover_s | 24 s | 32 s |
+
+`kv-valkey` valkey-ops and valkey-ops-d1k, paired, head 1ba8461: amd64
++0.2% [-0.4%, +0.9%] same and +0.3% [-0.7%, +1.2%] same; arm64 +0.0%
+[-0.6%, +0.6%] same and +0.4% [-1.7%, +2.6%] same. (At 986f766: every row
+within +1.1%.)
+
+`quick`, paired, head 1ba8461: every row same, inconclusive or
+sub-threshold (at most +0.8%) except **xmalloc on ref-arm64: +4.5% [+1.3%,
++7.9%], worse** (instr/op +1.0%; at 986f766 +3.5% [+1.9%, +5.1%]). On
+ref-amd64 xmalloc is +0.6%, same. Positive percentages are the candidate
+worse.
