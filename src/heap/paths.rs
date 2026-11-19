@@ -274,11 +274,15 @@ impl Heap {
                 // the way of another arena's: onto the flush-only
                 // `FOREIGN` cache, so that `malloc` does not hand it out
                 // again while a fork child may share its page (`crate::cow`).
-                // The epoch test inline is one load; the lookup behind it
-                // is out of line (`cow_deflects`), so outside an epoch the
-                // home push keeps its registers.
-                if arena == self.arena && !(crate::cow::in_force() && shared.cow_deflects(arena, class, p)) {
-                    self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
+                // The epoch test inline is one load; what follows it is a
+                // tail call out of line (`free_epoch`), so outside an epoch
+                // the home push keeps its registers.
+                if arena == self.arena {
+                    if crate::cow::in_force() {
+                        self.free_epoch(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
+                    } else {
+                        self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
+                    }
                 } else {
                     self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
                 }
@@ -289,6 +293,46 @@ impl Heap {
                 }
                 self.free_huge(shared, page, Tracked(blk), Tracked(ord))
             },
+        }
+    }
+
+    /// [`Heap::free`] of a home slot while a fork epoch's floors hold
+    /// (`crate::cow`): a slot below its arena's floor takes the `FOREIGN`
+    /// route ([`Shared::cow_deflects`]), any other the home push. Cold and
+    /// out of line, the tail of `free`'s home branch.
+    #[cold]
+    #[inline(never)]
+    // The tracked tokens (`blk`, `errno`, the slot cell, `ord`) are ghost.
+    #[allow(clippy::too_many_arguments)]
+    fn free_epoch(
+        &mut self,
+        shared: &Shared,
+        class: usize,
+        p: *mut u8,
+        Tracked(blk): Tracked<Live>,
+        Tracked(errno): Tracked<&mut ThreadErrno>,
+        Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>,
+        Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
+    )
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            process_regions().is_slot(class as int, p@.addr),
+            blk.slot_block(p, class as int),
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+            old(ord).top() == 0,
+        ensures
+            final(errno).val() == old(errno).val(),
+            final(self).wf(),
+            final(cell).kept(*old(cell)),
+            *final(ord) == *old(ord),
+    {
+        if shared.cow_deflects(self.arena, class, p) {
+            self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
+        } else {
+            self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
         }
     }
 
