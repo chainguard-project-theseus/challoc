@@ -274,7 +274,10 @@ impl Heap {
                 // the way of another arena's: onto the flush-only
                 // `FOREIGN` cache, so that `malloc` does not hand it out
                 // again while a fork child may share its page (`crate::cow`).
-                if arena == self.arena && !shared.cow_deflects(arena, class, p) {
+                // The epoch test inline is one load; the lookup behind it
+                // is out of line (`cow_deflects`), so outside an epoch the
+                // home push keeps its registers.
+                if arena == self.arena && !(crate::cow::in_force() && shared.cow_deflects(arena, class, p)) {
                     self.push(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
                 } else {
                     self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))

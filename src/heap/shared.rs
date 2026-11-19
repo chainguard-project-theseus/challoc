@@ -3995,6 +3995,8 @@ impl Shared {
     /// out of the cache `malloc` pops: a fork epoch's floors are in force
     /// and the slot's slab is below `arena`'s (`crate::cow`). Counts the
     /// free when it is. Slow paths only.
+    #[cold]
+    #[inline(never)]
     pub(super) fn cow_deflects(&self, arena: u16, class: usize, p: *mut u8) -> bool
         requires
             class < NCLASSES,
