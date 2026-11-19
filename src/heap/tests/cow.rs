@@ -219,6 +219,59 @@ fn concurrent_begins_and_ends_keep_the_depth_and_the_floors() {
     });
 }
 
+/// An end whose compare-and-exchanges all lose to other threads' begins
+/// and ends (`cow::leave`'s exhausted exit, forced with no tries) counts
+/// nothing and says so with `EAGAIN`, and the retry closes the epoch.
+#[test]
+fn an_end_that_runs_out_of_tries_is_retryable() {
+    in_fork_child("cow end retry", 30_000, || {
+        let s = shared();
+        assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
+        assert_eq!(
+            crate::cow::end_within(s, 0, Tracked::assume_new()),
+            crate::cow::EAGAIN
+        );
+        assert_eq!(
+            crate::cow::stat(s, 1, Tracked::assume_new()),
+            1,
+            "the end did not count"
+        );
+        assert!(crate::cow::in_force() && s.free_flags() & FREE_EPOCH != 0);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0, "the retry");
+        assert!(!crate::cow::open() && !crate::cow::in_force());
+        assert!(s.free_flags() & FREE_EPOCH == 0);
+    });
+}
+
+/// A fork child starts with no epoch open, also when it was forked while
+/// another thread's outermost transition was under way (`BUSY`), which
+/// nothing in the child would clear (`cow::fork_child`).
+#[test]
+fn a_fork_child_starts_with_no_epoch_open() {
+    in_fork_child("cow fork child", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let _keep: Vec<*mut u8> = (0..64).map(|_| t.alloc(c)).collect();
+        assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
+        crate::cow::test_set_busy();
+        assert!(crate::cow::in_force() && s.free_flags() & FREE_EPOCH != 0);
+        crate::cow::fork_child(s);
+        assert!(!crate::cow::open(), "the child's depth is 0, BUSY clear");
+        assert!(!crate::cow::in_force(), "the parent's floors do not hold");
+        assert_eq!(floor0(s, c), 0);
+        assert!(
+            s.free_flags() & FREE_EPOCH == 0,
+            "frees take the fast path again"
+        );
+        assert_eq!(crate::cow::flush_after(), 0);
+        // The child's own epochs open and close.
+        assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
+        assert!(!crate::cow::open());
+    });
+}
+
 /// With lazy purges (`lazy_band:true` under headroom: a `MADV_FREE`
 /// batch, after which `purge::purged_is_zero` is false), a `Purged` slab
 /// below the floor may still hold pages the fork child shares, so a

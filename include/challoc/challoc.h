@@ -102,7 +102,13 @@ size_t challoc_free_usable(void *ptr);
  * under way opens nothing and returns EBUSY (do not call challoc_cow_end()
  * for it). Returns 0, EINVAL for flags other than 0, ENOTSUP with
  * MALLOC_CONF cow_epoch:false, EBUSY as above. challoc_cow_end() returns 0,
- * also when no epoch is open.
+ * also when no epoch is open, or EAGAIN when other threads' begins and ends
+ * kept changing the count under it: the end did not count, so call it
+ * again (a program whose begins and ends all run on one thread never
+ * sees it).
+ * The epoch belongs to the parent: a child made by fork(2), whether or not
+ * the fork was the one the epoch was opened for, starts with no epoch open
+ * and need not call challoc_cow_end().
  * Defining CHALLOC_COW is how this header announces them. */
 #define CHALLOC_COW 1
 int challoc_cow_begin(unsigned flags);

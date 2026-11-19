@@ -3104,7 +3104,8 @@ pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
 /// called once the child has exited (and on a failed `fork`). The floors
 /// become drain floors (`crate::cow::drain_move`). 0, also with no epoch
 /// open (`crate::cow::end`'s `EINVAL`, which an end with no matching
-/// begin gets).
+/// begin gets); `EAGAIN` when other threads' begins and ends kept moving
+/// the depth and this end did not count: the caller calls it again.
 pub fn cow_end(Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     requires
         crate::sys::may_syscall(),
@@ -3116,7 +3117,9 @@ pub fn cow_end(Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     if !crate::cow::open() {
         return 0;
     }
-    let _ = crate::cow::end(shared, Tracked(ord));
+    if crate::cow::end(shared, Tracked(ord)) == crate::cow::EAGAIN {
+        return crate::cow::EAGAIN;
+    }
     0
 }
 

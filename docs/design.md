@@ -516,6 +516,14 @@ pages the child never had:
   its work is done: a `begin` that finds it set opens nothing and returns
   `EBUSY`, so two threads' outermost transitions never interleave and a
   nested `begin` never returns before the floors it counts on are set.
+  An `end` whose compare-and-exchanges keep losing to other threads'
+  begins and ends gives up after a bounded number of tries with `EAGAIN`,
+  counting nothing, and `challoc_cow_end` returns it for the caller to
+  retry, so a matched end is never dropped.
+- **The child.** The epoch is the parent's. The child's fork handler
+  clears the depth (busy bit included), the floors' force, the cache-flush
+  stamp and `FREE_EPOCH`, so a child starts with no epoch open even when
+  it was forked during another thread's transition.
 - **Scope.** The floors cover the slab classes. The huge region (above
   the largest medium class) is not steered: `begin` purges its free
   runs, but a huge block freed during the epoch is retained (below

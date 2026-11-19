@@ -63,7 +63,7 @@ const BUSY: u32 = 0x8000_0000;
 /// The most epochs open at once: [`begin`] refuses one more (`EBUSY`).
 const MAX_DEPTH: u32 = 0x7fff_ffff;
 /// How many compare-and-exchanges [`begin`] and [`end`] try while other
-/// threads move the depth before they give up (`EBUSY`, `EINVAL`).
+/// threads move the depth before they give up (`EBUSY`, `EAGAIN`).
 const MAX_TRIES: u32 = 1 << 16;
 /// A heap whose last cache GC is older than this (coarse monotonic
 /// nanoseconds) flushes every cache at its next slow path; 0 for none.
@@ -99,6 +99,7 @@ pub const MIN_CAP: u64 = 64 << 20;
 pub const ENOTSUP: i32 = 95;
 pub const EINVAL: i32 = 22;
 pub const EBUSY: i32 = 16;
+pub const EAGAIN: i32 = 11;
 
 /// Whether the floors hold.
 #[inline(always)]
@@ -252,8 +253,8 @@ pub enum Enter {
 /// it changes nothing and refuses with `EBUSY`: the epoch that thread is
 /// opening has no floors yet, or the one it is closing has none left, so
 /// a nested epoch counted now would return with no floors in force. A
-/// thread forked while another was in a transition inherits [`BUSY`],
-/// and its epochs are refused the same way, with nothing to wait for.
+/// child forked while another thread was in a transition starts with the
+/// depth at 0 ([`fork_child`]).
 fn enter() -> Enter {
     let mut tries: u32 = 0;
     while tries < MAX_TRIES
@@ -280,11 +281,13 @@ fn enter() -> Enter {
 /// outermost transition is under way ([`BUSY`]): an [`end`] matched to a
 /// [`begin`] that returned 0 never sees one, since the depth counts that
 /// epoch, and so is neither 0 before the transition nor 1 before the end
-/// of the last epoch.
-fn leave() -> Enter {
+/// of the last epoch. `EAGAIN`, with the depth as it was, when other
+/// threads moved the depth under each of `max_tries` compare-and-exchanges:
+/// the end did not count, and its caller calls it again.
+fn leave(max_tries: u32) -> Enter {
     let mut tries: u32 = 0;
-    while tries < MAX_TRIES
-        decreases MAX_TRIES - tries,
+    while tries < max_tries
+        decreases max_tries - tries,
     {
         tries += 1;
         let d = DEPTH.load(Ordering::Acquire);
@@ -299,7 +302,7 @@ fn leave() -> Enter {
             return Enter::Nested;
         }
     }
-    Enter::Refused(EINVAL)
+    Enter::Refused(EAGAIN)
 }
 
 /// Start an epoch (the outermost [`begin`] acts; nested ones count): the
@@ -341,7 +344,9 @@ pub fn begin(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
 /// End the epoch (the outermost [`end`] acts): the floors go, each
 /// becoming a drain floor where blocks of the epoch went above it, and the
 /// `free` dispatch bit is cleared. `EINVAL` with no epoch open (or while
-/// another thread's outermost transition is under way, [`leave`]).
+/// another thread's outermost transition is under way, [`leave`]);
+/// `EAGAIN`, counting nothing, when other threads kept moving the depth
+/// ([`MAX_TRIES`]): the caller ends again.
 pub fn end(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     requires
         crate::sys::may_syscall(),
@@ -350,7 +355,20 @@ pub fn end(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     ensures
         *final(ord) == *old(ord),
 {
-    match leave() {
+    end_within(shared, MAX_TRIES, Tracked(ord))
+}
+
+/// [`end`], giving up with `EAGAIN` after `max_tries` failed
+/// compare-and-exchanges (0 in a test: the exhausted exit, deterministic).
+pub fn end_within(shared: &Shared, max_tries: u32, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
+    requires
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).allows(rank_class(0, 0)),
+    ensures
+        *final(ord) == *old(ord),
+{
+    match leave(max_tries) {
         Enter::Nested => return 0,
         Enter::Refused(e) => return e,
         Enter::Outermost => {},
@@ -363,6 +381,33 @@ pub fn end(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     // The transition is done: the next begin may open an epoch.
     DEPTH.store(0, Ordering::Release);
     0
+}
+
+/// The child of a `fork(2)` (`api::fork_child`, while only the forking
+/// thread runs): the epochs it inherited are the parent's, open for its own
+/// life, so the child starts with none. Without this the child would keep
+/// every free on the slow path and hold the floors until the cap, and a
+/// child forked while another thread's outermost [`begin`] or [`end`] was
+/// under way would inherit [`BUSY`], which no thread of it ever clears, so
+/// compaction and young-heap rehome would stay off and its own epochs
+/// would be refused for good. The floors stay stored but stop holding with
+/// [`IN_FORCE`] clear ([`ClassState::cow_floor`]), and the child's next
+/// [`begin`] marks every pair again.
+pub fn fork_child(shared: &Shared) {
+    if DEPTH.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    IN_FORCE.store(false, Ordering::Relaxed);
+    FLUSH_AFTER.store(0, Ordering::Relaxed);
+    shared.set_epoch(false);
+    DEPTH.store(0, Ordering::Release);
+}
+
+/// Test only: an outermost transition under way in another thread
+/// ([`BUSY`]), as a fork child inherits it.
+#[cfg(test)]
+pub fn test_set_busy() {
+    DEPTH.fetch_or(BUSY, Ordering::Relaxed);
 }
 
 /// The drain's rule (design 5, "Fork epochs"): a block of slab `slab`

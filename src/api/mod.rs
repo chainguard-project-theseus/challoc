@@ -2882,6 +2882,8 @@ extern "C" fn fork_child() {
         reveal(crate::sys::cgroup::in_fork_child);
     }
     s.cgroup_fork_child();
+    // The parent's fork epochs are not the child's (`cow::fork_child`).
+    crate::cow::fork_child(s);
     crate::stats::pool_fork_child();
     let tracked published;
     proof {

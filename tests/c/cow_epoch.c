@@ -11,6 +11,7 @@
  *   - while the epoch is open no malloc returns a block that existed before
  *     it (none is handed out again while the child may share its page),
  *     and the deflected frees are counted;
+ *   - the child starts with no epoch open (the parent's is not its own);
  *   - end closes it; a block allocated during the epoch then reads as worth
  *     moving (experimental.utilization.batch_query reports one region in
  *     use, get_defrag_hint 1) while the holes below are open, and by the
@@ -88,10 +89,13 @@ int main(int argc, char **argv)
     pid_t pid = fork();
     REQUIRE(pid >= 0, "fork");
     if (pid == 0) {
-        /* The snapshotting child: reads its copy and exits. */
+        /* The snapshotting child: reads its copy and exits. The parent's
+         * epoch is not its own: it starts with none open. */
         unsigned long sum = 0;
         for (int i = 0; i < N; i++)
             sum += ((unsigned char *)old[i])[0];
+        if (challoc_cow_stat(CHALLOC_COW_OPEN) != 0 || challoc_cow_stat(CHALLOC_COW_IN_FORCE) != 0)
+            _exit(4);
         usleep(100 * 1000);
         _exit(sum == (unsigned long)N * 0x5a ? 0 : 3);
     }

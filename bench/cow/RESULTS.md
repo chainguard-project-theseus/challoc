@@ -70,7 +70,8 @@ from a checkout with the internal cell overlay; these are not those.
 
 ## Harness tier (cb launch, gate cells ref-amd64 and ref-arm64, base main)
 
-`cow` (one variant per VM, 3 replicas, head 986f766; challoc base vs head):
+`cow` (one variant per VM, 3 replicas, head 986f766; challoc base vs head;
+run `20261119t0144z-986f766-cow-m3jjz`):
 
 | row | amd64 | arm64 |
 |---|---|---|
@@ -84,14 +85,16 @@ from a checkout with the internal cell overlay; these are not those.
 | valkey-cow-rec (RSS 120 s later, activedefrag) | -1.1%, sub-threshold | -1.2%, sub-threshold |
 | valkey-cow-rec.recover_s | 24 s | 32 s |
 
-`kv-valkey` valkey-ops and valkey-ops-d1k, paired, head 1ba8461: amd64
+`kv-valkey` valkey-ops and valkey-ops-d1k, paired, head 1ba8461 (run
+`20261119t0240z-1ba8461-kv-valkey-3ju3v`): amd64
 +0.2% [-0.4%, +0.9%] same and +0.3% [-0.7%, +1.2%] same; arm64 +0.0%
-[-0.6%, +0.6%] same and +0.4% [-1.7%, +2.6%] same. (At 986f766: every row
-within +1.1%.)
+[-0.6%, +0.6%] same and +0.4% [-1.7%, +2.6%] same. (At 986f766, run
+`20261119t0202z-986f766-kv-valkey-37gee`: every row within +1.1%.)
 
-`quick`, paired, head 1ba8461: every row same, inconclusive or
+`quick`, paired, head 1ba8461 (run `20261119t0229z-1ba8461-quick-xkp4c`): every row same, inconclusive or
 sub-threshold (at most +0.8%) except **xmalloc on ref-arm64: +4.5% [+1.3%,
-+7.9%], worse** (instr/op +1.0%; at 986f766 +3.5% [+1.9%, +5.1%]). On
++7.9%], worse** (instr/op +1.0%; at 986f766, run
+`20261119t0132z-986f766-quick-2hr7u`, +3.5% [+1.9%, +5.1%]). On
 ref-amd64 xmalloc is +0.6%, same. Positive percentages are the candidate
 worse.
 
@@ -101,7 +104,8 @@ took a callee-saved register, saved and restored on every slow free,
 xmalloc's cross-thread frees included. 0bba0c1 makes the epoch branch a
 cold tail call (`Heap::free_epoch`) behind one load of `cow::in_force`;
 `free_slow` on aarch64 then differs from main only by that load and its
-branch on the home branch. `quick` re-run, paired, head 0bba0c1: xmalloc
+branch on the home branch. `quick` re-run, paired, head 0bba0c1 (run
+`20261119t0302z-0bba0c1-quick-spv6c`): xmalloc
 on ref-arm64 -1.3% [-4.3%, +1.8%] (instr/op -0.0%; was +4.5% worse), on
 ref-amd64 +0.1% same; no row worse on either cell (alloc-test1 amd64
 +0.7% and valkey1 +1.2..2.4% inconclusive within their margins).
