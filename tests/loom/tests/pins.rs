@@ -261,7 +261,9 @@ const PINS: &[(&str, &[&str])] = &[
             "let Some(slab) = line.set_slab(p, table) else {",
         ],
     ),
-    // `free_fast_slot` and `free_fast_tail` (tests/loom/src/free.rs).
+    // `free_fast_slot` and `free_fast_tail` (tests/loom/src/free.rs). The
+    // general arm's `FREE_EPOCH` test before the route check is a bit of
+    // the `flags` byte already read, not an atomic access.
     (
         "src/heap/paths.rs",
         &[
@@ -270,7 +272,8 @@ const PINS: &[(&str, &[&str])] = &[
             "0 => unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) }.push_fast(",
             "FREE_ROUTE => {",
             "shared.home_owns(class, slab, h) && h.push_fast(class, p, 0, Tracked(&mut tk))",
-            "(flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))",
+            "flags & FREE_EPOCH == 0",
+            "&& (flags & FREE_ROUTE == 0 || shared.home_owns(class, slab, h))",
         ],
     ),
     // `mirror_watermark`, take_group's lock, bound, check_zero comparison,
