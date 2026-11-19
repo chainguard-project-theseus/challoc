@@ -47,3 +47,23 @@ between server instances, so these cannot resolve a 2% difference.
 The epoch's growth (the bytes written during it) drains through the
 defragmenter's moves (0004 runs a cycle at active-defrag-cycle-max
 while challoc reports a drain), and the emptied slabs decay.
+
+## cb, local cell (indicative only: one develop session, never a verdict of record)
+
+`python3 bench/cb run cow` (this suite; small dataset: 1M keys, 0.2M at 1 KiB),
+base 8dc46f6 vs head, one block: valkey-cow 72.4 -> 18.4 MiB, valkey-cow-d1k
+26.5 -> 7.6 MiB, peak -25.8% / -4.5%, SET outside the save 1.21M -> 1.24M,
+RSS at the end of the recovery 101.0% -> 98.6% of its pre-save value.
+
+`cb run kv-valkey --rows valkey-ops,valkey-ops-d1k --variants base,head`, 4
+paired blocks (both on the runpath build with contrib/valkey 0001 to 0004;
+base binds no epoch): valkey-ops +0.2% [-1.3%, +1.6%] same; valkey-ops-d1k
++0.2% [-3.0%, +3.5%] inconclusive.
+
+`cb run quick`, 3 paired blocks: larson1 -0.8% [-7.2%, +5.9%], larson10 -0.6%
+[-2.4%, +1.2%], xmalloc -4.2% better, alloc-test1 +0.1% [-0.8%, +1.0%],
+valkey1 -3.9% better, valkey1-free -0.3% (wide), churn1024 same; instructions
+per op +0.0% to +1.9% (positive percentages are worse for the candidate).
+
+The harness tier (`make quick`, `make bench-launch SUITE=cow`) runs on GCE
+from a checkout with the internal cell overlay; these are not those.
