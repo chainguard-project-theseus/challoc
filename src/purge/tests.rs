@@ -175,10 +175,10 @@ fn batch_fills_and_flushes() {
     assert!(purged_is_zero());
 }
 
-/// For the advice tests, in a fork child: an explicit purge another
+/// For the advice tests (and `heap::tests::cow`), in a fork child: an explicit purge another
 /// thread had in flight at the fork never ends there (that thread is not
 /// in the child), so its count is dropped; nothing else is reset.
-pub(super) fn forget_other_threads_explicit_purges() {
+pub(crate) fn forget_other_threads_explicit_purges() {
     EXPLICIT.store(0, Ordering::Relaxed);
 }
 

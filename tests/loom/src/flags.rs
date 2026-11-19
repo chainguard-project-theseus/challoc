@@ -13,6 +13,9 @@
 //!   which runs with the published `Shared` (`api::shared`'s `SeqCst`
 //!   load of `STATE` saw `READY` earlier in the thread):
 //!   `flags::fetch_or(ROUTE)` (`SeqCst`);
+//! - [`Model::epoch`] is `cow::begin`'s and `cow::end`'s
+//!   `Shared::set_epoch(true)` and `set_epoch(false)` on a ready `Shared`:
+//!   `flags::fetch_or(EPOCH)`, then `flags::fetch_and(!EPOCH)` (`SeqCst`);
 //! - [`Model::free`] is the `free` fast path's `Shared::free_flags`,
 //!   reached through `api::shared_base` once the thread's heap proves
 //!   init complete (the heap is created after `api::shared`'s `SeqCst`
@@ -20,21 +23,24 @@
 //!   `api::shared_if_ready`'s `SeqCst` load, then `flags::load` (`SeqCst`),
 //!   twice.
 //!
-//! Checked: every value a load or the `fetch_or` returns is `push_flags`
-//! with or without `ROUTE` (`flags::fixed`, which `Shared::route_fixed`
-//! ties to `push_flags`), with no race on the storage `init` wrote (a
-//! reader not ordered after `init`'s writes is a reported causality
-//! violation); a thread's loads never lose `ROUTE` once they saw it
-//! (read-read coherence); and once every thread is joined the byte is
-//! `push_flags`, plus `ROUTE` if a builder ran. Controls: a `Relaxed`
-//! `READY` store is a reported race, and a builder setting a bit outside
-//! `ROUTE` (which `fetch_or`'s `requires` rules out) fails the assertions.
+//! Checked: every value a load, a `fetch_or` or the `fetch_and` returns
+//! is `push_flags` with or without `ROUTE` and `EPOCH` (`flags::fixed`,
+//! which `Shared::route_fixed` ties to `push_flags`), with no race on the
+//! storage `init` wrote (a reader not ordered after `init`'s writes is a
+//! reported causality violation); a thread's loads never lose `ROUTE`
+//! once they saw it (read-read coherence), the epoch's `fetch_and`
+//! included; and once every thread is joined the byte is `push_flags`,
+//! plus `ROUTE` if a builder ran, with `EPOCH` clear. Controls: a
+//! `Relaxed` `READY` store is a reported race, a builder setting a bit
+//! outside `ROUTE` (which `fetch_or`'s `requires` rules out) fails the
+//! assertions, and so does an epoch end whose mask clears `ROUTE` or a
+//! bit of `push_flags` (which `fetch_and`'s `requires` rules out).
 //! Left out: what `init` writes besides the two fields (it is verified,
 //! and it does not touch the byte), the rest of `build` (its arena and
 //! entry are `narenas.rs`'s), and the slow paths that read `push_flags`
 //! (a plain field, never written after `init`).
 
-use crate::vspec::flags::{ROUTE, RouteByte, fetch_or, load, new};
+use crate::vspec::flags::{DYN, EPOCH, ROUTE, RouteByte, fetch_and, fetch_or, load, new};
 use crate::{leak, model};
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU32, Ordering};
@@ -97,6 +103,22 @@ impl Model {
         }))
     }
 
+    /// `set_epoch(true)` then `set_epoch(false)` on a ready `Shared`, the
+    /// end clearing with `mask` (`!EPOCH` as shipped): the two previous
+    /// bytes, and `push_flags`.
+    fn epoch(&self, mask: u8) -> Option<(u8, u8, u8)> {
+        if !self.ready() {
+            return None;
+        }
+        // SAFETY: as in `build`.
+        Some(self.shared.with(|p| {
+            let (push, b) = unsafe { (*p).as_ref().expect("READY before init's writes") };
+            let on = fetch_or(b, EPOCH);
+            let off = fetch_and(b, mask);
+            (on, off, *push)
+        }))
+    }
+
     /// `free_flags` on a ready `Shared`, twice: the two bytes, and
     /// `push_flags`.
     fn free(&self) -> Option<(u8, u8, u8)> {
@@ -116,6 +138,12 @@ impl Model {
 /// Run `init` and `builders` builders setting `bits`, with the main
 /// thread freeing.
 fn run(publish: Ordering, builders: usize, bits: u8) {
+    run_epoch(publish, builders, bits, None);
+}
+
+/// [`run`], plus an epoch thread beginning and ending a fork epoch, its
+/// end clearing with `mask`, when `epoch` is `Some(mask)`.
+fn run_epoch(publish: Ordering, builders: usize, bits: u8, epoch: Option<u8>) {
     model(move || {
         let m = leak(Model::new(publish));
         let init = thread::spawn(move || m.init(PUSH));
@@ -123,29 +151,37 @@ fn run(publish: Ordering, builders: usize, bits: u8) {
         for _ in 0..builders {
             built.push(thread::spawn(move || m.build(bits)));
         }
+        let ep = epoch.map(|mask| thread::spawn(move || m.epoch(mask)));
         let freed = m.free();
+        if let Some(t) = ep {
+            if let Some((on, off, push)) = t.join().unwrap() {
+                assert_eq!(
+                    on & !DYN,
+                    push & !DYN,
+                    "fetch_or read a byte init did not make"
+                );
+                assert_eq!(
+                    off & !DYN,
+                    push & !DYN,
+                    "fetch_and read a byte init did not make"
+                );
+                assert!(off & EPOCH != 0, "the epoch's bit was gone before its end");
+            }
+        }
         let mut any_build = false;
         for t in built {
             if let Some((prev, push)) = t.join().unwrap() {
                 assert_eq!(
-                    prev & !ROUTE,
-                    push & !ROUTE,
+                    prev & !DYN,
+                    push & !DYN,
                     "fetch_or read a byte init did not make"
                 );
                 any_build = true;
             }
         }
         if let Some((r0, r1, push)) = freed {
-            assert_eq!(
-                r0 & !ROUTE,
-                push & !ROUTE,
-                "load read a byte init did not make"
-            );
-            assert_eq!(
-                r1 & !ROUTE,
-                push & !ROUTE,
-                "load read a byte init did not make"
-            );
+            assert_eq!(r0 & !DYN, push & !DYN, "load read a byte init did not make");
+            assert_eq!(r1 & !DYN, push & !DYN, "load read a byte init did not make");
             assert!(r0 & ROUTE == 0 || r1 & ROUTE != 0, "a load lost ROUTE");
         }
         init.join().unwrap();
@@ -196,4 +232,33 @@ fn loom_flags_relaxed_publish_is_a_race() {
 #[should_panic(expected = "did not make")]
 fn loom_flags_bit_outside_route_is_caught() {
     run(Ordering::SeqCst, 1, ROUTE | 0x10);
+}
+
+/// A fork epoch begun and ended (`set_epoch`'s `fetch_or(EPOCH)` and
+/// `fetch_and(!EPOCH)`) while a builder sets `ROUTE` and the main thread
+/// frees: the end keeps `ROUTE` and `push_flags`, and leaves `EPOCH`
+/// clear.
+///
+/// Runs `vspec::flags::new`, `vspec::flags::load`,
+/// `vspec::flags::fetch_or` and `vspec::flags::fetch_and`.
+#[test]
+fn loom_flags_epoch_set_and_cleared_beside_a_builder() {
+    run_epoch(Ordering::SeqCst, 1, ROUTE, Some(!EPOCH));
+}
+
+/// Control: an epoch end whose mask also clears `ROUTE` loses a builder's
+/// bit, which a load's coherence check or the joined byte's check
+/// catches.
+#[test]
+#[should_panic(expected = "ROUTE")]
+fn loom_flags_epoch_end_clearing_route_is_caught() {
+    run_epoch(Ordering::SeqCst, 1, ROUTE, Some(!(EPOCH | ROUTE)));
+}
+
+/// Control: an epoch end whose mask clears a bit of `push_flags` (which
+/// `fetch_and`'s `requires` rules out) fails the assertions.
+#[test]
+#[should_panic(expected = "did not make")]
+fn loom_flags_epoch_end_clearing_a_fixed_bit_is_caught() {
+    run_epoch(Ordering::SeqCst, 0, ROUTE, Some(!(EPOCH | 1)));
 }

@@ -995,9 +995,12 @@ pub ghost struct HintRead {
     pub curregs: int,
     pub cur_live: Option<int>,
     /// A fork epoch's drain ([`crate::cow::drain_move`]) asked for the
-    /// move: the slab is at or above its pair's drain floor and a slab
-    /// below the floor has a free slot.
+    /// move, from the drain floor `drain_floor` and the lowest partial
+    /// slab `drain_low` it read ([`crate::cow::drain_ok`]: the slab is at
+    /// or above the floor and a slab below it has a free slot).
     pub drain: bool,
+    pub drain_floor: usize,
+    pub drain_low: Option<usize>,
 }
 
 /// The design 13.5 rule over the reads `rd`: `p` is a live slot (bit set,
@@ -1018,7 +1021,7 @@ pub open spec fn defrag_rule(rd: HintRead) -> bool {
             &&& rd.committed
             &&& rd.found
             &&& rd.lowest != Some(slab as usize)
-            &&& (rd.drain || {
+            &&& ((rd.drain && crate::cow::drain_ok(slab as int, rd.drain_floor as int, rd.drain_low)) || {
                 &&& rd.live < n
                 &&& match rd.cur_live {
                     Some(l) => rd.live * crate::api::mallctl::sat_sub(curslabs, 1) <= crate::api::mallctl::sat_sub(rd.curregs, l),
@@ -1116,6 +1119,8 @@ pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (
         curregs: 0,
         cur_live: None,
         drain: false,
+        drain_floor: 0,
+        drain_low: None,
     };
     let Some(shared) = super::shared_if_ready() else {
         proof {
@@ -1178,7 +1183,15 @@ pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (
     let cs = a.class(class);
     // A fork epoch's drain (`crate::cow`): a block above the floor moves
     // back into the holes the epoch left below it, full slab or not.
-    let drain = crate::cow::draining() && crate::cow::drain_move(cs, slab, Tracked(&mut *ord));
+    let mut drain = false;
+    if crate::cow::draining() {
+        let (d, Ghost(f), Ghost(low)) = crate::cow::drain_move(cs, slab, Tracked(&mut *ord));
+        drain = d;
+        proof {
+            rd.drain_floor = f;
+            rd.drain_low = low;
+        }
+    }
     proof {
         rd.drain = drain;
     }

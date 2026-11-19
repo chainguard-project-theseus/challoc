@@ -3100,16 +3100,6 @@ impl Heap {
         true
     }
 
-    /// Count a slow-path entry and run periodic work every
-    /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
-    /// then decay (or starting the background thread that will do it,
-    /// `purge::on_tick`). Nothing else: thread statistics are merged by
-    /// `epoch` (`stats.rs`), not here. `ALLOC` is whether the caller is
-    /// an allocation: a free's tick creates the thread only in a process
-    /// that has never had one (design 8.1), because glibc calls `free`
-    /// with locks held that `pthread_create` and `pthread_join` take again
-    /// (the stack cache lock, from `pthread_join`'s TLS teardown). `cell`
-    /// is the calling thread's slot cell.
     /// [`Heap::tick`]'s fork-epoch flush, out of line so the tick keeps its
     /// code: every cache flushed once, and the GC stamp moved past `stamp`.
     #[cold]
@@ -3134,8 +3124,20 @@ impl Heap {
         }
     }
 
-    // Hot slow-path tick: left as written so its codegen does not move;
-    // inlined into the slow paths as it was before the epoch check grew it.
+    /// Count a slow-path entry and run periodic work every
+    /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
+    /// then decay (or starting the background thread that will do it,
+    /// `purge::on_tick`). Before that, on every entry, a heap whose last
+    /// cache GC is older than the start of a fork epoch flushes every
+    /// cache once ([`Heap::cow_flush`]). Nothing else: thread statistics
+    /// are merged by `epoch` (`stats.rs`), not here. `ALLOC` is whether
+    /// the caller is an allocation: a free's tick creates the thread only
+    /// in a process that has never had one (design 8.1), because glibc
+    /// calls `free` with locks held that `pthread_create` and
+    /// `pthread_join` take again (the stack cache lock, from
+    /// `pthread_join`'s TLS teardown). `cell` is the calling thread's slot
+    /// cell.
+    // Inlined into the slow paths, as written so its codegen does not move.
     #[allow(clippy::manual_is_multiple_of)]
     #[inline(always)]
     fn tick<const ALLOC: bool>(

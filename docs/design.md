@@ -511,9 +511,23 @@ pages the child never had:
   below and live blocks above (`live_at_or_above`, from the
   descriptors); a pair with neither ends its drain.
 
-The protocol model (`model/`, scenario `cow_epoch`) checks that no refill
-under a floor takes a slot of a slab whose pages the child shares, but in
-the fallback, and finds the reuse with the floor off.
+- **Begin and end** change the nesting depth only by compare-and-exchange,
+  and the outermost transition holds a busy bit in the depth word until
+  its work is done: a `begin` that finds it set opens nothing and returns
+  `EBUSY`, so two threads' outermost transitions never interleave and a
+  nested `begin` never returns before the floors it counts on are set.
+- **Scope.** The floors cover the slab classes. The huge region (above
+  the largest medium class) is not steered: `begin` purges its free
+  runs, but a huge block freed during the epoch is retained (below
+  `huge_retain_max`) and a later huge request may reuse its pages while
+  the child shares them.
+
+The protocol model (`model/`, scenarios `cow_epoch`, `cow_epoch_lazy` and
+`cow_epoch_exhausted`) checks that no refill under a floor takes a slot of
+a slab whose pages the child shares, but in the fallback, with eager and
+with lazy purges; finds the reuse with the floor off, or with lazily
+purged slabs taken below it; and checks that a refill with nothing left
+above the floor falls back below it.
 
 ## 6. Thread heaps and caches
 

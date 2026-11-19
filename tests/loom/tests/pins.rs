@@ -348,11 +348,14 @@ const PINS: &[(&str, &[&str])] = &[
             "if let Some(arena) = shared.arenas.get_existing(i as u16) {",
         ],
     ),
-    // `put_flags`, `set_multi_arena`, `free_flags` (tests/loom/src/flags.rs).
+    // `put_flags`, `set_multi_arena`, `set_epoch`, `free_flags`
+    // (tests/loom/src/flags.rs).
     (
         "src/heap/shared.rs",
         &[
             "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE);",
+            "crate::vspec::flags::fetch_or(&self.free_flags, FREE_EPOCH);",
+            "crate::vspec::flags::fetch_and(&self.free_flags, !FREE_EPOCH);",
             "ptr_mut_write(field_at(this, S_PUSH_FLAGS), Tracked(pf), flags);",
             "ptr_mut_write(field_at(this, S_FREE_FLAGS), Tracked(pa), crate::vspec::flags::new(flags));",
             "crate::vspec::flags::load(&self.free_flags)",

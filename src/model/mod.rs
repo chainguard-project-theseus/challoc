@@ -100,6 +100,9 @@ pub struct Trace(pub Vec<(u8, Op, u8, String)>);
 pub struct Outcome {
     pub states: usize,
     pub violation: Option<(String, Trace)>,
+    /// Some refill planned without the floor after finding nothing above
+    /// it (`ClassState::plan`'s fallback) and took slots.
+    pub fell_back: bool,
 }
 
 /// The exploration in progress: the scenario, the knobs, the states
@@ -109,6 +112,7 @@ struct Model<'a> {
     pub(super) v: Variant,
     pub(super) seen: HashSet<Node>,
     pub(super) trace: Vec<(u8, Op, u8, String)>,
+    pub(super) fell_back: std::cell::Cell<bool>,
 }
 
 /// Run `sc` under `v`: every interleaving, every state checked. The
@@ -158,11 +162,13 @@ fn explore_here(sc: &Scenario, v: Variant) -> Outcome {
         v,
         seen: HashSet::new(),
         trace: Vec::new(),
+        fell_back: std::cell::Cell::new(false),
     };
     let violation = m.explore(Node { shared, threads }).err();
     Outcome {
         states: m.seen.len(),
         violation,
+        fell_back: m.fell_back.get(),
     }
 }
 
@@ -270,6 +276,62 @@ mod tests {
     }
 
     #[test]
+    fn the_cow_floor_keeps_refills_off_a_lazily_purged_shared_slab() {
+        let out = run(&cow_epoch_lazy(), CURRENT);
+        assert!(
+            out.violation.is_none(),
+            "{}",
+            out.violation.unwrap().1.render()
+        );
+    }
+
+    #[test]
+    // `..CURRENT`: the current variant with one rule changed.
+    #[allow(clippy::needless_update)]
+    fn taking_lazily_purged_slabs_below_the_floor_reuses_the_childs_pages() {
+        let out = run(
+            &cow_epoch_lazy(),
+            Variant {
+                cow_lazy_floor: false,
+                ..CURRENT
+            },
+        );
+        let (msg, _) = out
+            .violation
+            .expect("taking a lazily purged slab below the floor must reuse a shared slab");
+        assert!(msg.contains("the child shares"), "{msg}");
+    }
+
+    #[test]
+    fn with_no_room_above_the_floor_a_refill_falls_back_below_it() {
+        let out = run(&cow_epoch_exhausted(), CURRENT);
+        assert!(
+            out.violation.is_none(),
+            "{}",
+            out.violation.unwrap().1.render()
+        );
+        assert!(
+            out.fell_back,
+            "the last refill must fall back to planning without the floor"
+        );
+    }
+
+    #[test]
+    // `..CURRENT`: the current variant with one rule changed.
+    #[allow(clippy::needless_update)]
+    fn the_exhausted_epoch_falls_back_only_under_a_floor() {
+        // Control: without the floor there is nothing to fall back from.
+        let out = run(
+            &cow_epoch_exhausted(),
+            Variant {
+                cow_floor: false,
+                ..CURRENT
+            },
+        );
+        assert!(!out.fell_back);
+    }
+
+    #[test]
     fn the_current_order_passes_the_calloc_race_scenario() {
         let out = run(&calloc_race(), CURRENT);
         assert!(
@@ -333,6 +395,7 @@ mod tests {
                 (0, vec![Op::Refill(1), Op::Write(0), Op::Release]),
             ],
             lg_group: 1,
+            lazy: false,
         };
         let out = run(
             &sc,

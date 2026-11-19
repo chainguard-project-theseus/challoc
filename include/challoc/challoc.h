@@ -78,6 +78,12 @@ size_t challoc_free_usable(void *ptr);
  *     waitpid(pid, ...);          // or wherever the child is reaped
  *     challoc_cow_end();
  *
+ * This covers the size classes served from slabs (up to the largest medium
+ * class). Requests above it come from the huge region, which the epoch does
+ * not steer: begin purges every free huge run, but a huge block freed during
+ * the epoch is retained (below huge_retain_max) and a later huge request
+ * may reuse its pages while the child still shares them.
+ *
  * The bytes written during the epoch stay above the old allocations as
  * new ones (they cost new memory instead of copies) until they are freed or
  * a defragmenter moves them: after challoc_cow_end() the utilisation
@@ -91,9 +97,12 @@ size_t challoc_free_usable(void *ptr);
  * challoc_cow_begin() is called by the thread that forks, just before
  * fork(2): it returns that thread's cached blocks to their slabs and
  * purges every free slab (as malloc_trim(0)), so the child pins none of the
- * parent's free memory. Epochs nest; only the outermost begin and end act.
- * Returns 0, EINVAL for flags other than 0, ENOTSUP with MALLOC_CONF
- * cow_epoch:false. challoc_cow_end() returns 0, also when no epoch is open.
+ * parent's free memory. Epochs nest; only the outermost begin and end act,
+ * one at a time: a begin while another thread's outermost begin or end is
+ * under way opens nothing and returns EBUSY (do not call challoc_cow_end()
+ * for it). Returns 0, EINVAL for flags other than 0, ENOTSUP with
+ * MALLOC_CONF cow_epoch:false, EBUSY as above. challoc_cow_end() returns 0,
+ * also when no epoch is open.
  * Defining CHALLOC_COW is how this header announces them. */
 #define CHALLOC_COW 1
 int challoc_cow_begin(unsigned flags);

@@ -3073,7 +3073,8 @@ proof fn lemma_user_block_shrink(p: usize, big: int, small: int)
 /// epoch can reuse those pages without copying; then sets the floors.
 /// Epochs nest. 0 on success (and before init, when nothing is allocated
 /// for a child to share), `EINVAL` for a `flags` other than 0, `ENOTSUP`
-/// with `cow_epoch:false`.
+/// with `cow_epoch:false`, `EBUSY` (no epoch opened) while another
+/// thread's outermost begin or end is under way (`crate::cow::begin`).
 pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     requires
         crate::sys::may_abort(),
@@ -3102,7 +3103,8 @@ pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
 /// `challoc_cow_end`: close the fork epoch [`cow_begin`] opened, to be
 /// called once the child has exited (and on a failed `fork`). The floors
 /// become drain floors (`crate::cow::drain_move`). 0, also with no epoch
-/// open.
+/// open (`crate::cow::end`'s `EINVAL`, which an end with no matching
+/// begin gets).
 pub fn cow_end(Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     requires
         crate::sys::may_syscall(),
@@ -3114,7 +3116,8 @@ pub fn cow_end(Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     if !crate::cow::open() {
         return 0;
     }
-    crate::cow::end(shared, Tracked(ord))
+    let _ = crate::cow::end(shared, Tracked(ord));
+    0
 }
 
 /// `challoc_cow_stat(which)`: one figure of the fork epochs

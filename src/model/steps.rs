@@ -89,7 +89,10 @@ impl Model<'_> {
                 }
                 sh.shares = 0;
                 for (i, s) in sh.slabs.iter().enumerate() {
-                    if s.committed && s.state != St::Purged && s.state != St::Fresh {
+                    if s.committed
+                        && (s.state != St::Purged || self.sc.lazy)
+                        && s.state != St::Fresh
+                    {
                         sh.shares |= 1 << i;
                     }
                 }
@@ -147,13 +150,19 @@ impl Model<'_> {
                         ));
                     }
                     s.state = St::Purged;
-                    s.mem = 0;
                     sh.empty[a] &= !(1 << slab);
                     sh.purged[a] |= 1 << slab;
-                    // The discard leaves the parent no page the child
-                    // shares: a write faults in a new one.
-                    sh.shares &= !(1 << slab);
-                    desc += &format!(" slab {slab} -> Purged, memory zero;");
+                    if self.sc.lazy {
+                        // `MADV_FREE`: the pages stay until the kernel
+                        // reclaims them, contents and sharing included.
+                        desc += &format!(" slab {slab} -> Purged, lazily;");
+                    } else {
+                        s.mem = 0;
+                        // The discard leaves the parent no page the child
+                        // shares: a write faults in a new one.
+                        sh.shares &= !(1 << slab);
+                        desc += &format!(" slab {slab} -> Purged, memory zero;");
+                    }
                 }
                 if sh.empty[a] == 0 && desc == "purge:" {
                     desc += " nothing Empty;";
@@ -493,6 +502,9 @@ impl Model<'_> {
         if th.np == 0 && want > 0 && floor != 0 {
             th.fallback = true;
             let again = self.plan_at(sh, th, want, 0)?;
+            if th.np > 0 {
+                self.fell_back.set(true);
+            }
             return Ok(format!(
                 "{desc} nothing above floor {floor}, again without it: {again}"
             ));
@@ -584,8 +596,8 @@ impl Model<'_> {
             sh.partial[a] |= 1 << s;
         }
         // `let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());`
-        // (`MADV_DONTNEED` here, so a `Purged` slab is zero.)
-        let zero = state.is_zero();
+        // (`purged_is_zero` is false once a purge was lazy.)
+        let zero = state.is_zero() && (state != St::Purged || !self.sc.lazy);
         let mut d = format!(
             " take slab {s} ({state:?}, live {live} -> {}, n {n}{})",
             slab.live,
@@ -628,8 +640,10 @@ impl Model<'_> {
         let a = th.arena as usize;
         // `let empty = if floor == 0 { lowest_set() } else { lowest_set_from(floor) };`
         // `if let Some(s) = empty { g.empty.map.clear(s); ... return Some(s); }`
-        // A `Purged` slab is taken whatever the floor: the model's purges
-        // are eager (`purge::purged_is_zero`).
+        // `let purged = if floor == 0 || purge::purged_is_zero() { lowest_set() }
+        // else { lowest_set_from(floor) };`: with eager purges a `Purged`
+        // slab is taken whatever the floor (the child shares none of its
+        // pages); with lazy ones only from the floor up.
         if let Some(s) = lowest_set(sh.empty[a] & !((1u8 << floor) - 1)) {
             sh.empty[a] &= !(1 << s);
             return Ok(Some((
@@ -637,8 +651,13 @@ impl Model<'_> {
                 format!("next_slab: Empty slab {s} out of the empty set"),
             )));
         }
-        // `if let Some(s) = g.purged.map.lowest_set() { g.purged.map.clear(s); ... return Some(s); }`
-        if let Some(s) = lowest_set(sh.purged[a]) {
+        // `if let Some(s) = purged { g.purged.map.clear(s); ... return Some(s); }`
+        let purged = if floor == 0 || !self.sc.lazy || !self.v.cow_lazy_floor {
+            sh.purged[a]
+        } else {
+            sh.purged[a] & !((1u8 << floor) - 1)
+        };
+        if let Some(s) = lowest_set(purged) {
             sh.purged[a] &= !(1 << s);
             return Ok(Some((
                 s,
@@ -819,7 +838,11 @@ impl Model<'_> {
                     }
                 }
                 St::Purged => {
-                    if in_purged.len() != 1 || s.live != 0 || s.bits != 0 || s.mem != 0 {
+                    if in_purged.len() != 1
+                        || s.live != 0
+                        || s.bits != 0
+                        || (s.mem != 0 && !self.sc.lazy)
+                    {
                         return Err(format!(
                             "slab {i} is Purged with live {} bits {:#06b} mem {:#06b} in {} purged sets",
                             s.live,

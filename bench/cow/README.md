@@ -27,6 +27,12 @@ under challoc; and with 0004 too (the epoch around `serverFork`, and the
 drain), against a quantum-8 challoc built with `--no-default-features
 --features quantum8`, each linked with an rpath to its library.
 
-This is not a `cb` suite yet: its rows need a Valkey build per variant
-and a child sampler, which `bench/cb` does not have. Numbers from it are
-session measurements, not harness-tier.
+The harness tier is the `cow` suite (`bench/suites/cow.toml`; `make
+bench-launch SUITE=cow`): its rows (`valkey-cow`, `valkey-cow-d1k`,
+`valkey-cow-tput`, `valkey-cow-rec`, bench/rows.toml) run
+`bench/drivers/valkey-cow.sh`, which builds Valkey per variant (the
+runpath build with 0001 to 0004 for challoc base and head, the bundled
+jemalloc as the control) and drives `cowbench.py` with its child sampler,
+one variant per VM on the gate cells. `run.sh` is the session matrix
+above: numbers from it are session measurements, not harness-tier;
+`RESULTS.md` keeps the two apart.

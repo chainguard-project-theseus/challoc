@@ -14,11 +14,17 @@ pub struct Variant {
     /// `plan` honours a fork epoch's floor. `false` plans as if no epoch
     /// were open, and a refill reuses the child's shared pages.
     pub cow_floor: bool,
+    /// With lazy purges ([`Scenario::lazy`]), `next_slab` takes `Purged`
+    /// slabs only from the floor up (`purge::purged_is_zero` false).
+    /// `false` takes them anywhere, as with eager purges, and a refill
+    /// reuses a lazily purged slab whose pages the child still shares.
+    pub cow_lazy_floor: bool,
 }
 
 pub const CURRENT: Variant = Variant {
     prefix_claim: true,
     cow_floor: true,
+    cow_lazy_floor: true,
 };
 
 /// A scenario: the threads (arena and program) and the geometry.
@@ -28,6 +34,11 @@ pub struct Scenario {
     pub threads: Vec<(u8, Vec<Op>)>,
     /// `lg_group`: 0 for one slab per group, 1 for two.
     pub lg_group: u8,
+    /// Purges are lazy (`MADV_FREE`, `lazy_band:true` under headroom):
+    /// a `Purged` slab keeps its contents and, across a fork, the pages
+    /// the child shares, and `purge::purged_is_zero` is false. `false`:
+    /// eager (`MADV_DONTNEED`), the default.
+    pub lazy: bool,
 }
 
 /// The calloc race scenario (the mechanism of
@@ -57,6 +68,7 @@ pub fn calloc_race() -> Scenario {
             ),
         ],
         lg_group: 1,
+        lazy: false,
     }
 }
 
@@ -88,6 +100,7 @@ pub fn churn() -> Scenario {
             ),
         ],
         lg_group: 1,
+        lazy: false,
     }
 }
 
@@ -104,6 +117,7 @@ pub fn three_way() -> Scenario {
             (0, vec![Op::Refill(3), Op::Write(1), Op::Release]),
         ],
         lg_group: 1,
+        lazy: false,
     }
 }
 
@@ -134,5 +148,55 @@ pub fn cow_epoch() -> Scenario {
             ),
         ],
         lg_group: 0,
+        lazy: false,
+    }
+}
+
+/// A fork epoch over a lazily purged slab (`lazy`): A fills slab 0, writes
+/// a slot and releases it all, purges it (lazily: its pages stay, and the
+/// fork child shares them), opens an epoch (the floor is above slab 0)
+/// and refills, while B refills one slot. No refill under the floor may
+/// take slab 0, `Purged` or not: `next_slab` takes `Purged` slabs only
+/// from the floor up.
+pub fn cow_epoch_lazy() -> Scenario {
+    Scenario {
+        name: "fork epoch over a lazily purged slab",
+        threads: vec![
+            (
+                0,
+                vec![
+                    Op::Refill(4),
+                    Op::Write(0),
+                    Op::Release,
+                    Op::Purge,
+                    Op::CowBegin,
+                    Op::Refill(2),
+                ],
+            ),
+            (0, vec![Op::Refill(1)]),
+        ],
+        lg_group: 0,
+        lazy: true,
+    }
+}
+
+/// A fork epoch whose floors leave nothing to take: A fills slab 0 and
+/// releases it (`Empty`, its pages shared at the fork), opens an epoch
+/// (the floor is above slab 0) and asks for one slot, while B fills slab
+/// 1, the last. Where B's refill comes first, nothing is left above the
+/// floor, so `plan` falls back to planning without it and takes slab 0:
+/// an epoch never fails an allocation the heap has room for.
+pub fn cow_epoch_exhausted() -> Scenario {
+    Scenario {
+        name: "fork epoch with no room above the floor",
+        threads: vec![
+            (
+                0,
+                vec![Op::Refill(4), Op::Release, Op::CowBegin, Op::Refill(1)],
+            ),
+            (0, vec![Op::Refill(4)]),
+        ],
+        lg_group: 0,
+        lazy: false,
     }
 }

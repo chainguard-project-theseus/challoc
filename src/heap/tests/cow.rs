@@ -162,3 +162,111 @@ fn epochs_nest_and_cow_epoch_false_refuses_them() {
         );
     });
 }
+
+/// Begins and ends of several threads at once: every begin that returns 0
+/// finds its floors and the dispatch bit in force until its end, the
+/// depth never loses a count (two ends at depth 2 both storing 1), and a
+/// last end never clears the state of an epoch a concurrent begin opened.
+/// A begin refused with `EBUSY` opened nothing and is not ended.
+#[test]
+fn concurrent_begins_and_ends_keep_the_depth_and_the_floors() {
+    in_fork_child("cow concurrent begin and end", 60_000, || {
+        let s = shared();
+        let threads = 4;
+        let rounds = 2000;
+        let opened = std::sync::atomic::AtomicU64::new(0);
+        std::thread::scope(|sc| {
+            for _ in 0..threads {
+                sc.spawn(|| {
+                    for _ in 0..rounds {
+                        match crate::cow::begin(s, Tracked::assume_new()) {
+                            0 => {
+                                opened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                assert!(
+                                    crate::cow::in_force(),
+                                    "a begin returned with no floors in force"
+                                );
+                                assert!(
+                                    s.free_flags() & FREE_EPOCH != 0,
+                                    "a begin returned with the dispatch bit clear"
+                                );
+                                std::thread::yield_now();
+                                assert!(
+                                    crate::cow::in_force(),
+                                    "another thread's end cleared an open epoch"
+                                );
+                                assert_eq!(
+                                    crate::cow::end(s, Tracked::assume_new()),
+                                    0,
+                                    "a matched end"
+                                );
+                            }
+                            e => assert_eq!(e, crate::cow::EBUSY),
+                        }
+                    }
+                });
+            }
+        });
+        assert!(opened.into_inner() > 0);
+        assert_eq!(
+            crate::cow::stat(s, 1, Tracked::assume_new()),
+            0,
+            "every count went back"
+        );
+        assert!(!crate::cow::open());
+        assert!(!crate::cow::in_force());
+        assert!(s.free_flags() & FREE_EPOCH == 0);
+    });
+}
+
+/// With lazy purges (`lazy_band:true` under headroom: a `MADV_FREE`
+/// batch, after which `purge::purged_is_zero` is false), a `Purged` slab
+/// below the floor may still hold pages the fork child shares, so a
+/// refill under the floor takes none: every slot comes from at or above
+/// the floor (`next_slab`'s lazy branch; `model::` covers the fallback
+/// when nothing is left above the floor).
+#[test]
+fn lazily_purged_slabs_below_the_floor_stay_unused() {
+    in_fork_child("cow lazy purges", 30_000, || {
+        crate::purge::tests::forget_other_threads_explicit_purges();
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let nslots = CLASSES[c].nslots();
+        // Three slabs: the first two released whole, the third kept.
+        let all: Vec<*mut u8> = (0..3 * nslots).map(|_| t.alloc(c)).collect();
+        let purged: Vec<usize> = all[..2 * nslots]
+            .iter()
+            .map(|&p| slab_of(s, c, p))
+            .collect();
+        for &p in &all[..2 * nslots] {
+            t.free(p);
+        }
+        t.flush_all();
+        crate::purge::configure_advice(true);
+        crate::purge::set_headroom(true, false);
+        assert_eq!(crate::purge::advice(), crate::purge::Advice::Lazy);
+        let cs = s.arena0.class(c);
+        assert!(cs.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()) >= 2);
+        crate::purge::set_headroom(false, false);
+        assert!(
+            !crate::purge::purged_is_zero(),
+            "the purge was a MADV_FREE batch"
+        );
+        assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
+        let f = floor0(s, c);
+        assert!(
+            purged.iter().all(|&b| b < f),
+            "the purged slabs are below the floor"
+        );
+        let new: Vec<*mut u8> = (0..2 * nslots).map(|_| t.alloc(c)).collect();
+        for &p in &new {
+            assert!(
+                slab_of(s, c, p) >= f,
+                "a refill under the floor took {p:?} of lazily purged slab {}",
+                slab_of(s, c, p)
+            );
+        }
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
+    });
+}

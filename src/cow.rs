@@ -34,8 +34,9 @@
 //!   while a slab below it has a free slot ([`drain_move`]), so the blocks
 //!   written during the epoch move back into the holes it left.
 //!
-//! Epochs nest: only the outermost [`begin`] and [`end`] act. Off with
-//! `cow_epoch:false`.
+//! Epochs nest: only the outermost [`begin`] and [`end`] act, one at a
+//! time (a [`begin`] while another thread's is under way is refused,
+//! [`enter`]). Off with `cow_epoch:false`.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -51,8 +52,19 @@ verus! {
 
 /// The floors hold: refills honour them (`ClassState::cow_floor`).
 exec static IN_FORCE: AtomicBool = AtomicBool::new(false);
-/// Open epochs (nesting depth).
+/// Open epochs (nesting depth), plus [`BUSY`] while the outermost
+/// [`begin`] or [`end`] does its work: every change of the depth is a
+/// compare-and-exchange, and none is made while [`BUSY`] is set, so the
+/// outermost transitions run one at a time and a nested one never
+/// returns before the floors it relies on are set.
 exec static DEPTH: AtomicU32 = AtomicU32::new(0);
+/// [`DEPTH`]'s bit for an outermost transition under way.
+const BUSY: u32 = 0x8000_0000;
+/// The most epochs open at once: [`begin`] refuses one more (`EBUSY`).
+const MAX_DEPTH: u32 = 0x7fff_ffff;
+/// How many compare-and-exchanges [`begin`] and [`end`] try while other
+/// threads move the depth before they give up (`EBUSY`, `EINVAL`).
+const MAX_TRIES: u32 = 1 << 16;
 /// A heap whose last cache GC is older than this (coarse monotonic
 /// nanoseconds) flushes every cache at its next slow path; 0 for none.
 exec static FLUSH_AFTER: AtomicU64 = AtomicU64::new(0);
@@ -86,6 +98,7 @@ pub const MIN_CAP: u64 = 64 << 20;
 /// Results of [`begin`] and [`end`], as `challoc_cow_begin` returns them.
 pub const ENOTSUP: i32 = 95;
 pub const EINVAL: i32 = 22;
+pub const EBUSY: i32 = 16;
 
 /// Whether the floors hold.
 #[inline(always)]
@@ -93,7 +106,8 @@ pub fn in_force() -> bool {
     IN_FORCE.load(Ordering::Relaxed)
 }
 
-/// Whether an epoch is open (its floors may have stopped holding).
+/// Whether an epoch is open (its floors may have stopped holding), or an
+/// outermost [`begin`] or [`end`] is under way.
 #[inline(always)]
 pub fn open() -> bool {
     DEPTH.load(Ordering::Relaxed) != 0
@@ -222,11 +236,78 @@ fn each_class_settle(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>)
     }
 }
 
+/// What [`enter`] and [`leave`] did to [`DEPTH`].
+pub enum Enter {
+    /// The depth went from 0 to 1 (from 1 to 0), and [`BUSY`] is set: the
+    /// caller does the outermost transition's work, then clears it.
+    Outermost,
+    /// The depth went up (down) by one, at least one epoch staying open.
+    Nested,
+    /// The depth is as it was; [`begin`] or [`end`] returns this.
+    Refused(i32),
+}
+
+/// [`begin`]'s change of [`DEPTH`]: one more open epoch, unless another
+/// thread's outermost [`begin`] or [`end`] is under way ([`BUSY`]), when
+/// it changes nothing and refuses with `EBUSY`: the epoch that thread is
+/// opening has no floors yet, or the one it is closing has none left, so
+/// a nested epoch counted now would return with no floors in force. A
+/// thread forked while another was in a transition inherits [`BUSY`],
+/// and its epochs are refused the same way, with nothing to wait for.
+fn enter() -> Enter {
+    let mut tries: u32 = 0;
+    while tries < MAX_TRIES
+        decreases MAX_TRIES - tries,
+    {
+        tries += 1;
+        let d = DEPTH.load(Ordering::Acquire);
+        if d & BUSY != 0 || d >= MAX_DEPTH {
+            return Enter::Refused(EBUSY);
+        }
+        if d == 0 {
+            if DEPTH.compare_exchange(0, 1 | BUSY, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return Enter::Outermost;
+            }
+        } else if DEPTH.compare_exchange(d, d + 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            return Enter::Nested;
+        }
+    }
+    Enter::Refused(EBUSY)
+}
+
+/// [`end`]'s change of [`DEPTH`]: one fewer open epoch. `EINVAL`, with
+/// the depth as it was, when no epoch is open or another thread's
+/// outermost transition is under way ([`BUSY`]): an [`end`] matched to a
+/// [`begin`] that returned 0 never sees one, since the depth counts that
+/// epoch, and so is neither 0 before the transition nor 1 before the end
+/// of the last epoch.
+fn leave() -> Enter {
+    let mut tries: u32 = 0;
+    while tries < MAX_TRIES
+        decreases MAX_TRIES - tries,
+    {
+        tries += 1;
+        let d = DEPTH.load(Ordering::Acquire);
+        if d & BUSY != 0 || d == 0 {
+            return Enter::Refused(EINVAL);
+        }
+        if d == 1 {
+            if DEPTH.compare_exchange(1, BUSY, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return Enter::Outermost;
+            }
+        } else if DEPTH.compare_exchange(d, d - 1, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            return Enter::Nested;
+        }
+    }
+    Enter::Refused(EINVAL)
+}
+
 /// Start an epoch (the outermost [`begin`] acts; nested ones count): the
 /// floors at every arena's commit cursor, the cap, the cache-flush stamp
 /// and the `free` dispatch bit. The caller has flushed its own caches and
 /// purged the `Empty` slabs (`api::cow::begin`). `ENOTSUP` with
-/// `cow_epoch:false`.
+/// `cow_epoch:false`; `EBUSY`, opening nothing, while another thread's
+/// outermost [`begin`] or [`end`] is under way ([`enter`]).
 pub fn begin(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     requires
         crate::sys::may_syscall(),
@@ -238,8 +319,10 @@ pub fn begin(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     if !shared.cow_enabled() {
         return ENOTSUP;
     }
-    if DEPTH.fetch_add(1, Ordering::Relaxed) != 0 {
-        return 0;
+    match enter() {
+        Enter::Nested => return 0,
+        Enter::Refused(e) => return e,
+        Enter::Outermost => {},
     }
     EPOCHS.fetch_add(1, Ordering::Relaxed);
     let live = each_class_mark(shared, Tracked(&mut *ord));
@@ -250,12 +333,15 @@ pub fn begin(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     FLUSH_AFTER.store(crate::sys::now_coarse_ns().saturating_add(1), Ordering::Relaxed);
     IN_FORCE.store(true, Ordering::Relaxed);
     shared.set_epoch(true);
+    // The transition is done: nested begins and ends may count again.
+    DEPTH.store(1, Ordering::Release);
     0
 }
 
 /// End the epoch (the outermost [`end`] acts): the floors go, each
 /// becoming a drain floor where blocks of the epoch went above it, and the
-/// `free` dispatch bit is cleared. `EINVAL` with no epoch open.
+/// `free` dispatch bit is cleared. `EINVAL` with no epoch open (or while
+/// another thread's outermost transition is under way, [`leave`]).
 pub fn end(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     requires
         crate::sys::may_syscall(),
@@ -264,47 +350,59 @@ pub fn end(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: i32)
     ensures
         *final(ord) == *old(ord),
 {
-    let d = DEPTH.load(Ordering::Relaxed);
-    if d == 0 {
-        return EINVAL;
-    }
-    DEPTH.store(d - 1, Ordering::Relaxed);
-    if d > 1 {
-        return 0;
+    match leave() {
+        Enter::Nested => return 0,
+        Enter::Refused(e) => return e,
+        Enter::Outermost => {},
     }
     IN_FORCE.store(false, Ordering::Relaxed);
     FLUSH_AFTER.store(0, Ordering::Relaxed);
     shared.set_epoch(false);
     each_class_settle(shared, Tracked(&mut *ord));
     DRAIN_UNTIL.store(crate::sys::now_coarse_ns().saturating_add(DRAIN_WINDOW_NS), Ordering::Relaxed);
+    // The transition is done: the next begin may open an epoch.
+    DEPTH.store(0, Ordering::Release);
     0
 }
 
+/// The drain's rule (design 5, "Fork epochs"): a block of slab `slab`
+/// moves back below the pair's drain floor `floor` when there is one, the
+/// slab is at or above it, and the lowest partial slab `low` (where a
+/// direct claim puts the moved block) lies below it.
+pub open spec fn drain_ok(slab: int, floor: int, low: Option<usize>) -> bool {
+    &&& floor != 0
+    &&& floor <= slab
+    &&& low matches Some(s) && (s as int) < floor
+}
+
 /// Whether a defragmenter should move a block of slab `slab` of `cs`
-/// back below the pair's drain floor: the slab is at or above it, and a
-/// slab below it has a free slot (the slab a direct claim takes from
-/// next, `lowest_partial`). The first query that finds none ends the
-/// pair's drain. `ord` is the caller's lock-order token (ghost) for the
-/// class lock `lowest_partial` takes.
-pub fn drain_move(cs: &ClassState, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: bool)
+/// back below the pair's drain floor ([`drain_ok`] over the floor and the
+/// lowest partial slab it read, returned as ghosts: the slab a direct
+/// claim takes from next, `lowest_partial`). The first query that finds
+/// no partial slab below the floor ends the pair's drain. `ord` is the
+/// caller's lock-order token (ghost) for the class lock `lowest_partial`
+/// takes.
+pub fn drain_move(cs: &ClassState, slab: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (bool, Ghost<usize>, Ghost<Option<usize>>))
     requires
         crate::sys::may_syscall(),
         old(ord).allows(rank_class(0, 0)),
     ensures
         *final(ord) == *old(ord),
+        r.0 ==> drain_ok(slab as int, r.1@ as int, r.2@),
 {
     let f = cs.drain_floor();
     if f == 0 || slab < f || !draining() {
-        return false;
+        return (false, Ghost(f), Ghost(None));
     }
-    match cs.lowest_partial(Tracked(ord)) {
+    let low = cs.lowest_partial(Tracked(ord));
+    match low {
         Some(s) if s < f => {
             DRAIN_MOVES.fetch_add(1, Ordering::Relaxed);
-            true
+            (true, Ghost(f), Ghost(low))
         },
         _ => {
             cs.drain_done();
-            false
+            (false, Ghost(f), Ghost(low))
         },
     }
 }
@@ -333,7 +431,7 @@ pub fn stat(shared: &Shared, which: u32, Tracked(ord): Tracked<&mut LockOrder>) 
 pub fn stat_unlocked(which: u32) -> u64 {
     match which {
         0 => EPOCHS.load(Ordering::Relaxed),
-        1 => DEPTH.load(Ordering::Relaxed) as u64,
+        1 => (DEPTH.load(Ordering::Relaxed) & !BUSY) as u64,
         2 => IN_FORCE.load(Ordering::Relaxed) as u64,
         3 => EXPIRED.load(Ordering::Relaxed),
         4 => CLAIMED.load(Ordering::Relaxed),
