@@ -461,6 +461,7 @@ impl ClassState {
     /// need no change: a closed page's are clear. The pages were
     /// discarded, so the claim touches them again; the `Release` store of
     /// the mask (`SlabPages::set_pages`) orders the claim after it.
+    #[inline(always)]
     pub(super) fn reopen_pages(&self, g: &mut Inner, slab: usize, need: usize)
         requires
             crate::sys::may_abort_pending(),

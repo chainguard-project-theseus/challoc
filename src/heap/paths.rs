@@ -1102,6 +1102,9 @@ pub fn free_sized_fast(
         !r ==> *final(blk) == *old(blk) || old(blk).block(p),
         r ==> old(blk).block(p),
 {
+    // `flags` (`push_flags`) is the bits the push gets; the byte read for
+    // the push carries them, and the dynamic ones (`lemma_route_flags`).
+    let _ = flags;
     match shared.sized_slot(p, hint) {
         Some(class) => {
             let ff = shared.free_flags();

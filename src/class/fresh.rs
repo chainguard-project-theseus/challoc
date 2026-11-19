@@ -48,6 +48,7 @@ impl ClassState {
     /// none. With a floor, `None` may leave idle slabs below it.
     ///
     /// [`purge::purged_is_zero`]: crate::purge::purged_is_zero
+    #[inline(always)]
     pub(super) fn next_slab(&self, g: &mut Inner, floor: usize, meta: &Meta, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),

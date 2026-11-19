@@ -3110,8 +3110,34 @@ impl Heap {
     /// with locks held that `pthread_create` and `pthread_join` take again
     /// (the stack cache lock, from `pthread_join`'s TLS teardown). `cell`
     /// is the calling thread's slot cell.
-    // Hot slow-path tick: left as written so its codegen does not move.
+    /// [`Heap::tick`]'s fork-epoch flush, out of line so the tick keeps its
+    /// code: every cache flushed once, and the GC stamp moved past `stamp`.
+    #[cold]
+    #[inline(never)]
+    fn cow_flush(&mut self, shared: &Shared, stamp: u64, Tracked(ord): Tracked<&mut LockOrder>)
+        requires
+            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            old(self).wf(),
+            shared.wf(),
+        ensures
+            *final(ord) == *old(ord),
+            final(self).keeps(*old(self)),
+    {
+        let now = now_ns();
+        self.last_gc = if now > stamp { now } else { stamp };
+        let ghost h0 = *self;
+        self.flush_all(shared, Tracked(&mut *ord));
+        proof {
+            Heap::lemma_keeps_trans(*old(self), h0, *self);
+        }
+    }
+
+    // Hot slow-path tick: left as written so its codegen does not move;
+    // inlined into the slow paths as it was before the epoch check grew it.
     #[allow(clippy::manual_is_multiple_of)]
+    #[inline(always)]
     fn tick<const ALLOC: bool>(
         &mut self,
         shared: &Shared,
@@ -3140,9 +3166,7 @@ impl Heap {
         // which a pop would hand out again. Flush them all, once.
         let stamp = crate::cow::flush_after();
         if stamp != 0 && self.last_gc < stamp {
-            let now = now_ns();
-            self.last_gc = if now > stamp { now } else { stamp };
-            self.flush_all(shared, Tracked(&mut *ord));
+            self.cow_flush(shared, stamp, Tracked(&mut *ord));
         }
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {

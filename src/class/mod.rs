@@ -4495,14 +4495,11 @@ impl ClassState {
         assert(!g.purged.map@.contains(s));
     }
 
-    /// A refill's lock hold ([`ClassState::plan_at`]) under the fork
-    /// epoch's floor ([`ClassState::cow_floor`]; design 5, "Fork epochs"):
-    /// above the floor first and, when that finds nothing (the class
-    /// region above the floor is spent), over the whole class, so that an
-    /// epoch never fails a refill that would succeed without it. The
-    /// slots it reserves while a floor is in force count towards the
-    /// epoch's cap ([`crate::cow::note_claimed`]). Outside an epoch it is
-    /// `plan_at(0, ..)`.
+    /// A refill's lock hold ([`ClassState::plan_at`]): outside a fork
+    /// epoch `plan_at(0, ..)`, inlined as before; with a floor in force
+    /// ([`ClassState::cow_floor`]; design 5, "Fork epochs") the out-of-line
+    /// [`ClassState::plan_epoch`]. One load and a predicted branch is all
+    /// the epochs cost a refill outside them.
     // The last six arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
@@ -4536,10 +4533,54 @@ impl ClassState {
             picks_sum(final(picks)@, np as int) <= want,
     {
         let floor = self.cow_floor();
-        let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
-        if floor == 0 {
-            return np;
+        if floor != 0 {
+            return self.plan_epoch(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
         }
+        self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord))
+    }
+
+    /// [`ClassState::plan`] under a fork epoch's `floor`: above the floor
+    /// first and, when that finds nothing (the class region above the
+    /// floor is spent), over the whole class, so that an epoch never fails
+    /// a refill that would succeed without it. The slots it reserves under
+    /// the floor count towards the epoch's cap
+    /// ([`crate::cow::note_claimed`]). Cold and out of line, so that the
+    /// refill path outside an epoch keeps its code.
+    // The last six arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
+    fn plan_epoch(
+        &self,
+        floor: usize,
+        meta: &Meta,
+        want: usize,
+        picks: &mut [Pick; MAX_PICKS],
+        Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>,
+        Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
+        Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
+        Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        pubw: Tracked<&'static Published>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (np: usize)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(ord).allows(rank_class(0, 0)),
+            self.published_by(*pubw@),
+            meta.is_process(),
+        ensures
+            *final(ord) == *old(ord),
+            np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
+            picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
+            picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
+            picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
+            picks_toks(self.spec_table(), final(picks)@, 0, np as int, *final(ptoks)),
+            np <= MAX_PICKS,
+            picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
+            picks_sum(final(picks)@, np as int) <= want,
+    {
+        let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
         if np == 0 && want > 0 {
             return self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
         }
@@ -4585,6 +4626,7 @@ impl ClassState {
     // Not isolated: the loops return while the guard borrows `ord`, whose
     // value `Lock::lock` states before them.
     #[verifier::loop_isolation(false)]
+    #[inline(always)]
     fn plan_at(
         &self,
         floor: usize,
