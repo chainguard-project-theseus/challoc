@@ -19,7 +19,7 @@
 #                       binary with its library in LD_PRELOAD (glibc: none),
 #                       so only the allocator changes between them.
 #   src-<tag>-runpath   the server's challoc integration applied
-#                       (contrib/valkey/000{1,2}, contrib/redis/000{1,2,3}),
+#                       (contrib/valkey/000{1,2,3,4}, contrib/redis/000{1,2,3}),
 #                       MALLOC=challoc, linked with a RUNPATH of
 #                       KV_RUNPATH whose libchalloc.so.0 is pointed at the
 #                       variant's library before each start (bench/README.md,
@@ -58,7 +58,7 @@ KV_SRC_RP=$KV_SRC-runpath
 KV_RUNPATH=${VALKEY_RUNPATH:-/opt/challoc/lib}
 # The server's challoc integration, applied in order to the runpath tree.
 case $KV_SERVER in
-  valkey) KV_PATCHES="$ROOT/contrib/valkey/0001-Add-MALLOC-challoc.patch $ROOT/contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch";;
+  valkey) KV_PATCHES=$(printf '%s ' "$ROOT"/contrib/valkey/0*.patch);;
   redis)  KV_PATCHES=$(printf '%s ' "$ROOT"/contrib/redis/0*.patch);;
 esac
 KV_CLI=$KV_SRC_JE/src/$KV_SERVER-cli

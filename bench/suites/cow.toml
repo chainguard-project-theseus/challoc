@@ -1,0 +1,20 @@
+# cow: Valkey's fork copy-on-write under a BGSAVE (bench/drivers/valkey-cow.sh,
+# docs/design.md section 5, "Fork epochs"), base vs head challoc with the
+# bundled jemalloc as the control: the copy at 64 B and 1 KiB values, SET
+# throughput outside and inside the save, and the RSS after the save with
+# activedefrag on. One variant per VM. Pair it with kv-valkey (the
+# command-mix rows) for the throughput of everything else.
+description = "Valkey BGSAVE copy-on-write: challoc base vs head (fork epochs), bundled jemalloc as control"
+cells = "tag:gate"
+variants = ["base", "head"]
+controls = ["jemalloc"]
+rows = ["valkey-cow", "valkey-cow-d1k", "valkey-cow-tput", "valkey-cow-rec"]
+replicas = 3
+blocks = 1
+warmup_blocks = 0
+shard_seconds = 1500
+looks = 1
+budget_usd = 20
+
+[local]
+blocks = 1

@@ -66,6 +66,11 @@ valkey_soak_secs = "1200"
 valkey_soak_settle = "60"
 # The Redis / Valkey command-mix rows (bench/drivers/kv-ops.sh).
 kv_keys = "1000000"
+# The valkey-cow rows (bench/drivers/valkey-cow.sh).
+cow_keys = "10000000"
+cow_writes = "1000000"
+cow_keys_d1k = "2000000"
+cow_writes_d1k = "200000"
 kv_reqs = "1000000"
 ruby_soak_secs = "600"
 jvm_soak_secs = "1200"
@@ -1277,3 +1282,77 @@ better = "lower"
 class = "st"
 env = { PROGRAM = "proto_benchmark", MIN_TIME = "3s" }
 est_s = 8
+
+# ---- fork copy-on-write under a BGSAVE (bench/drivers/valkey-cow.sh) -----
+# Valkey's BGSAVE child against the parent's writes (docs/design.md
+# section 5, "Fork epochs"): KEYS keys filled, a save stretched to about a
+# minute by rdb-key-save-delay, a tenth of the keys overwritten during it.
+# challoc is the runpath build with contrib/valkey 0001 to 0004 (a head
+# with fork epochs opens one around the save); jemalloc the bundled 5.3.0.
+# One variant per VM: a run holds the host's memory for the save.
+[row.valkey-cow]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "cow_mib"
+unit = "MiB"
+better = "lower"
+class = "soak-rss"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { MODE = "cow", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10" }
+metrics = [
+  { name = "peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_after_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 150
+
+[row.valkey-cow-d1k]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "cow_mib"
+unit = "MiB"
+better = "lower"
+class = "soak-rss"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { MODE = "cow", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2" }
+metrics = [
+  { name = "peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_after_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 150
+
+# SET throughput with no child (the score: what an epoch's code costs when
+# none is open) and during the save.
+[row.valkey-cow-tput]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "set_outside_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { MODE = "tput", SIZE = "64", KEYS = "{cow_keys}", DELAY = "-10" }
+metrics = [{ name = "set_inside_rps", unit = "req/s", better = "higher", class = "server" }]
+est_s = 150
+
+# The overwrite, then two save durations with activedefrag on: RSS at the
+# end as a percentage of its pre-save value (the score) and the seconds
+# until it is back within 5%.
+[row.valkey-cow-rec]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "rss_end_rel_pct"
+unit = "%"
+better = "lower"
+class = "soak-rss"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { MODE = "rec", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", RECOVER = "120" }
+metrics = [{ name = "recover_s", unit = "s", better = "lower", class = "soak-rss" }]
+est_s = 270
