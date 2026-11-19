@@ -3074,7 +3074,12 @@ proof fn lemma_user_block_shrink(p: usize, big: int, small: int)
 /// Epochs nest. 0 on success (and before init, when nothing is allocated
 /// for a child to share), `EINVAL` for a `flags` other than 0, `ENOTSUP`
 /// with `cow_epoch:false`, `EBUSY` (no epoch opened) while another
-/// thread's outermost begin or end is under way (`crate::cow::begin`).
+/// thread's outermost begin or end is under way (`crate::cow::begin`), and
+/// `EBUSY` inside the fork window (`lock::in_fork_window`: an atfork
+/// handler of the forking thread, in the parent or the child): the child's
+/// handler clears every epoch (`cow::fork_child`), so one opened by a child
+/// handler that runs before it would be lost, and design 9 keeps the
+/// state fork handlers reset unchanged in that window.
 pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: c_int)
     requires
         crate::sys::may_abort(),
@@ -3089,6 +3094,9 @@ pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     let Some(shared) = super::shared_if_ready() else { return 0 };
     if !shared.cow_enabled() {
         return crate::cow::ENOTSUP;
+    }
+    if crate::lock::in_fork_window() {
+        return crate::cow::EBUSY;
     }
     if !crate::cow::open() {
         if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {

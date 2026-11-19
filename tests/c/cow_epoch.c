@@ -11,7 +11,9 @@
  *   - while the epoch is open no malloc returns a block that existed before
  *     it (none is handed out again while the child may share its page),
  *     and the deflected frees are counted;
- *   - the child starts with no epoch open (the parent's is not its own);
+ *   - the child starts with no epoch open (the parent's is not its own),
+ *     and a begin from an atfork handler run in the fork window (registered
+ *     before challoc's) is EBUSY in both processes;
  *   - end closes it; a block allocated during the epoch then reads as worth
  *     moving (experimental.utilization.batch_query reports one region in
  *     use, get_defrag_hint 1) while the holes below are open, and by the
@@ -33,6 +35,26 @@ extern unsigned long long challoc_cow_stat(unsigned) WEAK;
 #endif
 
 extern int get_defrag_hint(void *) WEAK;
+
+/* Atfork handlers registered before challoc's (.preinit_array, as in
+ * atfork_early.c), so they run inside the fork window: a begin there is
+ * EBUSY and opens nothing, in the parent and in the child, whose own
+ * handler then clears the epochs it inherited (design 9). -1: not run. */
+static volatile int early_parent_r = -1, early_child_r = -1;
+
+static void early_parent(void)
+{
+    early_parent_r = challoc_cow_begin ? challoc_cow_begin(0) : -2;
+}
+
+static void early_child(void)
+{
+    early_child_r = challoc_cow_begin ? challoc_cow_begin(0) : -2;
+}
+
+/* No allocation before this: glibc's pthread_atfork does not allocate for
+ * the first handlers. */
+ATFORK_FIRST(NULL, early_parent, early_child);
 
 enum { N = 40000, SZ = 64 };
 
@@ -96,9 +118,14 @@ int main(int argc, char **argv)
             sum += ((unsigned char *)old[i])[0];
         if (challoc_cow_stat(CHALLOC_COW_OPEN) != 0 || challoc_cow_stat(CHALLOC_COW_IN_FORCE) != 0)
             _exit(4);
+        if (early_child_r != EBUSY)
+            _exit(5);
         usleep(100 * 1000);
         _exit(sum == (unsigned long)N * 0x5a ? 0 : 3);
     }
+
+    CHECK(early_parent_r == EBUSY, "a begin in the parent's fork window: %d, want EBUSY", early_parent_r);
+    CHECK(challoc_cow_stat(CHALLOC_COW_OPEN) == 1, "the fork window's begin opened nothing");
 
     /* The parent overwrites every other block while the child runs. */
     int reused = 0;

@@ -523,7 +523,9 @@ pages the child never had:
 - **The child.** The epoch is the parent's. The child's fork handler
   clears the depth (busy bit included), the floors' force, the cache-flush
   stamp and `FREE_EPOCH`, so a child starts with no epoch open even when
-  it was forked during another thread's transition.
+  it was forked during another thread's transition. A `begin` inside the
+  fork window (an atfork handler of the forking thread) returns `EBUSY`,
+  so no epoch opened there is cleared behind its caller (design 9).
 - **Scope.** The floors cover the slab classes. The huge region (above
   the largest medium class) is not steered: `begin` purges its free
   runs, but a huge block freed during the epoch is retained (below
