@@ -14,10 +14,11 @@ OUT=${OUT:-cow.jsonl}
 CELLS="64,10000000,100000,-10 64,10000000,1000000,-10 1024,2000000,20000,-2 1024,2000000,200000,-2"
 for rep in 1 2 3; do
   for cell in $CELLS; do
-    IFS=, read v k w d <<EOT
+    IFS=, read -r v k w d <<EOT
 $cell
 EOT
     for x in "je $JE" "ch $CH" "cow $COW"; do
+      # shellcheck disable=SC2086 # "label path": split on purpose
       set -- $x
       python3 "$B" --server "$2" --label "$1" --vsize "$v" --keys "$k" --writes "$w" --save-delay "$d" --seed "$rep" >> "$OUT"
     done
@@ -32,7 +33,7 @@ for rep in 1 2 3; do
 done
 for rep in 1 2; do
   for cell in "64,10000000,1000000,-10" "1024,2000000,200000,-2"; do
-    IFS=, read v k w d <<EOT
+    IFS=, read -r v k w d <<EOT
 $cell
 EOT
     python3 "$B" --server "$CH" --label ch-rec --vsize "$v" --keys "$k" --writes "$w" --save-delay "$d" --recover 120 --defrag --seed "$rep" >> "$OUT"

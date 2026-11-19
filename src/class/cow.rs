@@ -116,6 +116,8 @@ impl ClassState {
                 return true;
             }
             walked += 1;
+            // Two `if`s, not a let chain: Verus takes no let chain.
+            #[allow(clippy::collapsible_if)]
             if let Some(d) = t.desc_if_committed(s) {
                 if d.live() > 0 && d.arena_unheld(self.desc_inv(s)) == self.arena {
                     return true;

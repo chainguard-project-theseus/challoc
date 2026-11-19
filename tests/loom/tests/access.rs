@@ -1445,7 +1445,9 @@ fn access_slot_bytes_control() {
 // The free path's route byte (`vspec/flags.rs`; its `PAtomicU8` and the
 // invariant over it are private to that file, so rustc confines every
 // atomic operation on it to the wrappers): outside vspec/flags.rs the
-// wrappers are called once each, in heap/shared.rs, on the lines below;
+// wrappers are called in heap/shared.rs only, each of the lines below
+// once (`fetch_or` for the route bit and the epoch bit, `fetch_and` to
+// clear the epoch bit);
 // the one write through the field's offset (`S_FREE_FLAGS`) writes the
 // byte `flags::new` made; and no line
 // names `free_flags` or `RouteByte` with a raw pointer, transmute, zeroing,
@@ -1459,11 +1461,13 @@ const ROUTE_CALLS: &[&str] = &[
     ROUTE_NEW,
     "crate::vspec::flags::load(&self.free_flags)",
     "crate::vspec::flags::fetch_or(&self.free_flags, FREE_ROUTE);",
+    "crate::vspec::flags::fetch_or(&self.free_flags, FREE_EPOCH);",
+    "crate::vspec::flags::fetch_and(&self.free_flags, !FREE_EPOCH);",
 ];
 
 fn check_route(t: &Tree) -> Vec<String> {
     let mut out = Vec::new();
-    let mut seen = [0; 3];
+    let mut seen = [0; 5];
     let mut offset_writes = 0;
     for (file, text) in t {
         if file == "src/vspec/flags.rs" {
@@ -1499,12 +1503,17 @@ fn check_route(t: &Tree) -> Vec<String> {
                 .find("&mut ")
                 .is_some_and(|i| c[i..].split(';').next().unwrap().contains("free_flags"))
                 && !c.contains("Tracked(&mut parts.free_flags)");
-            let short = ["flags::new(", "flags::load(", "flags::fetch_or("]
-                .iter()
-                .any(|f| {
-                    c.match_indices(f)
-                        .any(|(i, _)| !c[..i].ends_with("crate::vspec::"))
-                });
+            let short = [
+                "flags::new(",
+                "flags::load(",
+                "flags::fetch_or(",
+                "flags::fetch_and(",
+            ]
+            .iter()
+            .any(|f| {
+                c.match_indices(f)
+                    .any(|(i, _)| !c[..i].ends_with("crate::vspec::"))
+            });
             let import = c.starts_with("use ")
                 && c.contains("vspec::")
                 && c.contains("flags")
@@ -1525,6 +1534,7 @@ fn check_route(t: &Tree) -> Vec<String> {
                 "vspec::flags::new(",
                 "vspec::flags::load(",
                 "vspec::flags::fetch_or(",
+                "vspec::flags::fetch_and(",
             ] {
                 if c.contains(f) {
                     match ROUTE_CALLS.iter().position(|w| *w == c) {
@@ -1538,9 +1548,9 @@ fn check_route(t: &Tree) -> Vec<String> {
             }
         }
     }
-    if offset_writes != 1 || seen != [1, 1, 1] {
+    if offset_writes != 1 || seen != [1; 5] {
         out.push(format!(
-            "src/heap/shared.rs: route-byte writes through S_FREE_FLAGS {offset_writes}, calls of new, load, fetch_or {seen:?}, not 1 each"
+            "src/heap/shared.rs: route-byte writes through S_FREE_FLAGS {offset_writes}, calls of new, load, fetch_or (route, epoch), fetch_and {seen:?}, not 1 each"
         ));
     }
     out
@@ -1560,6 +1570,7 @@ fn access_route_byte_control() {
         "fn f(s: &Shared) -> u8 { crate::vspec::flags::load(&s.free_flags) }",
         "fn f(s: &Shared) { unsafe { core::ptr::write(addr_of!(s.free_flags) as *mut u8, 0) } }",
         "use crate::vspec::flags::fetch_or;",
+        "fn f(s: &Shared) { crate::vspec::flags::fetch_and(&s.free_flags, !FREE_EPOCH); }",
     ] {
         assert!(
             !check_route(&with(&t, "src/heap/shared.rs", anchor, line)).is_empty(),

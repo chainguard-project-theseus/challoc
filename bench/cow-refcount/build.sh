@@ -9,7 +9,7 @@ mkdir -p $M/lib && cp $M/target/release/libchalloc.so $M/lib/libchalloc.so.0
 cd /tmp/w/valkey
 for v in vje:9.1.2 vjef:cow-refcount-9.1.2 vep:9.1.2 vepf:cow-refcount-9.1.2; do
   n=${v%%:*}; ref=${v#*:}
-  [ -d $M/$n ] || git worktree add -q --detach $M/$n $ref
+  [ -d "$M/$n" ] || git worktree add -q --detach "$M/$n" "$ref"
 done
 for n in vep vepf; do
   cd $M/$n
