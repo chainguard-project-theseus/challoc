@@ -94,3 +94,14 @@ sub-threshold (at most +0.8%) except **xmalloc on ref-arm64: +4.5% [+1.3%,
 +7.9%], worse** (instr/op +1.0%; at 986f766 +3.5% [+1.9%, +5.1%]). On
 ref-amd64 xmalloc is +0.6%, same. Positive percentages are the candidate
 worse.
+
+The xmalloc regression was `Heap::free` inlining the epoch's deflection
+lookup (`Shared::cow_deflects`) into libc's `free_slow`: on aarch64 that
+took a callee-saved register, saved and restored on every slow free,
+xmalloc's cross-thread frees included. 0bba0c1 makes the epoch branch a
+cold tail call (`Heap::free_epoch`) behind one load of `cow::in_force`;
+`free_slow` on aarch64 then differs from main only by that load and its
+branch on the home branch. `quick` re-run, paired, head 0bba0c1: xmalloc
+on ref-arm64 -1.3% [-4.3%, +1.8%] (instr/op -0.0%; was +4.5% worse), on
+ref-amd64 +0.1% same; no row worse on either cell (alloc-test1 amd64
++0.7% and valkey1 +1.2..2.4% inconclusive within their margins).
