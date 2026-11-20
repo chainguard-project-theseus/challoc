@@ -12,11 +12,12 @@
 # reads), pinned as verus.yaml pins it and to the Makefile's
 # PROVED_PORT_VERSION; and apk-tools and wolfi-keys, with which the deps
 # agent's kit entry installs the release it moves the pin to before it
-# runs the kit targets. verus and kani bring rust-1.99, the stream
+# runs the kit targets; and claude, Claude Code for the owner agents
+# that run in development sessions. verus and kani bring rust-1.99, the stream
 # Dockerfile.dev and lint.yaml pin too, so the session installs no rust
 # of its own. For lint's
 # toolchain outside the container, open a session on that check
 # (`chainctl develop --check clippy`).
 version: 1
 environment:
-  packages: [bash, make, git, build-base, coreutils, busybox, docker-29, iptables, verus~0.2026.11.02, kani~0.68.0, cbmc~6.11.0, theseus-proved-port~0.4.4, apk-tools, wolfi-keys]
+  packages: [bash, make, git, build-base, coreutils, busybox, docker-29, iptables, verus~0.2026.11.02, kani~0.68.0, cbmc~6.11.0, theseus-proved-port~0.4.4, apk-tools, wolfi-keys, claude]
