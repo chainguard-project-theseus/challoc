@@ -1266,7 +1266,10 @@ mod linux {
     /// Whether thread `tid` of this process has exited: `tgkill` with
     /// signal 0, which only checks that the thread exists, says `ESRCH`.
     /// (In a `fork` child every thread of the parent is gone; the forking
-    /// one has a new ID.)
+    /// one has a new ID.) Not the thread-group leader once it exits
+    /// (`pthread_exit` from `main`) while other threads run: it stays a
+    /// zombie until the last one exits, and `tgkill` still succeeds on it
+    /// ([`leader_exited`]).
     // The unit tests have no scratch pool, its one caller.
     #[cfg_attr(test, allow(dead_code))]
     pub fn thread_gone(tid: u32) -> bool
@@ -1278,6 +1281,56 @@ mod linux {
         let r = unsafe { raw::syscall3(nr::TGKILL, pid, tid as usize, 0) };
         // `ESRCH` (3 on both targets).
         r as isize == -3
+    }
+
+    /// Whether this process's thread-group leader (the thread whose ID
+    /// is the process ID) has exited: the state in `/proc/self/stat`
+    /// (the leader's) is `Z` or `X`. Unreadable (a sandbox without
+    /// `/proc`) reads as live, the safe side. One `open`, `read` and
+    /// `close`, so the scratch pool asks only when it is otherwise full.
+    // The unit tests have no scratch pool, its one caller.
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn leader_exited() -> bool
+        requires
+            crate::sys::may_syscall(),
+    {
+        // Spelled as bytes so the verifier sees the NUL `sys::open` requires.
+        const STAT: [u8; 16] = [
+            b'/', b'p', b'r', b'o', b'c', b'/', b's', b'e', b'l', b'f', b'/', b's', b't', b'a',
+            b't', 0,
+        ];
+        // The state is within the line's first 27 bytes: a PID of at most
+        // 7 digits (`pid_max` is at most 2^22), ` (`, a name of at most 15
+        // bytes, `) ` and the state.
+        let mut buf = [0u8; 64];
+        match read_small_file(&STAT, &mut buf) {
+            Some(n) => stat_exited(&buf, n),
+            None => false,
+        }
+    }
+
+    /// Whether the `/proc/<pid>/stat` line in `line[..n]` gives the state
+    /// `Z` (zombie) or `X` (dead). The state follows the last `)` by one
+    /// space: the name in parentheses may hold `)` itself, and no field
+    /// after it does. A prefix with no `)`, or with nothing two bytes
+    /// past it, is not an exited state.
+    pub fn stat_exited(line: &[u8], n: usize) -> bool
+        requires
+            n <= line@.len(),
+    {
+        let mut i = n;
+        while i > 0
+            invariant
+                i <= n,
+                n <= line@.len(),
+            decreases i,
+        {
+            i -= 1;
+            if line[i] == b')' {
+                return n - i > 2 && (line[i + 2] == b'Z' || line[i + 2] == b'X');
+            }
+        }
+        false
     }
 
     /// `RLIMIT_DATA` in `<sys/resource.h>`, the same on both targets.

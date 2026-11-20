@@ -908,6 +908,28 @@ fn small_files_read_whole_cut_or_not_at_all() {
     assert_eq!(read_small_file(b"/dev/null\0", &mut buf), Some(0));
 }
 
+/// The stat state parser: `Z` and `X` after the last `)` are exited,
+/// any other state is not, a `)` inside the name does not fool it, and a
+/// prefix cut before the state or with no `)` is not exited.
+#[test]
+fn stat_state_after_the_last_paren() {
+    let at = |s: &[u8]| stat_exited(s, s.len());
+    assert!(at(b"4194304 (a) b) c) Z 1 1 1 0 -1"));
+    assert!(at(b"12 (x) X 1"));
+    assert!(!at(b"12 (x) S 1"));
+    assert!(!at(b"12 (Z) Z) R 1"));
+    assert!(!at(b"12 (x) "));
+    assert!(!at(b"12 (x"));
+    assert!(!at(b""));
+    let line = b"12 (x) Z 1";
+    assert!(!stat_exited(line, 7), "the state cut off");
+    assert!(stat_exited(line, 8));
+    // This process's leader runs this test.
+    let mut buf = [0u8; 64];
+    let n = read_small_file(b"/proc/self/stat\0", &mut buf).unwrap();
+    assert!(!stat_exited(&buf, n), "{:?}", &buf[..n]);
+}
+
 #[test]
 fn write_to_devnull_and_bad_fd() {
     let fd = open(b"/dev/null\0", O_WRONLY).unwrap();

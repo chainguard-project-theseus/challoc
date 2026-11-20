@@ -2303,33 +2303,63 @@ mod pool {
         // first. Between the owner's exchange and the mark's store a
         // handler on this stack sees this thread's slot at FREE and
         // leaves it.
+        let mut full = true;
         for s in POOL.iter()
             invariant
                 crate::sys::may_syscall(),
         {
             let p = s.rec.load(Ordering::Acquire);
-            if !p.is_null() {
+            if p.is_null() {
+                full = false;
+            } else {
                 let o = s.owner.load(Ordering::Relaxed);
-                let mut open = o == 0;
-                if !open && o != tid && crate::sys::thread_gone(o) {
-                    let m = s.mark.load(Ordering::Relaxed);
-                    // A failed exchange: another thread took it since.
-                    open = m == FREE
-                        || s.mark
-                            .compare_exchange(m, FREE, Ordering::Relaxed, Ordering::Relaxed)
-                            .is_ok();
-                }
-                if open
-                    && s.owner
-                        .compare_exchange(o, tid, Ordering::Acquire, Ordering::Relaxed)
-                        .is_ok()
-                {
-                    s.mark.store(mark, Ordering::Relaxed);
+                let open = o == 0 || (o != tid && crate::sys::thread_gone(o) && free_mark(s));
+                if open && claim(s, o, tid, mark) {
                     return Some(p);
                 }
             }
         }
+        // Every slot has its object, none free: the objects an exited
+        // thread-group leader held, which `thread_gone` does not see (it
+        // stays a zombie while other threads run). Asked only here, so a
+        // leader that holds a report costs the other threads' calls
+        // nothing while the pool has room.
+        if full {
+            let pid = crate::sys::getpid() as u32;
+            if pid != tid && crate::sys::leader_exited() {
+                for s in POOL.iter() {
+                    let p = s.rec.load(Ordering::Acquire);
+                    if !p.is_null()
+                        && s.owner.load(Ordering::Relaxed) == pid
+                        && free_mark(s)
+                        && claim(s, pid, tid, mark)
+                    {
+                        return Some(p);
+                    }
+                }
+            }
+        }
         None
+    }
+
+    /// Free the mark of a slot whose holder has exited. False: another
+    /// thread took it since.
+    #[cfg(not(test))]
+    fn free_mark(s: &Slot) -> bool {
+        let m = s.mark.load(Ordering::Relaxed);
+        m == FREE || s.mark.compare_exchange(m, FREE, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    }
+
+    /// Take a slot whose owner is `o` (0: free; else exited, its mark
+    /// freed) for `tid` at `mark`. False: another thread took it since.
+    #[cfg(not(test))]
+    fn claim(s: &Slot, o: u32, tid: u32, mark: usize) -> bool {
+        if s.owner.compare_exchange(o, tid, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            s.mark.store(mark, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     /// The forking thread's ID, recorded by the fork prepare handler.

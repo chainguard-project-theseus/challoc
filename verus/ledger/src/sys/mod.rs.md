@@ -152,7 +152,7 @@ pub fn pthread_self() -> usize
 
 ## `sigprocmask_block`
 
-src/sys/mod.rs:1550. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1603. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_BLOCK, all, before)`, returning the syscall's word.
@@ -175,7 +175,7 @@ unsafe fn sigprocmask_block(
 
 ## `sigprocmask_setmask`
 
-src/sys/mod.rs:1583. Kind: external_body. Category: FFI/syscall.
+src/sys/mod.rs:1636. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > The raw `rt_sigprocmask(SIG_SETMASK, mask, NULL)`, returning the syscall's word.
@@ -192,7 +192,7 @@ unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -
 
 ## `trap`
 
-src/sys/mod.rs:1633. Kind: external_body. Category: inline asm.
+src/sys/mod.rs:1686. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K2 (no resume past the trap)).
 
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.

@@ -2018,7 +2018,11 @@ report. The objects come only from a pool of 64 metadata objects, kept
 once allocated: a call whose callback never returns (`longjmp`,
 `pthread_exit`) abandons its object to the pool, and the thread's next
 call from as high on its stack (every such object it finds, keeping one),
-or any call once the thread has exited, takes it back. A slot's stack
+or any call once the thread has exited, takes it back (an exited
+main thread stays a zombie the kernel still signals while other threads
+run, so for it the state in `/proc/self/stat` decides, read only when
+every slot is otherwise held; without `/proc` its object stays held). A
+slot's stack
 mark moves by compare-exchange and a release frees the mark before the
 owner, so a call interrupted by a signal handler that reports on the same
 stack never takes the object the handler used and gave back. A `fork` from

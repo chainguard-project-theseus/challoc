@@ -1032,6 +1032,12 @@ ctests! {
     /// `atfork_pool_with_challoc_linked`).
     c_atfork_pool => [ CTest { prog: "atfork_pool", stdout_has: &["ok atfork_pool"], ..BASE } ];
     c_thread_exit => [ CTest { prog: "thread_exit", ..BASE } ];
+    /// `tests/c/stats_leader_exit.c`: the main thread `pthread_exit`s
+    /// inside a statistics callback; with 63 other threads parked in
+    /// reports, one more call still gets a scratch object, the zombie
+    /// leader's (the pool, full, reads the leader's state:
+    /// `sys::leader_exited`, #468).
+    c_stats_leader_exit => [ CTest { prog: "stats_leader_exit", stdout_has: &["ok stats_leader_exit"], ..BASE } ];
     /// `tests/c/resource.c`: resource limits are resource failures, never
     /// aborts (design 14.1). `data_init`: a 32 MiB `RLIMIT_DATA` from the
     /// start runs a 15 MB working set, a request past the limit is
