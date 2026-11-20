@@ -28,8 +28,11 @@
 /* What the thread has used of its stack before the operation: what a
  * small program's own frames and libc's (`printf`) take on such a thread.
  * glibc's malloc leaves about 9 KiB of the 16 for it on `malloc` and
- * `fork`; challoc leaves 8 on every row here, so 6 keeps a margin for
- * other builds and compilers. */
+ * `fork`. challoc leaves at least 7.4 KiB on every PTHREAD_STACK_MIN row
+ * (x86_64 release build, GCC 16, measured at 4b66915c): the least on
+ * `many` and `many_warm` (7.4), `stats_print` and `stats_print_warm`
+ * (7.7) and `mallctl` (7.9), at least 8.1 on the rest. 6 keeps a margin
+ * for other builds and compilers. */
 #define HEADROOM 6144
 
 extern void *_Znwm(size_t) WEAK;
