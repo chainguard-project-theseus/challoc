@@ -28,7 +28,7 @@ use core::fmt::{self, Write};
 use super::jemalloc::malloc_write;
 use crate::QUANTUM;
 use crate::arena::Arena;
-use crate::config::{INERT_KEYS, KEYS, Name, PercpuArena, Thp, Value};
+use crate::config::{KEYS, Name, PercpuArena, Thp, Value};
 use crate::heap::Shared;
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
@@ -597,12 +597,6 @@ fn text_settings<W: Write + Report>(out: &mut W, shared: &Shared, snap: &Snapsho
         if let Some(v) = shared.config.get(key.as_bytes()) {
             writeln!(out, "  opt.{}: {}{}", key, v, note)?;
         }
-    }
-    // An inert key (`config::INERT_KEYS`) is parsed and validated but has
-    // no field and is read by nothing; say so, so a report never suggests
-    // the feature is on.
-    for key in INERT_KEYS.iter() {
-        writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
     writeln!(out, "Kernel and CPU features: {}", features)?;
     writeln!(
@@ -1470,6 +1464,44 @@ pub fn malloc_stats_print(write_cb: WriteCallback, cbopaque: *mut c_void, opts: 
     stats_print(Target::Callback(write_cb, cbopaque), opts, Tracked(&mut cc), Tracked(ord))
 }
 
+/// jemalloc's `stats_print` (`MALLOC_CONF=stats_print:true`): at exit,
+/// the text report `malloc_stats_print(write_cb, NULL, NULL)` makes, when
+/// challoc is initialised and the key is set; nothing otherwise (before
+/// init no conf was read, and nothing initialises here). `write_cb` is
+/// the `malloc_message` path's (`WriteCallback(None)`), from
+/// `exports::print_at_exit`, the library's `.fini_array` entry. The
+/// report is `stats_print`'s with no option letters (jemalloc's default
+/// `stats_print_opts`), and `ord` is the call's lock-order token, as for
+/// [`malloc_stats_print`]. Out of the test binary, as its caller is;
+/// `api::c_programs::c_conf_stats_print_reports_at_exit` runs it.
+#[cfg(not(test))]
+pub fn stats_print_at_exit(write_cb: WriteCallback, Tracked(ord): Tracked<LockOrder<'static>>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        ord.top() == 0,
+{
+    let tracked mut ord = ord;
+    let Some(shared) = super::shared_if_ready() else {
+        return;
+    };
+    if !shared.config.stats_print {
+        return;
+    }
+    // `Opts::parse` of a null string, spelled out: every section, text.
+    let o = Opts {
+        json: false,
+        no_general: false,
+        no_arenas: false,
+        no_bins: false,
+    };
+    // As in `stats_print`: the cgroup sample and the feature line from
+    // this frame, then the report.
+    sample_cgroup(shared, Tracked(&mut ord));
+    let features = super::feature_line();
+    stats_report(Target::Callback(write_cb, core::ptr::null_mut()), shared, &o, features, Tracked(ord));
+}
+
 // ---------------------------------------------------------------------------
 // glibc.
 // ---------------------------------------------------------------------------
@@ -1775,7 +1807,40 @@ mod exports {
         super::malloc_stats(Tracked(ord))
     }
 
+    /// The at-exit report (`stats_print:true`, [`super::stats_print_at_exit`]):
+    /// a call into challoc from the C runtime's exit, through
+    /// [`print_at_exit`], the `.fini_array` entry, with no callback.
+    pub extern "C" fn stats_print_exit(write_cb: super::WriteCallback) {
+        proof {
+            crate::sys::grant_syscalls();
+            crate::sys::grant_aborts();
+        }
+        let tracked mut ord = crate::lock::axiom_c_entry();
+        super::stats_print_at_exit(write_cb, Tracked(ord))
+    }
+
     } // verus!
+
+    /// jemalloc prints its `stats_print` report from an `atexit` handler it
+    /// registers at init; challoc's runs from the library's `.fini_array`
+    /// instead, so loading or initialising registers nothing and allocates
+    /// nothing. It runs at `exit` (the dynamic loader's finalisers run
+    /// after the `atexit` handlers registered once the program started,
+    /// and the executable's before its libraries'), never at `_exit`, as
+    /// jemalloc's handler. Out of Verus's build, which has
+    /// no `#[used]` statics (as for `api::REGISTER_EARLY`).
+    #[cfg(not(verus_keep_ghost))]
+    #[used]
+    #[unsafe(link_section = ".fini_array")]
+    static PRINT_AT_EXIT: extern "C" fn() = print_at_exit;
+
+    /// [`stats_print_exit`] with the `malloc_message` path as the callback
+    /// (`WriteCallback(None)`, which Verus cannot build: the type is
+    /// opaque to it).
+    #[cfg(not(verus_keep_ghost))]
+    extern "C" fn print_at_exit() {
+        stats_print_exit(super::WriteCallback(None))
+    }
 }
 
 #[cfg(test)]

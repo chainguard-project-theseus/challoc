@@ -230,7 +230,9 @@ lib_of() { case $1 in glibc-arena2|glibc-trim) echo "";; challoc-*) echo "$CHALL
 # pay for formatting a stats report inside its 100 ms.
 # The server rows also preload bench/probes/statsdump.so after the
 # allocator: an atexit hook calling malloc_stats_print where the allocator
-# exports it (challoc, jemalloc), since challoc's stats_print key is inert.
+# exports it (challoc, jemalloc). Both also print their own report for
+# stats_print:true, so their stderr carries two reports; the preload is
+# redundant for them.
 env_of() {
   lib=$(lib_of "$1")
   if [ "${2:-}" = server ]; then

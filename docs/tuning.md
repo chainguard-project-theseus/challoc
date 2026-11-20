@@ -42,8 +42,7 @@ up and reported.
 Reporting: every problem is printed on stderr as `challoc: <source>:
 <issue>` (`unknown conf key "x"`, `invalid conf value "x" for k`,
 `out-of-range conf value "x" for k (clamped)`, `conf value "x" for k is
-not a power of two (rounded up to N)`, `conf key k is accepted but has no
-effect (not implemented)`) and the offending pair is skipped (clamped or
+not a power of two (rounded up to N)`) and the offending pair is skipped (clamped or
 rounded for the numeric cases); parsing continues.
 
 Each source is read up to 4096 bytes (for an environment variable, its
@@ -55,7 +54,7 @@ with a shortened value.
 `abort_conf:true` turns the report into an abort. It is evaluated after
 every source has been read, so it covers keys that came before it, and it
 refuses unknown keys, bad values, out-of-range and rounded numbers,
-inert keys, and sources longer than 4096 bytes. It does not refuse a
+and sources longer than 4096 bytes. It does not refuse a
 documented runtime fallback for a valid key (`thp:auto` on a host with
 no sub-PMD folio size, `thp:always` under a cgroup limit below 1 GiB);
 the `malloc_stats_print` report says which applies (section 6). Use it in package tests:
@@ -64,12 +63,6 @@ challoc's message.
 
 Keys outside the table:
 
-- `stats_print` is *inert*: it parses as a boolean and is reported every
-  time it is set, so a program cannot believe it turned something on;
-  nothing prints at exit. `malloc_stats_print` lists it as
-  `opt.stats_print: accepted, no effect`, and `mallctl("opt.stats_print")`
-  returns `ENOENT`. To get the report at exit from a program that cannot
-  call `malloc_stats_print` itself, preload an `atexit` hook that calls it.
 - `junk`, `zero`, `retain`, `oversize_threshold`, `metadata_thp` and
   `confirm_conf` are jemalloc keys accepted with any value and ignored, so
   a `MALLOC_CONF` written for jemalloc parses clean under `abort_conf`.
@@ -120,6 +113,7 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `abort_conf` | `true`, `false` | `false` | Abort after parsing if any source reported a problem (section 1). | Package tests and any deployment that must not run on a misspelled key. | None at run time. |
 | `cgroup` | `true`, `false` | `true` | Read the memory cgroup (20 ms after init, section 4) and sample it: effective limits, `memory.current`, `memory.events`; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` a container that frees 400 MiB of 512 MiB keeps most of it resident for the whole decay window; with the default it is back to about 13 MiB within 50 ms. |
 | `check_zero` | `true`, `false` | `false` | Debug: every slot claimed from a `Fresh` or `Purged` slab, and every huge page handed out as known zero, is read at its first and last word under the class or huge lock; a non-zero word aborts with the slab's prior state (for a slab slot, usually a heap overflow or a stale-pointer write into memory not yet handed out). Slow paths only. | Diagnosing a `calloc` zero bug or a write into unallocated slab memory. | Extra reads on every refill from `Fresh` or `Purged` memory. |
+| `stats_print` | `true`, `false` | `false` | At `exit` (not `_exit`), print the full text report of `malloc_stats_print(NULL, NULL, NULL)` through `malloc_message` (stderr unless the program set the hook), as jemalloc does. It runs from the library's `.fini_array`, so it registers nothing and allocates nothing; before the first allocation nothing is printed. | A program that cannot call `malloc_stats_print` itself (`MALLOC_CONF=stats_print:true ruby -e 1`). | One report at exit; none while running. |
 
 **`background_thread` in detail.** Unset, the thread starts from a
 periodic tick that finds 64 MiB of freed memory waiting for decay, or
@@ -470,7 +464,7 @@ The lines an operator reads first, in the order they appear:
 
 | line | what to look for |
 |---|---|
-| `Run-time option settings` / `opt.<key>` | the configuration in force after every source; `(accepted, no effect)` marks an inert key; `thp` carries the forced-never note when a small cgroup limit applied |
+| `Run-time option settings` / `opt.<key>` | the configuration in force after every source; `(accepted, no effect; ...)` says why a key does nothing on this host; `thp` carries the forced-never note when a small cgroup limit applied |
 | `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes anon_name=no thp=always mthp=2M rseq=yes rseq_size=28 pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (a kernel without `CONFIG_ANON_VMA_NAME`). `thp=` is the host's global mode. The keys are never renamed |
 | `Sealed ranges: N of M` | `0 of M` under Docker's default seccomp (mseal filtered) or before 6.10 |
 | `Background thread: present` / `absent` / `absent (lazy start armed)` | whether decay runs while idle; Valkey shows `present`; `lazy start armed` is the default before the process has held enough dirty memory |

@@ -4,8 +4,8 @@
  * a program that cannot call it itself (a JVM, bench/drivers/jvm-bench.sh) still
  * leaves the allocator's own view (allocated, active, resident, retained,
  * per-class occupancy) on stderr. jemalloc's MALLOC_CONF=stats_print:true
- * does the same thing; challoc accepts that key but does not act on it
- * (src/config.rs, INERT_KEYS). Nothing here allocates. Under glibc,
+ * does the same thing, and so does challoc's; this probe serves runs that
+ * cannot set MALLOC_CONF. Nothing here allocates. Under glibc,
  * mimalloc or tcmalloc the symbol is absent and nothing is printed.
  *
  *   cc -O2 -shared -fPIC -o statsdump.so statsdump.c

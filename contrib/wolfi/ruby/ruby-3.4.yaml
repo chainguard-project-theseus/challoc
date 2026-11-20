@@ -277,9 +277,8 @@ test:
         # And the allocator the process is on reports itself as challoc:
         # mallctl("version") and challoc_version() called from Ruby through
         # Fiddle, and the process's malloc is the compat library's malloc.
-        # (MALLOC_CONF=stats_print:true prints nothing under challoc: the key
-        # is accepted and inert, src/config.rs INERT_KEYS; so the report is
-        # asked for directly.)
+        # The report is asked for directly as well, from inside the running
+        # interpreter.
         cat > /tmp/alloc.rb <<'EOF'
         require "fiddle"
         h = Fiddle::Handle::DEFAULT
@@ -306,10 +305,10 @@ test:
         grep -q 'mallctl.version=5.3.0-0-gchalloc' /tmp/alloc.out
         grep -q 'malloc_is_libjemalloc=true' /tmp/alloc.out
         grep -q '^Version: "5.3.0-0-gchalloc"' /tmp/alloc.err
-        # MALLOC_CONF reaches the allocator: challoc answers stats_print with
-        # a "challoc: ... accepted but has no effect" diagnostic today and
-        # would print the statistics if it implemented the key; jemalloc
-        # prints its report; glibc prints nothing.
+        # MALLOC_CONF reaches the allocator: challoc and jemalloc print their
+        # statistics report at exit for stats_print; glibc prints nothing.
+        # `challoc` also matches the diagnostic of a compat package built
+        # before challoc implemented the key.
         MALLOC_CONF=stats_print:true ruby -e 1 2>&1 | grep -q 'challoc\|jemalloc statistics'
         # The package is seen allocating: medium objects that reach malloc
         # (strings over ~600 B, hashes over 8 entries), a burst of garbage,
