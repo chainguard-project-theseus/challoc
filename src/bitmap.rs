@@ -35,9 +35,7 @@ use crate::vspec::zero::axiom_zero_word;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
-#[cfg(verus_keep_ghost)]
-use vstd::resource::iset::GhostPersistentISingleton;
-use vstd::resource::iset::{GhostISubset, GhostPersistentISubset};
+use vstd::resource::iset::{GhostISubset, GhostPersistentISingleton, GhostPersistentISubset};
 use vstd::resource::set::{GhostPersistentSubset, GhostSubset};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::{
@@ -1299,9 +1297,15 @@ impl<'a> AtomicBitmap<'a> {
     /// that was already clear means a slot was released twice. With the
     /// tokens it cannot happen: a clear bit's token is in the word, and
     /// tokens are unique. The tokens come by reference, and `toks` is left
-    /// empty.
+    /// empty. The third result is the witness of the value the release
+    /// stored (`lemma_seen_witness`, #850): the word's version after it,
+    /// with the released bits clear. It is ghost (`Tracked`, no bytes).
     #[inline]
-    pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: (u64, bool))
+    pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: (
+        u64,
+        bool,
+        Tracked<SeenWitness>,
+    ))
         requires
             i < self.spec_words(),
             subset(mask, self.slab_mask()),
@@ -1311,6 +1315,9 @@ impl<'a> AtomicBitmap<'a> {
         ensures
             final(toks).id() == old(toks).id(),
             final(toks)@.is_empty(),
+            r.2@.id() == self.spec_slots().hloc,
+            r.2@@.0 == self.spec_first() / 64 + i,
+            forall|b: u64| b < 64 && #[trigger] has_bit(mask, b) ==> !has_bit(r.2@@.2, (self.spec_first() % 64 + b) as u64),
             subset(r.0, self.slab_mask()),
             r.1 == (r.0 == self.slab_mask()),
             subset(mask, r.0),
@@ -1334,6 +1341,7 @@ impl<'a> AtomicBitmap<'a> {
         let w = &self.words[i];
         let prev;
         let tracked mut toks = toks.take();
+        let tracked mut got = None;
         vstd::open_atomic_invariant!(inv => pair => {
             let tracked (mut perm, mut g, u, d, sn, mut h) = pair;
             prev = crate::vspec::word::fetch_and(w, !m, Tracked(&mut perm));
@@ -1396,9 +1404,21 @@ impl<'a> AtomicBitmap<'a> {
                     }
                 }
                 lemma_seen_write(inv.constant(), &mut h, prev, perm.value());
+                // The witness of the value stored, whose released bits are
+                // clear.
+                let tracked wr = lemma_seen_witness(inv.constant(), &h, perm.value());
+                got = Some(wr);
+                let sm = self.mask;
+                assert forall|b: u64| b < 64 && #[trigger] has_bit(mask, b) implies !has_bit(prev & !m, (self.first@ % 64 + b) as u64) by {
+                    assert(b + s < 64) by (bit_vector)
+                        requires (mask >> b) & 1u64 == 1u64, mask & !(sm >> s) == 0u64, s < 64, b < 64;
+                    lemma_shl_bit(mask, s, (b + s) as u64);
+                    lemma_bit_ops(prev, m, (b + s) as u64);
+                }
                 pair = (perm, g, u, d, sn, h);
             }
         });
+        let tracked wr = got.tracked_unwrap();
         proof {
             let s = self.shift;
             let sm = self.mask;
@@ -1409,7 +1429,7 @@ impl<'a> AtomicBitmap<'a> {
             assert(subset(mask, (prev & sm) >> s)) by (bit_vector)
                 requires m & !prev == 0u64, m == mask << s, mask & !(sm >> s) == 0u64, (sm >> s) << s == sm, s < 64;
         }
-        ((prev & self.mask) >> self.shift, prev & self.mask == self.mask)
+        ((prev & self.mask) >> self.shift, prev & self.mask == self.mask, Tracked(wr))
     }
 
     /// Whether slot `bit` is set. This is the `free` check: a clear bit
@@ -3676,6 +3696,10 @@ pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
 /// current version (above).
 pub type SeenVals = (GhostISubset<(int, nat, u64)>, GhostPersistentISubset<(int, nat, u64)>, Ghost<nat>);
 
+/// A witness of a bitmap word's seen value: the persistent `(j, n, x)`
+/// at the class bitmap's `hloc` (above).
+pub type SeenWitness = GhostPersistentISingleton<(int, nat, u64)>;
+
 /// Word `k.j`'s seen values, as its invariant holds them (`h`) for its
 /// value `x`: both parts at `k.slots.hloc`, every versioned value of the
 /// word in one or the other, `x` seen at the current version `h.2`, no
@@ -4115,7 +4139,8 @@ impl<'a> AtomicBitmap<'a> {
     }
 
     pub fn release_t(&self, i: usize, mask: u64) -> (u64, bool) {
-        self.release(i, mask, Tracked::assume_new())
+        let (prev, full, _) = self.release(i, mask, Tracked::assume_new());
+        (prev, full)
     }
 }
 

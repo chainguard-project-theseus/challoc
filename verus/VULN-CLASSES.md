@@ -221,7 +221,12 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   value is `bit_word_held`'s body. Before #847 the contract stated only
   `word_tokens`, an `exists v` that `v = u64::MAX` met without a load
   ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843),
-  open for the stale half). A fact about the load, not C's view. The
+  open for the stale half). The stale half in part: a check ordered
+  after the slot's release that passes saw a later claim of the slot
+  (`lemma_claimed_again`,
+  [#850](https://github.com/chainguard-project-theseus/challoc/issues/850));
+  that the second free's check is ordered after the release is C's. A
+  fact about the load, not C's view. The
   huge half: the huge free's
   checks (THEOREMS.md "Bad input", *(lock)*) return only for a page
   where a live run starts at the lock.
@@ -380,9 +385,12 @@ Partly proved: the slab bit test at its load for a never-claimed slot
 value, `load_seen`, THEOREMS.md "Bad input" *(load)*,
 [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)),
 and the huge free's checks at the lock (`Huge::live_run_checks`,
-THEOREMS.md "Bad input" *(lock)*). Open: the slab bit test for a
-stale slot, which needs the witness ordered after the caller's
-earlier ones
+THEOREMS.md "Bad input" *(lock)*). In part for a stale slot: a check
+ordered after the slot's release that passes saw a later claim of it
+(`lemma_claimed_again`,
+[#850](https://github.com/chainguard-project-theseus/challoc/issues/850)).
+Open: that the second free's check is ordered after the release, which
+the program carries no record of
 ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843));
 and C's view of a stale pointer past the checks.
 
