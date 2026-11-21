@@ -959,10 +959,15 @@ class, `Shared::free_huge` a page index from
   they return only for a page
   where a live run starts at the lock (*(lock)* in theorem 3's "Bad
   input"). The slab bit test (`SlabTable::check_live`,
-  `check_located`, `class/table.rs`) is not: its exported contract
-  holds without a load, so that it aborts on a slot free at its load is
-  read from the code (*(load)*, the same place;
-  [#843](https://github.com/chainguard-project-theseus/challoc/issues/843)). That
+  `check_located`, `class/table.rs`) is proved in part (*(load)*, the
+  same place; `load_seen`,
+  [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)):
+  it returns only for a slot whose bit was set in some value its word
+  held, which excludes a slot no refill ever claimed. It does not
+  exclude a stale free: the value the word held before the first free
+  had the bit set too. That the value is this load's is
+  `bit_word_held`'s body
+  ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)). That
   an unsized free, `realloc`, `malloc_usable_size`, `sallocx` or
   `challoc_free_usable` of a pointer C holds no token for reaches them
   rests on the C-boundary assumption, and the plain free's fast-path
@@ -1253,8 +1258,9 @@ writer keeps:
   `fetch_or(.., 0)` leaves the value) persists the value it stores
   (`lemma_seen_write`). `SlabTable::new` makes the location's authority
   over every word's values and drops it, so a persistent `(j, x)` at
-  `hloc` is a fragment of a word invariant's. No reader uses it yet:
-  the bit test's load witness (#843) is its next step. That a writer
+  `hloc` is a fragment of a word invariant's. The bit test's load
+  takes a copy as its witness (`bitmap::lemma_seen_witness`, theorem 3's
+  *(load)*). That a writer
   persists the value it stores, not some other one, is the ghost
   code's, not restated by the invariant.
 - Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs`)
@@ -3637,8 +3643,8 @@ and for an error-result row, that a returning call returns that result:
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
 | `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
-| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | no: excluded by the C contract, *(C)*. *(load)*: the bit test's exported contract holds without a load ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)), so the abort at the check is read from the code |
-| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | no: *(C)* and *(load)*, as above |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | a never-allocated slot: at the check, *(load)*: `check_live` and `check_located` return only if the slot's bit was set in some value its bitmap word held (`load_seen`, [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)), which a slot no refill claimed never had. A stale free: no, *(C)*: the word held a value with the bit set before the first free, so the contract does not tell it from a live slot; that the value is this load's is `bit_word_held`'s body ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)) |
+| The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | as above: a never-allocated slot at the check, *(load)*; a stale one *(C)* |
 | The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`); with the opt-in `exact_sized_free` key, at the call (`check_live`) | no: excluded by the C contract, *(C)*; under the key, that the free reaches the test is `theorem_exact_sized_free` |
 | Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort at the call: the slot's state byte (`heap::slotstate`) is not `LIVE`; else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |
 | The same, through `realloc` and the queries | `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | with `double_free_scan`, abort after the bit test (`Shared::check_not_cached`); without it no abort at the call: the slot bit is still set, so `check_live` passes. `realloc(p, 1000)` after `p = malloc(16); free(p)` copies from `p` and frees it again, which pushes a second copy; a kept block is returned as is | no: excluded by the C contract, *(C)*; the queries take no token |
@@ -3739,75 +3745,68 @@ live extents share no page (`lemma_token_extent`), so the only
 `Active` descriptor `Huge::usable_size` can accept at a page of the
 token's run is the run's own, which starts at the token's first page.
 
-*(load)*: what the bit test's contracts state, and why it is not
-counted as proved
-([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)).
-The contracts below verify, and the mutations at the end of this
-paragraph fail them, so each body does test the bit of the value it
-loaded. But a caller cannot use them as a fact about a load:
-`word_tokens` is `exists|v: u64| ...`, and `v = u64::MAX` (no clear
-bits) gives the empty token set, so `obs = Set::empty()` meets both of
-`check_live`'s and `check_located`'s conjuncts for every slot, whether
-or not a load happened. `bit_word_held` exports its value `x`, but
-nothing in its contract ties `x` to the word's value at a point in
-time either. So no theorem in this document rests on these ensures,
-and that a free, `realloc` or query of a slot that was back in its
-bitmap at the load aborts is read from the code, as for the *(C)*
-rows. What does hold for callers: `check_live` and `check_located` return
-only for a slab that is no guard slab, and `is_set_unchecked` returns
-true for a caller holding the slot's token (`held`).
-Making the load fact non-vacuous needs ghost state the caller cannot
-choose, such as a monotone history of the word's values whose entry
-the load returns as a witness (#843).
-
-The contracts as they stand (`class/table.rs`). `bit_word_held` loads the word inside its invariant
-and hands its caller the slot tokens the invariant held at that load:
-its contract states `obs` is `addrs(s, free_bits(s, j, x))` for the
-value `x` it returns, which is the token set `bitmap::WordPred::inv`
-ties to that value (the tokens of exactly its clear bits).
-`is_set_unchecked` ensures `r == !slot_free_at(obs, c, slab, slot)`.
-`check_live` and `check_located` ensure `!slot_free_at(obs, c, slab, slot)`,
-and all three ensure `word_tokens(slab, slot, obs)`:
-`obs` is a token set the word's invariant admits, for some value of the
-word, the empty set (`v = u64::MAX`) included, which is why these
-conjuncts say nothing about the load to a caller (#843).
+*(load)*: the check itself is proved, with or without a token, against
+some value the word held (so, in part: for a never-claimed slot, not
+for a stale one)
+([#843](https://github.com/chainguard-project-theseus/challoc/issues/843),
+[#847](https://github.com/chainguard-project-theseus/challoc/issues/847)).
+`bit_word_held` loads the word inside its invariant and hands its
+caller a `BitLoad` (`class/table.rs`): the slot tokens the invariant
+held at that load, `addrs(s, free_bits(s, j, x))` for the value `x`
+loaded (the tokens of exactly its clear bits, `bitmap::WordPred`), and
+a witness that word `j` held `x`. The witness is a copy of the word's
+persistent seen value `(j, x)` at the class bitmap's `Slots::hloc`
+(`bitmap::lemma_seen_witness`, "Seen values" in theorem 5's token
+protocol). `is_set_unchecked` ensures
+`r == !slot_free_at(obs.toks(), c, slab, slot)`, `check_live` and
+`check_located` ensure `!slot_free_at(obs.toks(), c, slab, slot)`, and
+all three ensure `load_seen(slab, slot, obs)`: the witness is at
+`hloc`, for the slot's word `j`, and the tokens are those of its
+value's clear bits. A caller cannot meet `load_seen` without the load.
+`BitLoad::new`, the only constructor outside `class/table.rs`, holds
+no witness. Only the word invariants hold fragments at `hloc`, since
+`SlabTable::new` drops the location's authority. So a call that
+returns found the slot's bit set in some value its word held. A free,
+`realloc` or query of a slot no refill ever claimed does not return.
+A stale free is not excluded by this contract. `p = malloc(16);
+free(p); free(p)` meets `load_seen` with the value the word held
+before the first free, whose bit was set. What excludes it is that
+the witness is this load's value, which is stated only in
+`bit_word_held`'s body (below). An ordered history, a witness that
+comes after every one the caller already holds, would make it a
+contract fact (#843 stays open for that).
 
 ```rust
 // class/table.rs
 pub open spec fn slot_free_at(toks: Set<int>, c: int, slab: int, slot: int) -> bool {
     toks.contains(process_regions().slot_at(c, slab, slot))
 }
-pub open spec fn word_tokens(&self, slab: int, slot: int, toks: Set<int>) -> bool {
+pub open spec fn load_seen(&self, slab: int, slot: int, l: BitLoad) -> bool {
     let s = self.spec_slots();
     let j = (slab * class_table()[self.spec_class() as int].slab_bits + slot) / 64;
-    exists|v: u64| toks == #[trigger] crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, v))
+    &&& l.seen() matches Some(w) && w.0 == s.hloc && w.1.0 == j
+    &&& l.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, l.seen()->Some_0.1.1))
 }
-pub fn check_live(&self, slab, slot, p, Tracked(held), Tracked(obs): Tracked<&mut Ghost<Set<int>>>)
+pub fn check_live(&self, slab, slot, p, Tracked(held), Tracked(obs): Tracked<&mut BitLoad>)
     ensures
-        !slot_free_at(final(obs)@, self.spec_class() as int, slab as int, slot as int),
-        self.word_tokens(slab as int, slot as int, final(obs)@), /* ... */
-unsafe fn bit_word_held(..., Tracked(obs): Tracked<&mut Ghost<Set<int>>>) -> (x: u64)
+        !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
+        self.load_seen(slab as int, slot as int, *final(obs)), /* ... */
+unsafe fn bit_word_held(..., Tracked(obs): Tracked<&mut BitLoad>) -> (x: u64)
     ensures
-        ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs)@, c, slab, slot),
-        final(obs)@ == crate::bitmap::addrs(self.spec_slots(), crate::bitmap::free_bits(self.spec_slots(), bit as int / 64, x)), /* ... */
+        ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs).toks(), c, slab, slot),
+        final(obs).seen() == Some((self.spec_slots().hloc, (bit as int / 64, x))), /* ... */
 ```
 
-Where the snapshot identity is stated. `bit_word_held`'s contract ties
-`obs` to the value it returns; that the value is the one the word held
-(an atomic load through the invariant's permission, inside its opening)
-is the body's, as for every load. Past `bit_word_held` the loaded value
-is not returned, so `is_set_unchecked`, `check_live` and
-`check_located` state only that `obs` is the invariant's token set for
-some value of the word (`word_tokens`), with the slot's token absent.
-That some value is the loaded one is stated only at `bit_word_held`: a
-set that is the token set of another value of the word (the slot's
-token alone, say, while other bits were clear at the load) meets
-`word_tokens` but not `bit_word_held`'s postcondition. Even there, a
-caller learns only that `obs` matches the returned `x`, not that `x`
-was the word's value at some point (#843).
+Where the snapshot identity is stated. That the witness's value is
+the one this load read, and not an earlier value of the word, is
+`bit_word_held`'s body: it takes the witness inside the same opening
+as the atomic load, for the value the load returned. A caller learns
+that the word held `x` at some point, not when. What the seen values
+rest on is the ghost code's discipline: each writer persists the value
+it stores (`lemma_seen_write`; a writer that persisted another value
+as well would not break the invariant, theorem 5's "Seen values").
 
-What it does not say. Even read from the code, it is a fact about one
-load, not about C's view:
+What it does not say. It is a fact about one load, not about C's view:
 it does not say the free cores' later steps hold for such a pointer
 (they take C's token, *(C)*), nor that the slot is still claimed after
 the load. The plain free's fast path (`ClassLine::set_slab`, through
@@ -3818,14 +3817,15 @@ set), and a sized free defers the test to a flush unless
 `exact_sized_free` is set (rows above). The huge half is *(lock)*
 above.
 
-Mutations (`cargo verus focus`, module `class::table`, fresh target dir
-each): `check_live` without its `not_live` abort fails its
-`slot_free_at` postcondition; `bit_word_held` handing back an empty set
-instead of the invariant's tokens fails its postcondition; so does
-`bit_word_held` handing back `{}` when the bit is set and the slot's
-token alone when it is clear (which meets the bit postcondition
-alone): it fails the `addrs(s, free_bits(s, j, x))`
-postcondition.
+Mutations (`cargo verus focus`, module `class::table` or `bitmap`,
+fresh target dir each): `check_live` without its `not_live` abort
+fails its `slot_free_at` postcondition; `bit_word_held` handing back no
+witness fails its postcondition; `lemma_seen_witness` taking the
+word's `(j, 0)` instead of `(j, x)` fails its pre- and postcondition;
+and a caller asserting `load_seen` of `BitLoad::new()`, or of any
+`BitLoad` with an empty token set, fails (the vacuity `word_tokens` had,
+#843). Before #847, `bit_word_held` handing back an empty set instead
+of the invariant's tokens failed its postcondition, as it still does.
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
 a pointer that is no slot start and no huge page start claims nothing,

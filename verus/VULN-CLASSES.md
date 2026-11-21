@@ -208,18 +208,23 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   `heap::paths::theorem_exact_sized_free`: a sized free reaches plain
   `free`'s bit test; that the test aborts on a clear bit is read from
   the code.
-- Not proved: the slab bit test at its load (`SlabTable::check_live`,
-  `check_located`; THEOREMS.md "Bad input", *(load)*). Their ensures
-  (`!slot_free_at(obs, ..)` and `word_tokens(.., obs)`) verify against
-  the body, but `word_tokens` is `exists v`, and `v = u64::MAX` gives
-  the empty token set, so `obs = {}` meets them for every slot without
-  a load
-  ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)).
-  That a slot free at the load aborts is read from the code. What they
-  do state for callers: a returning call's slab is no guard slab. The
-  huge half is proved: the huge free's checks (THEOREMS.md "Bad
-  input", *(lock)*) return only for a page where a live run starts at
-  the lock.
+- In every configuration, the bit test itself
+  (`SlabTable::check_live`, `check_located`; THEOREMS.md "Bad input",
+  *(load)*), in part: a call returns only if the slot's bit was set in
+  some value its bitmap word held. The load hands back a witness of the
+  value it read, a persistent fragment of the word's seen values that
+  only the word invariants hold (`load_seen`,
+  [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)).
+  So a free of a slot no refill ever claimed does not pass. A stale
+  double free is not excluded by the contract: the value before the
+  first free had the bit set, and that the witness is this load's
+  value is `bit_word_held`'s body. Before #847 the contract stated only
+  `word_tokens`, an `exists v` that `v = u64::MAX` met without a load
+  ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843),
+  open for the stale half). A fact about the load, not C's view. The
+  huge half: the huge free's
+  checks (THEOREMS.md "Bad input", *(lock)*) return only for a page
+  where a live run starts at the lock.
 
 **What the code does (read, not proved; `docs/hardening.md` (1)).** An
 unsized free of a slot whose bitmap bit is clear aborts at the call
@@ -370,11 +375,14 @@ is the only reader of the environment is a source test.
 > `SlabTable::check_live`, `Shared::classify_free`, `Huge::free_run`
 > (`already_free`, `not_a_run`), `Huge::usable_size`.
 
-Partly proved: the huge free's checks at the lock
-(`Huge::live_run_checks`, THEOREMS.md "Bad input" *(lock)*). Open: the
-slab bit test at its load (`check_live`, `check_located`), whose
-`slot_free_at` ensures holds without a load until the word's
-invariant carries a history the load can witness
+Partly proved: the slab bit test at its load for a never-claimed slot
+(`check_live`, `check_located`: `slot_free_at` against a witnessed
+value, `load_seen`, THEOREMS.md "Bad input" *(load)*,
+[#847](https://github.com/chainguard-project-theseus/challoc/issues/847)),
+and the huge free's checks at the lock (`Huge::live_run_checks`,
+THEOREMS.md "Bad input" *(lock)*). Open: the slab bit test for a
+stale slot, which needs the witness ordered after the caller's
+earlier ones
 ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843));
 and C's view of a stale pointer past the checks.
 

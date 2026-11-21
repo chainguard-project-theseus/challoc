@@ -44,7 +44,7 @@ use crate::api::{ForkHeld, LineCell, LineSeen, LineVal, Published, Seen};
 use crate::api::{Start, StateVal, Statics};
 use crate::arena::{ArenaParts, ArenasParts, Held, Homed, RegVal, SparePerm};
 use crate::bitmap::FullSeen;
-use crate::class::SlotToks;
+use crate::class::{BitLoad, SlotToks};
 use crate::heap::slotstate::{SlotState, Slots};
 use crate::heap::{Built, CachePerms, FreshHeap, HeapPerm, HeapUse, Live, NodeHead};
 use crate::heap::{SharedParts, TableVal, TableWrite, TcachesParts};
@@ -176,6 +176,10 @@ const _: () = assert!(<TcachesParts as NotCopy<_>>::HOLDS && <TcachesParts as No
 
 // `HeapUse` is neither Copy nor Clone: the right to one heap reference.
 const _: () = assert!(<HeapUse as NotCopy<_>>::HOLDS && <HeapUse as NotClone<_>>::HOLDS);
+
+// `BitLoad` is neither Copy nor Clone: the record of one bitmap load,
+// with its seen-value witness.
+const _: () = assert!(<BitLoad as NotCopy<_>>::HOLDS && <BitLoad as NotClone<_>>::HOLDS);
 
 // `TableWrite` is neither Copy nor Clone: the record of one table write.
 const _: () = assert!(<TableWrite as NotCopy<_>>::HOLDS && <TableWrite as NotClone<_>>::HOLDS);

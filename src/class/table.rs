@@ -63,6 +63,7 @@ use vstd::resource::Loc;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::iset::GhostISetAuth;
+use vstd::resource::iset::GhostPersistentISingleton;
 use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSingleton, GhostSubset};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::u64_trailing_zeros;
@@ -708,6 +709,43 @@ pub open spec fn holds_slot(held: Option<GhostSingleton<int>>, c: int, slab: int
 /// there, so no refill, cache or program held the slot at that load.
 pub open spec fn slot_free_at(toks: Set<int>, c: int, slab: int, slot: int) -> bool {
     toks.contains(process_regions().slot_at(c, slab, slot))
+}
+
+/// Ghost: what the bit test's load leaves its caller
+/// ([`SlabTable::is_set_unchecked`], [`SlabTable::check_live`],
+/// [`SlabTable::check_located`]): the slot tokens the word's invariant
+/// held at the load, and the witness of the value loaded, a copy of the
+/// word's persistent seen value (`bitmap::lemma_seen_witness`). Its
+/// fields are private: outside this module only [`BitLoad::new`] makes
+/// one, holding no witness.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct BitLoad {
+    ghost toks: Set<int>,
+    tracked seen: Option<GhostPersistentISingleton<(int, u64)>>,
+}
+
+impl BitLoad {
+    /// The slot tokens the word's invariant held at the load.
+    pub closed spec fn toks(self) -> Set<int> {
+        self.toks
+    }
+
+    /// The witness of the value loaded, if any: its location and its
+    /// `(word, value)` pair.
+    pub closed spec fn seen(self) -> Option<(Loc, (int, u64))> {
+        match self.seen {
+            Some(w) => Some((w.id(), w@)),
+            None => None,
+        }
+    }
+
+    /// A record of no load, for a caller to pass to the bit test.
+    pub proof fn new() -> (tracked r: BitLoad)
+        ensures
+            r.seen() is None,
+    {
+        BitLoad { toks: Set::empty(), seen: None }
+    }
 }
 
 /// `p` is an initialised permission to the `T` at `addr`, through a
@@ -3847,22 +3885,27 @@ impl SlabTable {
         slab < self.watermark(Ordering::Relaxed)
     }
 
-    /// `toks` is a token set the invariant of the bitmap word holding
-    /// slot `slot` of `slab` admits: the tokens of exactly the clear bits
-    /// of some value of the word (`bitmap::WordPred`).
-    pub open spec fn word_tokens(&self, slab: int, slot: int, toks: Set<int>) -> bool {
+    /// `l` is what a load of the bitmap word holding slot `slot` of
+    /// `slab` left ([`BitLoad`]): a witness that the word held a value
+    /// `x` (the persistent `(j, x)` of its seen values, at the class
+    /// bitmap's `hloc`, `bitmap::seen_ok`), and the tokens of exactly the
+    /// clear bits of `x`. A caller cannot meet it without the load: only
+    /// the word invariants hold fragments at `hloc` (#843, #847).
+    pub open spec fn load_seen(&self, slab: int, slot: int, l: BitLoad) -> bool {
         let s = self.spec_slots();
         let j = (slab * class_table()[self.spec_class() as int].slab_bits + slot) / 64;
-        exists|v: u64| toks == #[trigger] crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, v))
+        &&& l.seen() matches Some(w) && w.0 == s.hloc && w.1.0 == j
+        &&& l.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, l.seen()->Some_0.1.1))
     }
 
     /// The `free` check's bit (design 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One `SeqCst` load of the bitmap
     /// word (vstd `PAtomicU64`), through its permission, no bounds checks. A set bit is not a
     /// guard slab's, and with the slot's token (`held`, [`holds_slot`]: a
-    /// live slot's) the bit is set. `obs` is set to the word's tokens at
-    /// the load ([`SlabTable::word_tokens`]), and `r` is exactly whether
-    /// the slot's token is not among them.
+    /// live slot's) the bit is set. `obs` is set to the load's record
+    /// ([`SlabTable::load_seen`]): the witness of the value loaded and
+    /// the word's tokens at the load, and `r` is exactly whether the
+    /// slot's token is not among them.
     ///
     /// # Safety
     /// `slab` must have been handed out ([`is_handed_out`]): its bitmap
@@ -3871,7 +3914,7 @@ impl SlabTable {
     ///
     /// [`is_handed_out`]: SlabTable::is_handed_out
     #[inline(always)]
-    pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut Ghost<Set<int>>>) -> (r: bool)
+    pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut BitLoad>) -> (r: bool)
         requires
             self.is_process(),
             slab < self.spec_nslabs(),
@@ -3879,8 +3922,8 @@ impl SlabTable {
         ensures
             r ==> !crate::layout::guard_slab(self.spec_class() as int, slab as int),
             holds_slot(*held, self.spec_class() as int, slab as int, slot as int) ==> r,
-            r == !slot_free_at(final(obs)@, self.spec_class() as int, slab as int, slot as int),
-            self.word_tokens(slab as int, slot as int, final(obs)@),
+            r == !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
+            self.load_seen(slab as int, slot as int, *final(obs)),
         opens_invariants [crate::bitmap::word_ns()]
     {
         proof {
@@ -3897,7 +3940,7 @@ impl SlabTable {
             let k = (bit % 64) as u64;
             assert((x >> k) & 1u64 != 0u64 ==> (x >> k) & 1u64 == 1u64) by (bit_vector);
             let s = self.spec_slots();
-            assert((*obs)@ == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, (slab as int * class_table()[self.spec_class() as int].slab_bits + slot as int) / 64, x)));
+            assert(obs.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, (slab as int * class_table()[self.spec_class() as int].slab_bits + slot as int) / 64, x)));
         }
         (x >> (bit % 64)) & 1 == 1
     }
@@ -3910,8 +3953,9 @@ impl SlabTable {
     /// slot's token (`held`, [`holds_slot`]) the bit is set: the word's
     /// invariant holds the tokens of exactly its clear bits
     /// (`bitmap::WordPred`), and tokens are unique. `obs` is set to the
-    /// tokens the invariant holds at the load: those of exactly the clear
-    /// bits of `x`, the value loaded.
+    /// tokens the invariant holds at the load, those of exactly the clear
+    /// bits of `x`, the value loaded, and to the witness that the word
+    /// held `x` (`bitmap::lemma_seen_witness`).
     ///
     /// # Safety
     /// The word is inside the handed-out part of the bitmap (committed).
@@ -3921,7 +3965,7 @@ impl SlabTable {
     // (ghost); the ghost arguments are part of the signature.
     #[allow(clippy::too_many_arguments, unused_variables)]
     #[inline(always)]
-    unsafe fn bit_word_held(&self, bits_base: usize, index: usize, Ghost(slab): Ghost<usize>, Ghost(slot): Ghost<usize>, Ghost(bit): Ghost<usize>, Tracked(held): Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut Ghost<Set<int>>>) -> (x: u64)
+    unsafe fn bit_word_held(&self, bits_base: usize, index: usize, Ghost(slab): Ghost<usize>, Ghost(slot): Ghost<usize>, Ghost(bit): Ghost<usize>, Tracked(held): Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut BitLoad>) -> (x: u64)
         requires
             self.is_process(),
             bits_base == self.bits_base,
@@ -3932,8 +3976,9 @@ impl SlabTable {
         ensures
             (x >> (bit % 64)) & 1 != 0 ==> !crate::layout::guard_slab(self.spec_class() as int, slab as int),
             holds_slot(*held, self.spec_class() as int, slab as int, slot as int) ==> (x >> (bit % 64)) & 1 != 0,
-            ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs)@, self.spec_class() as int, slab as int, slot as int),
-            final(obs)@ == crate::bitmap::addrs(self.spec_slots(), crate::bitmap::free_bits(self.spec_slots(), bit as int / 64, x)),
+            ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
+            final(obs).toks() == crate::bitmap::addrs(self.spec_slots(), crate::bitmap::free_bits(self.spec_slots(), bit as int / 64, x)),
+            final(obs).seen() == Some((self.spec_slots().hloc, (bit as int / 64, x))),
         opens_invariants [crate::bitmap::word_ns()]
     {
         proof {
@@ -3981,7 +4026,10 @@ impl SlabTable {
                 // The tokens the invariant holds at this load are those of
                 // the word's clear bits (`bitmap::WordPred`): the slot's is
                 // among them exactly when its bit is clear.
-                *obs = Ghost(g@);
+                // And the witness that the word held `x`: its persistent
+                // seen value (`bitmap::seen_ok`).
+                let tracked seen = crate::bitmap::lemma_seen_witness(inv.constant(), &h, x);
+                *obs = BitLoad { toks: g@, seen: Some(seen) };
                 self.lemma_slot_bit(slab as int, slot as int);
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
                 if crate::bitmap::has_bit(v, k) {
@@ -4240,7 +4288,7 @@ impl SlabTable {
     {
         debug_assert!(slot < self.class().nslots());
         let tracked none = None;
-        let tracked mut obs = Ghost(Set::empty());
+        let tracked mut obs = BitLoad::new();
         // SAFETY: the watermark check, then a slot below `nslots`.
         self.is_handed_out(slab) && unsafe { self.is_set_unchecked(slab, slot, Tracked(&none), Tracked(&mut obs)) }
     }
@@ -4469,7 +4517,7 @@ impl SlabTable {
     // `credit` is read only by the proof (ghost).
     #[allow(unused_variables)]
     #[inline]
-    pub fn check_located(&self, slab: usize, slot: usize, p: usize, held: Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut Ghost<Set<int>>>) -> (r: u16)
+    pub fn check_located(&self, slab: usize, slot: usize, p: usize, held: Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut BitLoad>) -> (r: u16)
         requires
             self.is_process(),
             crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_slot(*held@, self.spec_class() as int, slab as int, slot as int)),
@@ -4479,8 +4527,8 @@ impl SlabTable {
             !crate::layout::guard_slab(self.spec_class() as int, slab as int),
             holds_slot(*held@, self.spec_class() as int, slab as int, slot as int)
                 ==> r == slab_owner(self.spec_class() as int, slab as int),
-            !slot_free_at(final(obs)@, self.spec_class() as int, slab as int, slot as int),
-            self.word_tokens(slab as int, slot as int, final(obs)@),
+            !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
+            self.load_seen(slab as int, slot as int, *final(obs)),
     {
         self.check_live(slab, slot, p, held, Tracked(obs));
         let credit = vstd::invariant::create_open_invariant_credit();
@@ -4514,18 +4562,19 @@ impl SlabTable {
     /// watermark compare is a pending check then (not proved unreachable
     /// yet).
     ///
-    /// Stale free (with or without a token): `obs` is set to the slot
-    /// tokens the bit's word's invariant held at the load (the contract
-    /// states it is a token set that invariant admits,
-    /// [`SlabTable::word_tokens`]; `bit_word_held`'s, that it is the
-    /// loaded value's), and a call that returns found the slot's
-    /// token not among them ([`slot_free_at`]): a slot that was free at
-    /// the load does not return.
+    /// Stale free (with or without a token): `obs` is set to the load's
+    /// record ([`SlabTable::load_seen`]): the witness that the bit's word
+    /// held the value `x` loaded, and the slot tokens of exactly the
+    /// clear bits of `x`; a call that returns found the slot's token not
+    /// among them ([`slot_free_at`]), so the slot's bit was set in some
+    /// value the word held: a slot no refill ever claimed does not
+    /// return. That the value is this load's, which excludes a stale
+    /// slot, is `bit_word_held`'s body, not this contract (#843).
     ///
     /// [`check_located`]: SlabTable::check_located
     /// [`desc_if_committed`]: SlabTable::desc_if_committed
     #[inline(always)]
-    pub fn check_live(&self, slab: usize, slot: usize, p: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut Ghost<Set<int>>>)
+    pub fn check_live(&self, slab: usize, slot: usize, p: usize, Tracked(held): Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut BitLoad>)
         requires
             self.is_process(),
             crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_slot(*held, self.spec_class() as int, slab as int, slot as int)),
@@ -4534,8 +4583,8 @@ impl SlabTable {
             slab < self.spec_nslabs(),
             // A guard slab's bits are clear: it aborts by name.
             !crate::layout::guard_slab(self.spec_class() as int, slab as int),
-            !slot_free_at(final(obs)@, self.spec_class() as int, slab as int, slot as int),
-            self.word_tokens(slab as int, slot as int, final(obs)@),
+            !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
+            self.load_seen(slab as int, slot as int, *final(obs)),
     {
         if !self.is_handed_out(slab) {
             never_committed(self.class as usize, slab);
@@ -5774,7 +5823,7 @@ impl SlabTable {
         opens_invariants [crate::bitmap::word_ns()]
     {
         let tracked none = None;
-        let tracked mut obs = Ghost(Set::empty());
+        let tracked mut obs = BitLoad::new();
         // SAFETY: guaranteed by the caller.
         unsafe { self.bit_word_held(bits_base, index, Ghost(slab), Ghost(slot), Ghost(bit), Tracked(&none), Tracked(&mut obs)) }
     }

@@ -3284,7 +3284,7 @@ impl Shared {
                         blk.lemma_block_slot_addr(p, class as int);
                     }
                 }
-                let tracked mut obs = Ghost(Set::<int>::empty());
+                let tracked mut obs = crate::class::BitLoad::new();
                 let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
                 proof {
                     // `check_located` returned: not a guard slab.
