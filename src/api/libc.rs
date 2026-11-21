@@ -1074,7 +1074,10 @@ fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&m
     }
 }
 
-/// The abort for a pointer freed (or queried) before any allocation.
+/// The abort for a pointer freed (or queried) before any allocation. The
+/// usual cause is a pointer from another allocator reaching a challoc
+/// loaded by `dlopen` after start (unsupported, design 6.1), so the message
+/// names that.
 #[cold]
 #[inline(never)]
 fn free_before_init(p: *mut u8) -> !
@@ -1082,7 +1085,7 @@ fn free_before_init(p: *mut u8) -> !
         crate::sys::may_abort(),
 {
     crate::sys::abort_fmt(format_args!(
-        "{:#x} passed before any allocation: not an allocation",
+        "{:#x} passed before any allocation: not an allocation (from another allocator? loading challoc by dlopen after start is unsupported)",
         p as usize
     ))
 }
