@@ -2291,7 +2291,8 @@ fn fork_during_late_init_completes() {
 }
 
 /// challoc loaded late by `dlopen` into a glibc-malloc process does not
-/// initialise (`tests/c/dlopen_late.c`, run bare).
+/// initialise, and its `free` of a glibc pointer aborts naming the late
+/// load (`tests/c/dlopen_late.c`, run bare).
 #[test]
 fn dlopen_late_does_not_initialise() {
     let d = LinkedDir::new("dlopen-late");

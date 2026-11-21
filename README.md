@@ -187,6 +187,14 @@ Use it one of three ways:
   `--with-jemalloc`, KeyDB) by building or running it against the
   jemalloc-compat files.
 
+Loading challoc with `dlopen` after the process has started is not
+supported: the program keeps its first allocator, and a pointer from it
+that reaches challoc's `free` aborts (while that challoc has made no
+allocation, the message names the late load; after one, it is a plain
+invalid free).
+challoc's thread-local state uses the initial-exec model, which covers
+only libraries present at start (design 6.1).
+
 `challoc_version()` is the `dlsym` probe for whether challoc is the loaded
 allocator, and `challoc_features()` returns the feature line below.
 
