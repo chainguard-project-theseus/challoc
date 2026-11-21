@@ -2014,6 +2014,15 @@ impl ForkHeld {
         self.toks[k].held()
     }
 
+    /// Every hold but the arena creation lock's is a bare one
+    /// ([`LockHeld::raw`]: taken by `RawLock::lock_held`, released by
+    /// `RawLock::unlock_held`); the creation lock's is
+    /// `Lock::lock_held_perm`'s, with its cell's permission
+    /// ([`ForkHeld::created`]).
+    pub closed spec fn bare(self) -> bool {
+        forall|k: ForkLock| #[trigger] self.toks.contains_key(k) && k != ForkLock::Arenas ==> self.toks[k].raw()
+    }
+
     /// The content of [`FORK_SIGMASK`] as this hold's holder records it
     /// ([`save_sigmask`] records its argument), `None` before. Part of the
     /// hold because the slot is written and read only under every lock.
@@ -2063,6 +2072,7 @@ impl ForkHeld {
         assert(t.arenas() == self.arenas());
         assert(t.n() == self.n());
         assert(t.created() == self.created());
+        assert(t.toks == self.toks);
         assert forall|k: ForkLock| #[trigger] t.lock(k) == self.lock(k) by {}
     }
 
@@ -2077,6 +2087,7 @@ impl ForkHeld {
             final(self).saved() == old(self).saved(),
             final(self).no_slot() == old(self).no_slot(),
             final(self).created() == old(self).created(),
+            old(self).bare() && (k != ForkLock::Arenas ==> t.raw()) ==> final(self).bare(),
     {
         self.toks.tracked_insert(k, t);
     }
@@ -2094,6 +2105,8 @@ impl ForkHeld {
             final(self).saved() == old(self).saved(),
             final(self).no_slot() == old(self).no_slot(),
             final(self).created() == old(self).created(),
+            old(self).bare() ==> final(self).bare(),
+            old(self).bare() && k != ForkLock::Arenas ==> t.raw(),
     {
         self.toks.tracked_remove(k)
     }
@@ -2134,6 +2147,7 @@ impl ForkHeld {
         &&& s.arenas.frozen(self.created())
         &&& self.created().value().snap().0 as int == self.n()
         &&& self.created().value().snap().1 == self.arenas()
+        &&& self.bare()
         &&& forall|k: ForkLock|
             #![trigger self.keys().contains(k)]
             #![trigger self.lock(k)]
@@ -2190,7 +2204,13 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) 
 /// The hold has the permission of its cell that
 /// `fork_prepare` took (`purge::background::fork_lock`, through
 /// [`StateHold::wf`]): restated, as the tokens are, and still the only
-/// one, since the prepare's hold kept it. Its value keeps the state's
+/// one, since the prepare's hold kept it. The hold's `LockHeld` carries
+/// the state lock's tracked `Unlocked` (#856), at `true` as a holder of
+/// the cell's permission keeps it (`lock::CellPred`), so this premise
+/// also hands the release that token, which `Lock::unlock_held_perm`
+/// gives back to the cell's and then the word's invariant after
+/// `fork_window_close`; `fork_lock` took it, by `Lock::lock_held_perm`,
+/// before the C call that drops the hold. Its value keeps the state's
 /// lock invariant, restated too: it is the value prepare's
 /// `Lock::lock_held_perm` read, which that call ensures of it, and
 /// nothing wrote it since (only the hold can, through
@@ -2400,6 +2420,8 @@ extern "C" fn fork_prepare() {
                 == ForkLock::Arenas || k == ForkLock::Stats || class_part(k, arenas.dom())),
             forall|k: ForkLock| #[trigger]
                 toks.contains_key(k) ==> toks[k].held() == lock_at(*s, arenas, k),
+            forall|k: ForkLock| #[trigger]
+                toks.contains_key(k) && k != ForkLock::Arenas ==> toks[k].raw(),
             ord.root(),
             ord.top() < rank_class(i as int, 0),
     {
@@ -2434,6 +2456,8 @@ extern "C" fn fork_prepare() {
                     k matches ForkLock::Class(j, d) && j == i && 0 <= d < c)),
                     forall|k: ForkLock| #[trigger]
                         toks.contains_key(k) ==> toks[k].held() == lock_at(*s, arenas, k),
+                    forall|k: ForkLock| #[trigger]
+                        toks.contains_key(k) && k != ForkLock::Arenas ==> toks[k].raw(),
                     ord.root(),
                     ord.top() < rank_class(i as int, c as int),
             {
@@ -3048,6 +3072,16 @@ mod resume {
     /// through [`ForkHeld::wf`]): restated, as the tokens are, and still
     /// the only one, since the prepare's hold kept it and no one wrote the
     /// value.
+    /// The tokens (#856): each lock's hold (`lock::LockHeld`) carries the
+    /// lock's tracked `Unlocked`, which the word's invariant gave up when
+    /// the prepare's acquisition moved the word off `UNLOCKED`, and
+    /// [`ForkHeld::wf`] includes [`ForkHeld::bare`]: every token but the
+    /// creation lock's is at `false`. So this premise also hands the
+    /// release a token per fork lock, which `fork_release` (after
+    /// `fork_window_close`) gives back to each word's invariant through
+    /// `RawLock::unlock_held`. The claim restated is one the prepare
+    /// checked: `fork_prepare` proves `fork_holds`, `bare` included, before
+    /// the C call that drops the hold.
     /// That permission is exclusive (vstd's `PointsTo::is_exclusive`), so a
     /// second call would prove `false`, not just restate a token: the one
     /// caller is [`resumed`], called once per handler (the test

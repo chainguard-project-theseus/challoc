@@ -26,7 +26,7 @@ impl<T> LockSpec for Vec<T> {}
 /// spelled with a space before `(`, a `use .. as` rename, a trusted
 /// fact outside an `axiom fn` (an `external_body` proof, an `assume`),
 /// and a type named only inside `ensures`. `lock.rs`, whose axiom
-/// `axiom_acquired` is generic over `T`, is not scanned. What the scan
+/// `axiom_window_cell` is generic over `T`, is not scanned. What the scan
 /// reads each impl to define is what `DEFINED` lists, so a lock whose
 /// axioms were retired is one the scan sees, and a leftover axiom on it
 /// fails here.
@@ -187,22 +187,30 @@ fn lock_axioms_state_assumed_specs() {
     }
 }
 
-/// `axiom_acquired` mints a permission of a lock's cell, and two alive
-/// at once would prove `false` (vstd's `PointsTo::is_exclusive`): it is
-/// called only where `Lock::lock` and `Lock::try_lock` build their
-/// guard and where `Lock::lock_held_perm` hands the permission to its
-/// holder, each right after an acquire. It is private to `lock.rs`.
+/// The fork window's two premises mint what the window's hold already
+/// has: `axiom_window_served` a second token of a bare raw lock, and
+/// `axiom_window_cell` a second token and permission of a `Lock`'s cell
+/// (two permissions alive at once prove `false`, vstd's
+/// `PointsTo::is_exclusive`). Each is called once, on the `else` branch of
+/// `t is Some` for the token `RawLock::acquire` returned, which is `None`
+/// only on the window's path (`RawLock::lock_slow`): `axiom_window_served`
+/// in `RawLock::lock`, `axiom_window_cell` in `Lock::acquired`. Both are
+/// private to `lock.rs`.
 #[test]
 fn permission_axioms_are_called_only_at_acquisitions() {
     // Spelled in parts, so that this test's own lines match nothing.
     // A call is the name then `(` or a turbofish `::`.
-    let acquired = std::format!("{}{}", "axiom_", "acquired");
+    let cell = std::format!("{}{}", "axiom_", "window_cell");
+    let served = std::format!("{}{}", "axiom_", "window_served");
     let calls = |t: &str, name: &str| {
         t.contains(std::format!("{name}(").as_str())
             || t.contains(std::format!("{name}::").as_str())
     };
     let mut a = Vec::new();
+    let mut w = Vec::new();
     let mut func = "";
+    // The last two code lines before this one.
+    let mut prev = ["", ""];
     for line in include_str!("../lock.rs").lines() {
         let t = line.trim();
         if t.starts_with("//") {
@@ -211,11 +219,51 @@ fn permission_axioms_are_called_only_at_acquisitions() {
         if let Some(i) = t.find("fn ") {
             func = t[i + 3..].split(['(', '<']).next().unwrap();
         }
-        if calls(t, &acquired) && !t.starts_with("axiom fn") {
-            a.push(func);
+        if calls(t, &cell) && !t.starts_with("axiom fn") {
+            a.push((func, prev));
         }
+        if calls(t, &served) && !t.starts_with("axiom fn") {
+            w.push((func, prev));
+        }
+        prev = [prev[1], t];
     }
-    assert_eq!(a, ["lock", "try_lock", "lock_held_perm"]);
+    assert_eq!(
+        a,
+        [("acquired", ["(tok, out.tracked_unwrap())", "} else {"])]
+    );
+    assert_eq!(w, [("lock", ["tok = t.tracked_unwrap();", "} else {"])]);
+    // The branch tests `t is Some`, and `acquire` returns `None` only on
+    // the window's path.
+    let src = include_str!("../lock.rs");
+    let body = |f: &str| {
+        let at = src.find(f).unwrap();
+        &src[at..at + src[at..].find("\n    }\n").unwrap()]
+    };
+    for f in ["pub fn lock(&self)", "proof fn acquired("] {
+        assert_eq!(body(f).matches("if t is Some {").count(), 1, "{f}");
+    }
+    let slow = body("fn lock_slow(&self)");
+    assert_eq!(slow.matches("Tracked(None)").count(), 1);
+    assert!(
+        slow.contains("if fork_holder_is_me() {\n            return Tracked(None);\n        }"),
+        "`lock_slow` returns no token only on the window's path"
+    );
+    // The release side: Verus does not tie the release's window test to
+    // the acquisition's, so each release returns on `fork_holder_is_me`
+    // before anything that opens an invariant (`returned`, the cell's;
+    // `release_word`, the word's), and that is the only return.
+    let window_return = "        if fork_holder_is_me() {\n            return;\n        }\n";
+    for (f, opener) in [
+        ("fn release(&self, Tracked(t)", "self.release_word("),
+        ("fn release_cell(&self, Tracked(t)", "self.returned("),
+    ] {
+        let b = body(f);
+        let at = b.find(window_return).expect(f);
+        assert!(at < b.find(opener).expect(opener), "{f}");
+        assert_eq!(b.matches("return;").count(), 1, "{f}");
+        assert_eq!(b.matches("return ").count(), 0, "{f}");
+        assert_eq!(b.matches(opener).count(), 1, "{f}");
+    }
 }
 
 /// `in_child_fork_window` passes `axiom_child_window` the window's
@@ -459,15 +507,16 @@ fn root_lock_order_uses_are_listed() {
 fn raw_lock_state_machine() {
     let l = RawLock::new(Ghost::assume_new());
     assert!(!l.is_locked());
-    assert!(l.try_lock());
+    let (ok, t) = l.try_lock();
+    assert!(ok);
     assert!(l.is_locked());
-    assert!(!l.try_lock());
-    l.release();
+    assert!(!l.try_lock().0);
+    l.release_some(t);
     assert!(!l.is_locked());
-    assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED);
-    l.lock();
-    assert!(!l.try_lock());
-    l.release();
+    assert_eq!(l.load(), UNLOCKED);
+    let t = l.lock();
+    assert!(!l.try_lock().0);
+    l.release(t);
     assert!(!l.is_locked());
 }
 
@@ -502,7 +551,7 @@ fn contended_counter_is_exact() {
         }
     });
     assert_eq!(*l.lock_t(), THREADS * ITERS);
-    assert_eq!(l.raw().state.load(Ordering::Relaxed), UNLOCKED);
+    assert_eq!(l.raw().load(), UNLOCKED);
 }
 
 /// Long holds force the futex path (spinning cannot outlast them) and
@@ -530,7 +579,7 @@ fn sleepers_are_woken() {
             assert_eq!(mine, (0..20).map(|i| t * 100 + i).collect::<Vec<_>>());
         }
     }
-    assert_eq!(l.raw().state.load(Ordering::Relaxed), UNLOCKED);
+    assert_eq!(l.raw().load(), UNLOCKED);
 }
 
 /// One waiter spinning while the holder sleeps past the spin phase:
@@ -566,29 +615,29 @@ fn a_parked_waiter_is_released() {
         }
     }
     let l = Arc::new(RawLock::new(Ghost::assume_new()));
-    l.lock();
+    let t = l.lock();
     let waiter = {
         let l = Arc::clone(&l);
         std::thread::spawn(move || {
-            l.lock();
+            let t = l.lock();
             let acquired_at = Instant::now();
-            l.release();
+            l.release(t);
             acquired_at
         })
     };
     // The announce: the spin phase ends with the swap to `CONTENDED`.
-    if !within_bound(|| l.state.load(Ordering::Relaxed) == CONTENDED) {
-        l.release();
+    if !within_bound(|| l.load() == CONTENDED) {
+        l.release(t);
         panic!("the waiter did not announce itself within {BOUND:?}");
     }
     // Parked: while the lock stays held the word stays `CONTENDED`
     // and the waiter does not get through. Read, then release, then
     // assert, so a failure leaves nothing parked.
     std::thread::sleep(Duration::from_millis(20));
-    let word = l.state.load(Ordering::Relaxed);
+    let word = l.load();
     let through = waiter.is_finished();
     let released_at = Instant::now();
-    l.release();
+    l.release(t);
     assert_eq!(word, CONTENDED, "the word changed while the lock was held");
     assert!(!through, "the waiter got through while the lock was held");
     // Released: the wake reaches the waiter. On failure the waiter
@@ -603,7 +652,7 @@ fn a_parked_waiter_is_released() {
         "acquired {:?} before the release",
         released_at - acquired_at
     );
-    assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED);
+    assert_eq!(l.load(), UNLOCKED);
 }
 
 /// Weak-memory stress of `RawLock` (ignored; `CHALLOC_STRESS_SECS`).
@@ -611,8 +660,8 @@ fn a_parked_waiter_is_released() {
 /// equal and bump them all. A holder that reads two different words,
 /// or a final value below the acquisitions, saw a critical section
 /// whose writes were not ordered before its own: the edge from
-/// `release`'s `swap(Release)` to the next `try_acquire` or
-/// `swap(CONTENDED, Acquire)` (WEAKMEM.md, P2). Twice the CPUs keep
+/// `release`'s swap to `UNLOCKED` to the next `try_acquire` or swap to
+/// `CONTENDED`, all `SeqCst` (vstd's `PAtomicU32`; WEAKMEM.md, P2). Twice the CPUs keep
 /// some lockers on the futex path.
 #[test]
 #[ignore]
@@ -665,5 +714,5 @@ fn stress_lock_edges() {
     );
     assert_eq!(torn.load(Ordering::Relaxed), 0, "a holder read torn words");
     assert_eq!(end, [total; 4], "lost updates: {lost}");
-    assert_eq!(l.raw().state.load(Ordering::Relaxed), UNLOCKED);
+    assert_eq!(l.raw().load(), UNLOCKED);
 }

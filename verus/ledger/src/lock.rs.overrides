@@ -1,25 +1,49 @@
-# The mutex contract: a free lock's invariant owns its cell's permission and
-# the futex mutex hands it to one holder at a time. In the fork window an
-# acquire the window serves (fork_holder_is_me) also takes a permission,
-# one that stands for the fork handlers' hold of a lock prepare took (no
-# arena, and so no lock, is built in the window), used by the forking
-# thread alone until the release.
-# loom (verus/WEAKMEM.md, P2): the hand-off rests on `RawLock`'s mutual
-# exclusion and on its acquire/release edge (from the second acquisition
-# on, `try_acquire`'s and `lock_slow`'s `Acquire` exchanges read the
-# `Release` swap of the previous holder's `release`, so its writes to the
-# cell happen before the next holder's reads; the first holder's view of
-# the initial value is ordered by the lock's publication, not by this
-# edge). The lock models check both, on a copy of
-# `RawLock` with a futex stand-in: two holders at once, or a holder that
-# misses the previous one's write, is a race on the counter they bump.
-axiom_acquired	allocator invariant	loom/GenMC	trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: the permission hand-off itself, a fact of Verus's own model (that the one `PointsTo` the invariant holds while the lock is free, taken out at each acquisition, stands for the cell's contents under the edge the models check); the `lock_inv` and `lock_frame` clauses, which rest on the holders' releases (`LockGuard::unlock` and `Lock::unlock_held_perm` require them, a dropped guard's release does not), not on the atomics; at the first acquisition, the initial value's visibility, which rests on the lock's publication, not on the edge the models check, and, for a per-arena statistics lock, its initial value, which the trusted `Arena::put_stats` writes instead of `Lock::new` (whose `requires` checks `lock_inv` and `lock_frame` of the value with itself; a test compares the bytes with those of `Lock::new(ArenaStats::empty(index), ..)`, `ArenaStats::empty` ensures the invariant, `ArenaStats::identities`, and the frame is `true`); the call discipline (only right after an acquire, never while an earlier permission is alive), which `lock::tests::permission_axioms_are_called_only_at_acquisitions` backs by matching source text only; the fork window's second permission, which rests on that window's premise; and the shipped `RawLock`, which the models replace with a copy, with two lockers and with three bounded at 5 preemptions, and the kernel's futex, which they replace with a stand-in)	contract 3374465368, body none
+# The fork window's served acquisition of a `Lock` (design 9): on the path
+# where `RawLock::acquire` returned no token (`lock_slow`'s window test),
+# this premise gives the acquisition the lock's token (at `true`) and its
+# cell's permission with `lock_inv` and `lock_frame`, a second pair beside
+# the prepare handler's hold (for the creation lock and the state lock,
+# its permission too: `api::ForkHeld`, `purge::background::StateHold`),
+# standing for that hold, used by the forking thread alone until the
+# release, which in the window (`Lock::release_cell`) drops both without
+# touching the cell's invariant or the word. No arena, and so no lock, is
+# built in the window, so every lock it serves is one prepare took. Called
+# once, in `Lock::acquired`, on the branch where the token is `None`
+# (lock::tests::permission_axioms_are_called_only_at_acquisitions).
+# For a lock the prepare handler holds bare (`RawLock::lock_held`: every
+# fork lock but the creation lock and the state lock), the minted pair
+# duplicates the cell invariant's permission, and its token (at `true`)
+# contradicts the invariant's half (at `false`): the window path opens no
+# cell invariant of a lock it was served, so nothing joins them.
+# `Lock::release_cell` returns on its own `fork_holder_is_me` test before
+# `Lock::returned` opens it; Verus does not tie that test to this
+# acquisition (mutant N5 survives). The same test pins the release's text
+# (the window return is the first statement of `release_cell` and
+# `RawLock::release`); that the holder stays the forking thread until the
+# release is the window's premise (it closes only in `fork_release`).
+# Outside the window the hand-off is verified (#856 step 2): the cell's
+# invariant (`lock::CellPred`) holds the permission, with `lock_inv` and
+# `lock_frame`, while the token's other half is `false`, and only a
+# holder of the token can take it. That the one `PointsTo` stands for the
+# cell's contents under the lock's acquire/release edge is Verus's model
+# of the `SeqCst` exchanges (vstd's `PAtomicU32`); the loom lock models
+# check the edge on a copy of `RawLock` (verus/WEAKMEM.md, P2).
+axiom_window_cell	allocator invariant	none (assumption)
 # loom (verus/WEAKMEM.md, P2): `LockGuard::drop`'s body is
-# `RawLock::release` (`swap(UNLOCKED, Release)`, then a futex wake when it
-# returned `CONTENDED`); the lock models run a copy of `RawLock` with a
+# `Lock::release_cell`, the verified release of the guard's token and
+# permission (outside the fork window: the permission back into the
+# cell's invariant, then the swap to `UNLOCKED`, `SeqCst`, then a futex
+# wake when it returned `CONTENDED`), with the guard's two zero-sized
+# ghost fields read out of it. The drop calls it without checking its
+# requirement: that the token and permission are the lock's (the guard's
+# type invariant gives it) and that the value keeps `lock_inv` and
+# `lock_frame` (checked by `LockGuard::unlock` for the holders that end
+# with it, `api::tests::guards_end_in_unlock`; for a guard that drops
+# instead it is the assumption `lock_inv`'s doc describes, which this
+# release carries into the cell invariant). The lock models run a copy of `RawLock` with a
 # futex stand-in and check mutual exclusion, the acquire/release edge and
 # no lost wake-up.
-LockGuard::drop	atomics primitive	loom/GenMC	trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return)	contract 3065263068, body 2348458592
+LockGuard::drop	atomics primitive	loom/GenMC	trusted (partly checked, loom: lock::loom_lock_two_threads and lock::loom_lock_three_threads; not checked: this body, which the models replace with a copy of `RawLock::release`, with two lockers and with three bounded at 5 preemptions; its unchecked `lock_inv` and `lock_frame` requirement for a guard that drops without `LockGuard::unlock`; the kernel's futex, which the models replace with a stand-in that also orders the waker's accesses before the woken thread's return)	contract 3065263068, body 3567698186
 # `lock_slow`'s termination does not follow from the models: Drepper's
 # mutex 3 is not starvation-free, so a woken waiter can lose the word to
 # another thread's exchange as often as other threads retake the lock.
@@ -66,8 +90,9 @@ axiom_fork_entry	C-program contract	none (assumption)
 # (`count_frozen`, `get_frozen`) is the one prepare locked.
 # The window's record is verified code over two atomics (fork_holder_is_me,
 # in_fork_window, in_child_fork_window, fork_window_open,
-# fork_window_close); the premise above
-# rests on axiom_acquired, and the thread's identity on sys::pthread_self.
+# fork_window_close); the premises above are
+# axiom_window_served and axiom_window_cell, and the thread's identity
+# rests on sys::pthread_self.
 # The child's single thread before challoc's child handler: what
 # `in_fork_child` stands for, read from the window's record by
 # `in_child_fork_window` (verified). Platform facts: `pthread_self` tells
@@ -78,6 +103,15 @@ axiom_fork_entry	C-program contract	none (assumption)
 # pinned by lock::tests::fork_record_uses_are_listed (no loom model
 # covers the in-window reset).
 axiom_child_window	platform/kernel fact	none (assumption)
+# The fork window's served acquisition (design 9): on the path where
+# `fork_holder_is_me` returned true, `RawLock::lock_slow` returns without
+# touching the word, and this premise gives it the lock's token, a second
+# one beside the prepare handler's `LockHeld`, standing for that hold
+# (the same premise as the fork window's, above: only the forking thread
+# runs allocator code until the release, which in the window drops the
+# token without touching the word). Called once, on the line after that
+# test (lock::tests::permission_axioms_are_called_only_at_acquisitions).
+axiom_window_served	allocator invariant	none (assumption)
 # A field projection, `requires perm.ptr() == p`, no `ensures`: the
 # permission names the storage of a `Lock<T>` (vstd's `PointsTo` stands
 # for live memory, aligned for its type), and the harness runs the body on

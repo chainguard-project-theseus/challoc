@@ -25,6 +25,15 @@ pthread_atfork_handlers	function pointer	Kani	discharged on premises (Kani: api:
 # The state hold is of the lock each handler names, `&STATE`: a static is
 # one object, and STATE is the one Lock<State>
 # (purge::tests::state_lock_is_the_one_lock_of_its_type).
+# The holds restated carry tokens (#856): each `LockHeld` has its lock's
+# tracked `Unlocked`, which the word's invariant gave up at the prepare's
+# acquisition. axiom_fork_resumed_state hands the release the state
+# lock's token at `true` (a holder of the cell's permission), and
+# axiom_fork_resumed one per fork lock, at `false` for every lock but the
+# creation lock's (`ForkHeld::bare`, part of `ForkHeld::wf`); the release,
+# after `fork_window_close`, gives each back to its word's invariant.
+# Both claims are ones fork_prepare proved before the C call that drops
+# the hold (`fork_holds`, `bare` included; `StateHold::wf`).
 axiom_fork_resumed_state	platform/kernel fact	none (assumption)
 axiom_fork_resumed_sig	platform/kernel fact	none (assumption)
 axiom_fork_resumed	platform/kernel fact	none (assumption)
