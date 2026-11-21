@@ -23,7 +23,12 @@
 # key). impl-swap.txt swaps impl-old.txt's two method bodies while the
 # impl disambiguator goes from Ms0_ to the base-62 MsA_ and the backref
 # after it from B4_ to B5_ (c++filt hidden). pair-rename.txt renames g to
-# h (exact), and pair-removed.txt drops g (changed).
+# h (exact), and pair-removed.txt drops g (changed). Then it runs
+# ci/codegen-notices.sh on scripts/testdata/codegen-notices: report.txt
+# must give want.txt exactly, and report-big.txt (more than 40 changed
+# functions, and a codegen-fncmp.py failure) want-big.txt. Last, it runs
+# ci/codegen.sh with codegen-diff-standin.sh as compare, exiting 0 and
+# then 2: ci/codegen.sh must exit the same and end with want.txt's notices.
 set -eu
 d=scripts/testdata/codegen-fncmp
 py=$(command -v python3)
@@ -55,4 +60,35 @@ fi
 check impl-old.txt impl-swap.txt 'functions old 2 new 2: exact 0, reloc-only 0, padding-only 0, erratum-stub 0, changed 2' "$nofilt"
 check pair-old.txt pair-rename.txt 'functions old 2 new 2: exact 2, reloc-only 0, padding-only 0, erratum-stub 0, changed 0'
 check pair-old.txt pair-removed.txt 'functions old 2 new 1: exact 1, reloc-only 0, padding-only 0, erratum-stub 0, changed 1'
+# ci/codegen-notices.sh on saved compare reports: every notice line.
+n=scripts/testdata/codegen-notices
+notices() { # notices ARCH REPORT WANT
+  if sh ci/codegen-notices.sh "$1" "$n/$2" | cmp -s - "$n/$3"; then
+    echo "ok   codegen-notices $2"
+  else
+    echo "FAIL codegen-notices $2: got"
+    sh ci/codegen-notices.sh "$1" "$n/$2"
+    rc=1
+  fi
+}
+notices x86_64 report.txt want.txt
+notices aarch64 report-big.txt want-big.txt
+# ci/codegen.sh with the stand-in compare: compare's exit status is the
+# script's, and the report's notices end the output.
+arch=$(uname -m)
+out=$(mktemp)
+for want in 0 2; do
+  got=0
+  CHAINGUARD_BASE_REVISION=HEAD CODEGEN_DIFF="$PWD/$n/codegen-diff-standin.sh" STANDIN_RC=$want \
+    sh ci/codegen.sh > "$out" 2>&1 || got=$?
+  tail -n "$(wc -l < "$n/want.txt")" "$out" > "$out.tail"
+  if [ "$got" = "$want" ] && sed "s/ x86_64 / $arch /" "$n/want.txt" | cmp -s - "$out.tail"; then
+    echo "ok   codegen.sh with compare exiting $want"
+  else
+    echo "FAIL codegen.sh with compare exiting $want: exit $got, output"
+    cat "$out"
+    rc=1
+  fi
+done
+rm -f "$out" "$out.tail"
 exit $rc

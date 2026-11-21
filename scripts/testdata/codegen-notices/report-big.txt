@@ -1,0 +1,56 @@
+baseline 1111111, tree 2222222
+== q16
+   .text hash   old aaaaaaaaaaaaaaaa  new bbbbbbbbbbbbbbbb differs
+   functions old 42 new 41: exact 0, reloc-only 0, padding-only 0, erratum-stub 0, changed 42
+   insns old 84 new 41
+   ### changed: f1 (1 insns) vs baseline f1 (2 insns)
+   ### changed: f2 (1 insns) vs baseline f2 (2 insns)
+   ### changed: f3 (1 insns) vs baseline f3 (2 insns)
+   ### changed: f4 (1 insns) vs baseline f4 (2 insns)
+   ### changed: f5 (1 insns) vs baseline f5 (2 insns)
+   ### changed: f6 (1 insns) vs baseline f6 (2 insns)
+   ### changed: f7 (1 insns) vs baseline f7 (2 insns)
+   ### changed: f8 (1 insns) vs baseline f8 (2 insns)
+   ### changed: f9 (1 insns) vs baseline f9 (2 insns)
+   ### changed: f10 (1 insns) vs baseline f10 (2 insns)
+   ### changed: f11 (1 insns) vs baseline f11 (2 insns)
+   ### changed: f12 (1 insns) vs baseline f12 (2 insns)
+   ### changed: f13 (1 insns) vs baseline f13 (2 insns)
+   ### changed: f14 (1 insns) vs baseline f14 (2 insns)
+   ### changed: f15 (1 insns) vs baseline f15 (2 insns)
+   ### changed: f16 (1 insns) vs baseline f16 (2 insns)
+   ### changed: f17 (1 insns) vs baseline f17 (2 insns)
+   ### changed: f18 (1 insns) vs baseline f18 (2 insns)
+   ### changed: f19 (1 insns) vs baseline f19 (2 insns)
+   ### changed: f20 (1 insns) vs baseline f20 (2 insns)
+   ### changed: f21 (1 insns) vs baseline f21 (2 insns)
+   ### changed: f22 (1 insns) vs baseline f22 (2 insns)
+   ### changed: f23 (1 insns) vs baseline f23 (2 insns)
+   ### changed: f24 (1 insns) vs baseline f24 (2 insns)
+   ### changed: f25 (1 insns) vs baseline f25 (2 insns)
+   ### changed: f26 (1 insns) vs baseline f26 (2 insns)
+   ### changed: f27 (1 insns) vs baseline f27 (2 insns)
+   ### changed: f28 (1 insns) vs baseline f28 (2 insns)
+   ### changed: f29 (1 insns) vs baseline f29 (2 insns)
+   ### changed: f30 (1 insns) vs baseline f30 (2 insns)
+   ### changed: f31 (1 insns) vs baseline f31 (2 insns)
+   ### changed: f32 (1 insns) vs baseline f32 (2 insns)
+   ### changed: f33 (1 insns) vs baseline f33 (2 insns)
+   ### changed: f34 (1 insns) vs baseline f34 (2 insns)
+   ### changed: f35 (1 insns) vs baseline f35 (2 insns)
+   ### changed: f36 (1 insns) vs baseline f36 (2 insns)
+   ### changed: f37 (1 insns) vs baseline f37 (2 insns)
+   ### changed: f38 (1 insns) vs baseline f38 (2 insns)
+   ### changed: f39 (1 insns) vs baseline f39 (2 insns)
+   ### changed: f40 (1 insns) vs baseline f40 (2 insns)
+   ### changed: f41 (1 insns) vs baseline f41 (2 insns)
+
+   baseline functions with no counterpart (counted as changed):
+      gone (2 insns)
+
+   --- diff of f1, immediates masked
+   -      nop
+== q8
+   .text hash   old cccccccccccccccc  new dddddddddddddddd differs
+   scripts/codegen-fncmp.py failed (exit 1)
+   Traceback (most recent call last):
