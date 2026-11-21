@@ -429,7 +429,11 @@ fn tcache_none_leaves_every_cache_alone() {
     };
     let before = (
         snap(existing_heap(s).unwrap()),
-        snap(s.tcaches.get(t, Tracked::assume_new()).unwrap()),
+        snap(
+            s.tcaches
+                .get(t, Tracked::assume_new(), Tracked::assume_new())
+                .unwrap(),
+        ),
     );
     for a in [lua, FOREIGN] {
         assert!(before.0.iter().any(|e| e.0 == a && !e.4.is_empty()), "{a}");
@@ -487,7 +491,11 @@ fn tcache_none_leaves_every_cache_alone() {
     }
     let after = (
         snap(existing_heap(s).unwrap()),
-        snap(s.tcaches.get(t, Tracked::assume_new()).unwrap()),
+        snap(
+            s.tcaches
+                .get(t, Tracked::assume_new(), Tracked::assume_new())
+                .unwrap(),
+        ),
     );
     assert_eq!(after, before, "a MALLOCX_TCACHE_NONE call touched a cache");
     for (p, flags) in kept {
@@ -600,7 +608,10 @@ fn mallocx_routes_arenas_and_caches() {
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
-    let th = s.tcaches.get(t, Tracked::assume_new()).unwrap();
+    let th = s
+        .tcaches
+        .get(t, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     let before = th.cache_in(0, c).map_or(0, |cc| cc.len());
     dallocx(
         e,
@@ -905,7 +916,10 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         s.classify_free(e, vstd::prelude::Tracked::assume_new()),
         Ok((c, lua))
     );
-    let th = s.tcaches.get(t, Tracked::assume_new()).unwrap();
+    let th = s
+        .tcaches
+        .get(t, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     let before = th.cache_in(lua, c).unwrap().len();
     let before_foreign = th.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
     // The free through the explicit cache (homed on arena 0) lands on

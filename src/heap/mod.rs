@@ -332,10 +332,10 @@ pub struct Heap {
     /// home headers' permissions: the permission to its plain fields, the
     /// 128 bytes before `caches` ([`heap_head`]), and the block's metadata
     /// claim ([`Heap::home_at`]). A thread heap's creation puts them here
-    /// ([`tcaches::heap_new`]); [`Heap::destroy`], on the heap
-    /// `tcaches::heap_at` hands it (whose premise covers them as it covers
-    /// the home headers' permissions), takes them out and frees the block
-    /// with them. Those are the only stores and takes
+    /// ([`tcaches::heap_new`]); [`Heap::destroy`], on the heap whose
+    /// permission its caller hands it (with [`Heap::home_at`] of the
+    /// pointer, which says these are that block's), takes them out and
+    /// frees the block with them. Those are the only stores and takes
     /// (`crate::tests::trusted_mint_sites_are_pinned`).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     head: Tracked<(vstd::raw_ptr::PointsToRaw, crate::meta::MetaClaim)>,
@@ -401,8 +401,8 @@ impl Heap {
     /// `self` is well formed, owns every header `old` owned, and every
     /// header that had a stack still has the same one; its `others` list
     /// is `old`'s with nodes added at the head, if any (their keys with
-    /// them), and its home headers and home arena are `old`'s, with its
-    /// ticket ([`Heap::homed_ok`]).
+    /// them), and its home headers, the rest of its block ([`Heap::head`])
+    /// and home arena are `old`'s, with its ticket ([`Heap::homed_ok`]).
     pub closed spec fn keeps(&self, old: Heap) -> bool {
         &&& self.perms@.keeps(old.perms@)
         &&& self.perms@.follows(old.perms@)
@@ -415,6 +415,7 @@ impl Heap {
         &&& self.list_ok()
         &&& self.home_ok()
         &&& self.home_hdrs == old.home_hdrs
+        &&& self.head == old.head
         &&& list_grows(self.list@, old.list@)
         &&& list_grows(self.keys@, old.keys@)
         &&& self.arena == old.arena
@@ -439,7 +440,7 @@ impl Heap {
     /// address space (it is a metadata block). The heap keeps the rest of
     /// its block ([`Heap::head`]): the permission to the 128 bytes before
     /// the home headers, and the block's claim.
-    pub(super) closed spec fn home_at(&self, h: *mut Heap) -> bool {
+    pub closed spec fn home_at(&self, h: *mut Heap) -> bool {
         &&& self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c))
         &&& h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX
         &&& self.head@.0.is_range(h@.addr as int, 128)
@@ -512,7 +513,9 @@ impl Heap {
     /// headers are where creation wrote them at `h` is well formed, once
     /// the process's `Shared` is published ([`regions_ok`], [`crate::api::ready`])
     /// and its `shared` is that one; a thread heap, counted and holding its
-    /// ticket ([`Heap::homed_ok`]).
+    /// ticket ([`Heap::homed_ok`]). And its home headers and the rest of
+    /// its block are at `h` ([`Heap::home_at`]), as for
+    /// [`Heap::lemma_fresh_detached_wf`].
     proof fn lemma_fresh_wf(&self, h: *mut Heap)
         requires
             self.perms@.fresh(h),
@@ -525,14 +528,98 @@ impl Heap {
             crate::api::ready(),
             self.bound,
             self.homed@ matches Some(t) && homed_on(t, self.arena as int),
+            heap_head(h, self.head@.0),
+            heap_claim(h, self.head@.1),
+            h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
         ensures
             self.wf(),
+            self.home_at(h),
     {
         reveal(others::heads_ok);
         reveal(CachePerms::claimed);
         assert forall|c: int| 0 <= c < NCLASSES implies self.owns(#[trigger] self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c by {
             assert(self.home_hdrs@[c] == home_hdr(h, c));
         }
+    }
+
+    /// [`Heap::lemma_fresh_wf`] for a heap that is not counted (an
+    /// explicit cache, `tcaches::Tcaches::create`): it holds no ticket and
+    /// may not move its home. And its home headers and the rest of its
+    /// block are at `h` ([`Heap::home_at`]): the headers creation wrote,
+    /// and the permission to its plain fields and the block's claim,
+    /// which `h`'s block keeps ([`heap_head`], [`heap_claim`]) and does
+    /// not wrap the address space.
+    proof fn lemma_fresh_detached_wf(&self, h: *mut Heap)
+        requires
+            self.perms@.fresh(h),
+            self.list@.len() == 0,
+            self.keys@.len() == 0,
+            self.others@.addr == 0,
+            self.shared == Shared::storage() as *const Shared,
+            self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c)),
+            regions_ok(),
+            crate::api::ready(),
+            !self.bound,
+            !self.rehome,
+            self.homed@ is None,
+            heap_head(h, self.head@.0),
+            heap_claim(h, self.head@.1),
+            h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
+        ensures
+            self.wf(),
+            self.home_at(h),
+    {
+        reveal(others::heads_ok);
+        reveal(CachePerms::claimed);
+        assert forall|c: int| 0 <= c < NCLASSES implies self.owns(#[trigger] self.home_hdrs@[c]) && self.hdr_class(self.home_hdrs@[c]) == c by {
+            assert(self.home_hdrs@[c] == home_hdr(h, c));
+        }
+    }
+
+    /// `self` keeps `old`'s home headers and the rest of its block
+    /// ([`Heap::home_hdrs`], [`Heap::head`]), so [`Heap::home_at`] of
+    /// `old` holds of it ([`Heap::lemma_home_kept_at`]).
+    closed spec fn home_kept(&self, old: Heap) -> bool {
+        &&& self.home_hdrs == old.home_hdrs
+        &&& self.head == old.head
+    }
+
+    /// [`Heap::home_kept`] keeps [`Heap::home_at`].
+    proof fn lemma_home_kept_at(old: Heap, new: Heap, h: *mut Heap)
+        requires
+            new.home_kept(old),
+            old.home_at(h),
+        ensures
+            new.home_at(h),
+    {
+    }
+
+    /// [`Heap::keeps`] includes [`Heap::wf`] and [`Heap::home_kept`], and
+    /// keeps `bound`.
+    proof fn lemma_keeps_home(old: Heap, new: Heap)
+        requires
+            new.keeps(old),
+        ensures
+            new.wf(),
+            new.home_kept(old),
+            new.spec_bound() == old.spec_bound(),
+    {
+    }
+
+    /// A well-formed heap that is not counted may not move its home
+    /// ([`Heap::homed_ok`]).
+    proof fn lemma_unbound_no_rehome(h: Heap)
+        requires
+            h.wf(),
+            !h.spec_bound(),
+        ensures
+            !h.spec_rehome(),
+    {
+    }
+
+    /// The heap is counted in its home arena's bound count ([`Heap::bound`]).
+    pub closed spec fn spec_bound(&self) -> bool {
+        self.bound
     }
 
     /// The heap may still move its home ([`Heap::rehome`]); the measure
@@ -1324,6 +1411,7 @@ impl Heap {
             new.shared == old.shared,
             new.home_hdrs == old.home_hdrs,
             new.heads == old.heads,
+            new.head == old.head,
             new.bound == old.bound,
             new.homed == old.homed,
             new.rehome == old.rehome,
@@ -1388,6 +1476,7 @@ impl Heap {
             b.shared == a.shared,
             b.home_hdrs == a.home_hdrs,
             b.heads == a.heads,
+            b.head == a.head,
         ensures
             b.keeps(a),
     {
@@ -1698,6 +1787,19 @@ fn assert_rekey_flushed(len: &u32)
 /// splits off the heap's block for [`init_fields`], which keeps it in the
 /// [`FreshHeap`] returned with the heap; `h` is not null, aligned for a
 /// `Heap` (64 bytes), and `h + 128` is at most `usize::MAX`.
+/// The heap pointer `addr_to_ptr(a) as *mut Heap` yields: address `a`
+/// with the provenance of an address cast
+/// ([`cast_provenance`](crate::vspec::addr::cast_provenance)). Every heap
+/// is one: the metadata allocator hands out such pointers
+/// (`Meta::alloc_raw`), so [`Heap::create`]'s is `cast_heap` of its
+/// address, and a slot value names its heap by address alone
+/// (`thread::slot_ok`).
+pub open spec fn cast_heap(a: usize) -> *mut Heap {
+    vstd::raw_ptr::ptr_mut_from_data::<Heap>(
+        vstd::raw_ptr::PtrData::<Heap> { addr: a, provenance: crate::vspec::addr::cast_provenance(), metadata: () },
+    )
+}
+
 pub(super) open spec fn heap_head(h: *mut Heap, head: vstd::raw_ptr::PointsToRaw) -> bool {
     &&& head.is_range(h@.addr as int, 128)
     &&& head.provenance() == h@.provenance
@@ -2291,6 +2393,8 @@ impl Heap {
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
             r.0@.addr != 0 ==> (r.2@ matches Some((t, s)) && homed_on(t, t.arena) && s.heap() == r.0 && s.arena() == t.arena
                 && s.bound() && heap_head(r.0, s.head()) && heap_claim(r.0, s.claim()) && s.shared() == Shared::storage() as *const Shared),
+            r.0@.addr != 0 ==> r.0@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
+            r.0@.addr != 0 ==> r.0 == cast_heap(r.0@.addr),
             *final(ord) == *old(ord),
     {
         proof {
@@ -2334,7 +2438,10 @@ impl Heap {
         ensures
             r.0@.addr != 0 ==> r.1@.fresh(r.0),
             r.0@.addr != 0 ==> (r.2@ matches Some(st) && st.heap() == r.0 && st.arena() == arena as int && !st.bound()
-                && heap_head(r.0, st.head()) && heap_claim(r.0, st.claim()) && st.shared() == Shared::storage() as *const Shared),
+                && !st.rehome() && heap_head(r.0, st.head()) && heap_claim(r.0, st.claim())
+                && st.shared() == Shared::storage() as *const Shared),
+            r.0@.addr != 0 ==> r.0@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
+            r.0@.addr != 0 ==> r.0 == cast_heap(r.0@.addr),
             *final(ord) == *old(ord),
     {
         proof {
@@ -2650,7 +2757,12 @@ impl Heap {
 
     /// Flush every cache, free them and the heap itself back to the
     /// metadata allocator. `h` is dangling afterwards. The heap is the one
-    /// [`tcaches::heap_at`] hands out for `h`, with its ghost state, which
+    /// whose permission `loan` holds, at `h`, well formed, with its home
+    /// headers and the rest of its block at `h` ([`Heap::home_at`]): the
+    /// table's registry's for an explicit cache (`Tcaches::destroy`), the
+    /// thread's slot loan's for a thread heap (`thread::heap_destructor`),
+    /// creation's own for a heap never published
+    /// (`thread::create_heap_for_thread`). Its ghost state
     /// owns everything freed here: the caches' permissions and their
     /// stacks' claims ([`Heap::free_caches_in`] frees each array), each
     /// `others` node's permissions and its block's claim
@@ -2666,17 +2778,17 @@ impl Heap {
     ///
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
-    /// use by any thread. `u` is the caller's token for it
-    /// ([`tcaches::HeapUse`]), which `destroy` consumes: the heap is gone
-    /// afterwards, so the caller has no token left to reach it with.
+    /// use by any thread. `destroy` consumes `loan`: the heap is gone
+    /// afterwards, so the caller has no permission left to reach it with.
     ///
     /// Lock order: the flush takes class locks, the frees the metadata
     /// lock, and the exit purge class locks and the huge lock, one at a
     /// time.
-    pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(u): Tracked<tcaches::HeapUse>, Tracked(ord): Tracked<&mut LockOrder>)
+    pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(loan): Tracked<crate::sys::tls::HeapLoan>, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            loan.heap() matches Some(hp) && hp.addr() == h@.addr && hp.value().wf() && hp.value().home_at(h),
             // Part of `h` coming from `Heap::create`: never null.
             h@.addr != 0,
             // `flush_all`'s, which the body calls.
@@ -2689,9 +2801,10 @@ impl Heap {
             shared.lemma_wf();
             shared.lemma_wf_slow();
         }
-        let tracked mut u = u;
-        // SAFETY: the caller gives us exclusive ownership of the heap.
-        let heap = unsafe { tcaches::heap_at(h, Tracked(&mut u)) };
+        let tracked mut loan = loan;
+        // SAFETY: the loan holds the heap's permission, and the caller
+        // gives us exclusive ownership of the heap.
+        let heap = unsafe { thread::slot_heap_ref(h, Tracked(&mut loan)) };
         // Unbound before the flush: the arena is idle from here on, so a
         // thread this one just started (larson's successor, which frees
         // what this one allocated) can be homed on it, or move there

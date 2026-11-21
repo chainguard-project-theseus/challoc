@@ -1176,10 +1176,21 @@ fn explicit_caches_create_flush_destroy() {
         .unwrap();
     assert_eq!((t0, t1), (0, 1));
     assert_eq!(s.tcaches.len(), 2);
-    assert!(s.tcaches.get(2, Tracked::assume_new()).is_none());
-    assert!(s.tcaches.get(u16::MAX, Tracked::assume_new()).is_none());
+    assert!(
+        s.tcaches
+            .get(2, Tracked::assume_new(), Tracked::assume_new())
+            .is_none()
+    );
+    assert!(
+        s.tcaches
+            .get(u16::MAX, Tracked::assume_new(), Tracked::assume_new())
+            .is_none()
+    );
     let c = class_with(64);
-    let h = s.tcaches.get(t0, Tracked::assume_new()).unwrap();
+    let h = s
+        .tcaches
+        .get(t0, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     let (p, _) = h.alloc_in(
         s,
         0,
@@ -1203,7 +1214,7 @@ fn explicit_caches_create_flush_destroy() {
     assert!(s.tcaches.flush(s, t0, Tracked::assume_new()));
     assert_eq!(
         s.tcaches
-            .get(t0, Tracked::assume_new())
+            .get(t0, Tracked::assume_new(), Tracked::assume_new())
             .unwrap()
             .cache(c)
             .unwrap()
@@ -1219,7 +1230,11 @@ fn explicit_caches_create_flush_destroy() {
         !s.tcaches
             .destroy(s, t0, Tracked::assume_new(), Tracked::assume_new())
     );
-    assert!(s.tcaches.get(t0, Tracked::assume_new()).is_none());
+    assert!(
+        s.tcaches
+            .get(t0, Tracked::assume_new(), Tracked::assume_new())
+            .is_none()
+    );
     assert_eq!(s.tcaches.len(), 1);
     // The slot is reused.
     assert_eq!(

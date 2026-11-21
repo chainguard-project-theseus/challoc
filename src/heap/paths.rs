@@ -255,6 +255,9 @@ impl Heap {
             final(errno).val() == old(errno).val(),
             final(cell).kept(*old(cell)),
             final(self).wf(),
+            // Only a young heap's cross-arena free can move the home
+            // (`rehome_on_free`).
+            !old(self).spec_rehome() ==> final(self).keeps(*old(self)),
             free_target(p),
             blk.block(p),
             *final(ord) == *old(ord),
@@ -326,6 +329,7 @@ impl Heap {
         ensures
             final(errno).val() == old(errno).val(),
             final(self).wf(),
+            !old(self).spec_rehome() ==> final(self).keeps(*old(self)),
             final(cell).kept(*old(cell)),
             *final(ord) == *old(ord),
     {
