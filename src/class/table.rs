@@ -721,7 +721,7 @@ pub open spec fn slot_free_at(toks: Set<int>, c: int, slab: int, slot: int) -> b
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct BitLoad {
     ghost toks: Set<int>,
-    tracked seen: Option<GhostPersistentISingleton<(int, u64)>>,
+    tracked seen: Option<GhostPersistentISingleton<(int, nat, u64)>>,
 }
 
 impl BitLoad {
@@ -731,8 +731,8 @@ impl BitLoad {
     }
 
     /// The witness of the value loaded, if any: its location and its
-    /// `(word, value)` pair.
-    pub closed spec fn seen(self) -> Option<(Loc, (int, u64))> {
+    /// `(word, version, value)` triple.
+    pub closed spec fn seen(self) -> Option<(Loc, (int, nat, u64))> {
         match self.seen {
             Some(w) => Some((w.id(), w@)),
             None => None,
@@ -2048,7 +2048,7 @@ impl SlabTable {
         // among the word invariants (`bitmap::fresh_word_invs`); the
         // authority is dropped, so no other fragment at the location is
         // ever made.
-        let tracked (_hauth, hvals) = GhostISetAuth::<(int, u64)>::new(ISet::new(|p: (int, u64)| 0 <= p.0 < nwords));
+        let tracked (_hauth, hvals) = GhostISetAuth::<(int, nat, u64)>::new(ISet::new(|p: (int, nat, u64)| 0 <= p.0 < nwords));
         let ghost hloc = hvals.id();
         let ghost slots = Slots {
             loc: slot_auth.id(),
@@ -3887,15 +3887,16 @@ impl SlabTable {
 
     /// `l` is what a load of the bitmap word holding slot `slot` of
     /// `slab` left ([`BitLoad`]): a witness that the word held a value
-    /// `x` (the persistent `(j, x)` of its seen values, at the class
-    /// bitmap's `hloc`, `bitmap::seen_ok`), and the tokens of exactly the
-    /// clear bits of `x`. A caller cannot meet it without the load: only
-    /// the word invariants hold fragments at `hloc` (#843, #847).
+    /// `x` at some version `n` (the persistent `(j, n, x)` of its seen
+    /// values, at the class bitmap's `hloc`, `bitmap::seen_ok`), and the
+    /// tokens of exactly the clear bits of `x`. A caller cannot meet it
+    /// without the load: only the word invariants hold fragments at
+    /// `hloc` (#843, #847, #850).
     pub open spec fn load_seen(&self, slab: int, slot: int, l: BitLoad) -> bool {
         let s = self.spec_slots();
         let j = (slab * class_table()[self.spec_class() as int].slab_bits + slot) / 64;
         &&& l.seen() matches Some(w) && w.0 == s.hloc && w.1.0 == j
-        &&& l.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, l.seen()->Some_0.1.1))
+        &&& l.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, l.seen()->Some_0.1.2))
     }
 
     /// The `free` check's bit (design 4): whether `slot` of `slab`
@@ -3978,7 +3979,7 @@ impl SlabTable {
             holds_slot(*held, self.spec_class() as int, slab as int, slot as int) ==> (x >> (bit % 64)) & 1 != 0,
             ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
             final(obs).toks() == crate::bitmap::addrs(self.spec_slots(), crate::bitmap::free_bits(self.spec_slots(), bit as int / 64, x)),
-            final(obs).seen() == Some((self.spec_slots().hloc, (bit as int / 64, x))),
+            final(obs).seen() matches Some(w) && w.0 == self.spec_slots().hloc && w.1.0 == bit as int / 64 && w.1.2 == x,
         opens_invariants [crate::bitmap::word_ns()]
     {
         proof {

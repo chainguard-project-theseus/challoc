@@ -1251,16 +1251,24 @@ writer keeps:
 - Seen values: each word's invariant also holds its seen values
   (`bitmap::seen_ok`,
   [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)):
-  at the class bitmap's `Slots::hloc`, the pairs `(j, x)` of word
-  `j`'s values not yet seen, owned, and of those seen, persistent,
-  with the current value seen. Every write inside the invariant
+  at the class bitmap's `Slots::hloc`, the triples `(j, n, x)` ("word
+  `j` held `x` after its `n`-th write") not yet seen, owned, and those
+  seen, persistent, with a ghost version: the current value is seen at
+  the current version, no version above it is seen, and one value is
+  seen per version
+  ([#850](https://github.com/chainguard-project-theseus/challoc/issues/850)).
+  Every write inside the invariant
   (`AtomicBitmap::init`'s three, `claim_word`, `release`; `probe`'s
-  `fetch_or(.., 0)` leaves the value) persists the value it stores
-  (`lemma_seen_write`). `SlabTable::new` makes the location's authority
-  over every word's values and drops it, so a persistent `(j, x)` at
-  `hloc` is a fragment of a word invariant's. The bit test's load
-  takes a copy as its witness (`bitmap::lemma_seen_witness`, theorem 3's
-  *(load)*). That a writer
+  `fetch_or(.., 0)` leaves the value) bumps the version and persists
+  the value it stores at it (`lemma_seen_write`). `SlabTable::new`
+  makes the location's authority over every word's triples and drops
+  it, so a persistent `(j, n, x)` at `hloc` is a fragment of a word
+  invariant's. The bit test's load takes a copy as its witness
+  (`bitmap::lemma_seen_witness`, theorem 3's *(load)*). Any witness of
+  word `j` is ordered against the word's invariant: its version is at
+  most the current one, and at the current one its value is the
+  current value (`bitmap::lemma_seen_order`; the witness is persistent,
+  so not in the owned part). No caller uses the order yet. That a writer
   persists the value it stores, not some other one, is the ghost
   code's, not restated by the invariant.
 - Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs`)
@@ -3755,7 +3763,8 @@ caller a `BitLoad` (`class/table.rs`): the slot tokens the invariant
 held at that load, `addrs(s, free_bits(s, j, x))` for the value `x`
 loaded (the tokens of exactly its clear bits, `bitmap::WordPred`), and
 a witness that word `j` held `x`. The witness is a copy of the word's
-persistent seen value `(j, x)` at the class bitmap's `Slots::hloc`
+persistent seen value `(j, n, x)`, `n` the word's version at the load,
+at the class bitmap's `Slots::hloc`
 (`bitmap::lemma_seen_witness`, "Seen values" in theorem 5's token
 protocol). `is_set_unchecked` ensures
 `r == !slot_free_at(obs.toks(), c, slab, slot)`, `check_live` and
@@ -3772,9 +3781,12 @@ A stale free is not excluded by this contract. `p = malloc(16);
 free(p); free(p)` meets `load_seen` with the value the word held
 before the first free, whose bit was set. What excludes it is that
 the witness is this load's value, which is stated only in
-`bit_word_held`'s body (below). An ordered history, a witness that
-comes after every one the caller already holds, would make it a
-contract fact (#843 stays open for that).
+`bit_word_held`'s body (below). The witnesses are versioned, and any
+witness of a word is no newer than the word's current version
+(`bitmap::lemma_seen_order`,
+[#850](https://github.com/chainguard-project-theseus/challoc/issues/850)),
+but no caller carries an earlier witness to the check yet, so this
+is not yet a contract fact (#843 and #850 stay open for that).
 
 ```rust
 // class/table.rs
@@ -3785,7 +3797,7 @@ pub open spec fn load_seen(&self, slab: int, slot: int, l: BitLoad) -> bool {
     let s = self.spec_slots();
     let j = (slab * class_table()[self.spec_class() as int].slab_bits + slot) / 64;
     &&& l.seen() matches Some(w) && w.0 == s.hloc && w.1.0 == j
-    &&& l.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, l.seen()->Some_0.1.1))
+    &&& l.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, l.seen()->Some_0.1.2))
 }
 pub fn check_live(&self, slab, slot, p, Tracked(held), Tracked(obs): Tracked<&mut BitLoad>)
     ensures
@@ -3794,7 +3806,7 @@ pub fn check_live(&self, slab, slot, p, Tracked(held), Tracked(obs): Tracked<&mu
 unsafe fn bit_word_held(..., Tracked(obs): Tracked<&mut BitLoad>) -> (x: u64)
     ensures
         ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs).toks(), c, slab, slot),
-        final(obs).seen() == Some((self.spec_slots().hloc, (bit as int / 64, x))), /* ... */
+        final(obs).seen() matches Some(w) && w.0 == self.spec_slots().hloc && w.1.0 == bit as int / 64 && w.1.2 == x, /* ... */
 ```
 
 Where the snapshot identity is stated. That the witness's value is
@@ -3821,7 +3833,8 @@ Mutations (`cargo verus focus`, module `class::table` or `bitmap`,
 fresh target dir each): `check_live` without its `not_live` abort
 fails its `slot_free_at` postcondition; `bit_word_held` handing back no
 witness fails its postcondition; `lemma_seen_witness` taking the
-word's `(j, 0)` instead of `(j, x)` fails its pre- and postcondition;
+word's `(j, n, 0)` instead of `(j, n, x)` fails its pre- and
+postcondition;
 and a caller asserting `load_seen` of `BitLoad::new()`, or of any
 `BitLoad` with an empty token set, fails (the vacuity `word_tokens` had,
 #843). Before #847, `bit_word_held` handing back an empty set instead
