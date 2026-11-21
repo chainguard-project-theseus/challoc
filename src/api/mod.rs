@@ -235,10 +235,23 @@ exec static STATE: InitWords
 #[unsafe(link_section = ".init_array")]
 static REGISTER_EARLY: extern "C" fn() = register_early;
 
-#[cfg(all(not(test), not(verus_keep_ghost)))]
+verus! {
+
+/// [`REGISTER_EARLY`]'s function, the library's constructor: a call into
+/// challoc from the dynamic loader, which runs it before `main` with no
+/// allocator lock held, so it may enter the kernel (a root of the call
+/// graph, `sys::may_syscall`). Out of the tests, as its static is;
+/// Verus's build has no static to use it.
+#[cfg(not(test))]
+#[cfg_attr(verus_keep_ghost, allow(dead_code))]
 extern "C" fn register_early() {
+    proof {
+        crate::sys::grant_syscalls();
+    }
     let _ = atfork_handlers();
 }
+
+} // verus!
 
 verus! {
 
