@@ -3,14 +3,18 @@
 //! `futex` for `lock.rs`'s `wait` and `wake`. Each step names the code it
 //! mirrors:
 //!
+//! Every operation is `SeqCst`, as vstd's `PAtomicU32` operations are,
+//! which `lock.rs` calls (through `RawLock::try_acquire`, `load` and
+//! `swap_contended` and the swap in `RawLock::release`):
+//!
 //! - [`RawLock::try_acquire`] is `RawLock::try_acquire`: the CAS from
-//!   `UNLOCKED` to `LOCKED`, `Acquire` on success, `Relaxed` on failure;
+//!   `UNLOCKED` to `LOCKED`;
 //! - [`RawLock::lock`] is `RawLock::lock` and `lock_slow`: the CAS, then
-//!   [`SPINS`] rounds of a `Relaxed` poll and the CAS (with loom's
+//!   [`SPINS`] rounds of a poll and the CAS (with loom's
 //!   `spin_loop`, which yields, for `core::hint::spin_loop`), then
-//!   `swap(CONTENDED, Acquire)` and, while it did not return `UNLOCKED`, a
+//!   `swap(CONTENDED)` and, while it did not return `UNLOCKED`, a
 //!   futex wait on `CONTENDED` and the swap again;
-//! - [`RawLock::unlock`] is `RawLock::release`: `swap(UNLOCKED, Release)`,
+//! - [`RawLock::unlock`] is `RawLock::release`: `swap(UNLOCKED)`,
 //!   and a futex wake of one waiter if it returned `CONTENDED`.
 //!
 //! Checked: mutual exclusion and the acquire/release edge (the counter is
@@ -18,8 +22,9 @@
 //! see the previous one's write, is a reported race), and no lost wake-up
 //! (a waiter left asleep with the others done is a reported deadlock).
 //!
-//! Left out: the ghost rank and the `LockHeld` tokens, which are not
-//! compiled; `try_lock`, a bare `try_acquire`.
+//! Left out: the ghost rank, the word's invariant and the `Unlocked`
+//! and `LockHeld` tokens, which are not compiled; `try_lock`, a bare
+//! `try_acquire`.
 
 use crate::futex;
 use crate::{leak, model, model_bounded};
@@ -52,7 +57,7 @@ impl RawLock {
     /// `RawLock::try_acquire`.
     fn try_acquire(&self) -> bool {
         self.state
-            .compare_exchange(UNLOCKED, LOCKED, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange(UNLOCKED, LOCKED, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
@@ -62,21 +67,21 @@ impl RawLock {
             return;
         }
         for _ in 0..SPINS {
-            if self.state.load(Ordering::Relaxed) == UNLOCKED && self.try_acquire() {
+            if self.state.load(Ordering::SeqCst) == UNLOCKED && self.try_acquire() {
                 return;
             }
             loom::hint::spin_loop();
         }
-        let mut c = self.state.swap(CONTENDED, Ordering::Acquire);
+        let mut c = self.state.swap(CONTENDED, Ordering::SeqCst);
         while c != UNLOCKED {
             futex::wait(&self.state, CONTENDED);
-            c = self.state.swap(CONTENDED, Ordering::Acquire);
+            c = self.state.swap(CONTENDED, Ordering::SeqCst);
         }
     }
 
     /// `RawLock::release`.
     pub(crate) fn unlock(&self) {
-        if self.state.swap(UNLOCKED, Ordering::Release) == CONTENDED {
+        if self.state.swap(UNLOCKED, Ordering::SeqCst) == CONTENDED {
             futex::wake(&self.state);
         }
     }
@@ -140,8 +145,8 @@ fn contend<L: Mutex>(threads: u32) -> impl Fn() + Sync + Send + 'static {
 /// Two lockers: the CAS fast path against the spin and the sleep.
 ///
 /// Covers copies of `RawLock::lock_slow` and `LockGuard::drop`
-/// (`RawLock::release`), and the hand-off `lock::axiom_acquired`
-/// assumes of them: one holder at a time, each seeing the writes of the
+/// (`RawLock::release`), and the hand-off the lock's cell invariant
+/// (`lock::CellPred`) models over them: one holder at a time, each seeing the writes of the
 /// holder before it.
 #[test]
 fn loom_lock_two_threads() {
@@ -153,8 +158,8 @@ fn loom_lock_two_threads() {
 /// Bounded at 5 preemptions: too large to exhaust.
 ///
 /// Covers copies of `RawLock::lock_slow` and `LockGuard::drop`
-/// (`RawLock::release`), and the hand-off `lock::axiom_acquired`
-/// assumes of them, as `loom_lock_two_threads` does.
+/// (`RawLock::release`), and the hand-off the lock's cell invariant
+/// (`lock::CellPred`) models over them, as `loom_lock_two_threads` does.
 #[test]
 fn loom_lock_three_threads() {
     model_bounded(5, contend::<RawLock>(3));
