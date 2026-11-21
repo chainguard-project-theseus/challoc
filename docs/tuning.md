@@ -559,3 +559,12 @@ Each records what was measured and, where it is known, the cause.
   stopping on its absolute `active-defrag-ignore-bytes` threshold, which
   jemalloc's larger slab waste crosses one more time; nothing on the
   challoc side is tunable for it.
+- **`calloc` zeroes the requested bytes, not the usable size**:
+  `calloc(n, m)` zeroes only its `n * m` requested bytes, where jemalloc
+  clears the whole region. A program that reads past its
+  request up to `malloc_usable_size` after a `calloc` sees zeros under
+  jemalloc and can see stale bytes under challoc (C leaves those bytes
+  indeterminate). `challoc_calloc_usable` zeroes the whole usable size
+  (design 13.7); use it, or clear the tail. Clearing the tail in plain
+  `calloc` would add work to every `calloc` whose size is not a class
+  size (#54).
