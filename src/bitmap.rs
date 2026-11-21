@@ -35,6 +35,8 @@ use crate::vspec::zero::axiom_zero_word;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
+#[cfg(verus_keep_ghost)]
+use vstd::resource::iset::GhostPersistentISingleton;
 use vstd::resource::iset::{GhostISubset, GhostPersistentISubset};
 use vstd::resource::set::{GhostPersistentSubset, GhostSubset};
 #[cfg(verus_keep_ghost)]
@@ -3697,6 +3699,21 @@ pub proof fn lemma_seen_write(k: WordKey, tracked h: &mut SeenVals, x: u64, y: u
     assert forall|z: u64| #[trigger] h.0@.contains((k.j, z)) || h.1@.contains((k.j, z)) by {
         assert(old(h).0@.contains((k.j, z)) || old(h).1@.contains((k.j, z)));
     }
+}
+
+/// The witness a load of `x` from word `k.j` takes from its invariant's
+/// seen values `h`: the persistent `(k.j, x)` at `k.slots.hloc`, a copy;
+/// `h` is left as it was.
+pub proof fn lemma_seen_witness(k: WordKey, tracked h: &SeenVals, x: u64) -> (tracked w: GhostPersistentISingleton<(int, u64)>)
+    requires
+        seen_ok(k, *h, x),
+    ensures
+        w.id() == k.slots.hloc,
+        w@ == (k.j, x),
+{
+    reveal(seen_ok);
+    let tracked mut c = h.1.duplicate();
+    c.split_singleton((k.j, x))
 }
 
 /// The seen values of a fresh word `j`, at value 0, split off `vals`,
