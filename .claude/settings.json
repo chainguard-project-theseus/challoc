@@ -4,7 +4,7 @@
       "source": {
         "source": "github",
         "repo": "chainguard-project-theseus/proved-port",
-        "ref": "v0.4.4"
+        "ref": "v0.4.8"
       }
     }
   },

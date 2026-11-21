@@ -190,7 +190,7 @@ These bug classes are outside the guarantees, by design or by the scope of the t
 
 [Verus](README.md) checks every operation in a `verus!` function for arithmetic overflow, division by zero, out-of-bounds indexing, reachable panics, and loop and recursion termination. It also checks the function's `requires` and `ensures` contract. Ghost code is erased from ordinary builds. The coverage table below was measured with Verus release `0.2026.11.02.8bf68ee`.
 
-The [counter](count) includes executable functions under `src/` and excludes test code. It counts a function as Verus-verified when it is inside `verus!`, is neither `external_body` nor `external`, and has no `assume`, `admit`, or `Tracked::assume_new` in its body. It counts ghost functions separately. Shares are rounded down to a tenth of a percent.
+The [counter](count) includes executable functions under `src/` and excludes test code. It counts a function as Verus-verified when it is inside `verus!`, is neither `external_body` nor `external`, is not covered by `#[verifier::exec_allows_no_decreases_clause]`, and has no `assume`, `admit`, or `Tracked::assume_new` in its body. Since kit 0.4.5 a function under that attribute counts as trusted: Verus checks its body and contract, but nothing proves its loops end. The table below predates that rule and counts challoc's 16 such functions as verified. It counts ghost functions separately. Shares are rounded down to a tenth of a percent.
 
 | Coverage at `f40d08f2` | Functions | Lines |
 | --- | ---: | ---: |
@@ -204,7 +204,7 @@ The [counter](count) includes executable functions under `src/` and excludes tes
 | Trusted with no check | 68 | 638 |
 | Ghost functions, counted separately | 2365 | — |
 
-The combined row adds only trusted functions whose seam is discharged, on premises included. The [FLOOR](FLOOR) file holds `functions 89.4`, `lines 95.5`, `checked-functions 93.7` and `checked-lines 97.4` (the combined row), the figures the kit counter measured on main at `8f836243`. Each later raise to measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
+The combined row adds only trusted functions whose seam is discharged, on premises included. The [FLOOR](FLOOR) file holds `functions 88.5`, `lines 94.3`, `checked-functions 92.8` and `checked-lines 96.2` (the combined row), the figures kit 0.4.8's counter measures on main at `053c9306`. They were `89.4`, `95.5`, `93.7` and `97.4` under kit 0.4.4; each drop is a `lowered` line naming the kit change that moved the 16 no-decreases functions to trusted. Each later raise to measured figures lands in its own pull request. The Verus check fails when coverage drops below any figure, or when a figure is set below the base revision's unless a `lowered FIGURE P REASON` line records the decrease. The [README badge](../README.md) shows the `functions` and `lines` figures.
 
 ## Trust base
 
