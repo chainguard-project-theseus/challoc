@@ -1268,7 +1268,8 @@ writer keeps:
   word `j` is ordered against the word's invariant: its version is at
   most the current one, and at the current one its value is the
   current value (`bitmap::lemma_seen_order`; the witness is persistent,
-  so not in the owned part). No caller uses the order yet. That a writer
+  so not in the owned part). The bit tests use it to order their load
+  after a witness the caller passes in (`load_after`). That a writer
   persists the value it stores, not some other one, is the ghost
   code's, not restated by the invariant.
 - Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs`)
@@ -3784,9 +3785,15 @@ the witness is this load's value, which is stated only in
 `bit_word_held`'s body (below). The witnesses are versioned, and any
 witness of a word is no newer than the word's current version
 (`bitmap::lemma_seen_order`,
-[#850](https://github.com/chainguard-project-theseus/challoc/issues/850)),
-but no caller carries an earlier witness to the check yet, so this
-is not yet a contract fact (#843 and #850 stay open for that).
+[#850](https://github.com/chainguard-project-theseus/challoc/issues/850)).
+All four bit tests also ensure `load_after(slab, slot, old(obs),
+obs)`: if the `BitLoad` the caller passed in held a witness of the
+same word, the load's witness has a version at least as new, and the
+same value at the same version (`BitLoad::after`). So two checks of
+one word, in program order, are ordered. No free path yet carries
+the witness of the release that cleared the bit to the next check,
+so the stale free is not yet a contract fact (#843 and #850 stay open
+for that).
 
 ```rust
 // class/table.rs
@@ -3802,7 +3809,8 @@ pub open spec fn load_seen(&self, slab: int, slot: int, l: BitLoad) -> bool {
 pub fn check_live(&self, slab, slot, p, Tracked(held), Tracked(obs): Tracked<&mut BitLoad>)
     ensures
         !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
-        self.load_seen(slab as int, slot as int, *final(obs)), /* ... */
+        self.load_seen(slab as int, slot as int, *final(obs)),
+        self.load_after(slab as int, slot as int, *old(obs), *final(obs)), /* ... */
 unsafe fn bit_word_held(..., Tracked(obs): Tracked<&mut BitLoad>) -> (x: u64)
     ensures
         ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs).toks(), c, slab, slot),
@@ -3839,6 +3847,9 @@ and a caller asserting `load_seen` of `BitLoad::new()`, or of any
 `BitLoad` with an empty token set, fails (the vacuity `word_tokens` had,
 #843). Before #847, `bit_word_held` handing back an empty set instead
 of the invariant's tokens failed its postcondition, as it still does.
+`bit_word_held` without its `lemma_seen_order` call fails its
+`after` postcondition, and calling it for a witness of another word
+fails its precondition (#850).
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
 a pointer that is no slot start and no huge page start claims nothing,

@@ -746,6 +746,22 @@ impl BitLoad {
     {
         BitLoad { toks: Set::empty(), seen: None }
     }
+
+    /// `self` is no older than `l0` for word `j` of the class bitmap whose
+    /// seen values are at `loc`: if `l0` holds a witness of that word,
+    /// `self` holds one too, its version is at least `l0`'s, and at the
+    /// same version the value is the same (`bitmap::lemma_seen_order`,
+    /// #850).
+    pub open spec fn after(self, l0: BitLoad, loc: Loc, j: int) -> bool {
+        match l0.seen() {
+            Some(w0) => w0.0 == loc && w0.1.0 == j ==> {
+                &&& self.seen() is Some
+                &&& w0.1.1 <= self.seen()->Some_0.1.1
+                &&& w0.1.1 == self.seen()->Some_0.1.1 ==> w0.1.2 == self.seen()->Some_0.1.2
+            },
+            None => true,
+        }
+    }
 }
 
 /// `p` is an initialised permission to the `T` at `addr`, through a
@@ -3899,6 +3915,14 @@ impl SlabTable {
         &&& l.toks() == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, j, l.seen()->Some_0.1.2))
     }
 
+    /// `l1`, a load of the bitmap word holding slot `slot` of `slab`, is
+    /// no older than `l0`, the record the caller passed in
+    /// ([`BitLoad::after`]): a witness of the same word that the caller
+    /// already held names a version at most the load's (#850).
+    pub open spec fn load_after(&self, slab: int, slot: int, l0: BitLoad, l1: BitLoad) -> bool {
+        l1.after(l0, self.spec_slots().hloc, (slab * class_table()[self.spec_class() as int].slab_bits + slot) / 64)
+    }
+
     /// The `free` check's bit (design 4): whether `slot` of `slab`
     /// is marked allocated (or cached). One `SeqCst` load of the bitmap
     /// word (vstd `PAtomicU64`), through its permission, no bounds checks. A set bit is not a
@@ -3925,6 +3949,7 @@ impl SlabTable {
             holds_slot(*held, self.spec_class() as int, slab as int, slot as int) ==> r,
             r == !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
             self.load_seen(slab as int, slot as int, *final(obs)),
+            self.load_after(slab as int, slot as int, *old(obs), *final(obs)),
         opens_invariants [crate::bitmap::word_ns()]
     {
         proof {
@@ -3980,6 +4005,7 @@ impl SlabTable {
             ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
             final(obs).toks() == crate::bitmap::addrs(self.spec_slots(), crate::bitmap::free_bits(self.spec_slots(), bit as int / 64, x)),
             final(obs).seen() matches Some(w) && w.0 == self.spec_slots().hloc && w.1.0 == bit as int / 64 && w.1.2 == x,
+            final(obs).after(*old(obs), self.spec_slots().hloc, bit as int / 64),
         opens_invariants [crate::bitmap::word_ns()]
     {
         proof {
@@ -4030,6 +4056,14 @@ impl SlabTable {
                 // And the witness that the word held `x`: its persistent
                 // seen value (`bitmap::seen_ok`).
                 let tracked seen = crate::bitmap::lemma_seen_witness(inv.constant(), &h, x);
+                // A witness of this word the caller already held is no
+                // newer than this load's (`bitmap::lemma_seen_order`).
+                if obs.seen is Some {
+                    let tracked w0 = obs.seen.tracked_borrow();
+                    if w0.id() == s.hloc && w0@.0 == j {
+                        crate::bitmap::lemma_seen_order(inv.constant(), &h, x, w0);
+                    }
+                }
                 *obs = BitLoad { toks: g@, seen: Some(seen) };
                 self.lemma_slot_bit(slab as int, slot as int);
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
@@ -4530,6 +4564,7 @@ impl SlabTable {
                 ==> r == slab_owner(self.spec_class() as int, slab as int),
             !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
             self.load_seen(slab as int, slot as int, *final(obs)),
+            self.load_after(slab as int, slot as int, *old(obs), *final(obs)),
     {
         self.check_live(slab, slot, p, held, Tracked(obs));
         let credit = vstd::invariant::create_open_invariant_credit();
@@ -4586,6 +4621,7 @@ impl SlabTable {
             !crate::layout::guard_slab(self.spec_class() as int, slab as int),
             !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
             self.load_seen(slab as int, slot as int, *final(obs)),
+            self.load_after(slab as int, slot as int, *old(obs), *final(obs)),
     {
         if !self.is_handed_out(slab) {
             never_committed(self.class as usize, slab);
