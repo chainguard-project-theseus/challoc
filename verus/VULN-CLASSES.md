@@ -37,11 +37,11 @@ where some of the CVEs below lived, are not targets.
 | [CVE-2005-4895](https://nvd.nist.gov/vuln/detail/CVE-2005-4895) | 2005 (published 2012) | integer overflow in a size computation | TCMalloc (`tcmalloc.cc`, gperftools before 0.4) allocation paths | `api::libc::malloc` (`malloc_block`, `alloc_huge`), `api::jemalloc::mallocx` (`alloc_with`) | 2 Fit and alignment: `malloc` ensures `heap::fits(r, size, QUANTUM)`; `alloc_huge` ensures `size <= shared.huge_usable(size)`; 43: `theorem_nallocx_zero_rejects`. Test `c_cve_2005_4895` |
 | [CVE-2006-7252](https://nvd.nist.gov/vuln/detail/CVE-2006-7252) | 2006 (published 2012) | integer overflow in a size computation (`n * m`) | jemalloc `calloc` in FreeBSD 6.4 and NetBSD libc | `api::libc::calloc` (`calloc_zeroed`), `api::libc::reallocarray`, `api::libc::calloc_usable` | Interface contract rows 2, 4, 13 (F) with 2: `calloc_zeroed` ensures `n * m > usize::MAX ==> r.0@.addr == 0` and `heap::fits(r.0, n * m, QUANTUM)`; `reallocarray` ensures the same with `ENOMEM`. Test `c_cve_2006_7252` |
 | [CVE-2007-6754](https://nvd.nist.gov/vuln/detail/CVE-2007-6754) | 2007 (published 2012) | integer rounding and overflow in an aligned allocation | jemalloc `ipalloc` in FreeBSD 6.4 and NetBSD libc | `api::libc::alloc_aligned` (behind `aligned_alloc_block`, `posix_memalign_block`, `valloc_block`, `pvalloc_block`), `api::jemalloc::mallocx` with `MALLOCX_LG_ALIGN` | 2: `alloc_aligned` ensures `heap::fits(r, size, align)` for every power-of-two `align`; `mallocx` ensures `fits(r, size, 1 << (flags & 0x3f))`. No CVE-named test; the `c_cve_2018_6485` shapes cover it |
-| [CVE-2013-4332](https://nvd.nist.gov/vuln/detail/CVE-2013-4332) | 2013 | integer overflow in a size computation (alignment and page rounding) | glibc `pvalloc`, `valloc`, `posix_memalign`, `memalign`, `aligned_alloc` (2.18 and earlier) | `api::libc::pvalloc_block`, `valloc_block`, `posix_memalign_block`, `aligned_alloc_block` | 2: each ensures `fits(r, size, align)` (the page for `valloc`, `pvalloc`). Partial for `pvalloc`: its page-rounded size is not stated (interface row 8, R is `p`); see [#735](https://github.com/chainguard-project-theseus/challoc/issues/735). Test `c_cve_2013_4332` |
+| [CVE-2013-4332](https://nvd.nist.gov/vuln/detail/CVE-2013-4332) | 2013 | integer overflow in a size computation (alignment and page rounding) | glibc `pvalloc`, `valloc`, `posix_memalign`, `memalign`, `aligned_alloc` (2.18 and earlier) | `api::libc::pvalloc_block`, `valloc_block`, `posix_memalign_block`, `aligned_alloc_block` | 2: each ensures `fits(r, size, align)` (the page for `valloc`, `pvalloc`); `pvalloc` also ensures `fits(r, page_round(size, page), page)` and NULL when the rounding passes `usize::MAX` (interface row 8, [#735](https://github.com/chainguard-project-theseus/challoc/issues/735)). Test `c_cve_2013_4332` |
 | [CVE-2017-17426](https://nvd.nist.gov/vuln/detail/CVE-2017-17426) | 2017 | integer overflow in a size computation (tcache path near `SIZE_MAX`) | glibc 2.26 `malloc` | `api::libc::malloc` (`malloc_block`, `malloc_class`, the thread-cache pop) | 2: `fits(r, size, QUANTUM)` on every result, fast pop included. Test `c_cve_2017_17426` |
 | [CVE-2018-6485](https://nvd.nist.gov/vuln/detail/CVE-2018-6485) | 2018 | integer overflow in a size computation (`size + align`) | glibc `posix_memalign`, `memalign` (2.26 and earlier) | `api::libc::alloc_aligned`, `posix_memalign_block` | 2: as CVE-2013-4332; `posix_memalign` states `fits` of `*out` through `axiom_out_at_return`. Test `c_cve_2018_6485` |
 | [CVE-2018-6551](https://nvd.nist.gov/vuln/detail/CVE-2018-6551) | 2018 | integer overflow in a size computation (near `SIZE_MAX`) | glibc `malloc`, 2.24 to 2.26 on powerpc, 2.26 on i386 | `api::libc::malloc` | 2: `fits(r, size, QUANTUM)`. The CVE's targets are not challoc's (x86_64, aarch64 only). Test `c_cve_2018_6551` |
-| [CVE-2021-3420](https://nvd.nist.gov/vuln/detail/CVE-2021-3420) | 2021 | integer overflow in a size computation (alignment and page rounding) | newlib `memalign`, `pvalloc`, `nano_memalign`, `nano_valloc`, `nano_pvalloc` | `api::libc::alloc_aligned`, `pvalloc_block`, `valloc_block` | 2, as CVE-2013-4332; `pvalloc` partial ([#735](https://github.com/chainguard-project-theseus/challoc/issues/735)) |
+| [CVE-2021-3420](https://nvd.nist.gov/vuln/detail/CVE-2021-3420) | 2021 | integer overflow in a size computation (alignment and page rounding) | newlib `memalign`, `pvalloc`, `nano_memalign`, `nano_valloc`, `nano_pvalloc` | `api::libc::alloc_aligned`, `pvalloc_block`, `valloc_block` | 2, as CVE-2013-4332, `pvalloc` at the page-rounded size ([#735](https://github.com/chainguard-project-theseus/challoc/issues/735)) |
 | [CVE-2021-26461](https://nvd.nist.gov/vuln/detail/CVE-2021-26461) | 2021 | integer wrap-around in a size computation ("BadAlloc") | Apache NuttX `malloc`, `realloc`, `memalign` | `api::libc::malloc`, `realloc` (`realloc_block`), `alloc_aligned` | 2: `fits` on each, a kept `realloc` block included (`kept`, theorem 1) |
 | [CVE-2021-27419](https://nvd.nist.gov/vuln/detail/CVE-2021-27419) | 2021 | integer wrap-around in a size computation ("BadAlloc") | uClibc-ng `malloc-simple` | `api::libc::malloc` | 2: `fits(r, size, QUANTUM)` |
 | [CVE-2023-4911](https://nvd.nist.gov/vuln/detail/CVE-2023-4911) | 2023 | configuration read in a secure-execution process (malloc tunables through `GLIBC_TUNABLES`) | glibc `ld.so` tunables parser | `config::load`, `config::linux::env_var` | Secure-exec configuration (`config::linux::theorem_secure_conf`): no `env_var` call returns when `AT_SECURE` is set. Test `c_cve_2023_4911` |
@@ -73,18 +73,16 @@ page start with that many bytes of the huge region after it, at a
 multiple of `align`: `heap::fits(r, size, align)` (theorems 1 and 2,
 `heap/theorems.rs`). `calloc_zeroed` and `reallocarray` also ensure
 `n * m > usize::MAX ==> r@.addr == 0` with `ENOMEM`. `pvalloc_block`
-rounds with `size.checked_add(page - 1)` and asserts `m >= size` by
-bit-vector. `theorem_nallocx_zero_rejects` (theorem 43) proves a request
+rounds with `size.checked_add(page - 1)`, and it, `api::libc::pvalloc`
+and the export ensure `fits(r, page_round(size, page), page)`, with
+`size + (page - 1) > usize::MAX ==> r@.addr == 0` (bit-vector
+assertions tie the mask to `page_round`). `theorem_nallocx_zero_rejects` (theorem 43) proves a request
 `nallocx` sizes at 0 makes `mallocx` return NULL in every state.
 
 **Premises and limits.**
 - Slab results rest on `CachePerms::tracks` inside the assumed
   `Heap::wf`; huge results on the huge lock invariant (theorem 1,
   "Premises").
-- `pvalloc` states `fits` at `size`, not at the page-rounded size its API
-  promises (interface row 8): a program that writes up to the rounded
-  size relies on code that is proved internally (`pvalloc_block`'s
-  `m >= size` assertion, `alloc_aligned` at `m`) but not exported (#735).
 - `mallocx` without an alignment flag is stated at alignment 1, not the
   quantum (theorem 1, "weaker").
 - `fits` names `size` bytes; the usable size comes from `usable_is`
@@ -384,6 +382,12 @@ past the checks.
 > `m >= size` for `m = (size + page - 1) & !(page - 1)` and allocates
 > `m`; export it in the `ensures` of `api::libc::pvalloc`,
 > `pvalloc_block` and the export, and mark interface row 8's R `P`.
+
+Proved (#740): `pvalloc_block`, `api::libc::pvalloc` and the export
+ensure `fits(r, page_round(size, page), page)` and
+`size + (page - 1) > usize::MAX ==> r@.addr == 0`, and
+`pvalloc_block`'s token gives `page_round(size, page)` bytes;
+THEOREMS.md interface row 8's R is `P`.
 
 **[#736](https://github.com/chainguard-project-theseus/challoc/issues/736): usable-size and interior-page queries on huge runs (no CVE id)**
 
