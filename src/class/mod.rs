@@ -5617,7 +5617,7 @@ impl ClassState {
                 t.lemma_slot_bit(slab as int, 64 * word + b);
             }
         }
-        let (prev, was_full) = bm.release(word, mask, Tracked(tok));
+        let (prev, was_full, _) = bm.release(word, mask, Tracked(tok));
         if prev & mask != mask {
             proof {
                 // The released slots' bits were set: `tok` holds their

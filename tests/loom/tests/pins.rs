@@ -997,7 +997,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ("if i == len {", "if i == len {"),
             ("i = 0;", "i = 0;"),
             (
-                "pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: (u64, bool))",
+                "pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: (",
                 "",
             ),
             (
@@ -1044,7 +1044,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "",
             ),
             (
-                "let (prev, was_full) = bm.release(word, mask, Tracked(tok));",
+                "let (prev, was_full, _) = bm.release(word, mask, Tracked(tok));",
                 "fn release(&self, mask: u64, relaxed: bool) {",
             ),
             (

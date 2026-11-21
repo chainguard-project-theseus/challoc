@@ -3652,7 +3652,7 @@ and for an error-result row, that a returning call returns that result:
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
 | `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
-| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | a never-allocated slot: at the check, *(load)*: `check_live` and `check_located` return only if the slot's bit was set in some value its bitmap word held (`load_seen`, [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)), which a slot no refill claimed never had. A stale free: no, *(C)*: the word held a value with the bit set before the first free, so the contract does not tell it from a live slot; that the value is this load's is `bit_word_held`'s body ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)) |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | a never-allocated slot: at the check, *(load)*: `check_live` and `check_located` return only if the slot's bit was set in some value its bitmap word held (`load_seen`, [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)), which a slot no refill claimed never had. A stale free: in part, *(load)* with *(C)*: a check ordered after the slot's release (`load_after` a `BitLoad::of_release` record) that passes read a later version in which a claim set the bit again (`lemma_claimed_again`, [#850](https://github.com/chainguard-project-theseus/challoc/issues/850)); that the second free's check is ordered after the release is C's, since the program carries no record between its frees ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)) |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | as above: a never-allocated slot at the check, *(load)*; a stale one *(C)* |
 | The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`); with the opt-in `exact_sized_free` key, at the call (`check_live`) | no: excluded by the C contract, *(C)*; under the key, that the free reaches the test is `theorem_exact_sized_free` |
 | Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort at the call: the slot's state byte (`heap::slotstate`) is not `LIVE`; else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |
@@ -3773,8 +3773,11 @@ protocol). `is_set_unchecked` ensures
 all three ensure `load_seen(slab, slot, obs)`: the witness is at
 `hloc`, for the slot's word `j`, and the tokens are those of its
 value's clear bits. A caller cannot meet `load_seen` without the load.
-`BitLoad::new`, the only constructor outside `class/table.rs`, holds
-no witness. Only the word invariants hold fragments at `hloc`, since
+Outside `class/table.rs` a `BitLoad` is made only by `BitLoad::new`,
+which holds no witness, and `BitLoad::of_release`, which holds a
+witness the caller already has (a release's, below) and no tokens.
+Either way the witness is a word invariant's: only the word
+invariants hold fragments at `hloc`, since
 `SlabTable::new` drops the location's authority. So a call that
 returns found the slot's bit set in some value its word held. A free,
 `realloc` or query of a slot no refill ever claimed does not return.
@@ -3790,10 +3793,19 @@ All four bit tests also ensure `load_after(slab, slot, old(obs),
 obs)`: if the `BitLoad` the caller passed in held a witness of the
 same word, the load's witness has a version at least as new, and the
 same value at the same version (`BitLoad::after`). So two checks of
-one word, in program order, are ordered. No free path yet carries
-the witness of the release that cleared the bit to the next check,
-so the stale free is not yet a contract fact (#843 and #850 stay open
-for that).
+one word, in program order, are ordered. `AtomicBitmap::release`
+returns, as a ghost third result, the witness of the value it stored,
+with the released bits clear, and `BitLoad::of_release` makes a
+record of it. `lemma_claimed_again`: a load that is `after` such a
+record and finds the bit set read a strictly newer version, so the
+word was written again after the release, by a claim of the slot. That
+is the stale free's exact form. A `free` whose check is ordered after
+its slot's release passes only if the slot was claimed again (the ABA
+case, which an allocator with no per-pointer state cannot tell from a
+live free). What is not proved: the program holds no ghost state
+between its two frees, so no free path carries the release's record
+to the second free's check, and the order between them is C's
+(*(C)*, #843).
 
 ```rust
 // class/table.rs
@@ -3849,7 +3861,10 @@ and a caller asserting `load_seen` of `BitLoad::new()`, or of any
 of the invariant's tokens failed its postcondition, as it still does.
 `bit_word_held` without its `lemma_seen_order` call fails its
 `after` postcondition, and calling it for a witness of another word
-fails its precondition (#850).
+fails its precondition (#850). `release` returning the witness of the
+value before its write fails `lemma_seen_witness`'s precondition and
+its own postcondition, and `lemma_claimed_again` without the clear bit
+in the release's value fails its postcondition.
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
 a pointer that is no slot start and no huge page start claims nothing,
