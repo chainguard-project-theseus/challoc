@@ -1906,8 +1906,9 @@ shared library's soname is `libchalloc.so.0` (the ABI major; the crate
 version is 0.x); a package installs the file under that name with a
 `libchalloc.so` link for the linker (`scripts/install.sh`). With the
 `jemalloc-soname` feature the soname is `libjemalloc.so.2` instead,
-staged by `scripts/jemalloc-compat.sh`. The static library is built but
-not yet tested or shipped.
+staged by `scripts/jemalloc-compat.sh`. The static library is built and
+tested (`tests/c/static_link.c`: a program linked against it alone gets
+every allocation from challoc), but not yet shipped.
 
 One quantum per build (section 3): a run-time quantum would put a table
 select on every class lookup. Wolfi's `jemalloc` has quantum 16, so the

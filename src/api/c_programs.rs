@@ -2304,3 +2304,26 @@ fn dlopen_late_does_not_initialise() {
     d.run_ok(&exe, &[&d.path("libchalloc.so.0")], false, "ok dlopen_late");
     d.remove();
 }
+
+/// The `staticlib` crate type works: `tests/c/static_link.c`, linked
+/// against `libchalloc.a` with no shared challoc, gets every allocation
+/// (libc's own included) from challoc, from several threads (#58). Run
+/// bare.
+#[test]
+fn static_link_serves_every_malloc() {
+    let archive = std::format!("{}/release/libchalloc.a", target_dir());
+    assert!(
+        std::path::Path::new(&archive).exists(),
+        "{archive} missing: run `cargo build --release` first (`make test` does)"
+    );
+    let d = LinkedDir::new("static-link");
+    let exe = d.path("static_link");
+    d.cc(&[
+        &std::format!("{}/tests/c/static_link.c", root()),
+        &archive,
+        "-o",
+        &exe,
+    ]);
+    d.run_ok(&exe, &[], false, "ok static_link");
+    d.remove();
+}
