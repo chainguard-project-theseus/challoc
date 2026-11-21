@@ -143,8 +143,8 @@ impl Heap {
     /// `cache` is this heap's real cache for `(arena, class)` and is empty:
     /// callers arrive from a fast path that fell through on `len == 0`,
     /// from `ensure_cache` on a fresh header, or after re-reading `len`
-    /// following a `tick`. The `assert_eq!` ([`assert_refill_empty`]) is
-    /// the abort on a heap inconsistency, not the contract.
+    /// following a `tick`. [`assert_refill_empty`] is the abort on a heap
+    /// inconsistency, not the contract.
     pub(super) unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, pubw: Tracked<&'static Published>, cache: *mut CacheHeader, class: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: u32)
         requires
             crate::sys::may_abort(),
