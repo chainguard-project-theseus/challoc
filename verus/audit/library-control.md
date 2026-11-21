@@ -4,10 +4,10 @@
 library, function pointer, panic/abort and termination, made during
 [#138](https://github.com/chainguard-project-theseus/challoc/pull/138). There it covered 153 seams: 148 sound and 5 fixed.*
 
-*This file lists the 101 of those seams that the ledger still lists:
+*This file lists the 99 of those seams that the ledger still lists:
 the 116 the ledger at `26f535a9` listed, less the three statistics
 figure sums (`stats::fig_add`, `fig_mul`, `fig_add64`),
-`assert_not_home`, the five byte, digit and negation specs
+`assert_not_home`, `assert_flushed`, `assert_refill_empty`, the five byte, digit and negation specs
 (`u8::is_ascii_digit`, `u8::is_ascii_whitespace`, `char::to_digit`,
 `i64::wrapping_neg`, `isize::wrapping_neg`), `u32::rotate_right`,
 `Option::or_else`, `Result::unwrap_or`, `usize::trailing_zeros` and
@@ -37,7 +37,7 @@ false or unsound and corrected it, and the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 101 seams listed: 96 sound and 5 fixed; 70 discharged,
+Totals for the 99 seams listed: 94 sound and 5 fixed; 68 discharged,
 9 partly checked and 22 trusted. The category column is
 the ledger's; a few seams of this audit sit in another category there.
 
@@ -65,8 +65,6 @@ the ledger's; a few seams of this audit sit in another category there.
 | `Config::set_listed` | `config.rs` | function pointer | discharged | sound | Requires and ensures only `wf`; every parser keeps `wf`. |
 | `Config::get` | `config.rs` | function pointer | trusted (partly checked) | sound | No `ensures`. |
 | `KEYS` | `config.rs` | function pointer | discharged | sound | Every `KEYS` entry is a `TABLE` name. |
-| `assert_flushed` | `heap/mod.rs` | panic/abort | discharged | sound | `assert_eq!` (not debug-only): returns only with `*len == 0`. |
-| `assert_refill_empty` | `heap/mod.rs` | panic/abort | discharged | sound | As `assert_flushed`. |
 | `debug_scheduled` | `heap/paths.rs` | panic/abort | discharged | sound | No contract; a `debug_assert!`. |
 | `ThreadKey::create` | `heap/shared.rs` | function pointer | trusted | sound | No `ensures`; `valid` records the result. |
 | `S_PUSH_FLAGS` | `heap/shared.rs` | core library | discharged | sound | `offset_of!` value, opaque; facts only through `axiom_shared_layout`, which the build's `const` assertion checks. |
@@ -241,9 +239,10 @@ These probes found no defect:
   against its contract. Only termination is assumed, and each loop can
   run on without bound (another thread's progress, a retried `EINTR`,
   the program's `new_handler`, or the background thread's lifetime).
-- The abort seams: `assert_flushed`, `assert_refill_empty` and `check`
-  use `assert_eq!` and `assert!`, not the debug forms, so their
-  `ensures` hold in release builds too.
+- The abort seam `check` uses `assert!`, not the debug form, so its
+  `ensures` holds in release builds too. (`assert_flushed` and
+  `assert_refill_empty` are verified since #854: each calls the abort
+  only when `*len != 0`.)
 
 ## Notes
 
