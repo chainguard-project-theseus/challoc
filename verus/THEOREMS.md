@@ -1241,6 +1241,20 @@ writer keeps:
 - Free slots: tokens in each word's `AtomicInvariant`,
   `bitmap::WordPred` (`bitmap.rs`): the word's `WordPerm` (vstd's
   `PermissionU64`) and the tokens of exactly its clear bits.
+- Seen values: each word's invariant also holds its seen values
+  (`bitmap::seen_ok`,
+  [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)):
+  at the class bitmap's `Slots::hloc`, the pairs `(j, x)` of word
+  `j`'s values not yet seen, owned, and of those seen, persistent,
+  with the current value seen. Every write inside the invariant
+  (`AtomicBitmap::init`'s three, `claim_word`, `release`; `probe`'s
+  `fetch_or(.., 0)` leaves the value) persists the value it stores
+  (`lemma_seen_write`). `SlabTable::new` makes the location's authority
+  over every word's values and drops it, so a persistent `(j, x)` at
+  `hloc` is a fragment of a word invariant's. No reader uses it yet:
+  the bit test's load witness (#843) is its next step. That a writer
+  persists the value it stores, not some other one, is the ghost
+  code's, not restated by the invariant.
 - Claimed: `AtomicBitmap::claim_word`, `claim_from` (`bitmap.rs`)
   move out the tokens of the bits their `fetch_or` won;
   `ClassState::claim_with` (`class/mod.rs`) returns them by index.
