@@ -1,0 +1,25 @@
+baseline 9e464dbd20d2f8b81528bff578614fd53d175104, tree 85693e9a5ef3910be34863e618fcfa46c829cfd7
+== q16
+   .text hash   old 1111111111111111  new 2222222222222222 differs
+   sections old: .text=03a6a0 .rodata=00f000
+   sections new: .text=03a6c0 .rodata=00f050
+   functions old 3 new 3: exact 0, reloc-only 0, padding-only 1, erratum-stub 0, changed 3
+   insns old 300 new 310
+   ### padding-only: pad (10 -> 12 insns): trailing nops
+   ### changed: _ZN7challoc6config3get17h0123456789abcdefE (114 insns) vs baseline _ZN7challoc6config3get17h0123456789abcdefE (88 insns)
+       = challoc::config::get
+   ### changed: print_at_exit (31 insns) vs no baseline counterpart
+
+   baseline functions with no counterpart (counted as changed):
+      find_100% = challoc::config::find (40 insns)
+
+   --- diff of _ZN7challoc6config3get17h0123456789abcdefE, immediates masked
+   --- old
+   +++ new
+   @@ -1,2 +1,2 @@
+   -      mov    rax,IMM
+   +      mov    rcx,IMM
+== q8
+   .text hash   old 3333333333333333  new 3333333333333333 IDENTICAL
+   sections old: .text=03a3a0 .rodata=00f000
+   sections new: .text=03a3a0 .rodata=00f000

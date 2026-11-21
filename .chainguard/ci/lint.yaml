@@ -134,10 +134,13 @@ checks:
       scripts/codegen-fncmp.py on the dump pairs in
       scripts/testdata/codegen-fncmp, each pair's verdict line against the
       expected one; the crate-hash and impl-disambiguator pairs run with
-      c++filt hidden from PATH and the crate-hash pair also with it.
+      c++filt hidden from PATH and the crate-hash pair also with it; then
+      ci/codegen-notices.sh on two saved compare reports, and ci/codegen.sh
+      with a stand-in compare exiting 0 and 2.
     trigger: [presubmit, postsubmit]
     environment:
-      packages: [python-3.13, busybox, binutils]
+      # git: ci/codegen.sh checks the base out in a worktree.
+      packages: [python-3.13, busybox, binutils, git]
     timeout: 5m
     cmd: [sh, ci/codegen-fncmp-test.sh]
 

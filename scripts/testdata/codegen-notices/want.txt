@@ -1,0 +1,5 @@
+::notice title=codegen x86_64 q16::functions old 3 new 3: exact 0, reloc-only 0, padding-only 1, erratum-stub 0, changed 3
+::notice title=codegen x86_64 q16::changed: _ZN7challoc6config3get17h0123456789abcdefE (114 insns) vs baseline _ZN7challoc6config3get17h0123456789abcdefE (88 insns) = challoc::config::get
+::notice title=codegen x86_64 q16::changed: print_at_exit (31 insns) vs no baseline counterpart
+::notice title=codegen x86_64 q16::no counterpart: find_100%25 = challoc::config::find (40 insns)
+::notice title=codegen x86_64 q8::.text identical: byte-identical machine code
