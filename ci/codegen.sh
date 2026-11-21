@@ -5,10 +5,11 @@
 # per-variant report (.text hash; exact, reloc-only, padding-only,
 # erratum-stub and changed functions, with the full diff of each changed
 # one) and exits 2 when a function changed. Each variant's verdict (the
-# `functions old ..` line, or `.text` identical) and each changed
-# function's `### changed:` line are printed again at the end as
-# `::notice` lines, which Checks lists at the top of the GitHub check
-# run's output text, so they can be read and quoted without the log.
+# `functions old ..` line, or `.text` identical) and its list of changed
+# functions are printed again at the end as `::notice` lines (two per
+# variant, ci/codegen-notices.sh), which Checks lists at the top of the
+# GitHub check run's output text, so they can be read and quoted without
+# the log.
 # CODEGEN_DIFF names another script to run in place of
 # scripts/codegen-diff.sh (ci/codegen-fncmp-test.sh runs a stand-in).
 set -eu

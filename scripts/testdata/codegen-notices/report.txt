@@ -3,15 +3,21 @@ baseline 9e464dbd20d2f8b81528bff578614fd53d175104, tree 85693e9a5ef3910be34863e6
    .text hash   old 1111111111111111  new 2222222222222222 differs
    sections old: .text=03a6a0 .rodata=00f000
    sections new: .text=03a6c0 .rodata=00f050
-   functions old 3 new 3: exact 0, reloc-only 0, padding-only 1, erratum-stub 0, changed 3
+   functions old 6 new 5: exact 0, reloc-only 0, padding-only 1, erratum-stub 0, changed 6
    insns old 300 new 310
    ### padding-only: pad (10 -> 12 insns): trailing nops
+       = challoc[2c6af560d68efc56]::pad
    ### changed: _ZN7challoc6config3get17h0123456789abcdefE (114 insns) vs baseline _ZN7challoc6config3get17h0123456789abcdefE (88 insns)
-       = challoc::config::get
-   ### changed: print_at_exit (31 insns) vs no baseline counterpart
+       = challoc[2c6af560d68efc56]::config::get
+   ### changed: _RNvXsA_print_at_exit (31 insns) vs no baseline counterpart
+       = <challoc[2c6af560d68efc56]::Issue as core[837f9ed694c4a26f]::fmt::Display>::fmt
+   ### changed: _RNvCs3OqXV10JfZq_7challoc5fresh (20 insns) vs baseline _RNvCs3OqXV10JfZq_7challoc5stale (18 insns)
+       = challoc[2c6af560d68efc56]::fresh
+   ### changed: _RNvMs0_NtCsNEWhash_7challoc4same (9 insns) vs baseline _RNvMsA_NtCsOLDhash_7challoc4same (8 insns)
 
    baseline functions with no counterpart (counted as changed):
-      find_100% = challoc::config::find (40 insns)
+      find_100% (40 insns)
+      _RNvNtCs3_find2 = <challoc[2c6af560d68efc56]::A as challoc[2c6af560d68efc56]::B>::find2 (7 insns)
 
    --- diff of _ZN7challoc6config3get17h0123456789abcdefE, immediates masked
    --- old
