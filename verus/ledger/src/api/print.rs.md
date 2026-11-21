@@ -8,6 +8,7 @@ file.
 | item | kind | category | tool | status |
 |---|---|---|---|---|
 | `WriteCallback` | ext_type_spec | function pointer | none (assumption) | trusted |
+| `NO_CALLBACK` | external_body const | core library | Kani | discharged |
 | `call_back` | external_body | function pointer | Kani | discharged |
 | `cancel_disable` | external_body | FFI/syscall | Kani | discharged |
 | `cancel_restore` | external_body | FFI/syscall | Kani | discharged |
@@ -31,9 +32,22 @@ Hashes: contract 3845522629, body none.
 pub struct ExWriteCallback(WriteCallback);
 ```
 
+## `NO_CALLBACK`
+
+src/api/print.rs:90. Kind: external_body const. Category: core library.
+Tool: Kani. Status: discharged (Kani: api::print::kani_print::no_callback_calls_nothing).
+
+> No callback, `WriteCallback(None)`: a report to it goes to the `malloc_message` path ([`emit`]).
+
+Hashes: contract 3891324367, body none.
+
+```rust
+pub(crate) const NO_CALLBACK: WriteCallback = WriteCallback(None);
+```
+
 ## `call_back`
 
-src/api/print.rs:127. Kind: external_body. Category: function pointer.
+src/api/print.rs:135. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_print::call_back_calls_once; premises: C3 (the program's `write_cb` is null or a report callback that keeps the C allocation contract)).
 
 > Call the caller's callback `cb`, when it gave one, with `opaque` and the C string in `buf`, which holds a NUL; whether it did.
@@ -55,7 +69,7 @@ fn call_back(
 
 ## `cancel_disable`
 
-src/api/print.rs:174. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:182. Kind: external_body. Category: FFI/syscall.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::disable_keeps_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point)).
 
 > Disable the calling thread's cancellation (`pthread_setcancelstate`); the state it had, for [`cancel_restore`].
@@ -70,7 +84,7 @@ pub(super) fn cancel_disable() -> i32
 
 ## `cancel_restore`
 
-src/api/print.rs:189. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:197. Kind: external_body. Category: FFI/syscall.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::restore_passes_the_old_state; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point)).
 
 > Give the calling thread back the cancel state `old` that [`cancel_disable`] returned (`pthread_setcancelstate`).
@@ -85,7 +99,7 @@ pub(super) fn cancel_restore(old: i32)
 
 ## `write_file`
 
-src/api/print.rs:214. Kind: external_body. Category: FFI/syscall.
+src/api/print.rs:222. Kind: external_body. Category: FFI/syscall.
 Tool: Kani. Status: discharged on premises (Kani: api::print::kani_write_file::write_file_writes_the_bytes; premises: C9 (glibc's pthread_setcancelstate stores the old state and returns 0, or returns an error number, and is not a cancellation point), C13 (the program's malloc_info stream is null or open, with stream functions that keep the C allocation contract), C14 (glibc's fwrite writes at most the bytes to the stream with cancellation disabled, and its calls into challoc keep the C allocation contract)).
 
 > `fwrite` of `s` to the caller's stream `f`.
@@ -101,7 +115,7 @@ fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
 
 ## `axiom_c_call`
 
-src/api/print.rs:1761. Kind: axiom. Category: C-program contract.
+src/api/print.rs:1769. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
@@ -119,7 +133,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ## `malloc_stats_print`
 
-src/api/print.rs:1781. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1789. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -135,7 +149,7 @@ pub extern "C" fn malloc_stats_print (verified_export_pair!)
 
 ## `je_malloc_stats_print`
 
-src/api/print.rs:1781. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1789. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -151,7 +165,7 @@ pub extern "C" fn je_malloc_stats_print (verified_export_pair!)
 
 ## `malloc_info`
 
-src/api/print.rs:1789. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1797. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -166,7 +180,7 @@ pub extern "C" fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int 
 
 ## `malloc_stats`
 
-src/api/print.rs:1801. Kind: unsupported-attribute. Category: C ABI export.
+src/api/print.rs:1809. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
