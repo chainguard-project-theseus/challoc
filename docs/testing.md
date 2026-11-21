@@ -152,7 +152,7 @@ so a broken preload cannot pass.
 | Configuration and report | `conf.c` (every `malloc_conf` source), `tunables.c` (the hardening opt-ins and their controls), `features.c` (`challoc_features()` against the report) |
 | Kernel features, both ways | `guard_slab.c`, `pagemap_guard.c` (guard slabs, by fault and through `PAGEMAP_SCAN`), `mseal.c`, `thp.c`, `decay.c` (decay, purge, the background thread), `setxid.c` (the setuid-family calls glibc broadcasts to every thread, while the background thread starts and stops), `bg_restart.c` (a restart of the background thread from a thread with no heap), `mlock_purge.c` (purges that `madvise` refuses on `mlock`ed memory), `lazy_bg.c` (the lazy background thread: a burst of dirty memory starts it and a small workload never does; `background_thread:false`, a seccomp filter on `clone` or `RLIMIT_NPROC` keep it off; fork and exec children start single-threaded) |
 | cgroup | `cgroup.c`, `cgroup_policy.c` (the `api::` rows and `test-cgroup-limit`); `cgroup_churn.c`, `cgroup_lazy.c`, `cgroup_oscillate.c` (the memory-limited container runs, `scripts/cgroup-tests.sh`) |
-| Linking | `as_needed.c`, `as_needed_lib.c` (`tests/as-needed.sh`, `make check-needed`) |
+| Linking | `as_needed.c`, `as_needed_lib.c` (`tests/as-needed.sh`, `make check-needed`); `static_link.c` (linked against `libchalloc.a` with no shared challoc: every allocation, libc's own included, comes from challoc; run bare) |
 | Unit-test helper | `sysnr.c` (prints the C headers' syscall numbers for the `sys::nr` test) |
 
 ### One compiler line
