@@ -23,23 +23,25 @@ verus! {
 /// `caches`, [`heap_head`]), which [`init_fields`] takes and keeps here,
 /// and what the field writers stored in them: the `Shared` and the home
 /// arena ([`init_fields`]), and `bound`, which `init_fields` stores as
-/// `false` and [`mark_bound`] sets. Linear and not
+/// `false` and [`mark_bound`] sets, and `rehome`, which `init_fields`
+/// stores as `false` and [`mark_rehome`] sets. Linear and not
 /// `Copy` (it holds the permission): the one holder of the heap-head
 /// permission, made by [`init_fields`] once per heap. That `shared`,
-/// `arena` and `bound` are what the heap's fields hold is not a fact
-/// Verus checks (the permission forgets the values): `init_fields` sets
-/// them to what it stores, and nothing else builds one (its fields are
-/// private to this module), takes one apart but [`FreshHeap::into_block`]
-/// (verified, it returns exactly `head()` and `claim()`), or changes what
-/// it records but `mark_bound`, which records its store of `bound` in it. [`mark_rehome`]
-/// stores `rehome`, a field the token does not record, through the
-/// permission it holds, and keeps what it records. It also holds the
+/// `arena`, `bound` and `rehome` are what the heap's fields hold is not a
+/// fact Verus checks (the permission forgets the values): `init_fields`
+/// sets them to what it stores, and nothing else builds one (its fields
+/// are private to this module), takes one apart but
+/// [`FreshHeap::into_block`] (verified, it returns exactly `head()` and
+/// `claim()`), or changes what it records but `mark_bound` and
+/// `mark_rehome`, which record their stores of `bound` and `rehome` in
+/// it. It also holds the
 /// heap block's metadata claim ([`FreshHeap::claim`]), which
 /// [`init_fields`] is handed with the permission. The heap-head
 /// permission and the claim go into the heap's ghost state
 /// (`Heap::head`, [`FreshHeap::into_block`] at `tcaches::heap_new`),
-/// from which `Heap::destroy` frees the block. `Tcaches::create` drops
-/// the token instead, as it drops the cache permissions creation returns.
+/// from which `Heap::destroy` frees the block (for an explicit cache,
+/// `Tcaches::create`, with the heap's permission in the table's
+/// registry).
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub(crate) tracked struct FreshHeap {
     ghost heap: *mut Heap,
@@ -47,6 +49,7 @@ pub(crate) tracked struct FreshHeap {
     tracked claim: crate::meta::MetaClaim,
     ghost arena: vstd::prelude::int,
     ghost bound: bool,
+    ghost rehome: bool,
     ghost shared: *const Shared,
 }
 
@@ -70,6 +73,12 @@ impl FreshHeap {
     /// [`mark_bound`] has recorded its store.
     pub(super) closed spec fn bound(&self) -> bool {
         self.bound
+    }
+
+    /// `rehome`: `false` as [`init_fields`] stored it, `true` once
+    /// [`mark_rehome`] has recorded its store.
+    pub(super) closed spec fn rehome(&self) -> bool {
+        self.rehome
     }
 
     /// The `Shared` pointer [`init_fields`] stored in `shared`.
@@ -209,6 +218,7 @@ pub(super) unsafe fn init_fields(
         heap_head(h, r@.head()),
         r@.arena() == arena as int,
         !r@.bound(),
+        !r@.rehome(),
         r@.shared() == Shared::storage() as *const Shared,
         r@.claim() == head.1,
 {
@@ -252,7 +262,7 @@ pub(super) unsafe fn init_fields(
             },
         );
     }
-    Tracked(FreshHeap { heap: h, head: raw, claim, arena: arena as int, bound: false, shared: sp })
+    Tracked(FreshHeap { heap: h, head: raw, claim, arena: arena as int, bound: false, rehome: false, shared: sp })
 }
 
 /// `(*h).bound = true` for a heap [`Heap::create`] has just made: a
@@ -271,6 +281,7 @@ pub(super) unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap
         heap_head(h, final(s).head()),
         final(s).arena() == old(s).arena(),
         final(s).bound(),
+        final(s).rehome() == old(s).rehome(),
         final(s).shared() == old(s).shared(),
         final(s).claim() == old(s).claim(),
 {
@@ -290,8 +301,8 @@ pub(super) unsafe fn mark_bound(h: *mut Heap, Tracked(s): Tracked<&mut FreshHeap
 /// `(*h).rehome = true` for a thread heap [`Heap::create`] has just made
 /// and marked bound ([`mark_bound`]): it may still move its home
 /// ([`Heap::try_rehome`]). A store of `true` to `rehome` ([`H_REHOME`])
-/// through a permission carved from the token's ([`put_head`]); the
-/// token does not record `rehome`, and what it records stays as it was.
+/// through a permission carved from the token's ([`put_head`]),
+/// recorded in the token; what else it records stays as it was.
 /// A heap with `rehome` set is bound (a conjunct of
 /// [`Heap::homed_ok`]): the token must record [`mark_bound`]'s store
 /// first.
@@ -309,6 +320,7 @@ pub(super) unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHea
         heap_head(h, final(s).head()),
         final(s).arena() == old(s).arena(),
         final(s).bound(),
+        final(s).rehome(),
         final(s).shared() == old(s).shared(),
         final(s).claim() == old(s).claim(),
 {
@@ -320,6 +332,9 @@ pub(super) unsafe fn mark_rehome(h: *mut Heap, Tracked(s): Tracked<&mut FreshHea
     }
     // SAFETY: guaranteed by the caller.
     unsafe { put_head::<bool>(h, H_REHOME, Tracked(&mut s.head), true) };
+    proof {
+        s.rehome = true;
+    }
 }
 
 } // verus!
@@ -426,24 +441,27 @@ mod kani_assemble {
         kani::any()
     }
 
-    /// `HeapPerm::assemble` at its one call, `tcaches::heap_new`, whose one
-    /// caller, `heap::thread::create_heap_for_thread`, gets the token from
-    /// `Heap::create`: `Heap::create_detached` runs `init_fields`, then
-    /// `Heap::create` runs `mark_bound` and `mark_rehome`. The axiom
+    /// `HeapPerm::assemble` at its one call, `tcaches::heap_new`, for its
+    /// caller `heap::thread::create_heap_for_thread`, which gets the token
+    /// from `Heap::create`: `Heap::create_detached` runs `init_fields`,
+    /// then `Heap::create` runs `mark_bound` and `mark_rehome`
+    /// ([`detached_writers_store_the_assembled_fields`] checks the other
+    /// caller's, `Tcaches::create`'s). The axiom
     /// states that the heap at `s.heap()` has a null `others` and the
-    /// `arena`, `bound` and `shared` the token records, which are what
-    /// those writers stored: the `arena` given, `bound` `true`, and
-    /// `shared` the pointer `api::shared_ptr` gives (`Shared::storage()`).
-    /// The writers are called only there and here, and `heap_new` only
-    /// there (`crate::tests::assembled_writes_only_at_checked_sites`). The
-    /// harness runs the three writers in that order, the only one it
-    /// checks, for any `arena`, on storage of a `Heap`'s size and
+    /// `arena`, `bound`, `rehome` and `shared` the token records, which are
+    /// what those writers stored: the `arena` given, `bound` and `rehome`
+    /// `true`, and `shared` the pointer `api::shared_ptr` gives
+    /// (`Shared::storage()`). The writers are called only there and here,
+    /// and `heap_new` only by those two callers
+    /// (`crate::tests::assembled_writes_only_at_checked_sites`). The
+    /// harness runs the three writers in that order, for any `arena`, on
+    /// storage of a `Heap`'s size and
     /// alignment holding arbitrary bytes, so a field the writers do not
     /// store keeps them. It hands `init_fields` a `Shared` of its own
     /// (`ZERO_SHARED`), not the process's: outside `cfg(test)`
     /// `heap::paths::shared_ptr` reads nothing of the one it is given and
     /// returns `api::shared_ptr()`, so the stored `shared` must still be
-    /// that pointer. It reads those four fields of the `Heap` there,
+    /// that pointer. It reads those five fields of the `Heap` there,
     /// each by its own place. Kani checks that every store is inside the
     /// storage. `tid` and `now_ns`, system calls whose values the axiom
     /// does not state, return any value. Not checked: the join itself
@@ -474,12 +492,57 @@ mod kani_assemble {
         // SAFETY: as above; `bound` is stored.
         unsafe { mark_rehome(h, Tracked::assume_new()) };
         // SAFETY: each a field of the slot, read by its place: the
-        // writers stored all four (`bound` as a `bool`), so each holds a
+        // writers stored all five (`bound` and `rehome` as `bool`s), so each holds a
         // value of its type, whatever the arbitrary bytes were.
-        let (others, at, b, s) = unsafe { ((*h).others, (*h).arena, (*h).bound, (*h).shared) };
+        let (others, at, b, re, s) = unsafe {
+            (
+                (*h).others,
+                (*h).arena,
+                (*h).bound,
+                (*h).rehome,
+                (*h).shared,
+            )
+        };
         assert!(others.is_null());
         assert_eq!(at, arena);
         assert!(b);
+        assert!(re);
+        assert!(s == sp);
+    }
+
+    /// [`writers_store_the_assembled_fields`] in the other order
+    /// `HeapPerm::assemble`'s token comes from: `Heap::create_detached`
+    /// alone (an explicit cache, `Tcaches::create`), which runs
+    /// `init_fields` and neither `mark_bound` nor `mark_rehome`. The heap
+    /// has a null `others`, the `arena` given, `bound` and `rehome`
+    /// `false`, and `shared` the pointer `api::shared_ptr` gives. Checked
+    /// and not checked as there.
+    #[kani::proof]
+    #[kani::stub(crate::heap::shared::tid, any_tid)]
+    #[kani::stub(crate::heap::shared::now_ns, any_ns)]
+    fn detached_writers_store_the_assembled_fields() {
+        let mut slot = MaybeUninit::<Heap>::uninit();
+        let h = slot.as_mut_ptr();
+        // SAFETY: as in `writers_store_the_assembled_fields`.
+        unsafe { h.cast::<[u8; size_of::<Heap>()]>().write(kani::any()) };
+        let arena: u16 = kani::any();
+        let sp = crate::api::shared_ptr();
+        // SAFETY: as in `writers_store_the_assembled_fields`.
+        let _s = unsafe { init_fields(h, &ZERO_SHARED, arena, Tracked::assume_new()) };
+        // SAFETY: each a field of the slot, read by its place, as there.
+        let (others, at, b, re, s) = unsafe {
+            (
+                (*h).others,
+                (*h).arena,
+                (*h).bound,
+                (*h).rehome,
+                (*h).shared,
+            )
+        };
+        assert!(others.is_null());
+        assert_eq!(at, arena);
+        assert!(!b);
+        assert!(!re);
         assert!(s == sp);
     }
 }

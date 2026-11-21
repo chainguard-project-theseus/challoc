@@ -680,6 +680,7 @@ impl Meta {
             r.0 as usize != 0 ==> self.holds(r.0 as usize as int, layout_size(layout) as int),
             r.0 as usize != 0 ==> r.1@.0.is_range(r.0 as usize as int, layout_size(layout) as int),
             r.0 as usize != 0 ==> r.1@.0.provenance() == r.0@.provenance,
+            r.0 as usize != 0 ==> r.0@.provenance == cast_provenance(),
             r.0 as usize != 0 ==> r.1@.1.of(self.live_id(), r.0, layout),
             *final(ord) == *old(ord),
     {
@@ -2262,11 +2263,15 @@ impl Inner {
             &&& self.perms@[k].ptr() == k
             &&& self.base <= k as usize
             &&& k as usize + 8 <= self.bump
+            &&& k@.provenance == cast_provenance()
         }
     }
 
     /// Every live object is a block of its bin inside the bump area,
-    /// on no free list, and `allocated` is their bytes.
+    /// on no free list, and `allocated` is their bytes. Its pointer has
+    /// the provenance of an address cast ([`cast_provenance`]): the bump
+    /// pointer is cast to one (`Inner::alloc`), and a free block is a
+    /// live one given back.
     spec fn live_wf(&self) -> bool {
         let m = self.live@@;
         &&& self.stats.allocated == live_bytes(m, NBINS as nat)
@@ -2275,6 +2280,7 @@ impl Inner {
             &&& self.base <= k as usize
             &&& k as usize + bin_size(m[k] as int) <= self.bump
             &&& (k as usize) as int % bin_align_spec(m[k] as int) == 0
+            &&& k@.provenance == cast_provenance()
         }
         &&& forall|b: int, i: int|
             0 <= b < NBINS && 0 <= i < self.lists@[b].len() ==> !m.contains_key(#[trigger] self.lists@[b][i])
@@ -2771,6 +2777,7 @@ impl Inner {
             res.0 as usize == 0 ==> *final(self) == *old(self),
             res.0 as usize != 0 ==> res.1@.0.is_range(res.0 as usize as int, bin_size(bin as int)),
             res.0 as usize != 0 ==> res.1@.0.provenance() == res.0@.provenance,
+            res.0 as usize != 0 ==> res.0@.provenance == cast_provenance(),
             res.0 as usize != 0 ==> (res.1@.1.claim matches Some(c) && c.id() == final(self).live_id() && c.key() == res.0 as *mut FreeNode
                 && c.value() == bin as nat),
             ({ let p = res.0; p as usize != 0 ==> {

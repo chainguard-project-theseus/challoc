@@ -403,28 +403,46 @@ pub fn alloc(
             // Premise (`axiom_heap_use`): the caller uses cache `t` on no other
             // thread (the `MALLOCX_TCACHE` contract).
             let tracked mut u = super::axiom_heap_use();
-            let Some(h) = shared.tcaches.get(t, Tracked(&mut u)) else {
+            // The loan the registry's permission to the cache's heap
+            // comes in, handed back by `put_back` on each path.
+            let tracked mut loan = crate::sys::tls::HeapLoan::empty();
+            let Some(h) = shared.tcaches.get(t, Tracked(&mut u), Tracked(&mut loan)) else {
                 invalid_tcache(t)
             };
             proof {
                 h.lemma_wf_regions();
             }
+            let ghost old_h = *h;
             // As for the default cache: only an explicit arena pins a
             // shared class to it (`Heap::alloc_in`).
             match arena {
                 Some(a) => {
                     if no_arena(shared, a, Tracked(&mut *ord)) {
+                        proof {
+                            super::Heap::lemma_keeps_refl(*h);
+                        }
+                        shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
                         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
                     }
                     let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
                     let ghost take = p@.addr != 0 && zero;
+                    let ghost h1 = *h;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
+                    proof {
+                        super::Heap::lemma_keeps_trans(old_h, h1, *h);
+                    }
+                    shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
                     (p, zero, z)
                 },
                 None => {
                     let (p, zero) = h.alloc_zeroed(shared, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
                     let ghost take = p@.addr != 0 && zero;
+                    let ghost h1 = *h;
                     let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
+                    proof {
+                        super::Heap::lemma_keeps_trans(old_h, h1, *h);
+                    }
+                    shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
                     (p, zero, z)
                 },
             }
@@ -539,10 +557,18 @@ pub fn alloc_huge(
     // Premise (`axiom_heap_use`): the caller uses the explicit cache
     // `tcache` names on no other thread (the `MALLOCX_TCACHE` contract).
     let tracked mut u = super::axiom_heap_use();
+    let tracked mut loan = crate::sys::tls::HeapLoan::empty();
     let a = match (arena, tcache) {
         (Some(a), _) => a,
-        (None, Tcache::Explicit(t)) => match shared.tcaches.get(t, Tracked(&mut u)) {
-            Some(h) => h.arena(),
+        (None, Tcache::Explicit(t)) => match shared.tcaches.get(t, Tracked(&mut u), Tracked(&mut loan)) {
+            Some(h) => {
+                let a = h.arena();
+                proof {
+                    super::Heap::lemma_keeps_refl(*h);
+                }
+                shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+                a
+            },
             None => invalid_tcache(t),
         },
         (None, _) => {
@@ -581,14 +607,16 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     // Premise (`axiom_heap_use`): the caller uses the explicit cache
     // `tcache` names on no other thread (the `MALLOCX_TCACHE` contract).
     let tracked mut u = super::axiom_heap_use();
+    let tracked mut loan = crate::sys::tls::HeapLoan::empty();
     match tcache {
         Tcache::Default => crate::heap::free(shared, p, Tracked(blk), Tracked(errno), Tracked(ord)),
-        Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u)) {
+        Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u), Tracked(&mut loan)) {
             Some(h) => {
                 // The calling thread's slot cell, for the explicit cache's
                 // tick (`purge::on_tick`).
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
-                h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord))
+                h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
+                shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
             },
             None => invalid_tcache(t),
         },

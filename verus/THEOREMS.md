@@ -14,9 +14,9 @@ binary that a disassembly checker (`scripts/perf-budget.sh`, the
 `perf-budget` check) proves, not Verus. "Bad input" (the B column of the
 interface contract), the
 [theorems outside the numbered sections](#theorems-outside-the-numbered-sections),
-five of which have their own sections after section 46 (thread exit,
-explicit-cache destroy, exact sized frees, the double-free window and
-same-region overflow reach),
+six of which have their own sections after section 46 (thread exit,
+explicit-cache destroy, the explicit-cache registry, exact sized frees,
+the double-free window and same-region overflow reach),
 and the interface contract are not numbered. The sections fall into the
 groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 
@@ -24,7 +24,7 @@ groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 | --- | --- |
 | Returned blocks and allocator metadata | 1, 2, 4, 5, 7, 24, 41; overflow reach, same-region overflow reach and commits that avoid guards |
 | Free paths and bad input | 3, 25, 43, 44; Bad input; exact sized frees and the double-free window (opt-in keys) |
-| Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy |
+| Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy and registry |
 | Purge and decay | 18, 19, 30, 31, 38, 40 |
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
 | The C boundary and system calls | 8, 21, 32, 42, 45, 46; secure-exec configuration; interface contract |
@@ -108,6 +108,8 @@ leave out (theorem 33). Remaining work is tracked in
   `heap::thread::theorem_exit_no_rebuild`, `heap/thread.rs`.
 - **Explicit-cache destroy** ([A lookup holding destroy's bound finds no destroyed explicit cache](#a-lookup-holding-destroys-bound-finds-no-destroyed-explicit-cache-rests-on-vspecentrys-write-list)):
   `heap::tcaches::theorem_tcache_destroyed_none`, `heap/tcaches.rs`.
+- **Explicit-cache registry** ([An explicit cache's heap comes from the table's registry](#an-explicit-caches-heap-comes-from-the-tables-registry-rests-on-the-explicit-cache-contract)):
+  `heap::tcaches::Tcaches::get`'s contract, `heap/tcaches.rs`.
 - **Opt-in exact sized frees** ([Sized frees run plain `free`'s check under `exact_sized_free`](#sized-frees-run-plain-frees-check-under-exact_sized_free-rests-on-the-c-boundary-assumption)):
   `heap::paths::theorem_exact_sized_free`, `heap/paths.rs`.
 - **Opt-in double-free scan** ([Double-free window under `double_free_scan`](#double-free-window-under-double_free_scan-rests-on-the-slot-state-premise)):
@@ -173,8 +175,10 @@ add.
   or from a thread it runs after, carried along in contracts, and no
   linear permission to the frozen statics exists once one does). The
   trusted items that hand out a `Shared::wf` or `Heap::wf` they did not
-  get from a verified caller assert it too: `sys::tls::TlsSlot::entry`,
-  `tcaches::heap_at` and `purge::background::shared_arg`.
+  get from a verified caller assert it too: `sys::tls::TlsSlot::entry`
+  and `purge::background::shared_arg`. An explicit cache's heap is
+  `wf` by the table's invariant (`tcaches::heap_ok`), which
+  `Tcaches::create` proves when it registers the heap.
   `mallctl::shared` is not one: it takes the `api::ReadyMark` of the
   `READY` its caller saw, `requires api::marks_ready(*mark)`, which
   `mallctl::ctl` requires and passes to every reader, and reads through
@@ -343,19 +347,25 @@ the call does not return (theorem 3, which is not voided for it).
   `zero_ok`, `tokened`, `claimed`, `regions_ok()`, `list_ok`, `home_ok`
   and `homed_ok` (the arena ticket); also `ready()` and that
   its `shared` field is the process's `Shared` at its storage.
-- Assumed by `tcaches::heap_at` (`heap/tcaches.rs`, with its home
-  headers at the pointer and the rest of its block with the block's
-  claim in `Heap::head`, `Heap::home_at`, and its
-  nodes' block permissions and claims, `others::block_ok`;
-  `external_body`; it also takes the caller's `HeapUse` token,
-  which `heap::tcaches::axiom_heap_use`, `heap/tcaches.rs`, mints
-  once per call that reaches an existing heap, so one token gives one
-  heap reference at a time), and, for the calling thread's heap, by the slot
+- For an explicit cache, proved: the table's invariant
+  (`heap/tcaches.rs`) holds each entry's heap permission in a ghost
+  registry, well formed, with its home headers at the entry's pointer
+  and the rest of its block with the block's claim in `Heap::head`
+  (`Heap::home_at`), and its nodes' block permissions and claims
+  (`others::block_ok`) (`heap_ok`). `Tcaches::create` registers what
+  `Heap::create_detached` returned, `Tcaches::get` lends it out and
+  `Tcaches::destroy` takes it out for `Heap::destroy`. `get` also takes
+  the caller's `HeapUse` token, which `heap::tcaches::axiom_heap_use`
+  (`heap/tcaches.rs`, trusted) mints once per call that reaches an
+  existing explicit cache, and `axiom_entry_heap` (trusted) states that
+  the registry holds a non-null entry's permission when `get` or
+  `destroy` loads it. For the calling thread's heap, assumed by the slot
   token `sys::tls::TlsSlot::entry` (an axiom): a token whose
   slot holds a heap holds the heap's linear permission
   (`heap::thread::HeapPerm`, abstract: a `vstd` `PointsTo<Heap>` would
   own the home headers' bytes a second time, next to the heap's own
   `CachePerms`) for the heap the value names, with the heap well formed
+  and its home headers at the address-cast pointer to its address
   (`heap::thread::slot_ok`). `thread::heap_from_slot` (verified)
   authenticates the value and borrows the heap from the token
   through the trusted `heap::thread::slot_heap_ref` (partly checked by
@@ -377,9 +387,9 @@ the call does not return (theorem 3, which is not voided for it).
   included (`mark_bound`, `mark_rehome`, `heap/fresh.rs`, and
   `init_fields` are verified): `Heap::create` (`heap/mod.rs`),
   `create_detached`. Teardown, `destroy`, is verified
-  (its heap block from the ghost state of the heap `tcaches::heap_at`
-  hands it: `Heap::head` and the home headers' permissions; creation
-  puts a thread heap's head and claim there, `tcaches::heap_new`).
+  (its heap block from the ghost state of the heap whose permission its
+  caller hands it: `Heap::head` and the home headers' permissions;
+  creation puts a heap's head and claim there, `tcaches::heap_new`).
 - No writer escapes the permissions: `Heap::set_arena`
   (`heap/mod.rs`) swaps the home headers through their permissions
   and ensures `wf`; `Heap::free_caches` writes a bare array and
@@ -1104,8 +1114,8 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
   `Heap::destroy` (verified) gives back the claims
   of what it frees from the heap's ghost state (the stacks' from
   `CachePerms::blocks`, the nodes' from `Heap::heads`) and the heap
-  block's from `Heap::head` (`Heap::home_at`, which `tcaches::heap_at`
-  assumes).
+  block's from `Heap::head` (`Heap::home_at`, which `destroy` requires
+  of the permission its caller hands it).
 - `Shared::put_head` and `put_table` store what they are given
   (common premise); `SlabTable::new` (`class/table.rs`) proves
   `meta_ok` from the reservations `Meta::reserve_table` (`meta.rs`)
@@ -2332,13 +2342,13 @@ the same tokens. The chain that makes an entry of the log a release:
 - `Heap::destroy` is verified: it calls `flush_all`
   first (after giving a counted heap's arena binding back, which touches
   no cache, so that a successor thread can be homed on the arena while
-  the flush runs), on the heap `tcaches::heap_at`
-  hands out for its pointer, `Heap::wf` by that function's premise, and
-  not in use elsewhere by `tcaches::axiom_heap_use`
-  (`heap/tcaches.rs`, trusted), whose `HeapUse` token `destroy`
-  consumes: `heap_destructor` and `create_heap_for_thread` each make
-  one. The heap `heap_destructor` hands it is the TLS slot's heap, whose
-  `wf` `heap_at` assumes (common premise). After the flush
+  the flush runs), on the heap whose permission its caller hands it in
+  a `HeapLoan`, which `destroy` consumes: `Heap::wf` and
+  `Heap::home_at` at its pointer are in `destroy`'s precondition.
+  `Tcaches::destroy` hands it the registry's permission (`heap_ok`),
+  `create_heap_for_thread` the one `Heap::create` returned, and
+  `heap_destructor` the one the TLS slot's loan holds, whose `wf` and
+  `home_at` `TlsSlot::entry` assumes (`slot_ok`, common premise). After the flush
   `free_caches_in` (`heap/mod.rs`) frees each array; it requires
   every header of the array empty and reads each header through its
   permission, so its `assert_flushed` abort is proved unreachable.
@@ -3392,9 +3402,10 @@ it).
   heap permission alone; the aarch64 `get_tp` returns the token's thread
   pointer.
 - `Heap::create` makes no call that can allocate (above).
-- Explicit caches reach a heap through `tcaches::heap_at` with a
-  `HeapUse` token (`tcaches::axiom_heap_use`, `heap/tcaches.rs`): one
-  token per call that reaches an existing heap.
+- Explicit caches reach a heap through `Tcaches::get`, which lends it
+  from the table's registry with a `HeapUse` token
+  (`tcaches::axiom_heap_use`, `heap/tcaches.rs`): one token per call
+  that reaches an existing explicit cache.
 - `Heap::destroy` (verified, theorem 10), on the heapless path:
   it takes no slot token and writes no slot (no call in it does; the slot
   holds `TLS_CREATING` across it, so a nested entry would be benign).
@@ -4388,13 +4399,15 @@ entries, and the slot token under every cached entry
 `perms` is a private field of `Heap`, so only `heap` code can change a
 cache, and only through a `&mut Heap`. A verified function obtains a
 heap only from `thread::heap_from_slot` (verified, borrowing it from the slot token, `TlsSlot::entry`; through
-`heap_for_thread_in` and `existing_heap_in`), `tcaches::heap_at`
-(trusted, `external_body`; through `Tcaches::get`, `heap_destructor`
-and `Heap::destroy`) or `tcaches::heap_new`
+`heap_for_thread_in` and `existing_heap_in`), `Tcaches::get`
+(verified, lending it from the table's registry, `heap_ok`), a heap
+loan handed to `Heap::destroy` (through `slot_heap_ref`) or
+`tcaches::heap_new`
 (heap creation, verified over the trusted `HeapPerm::assemble`;
 `mallctl::thread_heap` goes through `heap_for_thread`),
-and each reference is assumed `Heap::wf` afresh: no ghost state links two
-references to the same heap. The theorem is therefore stated per
+and each reference is `Heap::wf` afresh, by the slot premise or the
+registry's invariant: no ghost state links two references to the same
+heap across calls. The theorem is therefore stated per
 reference: every heap the direct paths obtain, they leave caching
 exactly what it cached.
 
@@ -5811,7 +5824,7 @@ In words:
 
 **Premises beyond the common ones.**
 - Every heap a verified path is handed is `Heap::wf` (common premises:
-  `TlsSlot::entry`, `heap_at`), and the statements are per reference, as
+  `TlsSlot::entry`, and the table's registry, `heap_ok`), and the statements are per reference, as
   in theorem 20: `flush_caller`, `Tcaches::flush` and the
   `ThreadTcacheEnabled` arm each state the result for the reference they
   hold; that the next call's reference is the same heap in the same
@@ -7118,8 +7131,8 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
   linear permission with those claims (and, from `FreshHeap::shared`, that its `shared`
   field is the process's `Shared`), and `heap_new` puts it in the
   thread's slot token and borrows the heap from there.
-- `Heap::destroy` (verified; it takes a `tcaches::HeapUse` token and
-  requires `h@.addr != 0`) unbinds a counted heap's
+- `Heap::destroy` (verified; it takes the heap's permission in a
+  `HeapLoan` and requires `h@.addr != 0`) unbinds a counted heap's
   home arena with the ticket the heap holds (`Heap::homed_ok`), first,
   and clears the heap's `bound` and `rehome` with it, so the dying heap
   holds no ticket and is not counted for the rest of `destroy` while
@@ -7128,13 +7141,14 @@ and `a_young_heap_moves_onto_the_idle_arena_it_frees_into` exercise
 - `homed_ok`'s `rehome ==> bound`: a new thread heap is
   counted, so it holds whatever `mark_rehome` (`heap/fresh.rs`,
   verified) stored;
-  an explicit cache, assumed `wf` (`heap_at`), rests on `init_fields`
+  an explicit cache, `wf` by the table's registry (`heap_ok`), rests on `init_fields`
   storing `false` (verified) and on `create` being the one writer that
   sets `rehome` (by inspection; `set_arena` and `try_rehome` clear
   it). `same_shape`, `caches_same`, `updates` and the field lists
   of `claim` and the accounting lemmas keep `rehome` too.
 - Every heap a verified path is handed is `Heap::wf`, with
-  `homed_ok` (common premises: `TlsSlot::entry`, `heap_at`): a thread
+  `homed_ok` (common premises: `TlsSlot::entry`, and the table's
+  registry, `heap_ok`): a thread
   heap's ticket is the one `create_heap_for_thread` installed, kept by
   every verified writer (`keeps`, `same_shape`, `caches_same` and
   `updates` keep `bound` and `homed`); an explicit cache is not
@@ -9916,6 +9930,152 @@ heap::tcaches`, each on `heap/tcaches.rs`):
 M14 with the theorem's premise lacking `read.atomic == ...` verifies, so
 that conjunct is what rejects it.
 
+## An explicit cache's heap comes from the table's registry (rests on the explicit-cache contract)
+
+`Tcaches::get` hands out the heap of an explicit cache. It used to get
+that heap from `heap_at`, which asserts that the heap is well formed and
+that its home headers are at the pointer. Now it gets it from a ghost
+registry in the table's invariant, which carries the heap's permission
+from `tcache.create` to each lookup and back.
+
+**Statement.** The table's invariant (`TablePred`, `heap/tcaches.rs`)
+holds, beside each entry's permission and generation, a registry
+(`TableVal::heaps`). Each permission it holds is for the heap at its
+entry's pointer: well formed, not counted in any arena, with its home
+headers and the rest of its block at that pointer (`heap_ok`, part of
+`entry_ok`). `Tcaches::create` builds the permission from what
+`Heap::create_detached` returned (`heap_new`,
+`Heap::lemma_fresh_detached_wf`) and puts it in with the store that
+publishes the entry. `Tcaches::get` takes it out in the opening that
+loads the entry. It lends it to the caller through a `HeapLoan`
+(`slot_heap_ref`), and records the heap in the caller's `HeapUse`
+(`HeapUse::lent`). `Tcaches::put_back` hands it back once the reference
+ends. It requires that the heap keeps the recorded one (`Heap::keeps`,
+which now includes the heap's block, `Heap::head`), so the registry's
+invariant holds again. `Tcaches::destroy` takes it out with the swap
+that leaves the entry null. Every caller of `get` puts it back on each
+path that returns: `heap::mallocx`'s `alloc` (three paths),
+`alloc_huge` and `free`, `api::jemalloc`'s `sdallocx_routed`,
+`Tcaches::flush` and `destroy_then_get`.
+
+```rust
+// heap/tcaches.rs
+pub fn get<'a>(&'a self, id: u16, Tracked(u): Tracked<&'a mut HeapUse>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
+    requires
+        old(loan).heap() is None,
+    ensures
+        r matches Some(h) ==> h.wf(),
+        r matches Some(h) ==> !h.spec_rehome(),
+        r matches Some(h) ==> (final(u).lent() matches Some((q, l)) && l == *h && q@.addr == final(u).read()->Some_0.addr
+            && (final(loan).heap() matches Some(hp) && hp.addr() == q@.addr && hp.value() == *final(h))),
+        // ... and the read record of theorem_tcache_destroyed_none, unchanged.
+```
+
+**Premises (seams).**
+
+| seam | kind | what it gives here |
+|---|---|---|
+| `axiom_entry_heap` (`heap/tcaches.rs`) | C-program contract, assumption | when `get` loads a non-null entry, the registry holds its permission: no other caller holds it out. Called only in `get` and in `Tcaches::destroy`'s swap (`entry_heap_axiom_only_in_get_and_destroy`; the destroy call is the next section's); each `get` is followed by its `put_back` on every path (`every_get_puts_back`). It states nothing of the heap. |
+| `axiom_heap_use` (`heap/tcaches.rs`) | C-program contract, assumption | the caller's token, as before |
+| `HeapPerm::assemble` (`heap/thread.rs`) | allocator invariant, partly checked by Kani | the fresh heap's permission, now with `rehome`; `detached_writers_store_the_assembled_fields` checks `Heap::create_detached`'s writer order, as `writers_store_the_assembled_fields` checks `Heap::create`'s |
+| `slot_heap_ref` (`heap/thread.rs`) | raw pointer, partly checked by Kani | the reference from the loan's permission |
+| `axiom_tcaches_assemble`, `axiom_tcaches_layout` | as in the section above | the table's invariant |
+
+**Not covered.** That `create` puts the permission in is not something
+a specification observes: mutation M5 below verifies, and that fact is
+what `axiom_entry_heap`'s doc names. `Tcaches::destroy` hands the
+permission it takes out of the registry to `Heap::destroy` (next
+section).
+
+**Mutations** (`cargo verus focus --locked -- --verify-module
+heap::tcaches` and the named modules):
+
+| id | change | rejected by |
+|---|---|---|
+| M1 | `get` drops the registry's permission instead of lending it | precondition (`slot_heap_ref`) |
+| M2 | `heap_ok` without `home_at` | `HeapUse` type invariant |
+| M3 | `Heap::keeps` without `head` (`heap`) | postcondition (`lemma_keeps_home`) |
+| M4 | `Heap::free` without `!rehome ==> keeps` (`heap::mallocx`) | precondition (`put_back` in `mallocx::free`) |
+| M5 | `create` drops the permission instead of registering it | not rejected (see "Not covered") |
+
+## Every heap `Heap::destroy` frees comes with its permission (rests on the explicit-cache contract and the slot premise)
+
+`Heap::destroy` used to reach the heap through `tcaches::heap_at`, a
+trusted dereference that asserted the heap at any pointer it was handed
+well formed, with its home headers and block at that pointer. It now
+takes the heap's permission from its caller, and `heap_at` is gone.
+
+**Statement.** `Heap::destroy(h, shared, loan, ord)` requires that
+`loan` holds the permission to the heap at `h`'s address, well formed,
+with `Heap::home_at(h)`. Each of its three callers hands it one:
+
+- `Tcaches::destroy`: the registry's permission, taken out with the
+  swap that leaves the entry null (`heap_ok` gives `wf` and `home_at`).
+- `create_heap_for_thread`, for a heap the thread key could not take:
+  what `Heap::create` returned, installed in a loan of its own
+  (`heap_new`, `install_fresh`), as the published path installs it in
+  the slot's loan.
+- `heap_destructor`: the permission the thread's slot loan holds. The
+  destructor reads the slot before it stores `TLS_EXITED`, names the
+  heap as `heap_from_slot` does (`pac::auth` under `PUSH_PAC`), and
+  destroys the heap at `addr_to_ptr` of that address. Its argument `p`
+  is tested for null and not otherwise used.
+
+For the destructor's pointer to be the one `home_at` names,
+`slot_ok` now includes `home_at(cast_heap(addr))`: the heap's home
+headers are at the address-cast pointer to its address. Every heap
+pointer is one: the metadata allocator's free lists and live map hold
+only address-cast pointers (`Inner::lists_wf`, `Inner::live_wf`), so
+`Meta::alloc_raw` returns one, and so do `Heap::create_detached` and
+`Heap::create` (`r.0 == cast_heap(r.0@.addr)`).
+
+```rust
+// heap/mod.rs
+pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(loan): Tracked<crate::sys::tls::HeapLoan>, Tracked(ord): Tracked<&mut LockOrder>)
+    requires
+        loan.heap() matches Some(hp) && hp.addr() == h@.addr && hp.value().wf() && hp.value().home_at(h),
+        // ...
+```
+
+**Premises (seams).**
+
+| seam | kind | what it gives here |
+|---|---|---|
+| `axiom_entry_heap` (`heap/tcaches.rs`) | C-program contract, assumption | now also at `Tcaches::destroy`'s swap: the registry holds the entry's permission (`entry_heap_axiom_only_in_get_and_destroy`) |
+| `TlsSlot::entry` (`sys/tls.rs`) | slot premise, assumption | the destructor's token: `slot_ok`, which now includes `home_at` of the cast pointer. `home_at` is of the heap's private ghost fields `home_hdrs` and `head`, which only creation sets and only `Heap::destroy` takes from |
+| `slot_heap_ref` (`heap/thread.rs`) | raw pointer, partly checked by Kani | the reference `Heap::destroy` and the destructor take from the loan |
+| `addr_to_ptr` (`vspec/addr.rs`) | raw pointer | the destructor's pointer, with the cast provenance |
+| `pac::auth` (`sys/pac.rs`) | platform | the slot value's authentication, as in `heap_from_slot` |
+
+**Removed.** `tcaches::heap_at` (allocator invariant, assumption). Its
+premise about the destructor, that the C library hands back the value
+registered with the key, is no longer stated anywhere: the destructor
+does not use that value. `axiom_heap_use` is no longer called in
+`Tcaches::destroy`, `heap_destructor` or `create_heap_for_thread`.
+
+**Exec change.** One, in the cold thread-exit destructor: it reads the
+slot (`get_tp`), the process's push flags (`fast_flags`) and, under
+`PUSH_PAC`, authenticates the slot value, where it used to cast `p`.
+The heap it destroys is the same one, since the C library hands it the
+value registered with the key, and that is the slot's heap. A slot that
+holds no heap when the destructor runs (which the C library never
+causes) gets the sentinel and frees nothing, where the old code freed
+`p`. The unit tests' variant of `exit_pac` reads the flag from the
+heap's own `Shared`, since their heaps are built over test `Shared`s.
+
+**Mutations** (`cargo verus focus -- --verify-module heap::thread` and
+the named modules):
+
+| id | change | rejected by |
+|---|---|---|
+| N1 | `slot_ok` without `home_at` (`heap::thread`) | precondition (`Heap::destroy` in `heap_destructor`) |
+| N2 | `Inner::live_wf` without the cast provenance (`meta`) | postcondition (`Inner::free`) |
+| N2b | `Inner::lists_wf` without the cast provenance (`meta`) | postcondition (`Inner::alloc`), assertion |
+| N3 | the destructor destroys `p as *mut Heap` (`heap::thread`) | assertion (`h == cast_heap(a)`) |
+| N4 | the destructor skips `pac::auth` (`heap::thread`) | precondition (`slot_heap_ref`, `Heap::destroy`) |
+| N5 | `Tcaches::destroy` drops the registry's permission (`heap::tcaches`) | precondition (`Heap::destroy`) |
+| N6 | the unpublished path skips `install_fresh` (`heap::thread`) | precondition (`Heap::destroy`) |
+
 ## Sized frees run plain `free`'s check under `exact_sized_free` (rests on the C-boundary assumption)
 
 `exact_sized_free` is an opt-in hardening key (`config.rs`;
@@ -11038,7 +11198,8 @@ alone):
   `destroy` runs first empties every home and node header and appends
   exactly what they held to the released log, each slot's token handed
   to `release_routed` with it. `destroy` itself is verified (its heap block from
-  `Heap::head`, which `tcaches::heap_at` assumes), section
+  `Heap::head`, which `destroy` requires of the permission its caller
+  hands it), section
   10's "weaker" list applies, and that every heap gets a destructor is
   not proved (with an invalid thread key none does), hence `p`.
 
