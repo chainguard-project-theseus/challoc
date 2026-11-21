@@ -362,7 +362,10 @@ futex mutex in the shape of Drepper's "mutex, take 3": one CAS to acquire
 uncontended, one swap to release, `FUTEX_WAKE` only when the word says a
 waiter may sleep. A contended locker spins 100 rounds (`SPINS`, one
 `core::hint::spin_loop` each) before `FUTEX_WAIT`: slow-path critical
-sections are a few dozen instructions.
+sections are a few dozen instructions. The word is a vstd `PAtomicU32`
+(every operation `SeqCst`), whose permission and the lock's ghost token
+sit in an atomic invariant while the lock is free, so the proofs check
+that an acquisition is the exchange that took the word off `UNLOCKED`.
 
 The slab sets (`class/sets.rs`) are two-level bitmaps over slab numbers
 (`Set`) that give "lowest slab in the set" in two `tzcnt` instructions.

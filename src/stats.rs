@@ -2493,7 +2493,7 @@ impl crate::lock::LockSpec for Snapshot {
 
 /// The frame holds of every value with itself. Nothing calls this: Verus
 /// proves `Lock::new`'s `requires` of the initial value at each call
-/// directly (`lock::axiom_acquired` claims it at the first acquisition).
+/// directly (the cell's invariant, `lock::CellPred`, holds it until the first acquisition).
 proof fn lemma_snapshot_frame_reflexive(v: Snapshot)
     ensures
         crate::lock::lock_frame(v, v),
@@ -2521,7 +2521,7 @@ proof fn lemma_snapshot_frame_reflexive(v: Snapshot)
 /// whose ensures give the identities. The fork handlers take and release
 /// the raw lock without touching the value, and nothing reads it
 /// without a guard. What is left is the mutex contract
-/// (`lock::axiom_acquired`).
+/// in the fork window (`lock::axiom_window_cell`).
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
@@ -2537,7 +2537,7 @@ impl crate::lock::LockSpec for ArenaStats {
 
 /// The frame holds of every value with itself. Nothing calls this: Verus
 /// proves `Lock::new`'s `requires` of the initial value at each call
-/// directly (`lock::axiom_acquired` claims it at the first acquisition).
+/// directly (the cell's invariant, `lock::CellPred`, holds it until the first acquisition).
 proof fn lemma_arena_stats_frame_reflexive(v: ArenaStats)
     ensures
         crate::lock::lock_frame(v, v),
