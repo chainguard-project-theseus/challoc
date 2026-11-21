@@ -838,11 +838,6 @@ fn static_and_opt_keys_report_the_build_and_configuration() {
         ENOENT,
         "accepted-and-ignored conf keys are not readable"
     );
-    assert_eq!(
-        call("opt.stats_print"),
-        ENOENT,
-        "the inert key without a field is not readable"
-    );
     // The two byte-count options are `size_t`, as jemalloc's
     // `opt.tcache_max` is: an `unsigned` buffer is the wrong size and
     // gets the low half plus `EINVAL`, as for any size_t key.

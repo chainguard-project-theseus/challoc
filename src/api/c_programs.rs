@@ -1418,18 +1418,49 @@ fn c_conf_no_tcache() {
 }
 
 #[test]
-fn c_conf_inert_key_aborts_under_abort_conf() {
-    // `stats_print` is parsed but nothing prints at exit: with abort_conf a
-    // program cannot start believing it turned something on. `thp` and
-    // `huge_retain_max` are live keys and pass.
-    run_conf(
-        "inert",
-        None,
-        &[("MALLOC_CONF", "abort_conf:true,stats_print:true")],
-        Some(
-            "challoc: MALLOC_CONF: conf key stats_print is accepted but has no effect (not implemented)",
-        ),
+fn c_conf_stats_print_reports_at_exit() {
+    // `stats_print:true`: the text report on stderr (the
+    // `malloc_message` path with no hook) at exit, and `abort_conf`
+    // accepts the key. Without
+    // the key nothing is printed at exit.
+    run_row(
+        "c_conf stats_print",
+        &CTest {
+            prog: "conf",
+            env: &[("MALLOC_CONF", "abort_conf:true,stats_print:true")],
+            stderr_has: &[
+                "___ Begin jemalloc statistics ___",
+                "  opt.stats_print: true\n",
+                "--- End jemalloc statistics ---",
+            ],
+            ..BASE
+        },
     );
+    run_row(
+        "c_conf stats_print off",
+        &CTest {
+            prog: "conf",
+            env: &[("MALLOC_CONF", "abort_conf:true,stats_print:false")],
+            stderr_lacks: &["jemalloc statistics"],
+            ..BASE
+        },
+    );
+    // A program that never allocates: challoc is never initialised, so
+    // nothing prints and nothing initialises at exit.
+    run_row(
+        "c_conf stats_print never initialised",
+        &CTest {
+            prog: "stats_print_noinit",
+            env: &[("MALLOC_CONF", "abort_conf:true,stats_print:true")],
+            stderr_lacks: &["jemalloc statistics", "challoc:"],
+            ..BASE
+        },
+    );
+}
+
+#[test]
+fn c_conf_live_keys_pass_abort_conf() {
+    // `thp` and `huge_retain_max` are live keys and pass.
     run_conf(
         "huge_retain_max",
         None,

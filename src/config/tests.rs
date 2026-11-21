@@ -65,6 +65,7 @@ fn defaults_match_the_design_table() {
     assert!(!d.pac_pointers, "signed pointers are opt-in");
     assert!(d.cgroup);
     assert!(d.cow_epoch, "challoc_cow_begin opens epochs by default");
+    assert!(!d.stats_print, "no report at exit by default");
     assert_eq!(d.effective_guard_slab_interval(), 8);
 }
 
@@ -91,6 +92,7 @@ fn every_bool_key_parses_true_and_false() {
         "cgroup",
         "check_zero",
         "cow_epoch",
+        "stats_print",
     ];
     for key in keys {
         for v in [true, false] {
@@ -331,37 +333,11 @@ fn percpu_arena_values() {
     );
 }
 
-/// The one inert key: a bool by value, no field, unreadable, one
-/// `Issue::Inert` per pair (what `abort_conf` aborts on), and in no
-/// other table.
+/// The opt-in bool keys `stats_print` and the two hardening keys: no
+/// report, stored, readable, and `abort_conf` accepts them.
 #[test]
-fn inert_keys_are_reported_and_rejected_under_abort_conf() {
-    assert_eq!(INERT_KEYS, &["stats_print"]);
-    for key in INERT_KEYS {
-        assert!(!KEYS.contains(key) && !IGNORED_KEYS.contains(key), "{key}");
-        let value = "true";
-        let text = std::format!("{key}:{value}");
-        let (cfg, issues) = parse(&text);
-        assert_eq!(issues.len(), 1, "{text}: {issues:?}");
-        assert_eq!(
-            issues[0],
-            std::format!("conf key {key} is accepted but has no effect (not implemented)"),
-            "{text}"
-        );
-        assert_eq!(cfg, Config::DEFAULT, "{key} has no field");
-        assert_eq!(cfg.get(key.as_bytes()), None, "{key}");
-        let (cfg, issues) = parse(&std::format!("{key}:nonsense"));
-        assert_eq!(cfg, Config::DEFAULT, "{key}:nonsense changed the config");
-        assert_eq!(issues.len(), 1, "{key}:nonsense: {issues:?}");
-        assert!(
-            issues[0].contains("invalid conf value"),
-            "{key}:nonsense: {}",
-            issues[0]
-        );
-    }
-    // The two hardening keys are real, opt-in keys: no report, stored,
-    // readable, and `abort_conf` accepts them.
-    for key in ["zero_on_free", "slot_randomize"] {
+fn opt_in_keys_are_accepted_under_abort_conf() {
+    for key in ["stats_print", "zero_on_free", "slot_randomize"] {
         let (cfg, issues) = parse(&std::format!("{key}:true,abort_conf:true"));
         assert!(issues.is_empty(), "{key}: {issues:?}");
         assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(true)), "{key}");
@@ -369,12 +345,12 @@ fn inert_keys_are_reported_and_rejected_under_abort_conf() {
     }
     let (cfg, _) = parse("zero_on_free:true,slot_randomize:true");
     assert!(cfg.zero_on_free && cfg.slot_randomize);
-    // Mixed with real keys the real ones still apply and the inert ones
-    // are counted: what `load` aborts on under `abort_conf`.
+    // Mixed with other keys, every one applies and nothing is reported:
+    // nothing for `load` to abort on under `abort_conf`.
     let (cfg, issues) = parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");
     assert_eq!(cfg.narenas, 3);
-    assert!(cfg.abort_conf && !cfg.cgroup && cfg.thp == Thp::Always);
-    assert_eq!(issues.len(), 1, "cgroup and thp are real keys: {issues:?}");
+    assert!(cfg.abort_conf && !cfg.cgroup && cfg.thp == Thp::Always && cfg.stats_print);
+    assert!(issues.is_empty(), "{issues:?}");
 }
 
 /// `huge_dirty_decay_ms` (design 7): unset it follows `dirty_decay_ms`
@@ -665,35 +641,20 @@ fn get_covers_every_key_and_only_those() {
     }
 }
 
-/// The three tables and `set` agree: every name in `KEYS`,
-/// `IGNORED_KEYS` and `INERT_KEYS` is one `set` knows (a bad value is
-/// refused as a value, never as an unknown key; an ignored key takes
-/// any value; an inert key is reported as inert), the tables are
-/// disjoint, and a name in none of them is [`Issue::UnknownKey`], so a
-/// key added to one table that another also names (or a typo in a
+/// The two tables and `set` agree: every name in `KEYS` and
+/// `IGNORED_KEYS` is one `set` knows (a bad value is refused as a value,
+/// never as an unknown key; an ignored key takes any value), the tables
+/// are disjoint, and a name in neither is [`Issue::UnknownKey`], so a
+/// key added to one table that the other also names (or a typo in a
 /// test) fails here rather than in `opt.<key>` or `malloc_stats_print`.
 #[test]
 fn set_knows_exactly_the_tabled_keys() {
-    for key in KEYS.iter().chain(IGNORED_KEYS).chain(INERT_KEYS) {
+    for key in KEYS.iter().chain(IGNORED_KEYS) {
         let mut cfg = Config::DEFAULT;
         let r = cfg.set(key.as_bytes(), b"nonsense-value");
         assert!(!matches!(r, Err(Issue::UnknownKey(_))), "{key}: {r:?}");
         if IGNORED_KEYS.contains(key) {
             assert_eq!(r, Ok(()), "{key} takes any value");
-        } else if INERT_KEYS.contains(key) {
-            assert_eq!(
-                r,
-                Err(Issue::BadValue {
-                    key: key.as_bytes(),
-                    value: b"nonsense-value"
-                }),
-                "{key}"
-            );
-            assert_eq!(
-                cfg.set(key.as_bytes(), b"true"),
-                Err(Issue::Inert(key.as_bytes())),
-                "{key}"
-            );
         } else {
             assert_eq!(
                 r,
@@ -705,14 +666,9 @@ fn set_knows_exactly_the_tabled_keys() {
             );
             assert!(cfg.get(key.as_bytes()).is_some(), "{key} is readable");
         }
-        let n = [
+        assert_ne!(
             KEYS.contains(key),
             IGNORED_KEYS.contains(key),
-            INERT_KEYS.contains(key),
-        ];
-        assert_eq!(
-            n.iter().filter(|&&b| b).count(),
-            1,
             "{key} is in exactly one table"
         );
     }
@@ -764,6 +720,7 @@ fn field(c: &Config, name: &str) -> Value {
         "cgroup" => Value::Bool(c.cgroup),
         "check_zero" => Value::Bool(c.check_zero),
         "cow_epoch" => Value::Bool(c.cow_epoch),
+        "stats_print" => Value::Bool(c.stats_print),
         _ => panic!("{name}: a key with no field here"),
     }
 }
@@ -782,10 +739,7 @@ fn the_table_is_the_one_spelling_of_every_key() {
             1,
             "{key} is named once"
         );
-        assert!(
-            !IGNORED_KEYS.contains(key) && !INERT_KEYS.contains(key),
-            "{key}"
-        );
+        assert!(!IGNORED_KEYS.contains(key), "{key}");
         assert_eq!(d.get(key.as_bytes()), Some(field(&d, key)), "{key}");
         // A value of the key's type that differs from the default.
         let other = match field(&d, key) {

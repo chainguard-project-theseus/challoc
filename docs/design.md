@@ -1611,23 +1611,20 @@ Format is jemalloc's `key:value,key:value`. The keys, in `KEYS` order:
 | `slot_randomize`          | false   | 4                                       |
 | `double_free_scan`        | false   | 6.3 step 3                              |
 | `exact_sized_free`        | false   | sized frees run `free`'s check; 6.3     |
-| `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
+| `abort_conf`              | false   | abort on unknown keys and bad values    |
 | `cgroup`                  | true    | 11                                      |
 | `check_zero`              | false   | debug: verify every slot or page handed out as zero |
+| `stats_print`             | false   | the text report at `exit`; 16           |
 
-Two more lists (`config::INERT_KEYS`, `config::IGNORED_KEYS`):
-`stats_print` is *inert*, parsed as a bool and reported every time it is
-set (so `abort_conf` refuses a configuration that relies on it and
-`malloc_stats_print` marks it "accepted, no effect"; nothing prints at
-exit); `junk`, `zero`, `retain`, `oversize_threshold`,
-`metadata_thp` and `confirm_conf` are jemalloc keys accepted with any
-value and ignored (`metadata_thp` because the metadata follows `thp`).
-Unknown keys, bad values, out-of-range numbers (clamped), inert keys and
-sources longer than 4096 bytes (the pair at the cut is dropped) are
-reported on stderr and otherwise ignored unless `abort_conf` is set,
-which is evaluated after every source has been read. `opt.<key>` is
-readable through `mallctl` for every key of the table; the inert and
-ignored keys return `ENOENT`.
+One more list (`config::IGNORED_KEYS`): `junk`, `zero`, `retain`,
+`oversize_threshold`, `metadata_thp` and `confirm_conf` are jemalloc
+keys accepted with any value and ignored (`metadata_thp` because the
+metadata follows `thp`). Unknown keys, bad values, out-of-range numbers
+(clamped) and sources longer than 4096 bytes (the pair at the cut is
+dropped) are reported on stderr and otherwise ignored unless
+`abort_conf` is set, which is evaluated after every source has been
+read. `opt.<key>` is readable through `mallctl` for every key of the
+table; the ignored keys return `ENOENT`.
 
 ## 13. API surface
 
@@ -2220,15 +2217,20 @@ are per thread whatever its value.
   memory is still known zero, the ranges and bytes whose discard failed)
   and a `thp:` line (section 17.1: key, mode in force and why, the ranges
   advised, the host's global mode). The JSON form (`"J"`) has matching
-  `"cgroup"` and `"thp"` objects. The options list marks inert keys
-  "accepted, no effect". The line heads are pinned
+  `"cgroup"` and `"thp"` objects. The options list marks a key the host
+  overrides "accepted, no effect" with the reason. The line heads are pinned
   by `print::tests::text_report_line_set_is_pinned` and the JSON shape by
   `json_report_shape_is_pinned`.
 - Mappings are named `challoc:classes`, `challoc:huge` and `challoc:meta`
   (`PR_SET_VMA_ANON_NAME`, when the kernel has it), so `Rss` per name in
   `/proc/<pid>/smaps` places memory by region.
 - Abort messages include the faulting pointer, its classification and the
-  reason, prefixed `challoc: `. `stats_print:true` prints nothing at exit.
+  reason, prefixed `challoc: `.
+- `stats_print:true` prints the text report (`malloc_stats_print` with no
+  callback and no options, through `malloc_message`) at `exit`, from the
+  library's `.fini_array` rather than an `atexit` handler registered at
+  init as jemalloc does, so nothing is registered or allocated for it; it
+  prints nothing when challoc was never initialised.
 - `challoc_version()` (`const char *`, the crate version) is the `dlsym`
   probe for "is challoc the loaded allocator"; it touches no allocator
   state and does not initialise the allocator. `mallctl("version")` stays

@@ -23,18 +23,13 @@
 //! it applies to keys that appeared before it in the same or an earlier
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
-//! Three tables name the keys. [`KEYS`] names the tunables the allocator
+//! Two tables name the keys. [`KEYS`] names the tunables the allocator
 //! reads, jemalloc's and challoc's own (`lazy_band`, `guards`, ...), in
 //! table order; [`Config::set`] and [`Config::get`] (`opt.<key>`) find a
 //! key's index there and run that index's parser or reader; the modules
 //! named in each field's doc act on the values.
 //! [`IGNORED_KEYS`] are jemalloc keys accepted with any value and ignored,
-//! so a conf string written against jemalloc parses clean. The *inert*
-//! key ([`INERT_KEYS`]: `stats_print`) is parsed as a bool but nothing in
-//! the allocator reads it (there is nothing to print at exit); it is
-//! reported as [`Issue::Inert`] so that `abort_conf` rejects it and a
-//! program cannot believe it turned something on, and
-//! `malloc_stats_print` lists it as "accepted, no effect".
+//! so a conf string written against jemalloc parses clean.
 
 use core::ffi::CStr;
 use core::fmt::{self, Write as _};
@@ -195,6 +190,9 @@ pub struct Config {
     /// `challoc_cow_begin` opens fork epochs (`crate::cow`; design 5,
     /// "Fork epochs"); `false` makes it return `ENOTSUP`.
     pub cow_epoch: bool,
+    /// Print the `malloc_stats_print` text report through `malloc_message`
+    /// at exit (jemalloc's `stats_print`; `api::print::stats_print_at_exit`).
+    pub stats_print: bool,
 }
 
 impl Config {
@@ -250,6 +248,7 @@ impl Config {
         cgroup: true,
         check_zero: false,
         cow_epoch: true,
+        stats_print: false,
     };
 
     /// Apply one `key:value,key:value` string on top of `self`. Each problem
@@ -357,8 +356,7 @@ impl Config {
     }
 
     /// Set one key from its textual value: a [`KEYS`] entry's parser
-    /// ([`Config::set_at`]), an inert key ([`INERT_KEYS`]: validated as a
-    /// bool, then [`Issue::Inert`]), an ignored key ([`IGNORED_KEYS`]: any
+    /// ([`Config::set_at`]), an ignored key ([`IGNORED_KEYS`]: any
     /// value), else [`Issue::UnknownKey`]. An out-of-range number is
     /// clamped *and* returned as [`Issue::OutOfRange`].
     pub fn set<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
@@ -369,14 +367,6 @@ impl Config {
     {
         if let Some(r) = self.set_listed(key, value) {
             return r;
-        }
-        if contains(INERT_KEYS, key) {
-            // jemalloc's `stats_print` (report at exit): no field, since
-            // there is nothing to print at exit; validated as a bool and
-            // reported as inert so `abort_conf` does not let a program
-            // expect the report.
-            parse_bool(value).ok_or(Issue::BadValue { key, value })?;
-            return Err(Issue::Inert(key));
         }
         if contains(IGNORED_KEYS, key) {
             // jemalloc keys accepted for compatibility and ignored: their
@@ -403,7 +393,7 @@ impl Config {
 
     /// The value of a key by name, for `mallctl("opt.<key>")`: the reader
     /// of the [`KEYS`] entry named `key`. `None` for keys that are only
-    /// accepted and ignored, for inert keys and for unknown keys.
+    /// accepted and ignored and for unknown keys.
     pub fn get(&self, key: &[u8]) -> (r: Option<Value>)
         ensures
             r is None <==> !listed(key@),
@@ -517,7 +507,8 @@ impl Config {
             20 => bool_into(&mut self.abort_conf, key, value),
             21 => bool_into(&mut self.cgroup, key, value),
             22 => bool_into(&mut self.check_zero, key, value),
-            _ => bool_into(&mut self.cow_epoch, key, value),
+            23 => bool_into(&mut self.cow_epoch, key, value),
+            _ => bool_into(&mut self.stats_print, key, value),
         }
     }
 
@@ -599,7 +590,8 @@ impl Config {
             20 => Value::Bool(self.abort_conf),
             21 => Value::Bool(self.cgroup),
             22 => Value::Bool(self.check_zero),
-            _ => Value::Bool(self.cow_epoch),
+            23 => Value::Bool(self.cow_epoch),
+            _ => Value::Bool(self.stats_print),
         }
     }
 
@@ -860,7 +852,7 @@ pub exec const KEYS: &'static [&'static str] = &NAMES;
 /// exec only.
 // The lifetime is spelled out for `verus!`, as for `KEYS`.
 #[allow(clippy::redundant_static_lifetimes)]
-const NAMES: [&'static str; 24] = [
+const NAMES: [&'static str; 25] = [
     "background_thread",
     "dirty_decay_ms",
     "muzzy_decay_ms",
@@ -885,6 +877,7 @@ const NAMES: [&'static str; 24] = [
     "cgroup",
     "check_zero",
     "cow_epoch",
+    "stats_print",
 ];
 
 /// jemalloc keys that are accepted and ignored.
@@ -897,13 +890,6 @@ pub exec const IGNORED_KEYS: &'static [&'static str] = &[
     "metadata_thp",
     "confirm_conf",
 ];
-
-/// Keys that parse (as bools) but that no code acts on and no field
-/// stores: `stats_print` has nothing to print at exit. Setting one is
-/// [`Issue::Inert`], which `abort_conf` turns into an abort;
-/// `malloc_stats_print` lists them as "accepted, no effect".
-#[allow(clippy::redundant_static_lifetimes)]
-pub exec const INERT_KEYS: &'static [&'static str] = &["stats_print"];
 
 /// Whether `key` is one of `names` (`names.iter().any(..)`, spelled out:
 /// Verus does not specify `Iterator::any`).
@@ -1006,9 +992,6 @@ pub enum Issue<'a> {
         value: &'a [u8],
         to: u64,
     },
-    /// One of [`INERT_KEYS`]: parsed, but no field stores it and nothing
-    /// reads it.
-    Inert(&'a [u8]),
     /// A source longer than [`MAX_TEXT`](linux::MAX_TEXT) bytes: everything
     /// after the last pair that ends before the cut was ignored.
     Cut,
@@ -1070,13 +1053,6 @@ impl fmt::Display for Issue<'_> {
                     Bytes(value),
                     Bytes(key),
                     to
-                )
-            }
-            Issue::Inert(key) => {
-                write!(
-                    f,
-                    "conf key {} is accepted but has no effect (not implemented)",
-                    Bytes(key)
                 )
             }
             Issue::Cut => write!(
@@ -1722,7 +1698,7 @@ mod linux {
     /// Read every source in priority order into a `Config`, printing each
     /// problem as `challoc: <source>: <issue>` on stderr. Aborts when
     /// `abort_conf` is set by the time all sources are read and anything was
-    /// reported, an inert key or a cut source included. Never allocates: the
+    /// reported, a cut source included. Never allocates: the
     /// file goes through `buf` (`api::init` passes [`CONF_BUF`], through
     /// [`conf_buffer`]; a unit test, which holds no permission to it, passes
     /// its own) and the environment is walked in place. The result is well formed: the defaults are
@@ -2192,13 +2168,6 @@ mod kani_config {
     fn display_issue_rounded() {
         let to: u64 = kani::any();
         issue_formats(|key, value| Issue::Rounded { key, value, to });
-    }
-
-    /// [`issue_formats`] of `Inert`.
-    #[kani::proof]
-    #[kani::unwind(22)]
-    fn display_issue_inert() {
-        issue_formats(|k, _| Issue::Inert(k));
     }
 
     /// [`issue_formats`] of `Cut`.

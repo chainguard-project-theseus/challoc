@@ -166,7 +166,7 @@ fn text_report_has_every_section_and_live_figures() {
         "opt.zero_on_free: false\n",
         "opt.slot_randomize: false\n",
         "opt.cgroup: true\n",
-        "opt.stats_print: accepted, no effect",
+        "opt.stats_print: false\n",
         "opt.double_free_scan: false\n",
         "opt.huge_retain_max: 67108864\n",
         "Kernel and CPU features: page_size=",
@@ -423,11 +423,7 @@ fn text_report_line_set_is_pinned() {
         "  config.quantum:".into(),
         "Run-time option settings".into(),
     ];
-    want.extend(
-        KEYS.iter()
-            .chain(INERT_KEYS)
-            .map(|key| std::format!("  opt.{key}:")),
-    );
+    want.extend(KEYS.iter().map(|key| std::format!("  opt.{key}:")));
     want.extend(
         [
             "Kernel and CPU features:",

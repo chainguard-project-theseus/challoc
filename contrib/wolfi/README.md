@@ -388,10 +388,9 @@ bootstrap interpreter runs on challoc during the build as well.
 
 ### What the package test proves
 
-The prompt's `MALLOC_CONF=stats_print:true ruby -e 1 | grep challoc` does
-not work under challoc: `stats_print` is parsed and inert (`src/config.rs`
-`INERT_KEYS`; nothing is printed at exit), so the report is asked for
-directly, from inside the running interpreter, through Fiddle (a default
+The prompt's `MALLOC_CONF=stats_print:true ruby -e 1 | grep challoc`
+greps stdout, and `stats_print` writes its report at exit to stderr, so
+the report is asked for directly, from inside the running interpreter, through Fiddle (a default
 gem in 3.4, built here because `libffi-dev` is in the environment):
 
 | check | how |
