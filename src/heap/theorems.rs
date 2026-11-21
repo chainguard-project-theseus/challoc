@@ -523,6 +523,17 @@ pub open spec fn free_target(p: *mut u8) -> bool {
     ||| process_regions().is_huge_block(p@.addr, 1)
 }
 
+/// A free's bit test passed for the slot start `p` (`VULN-CLASSES.md`
+/// E): a load of the process's bitmap of `p`'s class found the slot's
+/// token absent from its word's tokens
+/// ([`bit_set_at_load`](crate::class::bit_set_at_load)), so no refill,
+/// cache or program held the slot free at that load. The plain frees
+/// prove it before they claim the block: a stale pointer whose slot was
+/// free at the load does not return.
+pub open spec fn slot_checked(p: *mut u8) -> bool {
+    exists|t: crate::class::SlabTable| t.is_process() && #[trigger] crate::class::bit_set_at_load(t, p@.addr as int)
+}
+
 /// A sized free's size hint names `p`'s class: if `p` is a slot start of
 /// class `c`, `hint` is `Some(c)`.
 /// `hint` is the class the size (and alignment) the program passed name,

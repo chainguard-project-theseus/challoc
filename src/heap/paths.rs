@@ -24,11 +24,11 @@ use super::zero::zero_on_free;
 #[cfg(verus_keep_ghost)]
 use super::{
     CachePerms, PUSH_ZERO, TLS_EXITED, cell_ok, free_target, hand_out, hint_ok, lemma_handed_ok,
-    lemma_hint_ok, lemma_plain_stored, pac_mode, regions_ok, slot_ok, slot_ptr, slot_start,
-    slot_token,
+    lemma_hint_ok, lemma_plain_stored, pac_mode, regions_ok, slot_checked, slot_ok, slot_ptr,
+    slot_start, slot_token,
 };
 use super::{
-    FOREIGN, FREE_DYN, FREE_EPOCH, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap,
+    Claim, FOREIGN, FREE_DYN, FREE_EPOCH, FREE_ROUTE, Heap, Live, PUSH_PAC, Shared, existing_heap,
 };
 #[cfg(verus_keep_ghost)]
 use crate::layout::{class_table, process_regions};
@@ -240,31 +240,36 @@ impl Heap {
 
     /// Fast path of `free`. Aborts unless `p` is an allocated slab slot or
     /// a live huge run. A slot of another arena goes onto this heap's
-    /// [`FOREIGN`] cache for the class (design 6.3 step 4). `blk` is the
-    /// caller's token for `p` ([`Live::claims`]).
+    /// [`FOREIGN`] cache for the class (design 6.3 step 4). `claim` is
+    /// the caller's token for `p` ([`Claim::claims`]), claimed only past
+    /// the slot's bit test ([`Shared::classify_free`]): a slot start
+    /// returns only if that test passed ([`slot_checked`]).
     #[inline(always)]
-    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held_block(p)),
             crate::sys::may_syscall(),
             shared.wf(),
             old(self).wf(),
-            blk.claims(p),
+            claim.claims(p),
             old(ord).top() == 0,
         ensures
             final(errno).val() == old(errno).val(),
             final(cell).kept(*old(cell)),
             final(self).wf(),
             free_target(p),
-            blk.block(p),
+            claim.held matches Some(l) ==> l.block(p),
+            slot_start(p) ==> slot_checked(p),
             *final(ord) == *old(ord),
     {
         proof {
             shared.lemma_wf();
             shared.lemma_regions_ok();
         }
-        match shared.classify_free(p, Tracked(&blk)) {
+        let tracked mut claim = claim;
+        match shared.classify_free(p, Tracked(&mut claim)) {
             Ok((class, arena)) => {
+                let tracked blk = claim.held.tracked_unwrap();
                 proof {
                     blk.lemma_claimed_block(p);
                     blk.lemma_claims_slot(p, class as int);
@@ -288,8 +293,10 @@ impl Heap {
                 }
             }
             Err(page) => {
+                let tracked blk = claim.held.tracked_unwrap();
                 proof {
                     blk.lemma_run_block(p, page);
+                    crate::heap::live::lemma_not_slot(p);
                 }
                 self.free_huge(shared, page, Tracked(blk), Tracked(ord))
             },
@@ -934,9 +941,12 @@ impl Heap {
 /// both it and the `free_flags` byte are produced only after the bit
 /// test. Nothing in the slot check needs them, and on x86_64 a byte
 /// loaded up front stays live across the bit arithmetic and costs `free`
-/// a callee-saved register (`push`/`pop` of `rbx`). `blk` is the caller's
-/// token for `p` ([`Live::claims`]): the push takes its slot token, and a
-/// `None` leaves it as it was, for the cold path.
+/// a callee-saved register (`push`/`pop` of `rbx`). `claim` is the
+/// caller's token for `p` ([`Claim::claims`]), held or still the call's:
+/// it is claimed only past the bit test ([`Shared::set_slot`]), so a
+/// pushed slot passed it ([`slot_checked`]). The push takes its slot
+/// token, and a `None` leaves a token that claims `p` (the held one as it
+/// was, or the live block's), for the cold path.
 ///
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`](super::thread::tls_heap_slot) on this
@@ -950,13 +960,13 @@ pub unsafe fn free_fast_slot(
     t: usize,
     tp: usize,
     p: *mut u8,
-    Tracked(blk): Tracked<&mut Live>,
+    Tracked(claim): Tracked<&mut Claim>,
     Tracked(tls): Tracked<&mut TlsSlot>,
 ) -> (r: Option<usize>)
     requires
         crate::sys::may_abort_corrupt(),
         shared.wf(),
-        old(blk).claims(p),
+        old(claim).claims(p),
         slot_ok(old(tls).cell, old(tls).loan),
         t == old(tls).value(),
         t > TLS_EXITED,
@@ -965,19 +975,25 @@ pub unsafe fn free_fast_slot(
         r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
         zero_on_free(shared) ==> r is None,
         r is Some ==> free_target(p),
-        r is None ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
-        r is None ==> *final(blk) == *old(blk) || old(blk).block(p),
-        r matches Some(c) ==> old(blk).slot_block(p, c as int),
+        r is Some ==> slot_checked(p),
+        r is None ==> final(claim).claims(p),
+        r is None ==> (old(claim).held matches Some(l) ==> final(claim).held matches Some(m) && m.len() == l.len() && (m == l
+            || l.block(p))),
+        r matches Some(c) ==> (old(claim).held matches Some(l) ==> l.slot_block(p, c as int)),
         final(tls).lent(*old(tls)),
-        r is Some ==> *final(blk) == old(blk).without_slot(),
     opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns(), crate::vspec::flags::flags_ns()]
 {
     let Some((class, slab)) = shared.set_slot(p) else {
         return None;
     };
+    // The bit test passed: claim the block.
+    proof {
+        claim.settle(p);
+    }
+    let tracked mut blk = claim.held.tracked_take();
     let flags = shared.free_flags();
     // SAFETY: guaranteed by the caller.
-    unsafe {
+    let r = unsafe {
         free_fast_tail(
             shared,
             class,
@@ -986,10 +1002,14 @@ pub unsafe fn free_fast_slot(
             flags,
             t,
             tp,
-            Tracked(blk),
+            Tracked(&mut blk),
             Tracked(tls),
         )
+    };
+    proof {
+        claim.held = Some(blk);
     }
+    r
 }
 
 /// After the bit test: the heap from the slot value `t`, authenticated
@@ -1292,46 +1312,49 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 }
 
 /// `free` of a non-null pointer on the calling thread. Aborts unless `p`
-/// is an allocated slab slot or a live huge run. `blk` is the caller's
-/// token for `p` ([`Live::claims`]).
+/// is an allocated slab slot or a live huge run. `claim` is the caller's
+/// token for `p` ([`Claim::claims`]), claimed only past the slot's bit
+/// test: a slot start returns only if it passed ([`slot_checked`]).
 #[inline(always)]
-pub fn free(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+pub fn free(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        blk.claims(p),
+        claim.claims(p),
         old(ord).top() == 0,
     ensures
         final(errno).val() == old(errno).val(),
         free_target(p),
-        blk.block(p),
+        claim.held matches Some(l) ==> l.block(p),
+        slot_start(p) ==> slot_checked(p),
         *final(ord) == *old(ord),
 {
     // The slot's cell goes down the free path for its tick, which may
     // start the background thread (`purge::on_tick`).
     let tracked tls = TlsSlot::entry();
     match super::thread::heap_for_thread_in(shared, Tracked(&mut tls.cell), Tracked(&mut tls.loan), Tracked(&mut *ord)) {
-        Some(h) => h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord)),
-        None => free_direct(shared, p, Tracked(blk), Tracked(ord)),
+        Some(h) => h.free(shared, p, Tracked(claim), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord)),
+        None => free_direct(shared, p, Tracked(claim), Tracked(ord)),
     }
 }
 
 /// `free` of a non-null pointer straight to its slab bitmap or the huge
 /// allocator, through no cache (`MALLOCX_TCACHE_NONE`, or a thread without
-/// a heap). Counted in the thread's statistics when it has a heap. `blk`
-/// as for [`free`].
-pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+/// a heap). Counted in the thread's statistics when it has a heap.
+/// `claim` as for [`free`].
+pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_abort_corrupt(),
-        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held_block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
-        blk.claims(p),
+        claim.claims(p),
         old(ord).top() == 0,
     ensures
         free_target(p),
-        blk.block(p),
+        claim.held matches Some(l) ==> l.block(p),
+        slot_start(p) ==> slot_checked(p),
         *final(ord) == *old(ord),
 {
     proof {
@@ -1339,8 +1362,10 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tra
         shared.lemma_regions_ok();
         shared.lemma_wf_ready();
     }
-    match shared.classify_free(p, Tracked(&blk)) {
+    let tracked mut claim = claim;
+    match shared.classify_free(p, Tracked(&mut claim)) {
         Ok((class, arena)) => {
+            let tracked blk = claim.held.tracked_unwrap();
             proof {
                 blk.lemma_claimed_block(p);
                 blk.lemma_claims_slot(p, class as int);
@@ -1373,10 +1398,11 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<Live>, Tra
             }
         }
         Err(page) => {
+            let tracked mut blk = claim.held.tracked_unwrap();
             proof {
                 blk.lemma_run_block(p, page);
+                super::live::lemma_not_slot(p);
             }
-            let tracked mut blk = blk;
             if shared.zero_on_free() {
                 // The token for the cleared run (`theorem_zero_on_free_huge`).
                 let Tracked(z) = shared.zero_huge(page, Tracked(&mut blk), Tracked(&mut *ord));
@@ -1423,7 +1449,7 @@ fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tr
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    free_direct(shared, p, Tracked(blk), Tracked(&mut *ord));
+    free_direct(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *ord));
 }
 
 /// The free of a live huge run on a thread with a heap, as
@@ -1449,7 +1475,8 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    match shared.classify_free(p, Tracked(&blk)) {
+    let tracked mut claim = Claim::held(blk);
+    match shared.classify_free(p, Tracked(&mut claim)) {
         Ok((class, _)) => {
             proof {
                 // A page start of the huge region is no slot.
@@ -1457,6 +1484,7 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
             }
         },
         Err(page) => {
+            let tracked blk = claim.held.tracked_unwrap();
             proof {
                 blk.lemma_run_block(p, page);
             }
@@ -1490,7 +1518,7 @@ fn theorem_valid_cache_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
+    h.free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
 }
 
 /// A sized free (`free_sized`, `sdallocx`, `free_aligned_sized`) of a
@@ -1540,7 +1568,7 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
         blk.lemma_claimed_block(p);
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
-    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
+    h.free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
 }
 
 /// The sized free of [`theorem_valid_sized_free_never_aborts`] through no
@@ -1570,7 +1598,7 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
         blk.lemma_claims(p);
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
-    free_direct(shared, p, Tracked(blk), Tracked(&mut *ord));
+    free_direct(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *ord));
 }
 
 /// With `exact_sized_free` (the configuration key), a sized free
@@ -1615,7 +1643,7 @@ fn theorem_exact_sized_free(shared: &Shared, h: &mut Heap, p: *mut u8, size: usi
         assert(!pushed && *h == h0 && blk == b0);
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
-    h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
+    h.free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(cell), Tracked(&mut *ord));
 }
 
 /// `shared` as the raw pointer [`existing_heap`] takes and `init_fields`

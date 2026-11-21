@@ -672,7 +672,7 @@ axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
 
 /// A page start of the huge region is no slot start: the class regions
 /// are apart from the huge region (`zero::lemma_slot_not_huge`).
-proof fn lemma_not_slot(p: *mut u8)
+pub proof fn lemma_not_slot(p: *mut u8)
     requires
         crate::heap::regions_ok(),
         process_regions().is_huge_block(p@.addr, 1),
@@ -903,8 +903,11 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
 /// and two tokens of one slot or overlapping runs let a proof derive
 /// `false`. The run-time checks behind the frees (the bitmap bit test,
 /// the huge table lookup, the cache flush's release) stay in the code for
-/// such programs. Its callers are the Rust entry points of the frees
-/// and of the reallocations (`api::libc::free`, `free_sized`,
+/// such programs. `api::libc::free` and `api::cxx::delete` reach it
+/// through [`Claim::settle`], past the bit test of a slot
+/// (`VULN-CLASSES.md` E; a huge page start is claimed as it is
+/// classified). Its other callers are the Rust entry points of
+/// the frees and of the reallocations (`free_sized`,
 /// `free_sized_hint`, `free_usable`, `realloc` and `realloc_usable`;
 /// `api::jemalloc::dallocx`, `sdallocx` and `rallocx`), each with the
 /// call's token it is passed, and the verification-only
@@ -916,6 +919,84 @@ pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)
     ensures
         r.claims(c.block()->0),
 ;
+
+/// The token of the block a free hands back, held or still to be claimed
+/// (`VULN-CLASSES.md` E): the block's [`Live`] (`held`), or, while `held`
+/// is `None`, the call's token ([`CCall`], `call`) that
+/// [`axiom_c_claim`] would turn into it. The plain frees pass the call's
+/// token down unclaimed and claim it ([`Claim::settle`]) only once their
+/// run-time check has passed, so the proof of the check does not rest on
+/// the C contract. Callers that hold the token already pass it held
+/// ([`Claim::held`]).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct Claim {
+    pub tracked held: Option<Live>,
+    pub tracked call: Option<crate::vspec::cbuf::CCall>,
+}
+
+impl Claim {
+    /// The token claims `p` ([`Live::claims`]), held or not: a pending
+    /// call's token claims the pointer the call passes.
+    pub open spec fn claims(self, p: *mut u8) -> bool {
+        match self.held {
+            Some(l) => l.claims(p),
+            None => self.call matches Some(c) && c.block() == Some(p),
+        }
+    }
+
+    /// The token is held, and it is the live block `p`'s ([`Live::block`]).
+    pub open spec fn held_block(self, p: *mut u8) -> bool {
+        self.held matches Some(l) && l.block(p)
+    }
+
+    /// A token the caller already holds.
+    pub proof fn held(tracked l: Live) -> (tracked r: Claim)
+        ensures
+            r.held == Some(l),
+    {
+        Claim { held: Some(l), call: None }
+    }
+
+    /// The call's token, not claimed yet.
+    pub proof fn pending(tracked c: CCall) -> (tracked r: Claim)
+        ensures
+            r.held is None,
+            forall|p: *mut u8| #[trigger] r.claims(p) <==> c.block() == Some(p),
+    {
+        Claim { held: None, call: Some(c) }
+    }
+
+    /// Claim the block: a pending call's token becomes the block's
+    /// ([`axiom_c_claim`], the seam); a held token stays as it is. The
+    /// free paths call it only past their run-time check.
+    pub proof fn settle(tracked &mut self, p: *mut u8)
+        requires
+            old(self).claims(p),
+        ensures
+            final(self).held is Some,
+            final(self).claims(p),
+            old(self).held is Some ==> *final(self) == *old(self),
+    {
+        if self.held is None {
+            let tracked c = self.call.tracked_take();
+            self.held = Some(axiom_c_claim(c));
+        }
+    }
+
+    /// The block's token: [`Claim::settle`], then the `Live` out.
+    pub proof fn take(tracked self, p: *mut u8) -> (tracked r: Live)
+        requires
+            self.claims(p),
+        ensures
+            r.claims(p),
+            self.held matches Some(l) ==> r == l,
+    {
+        let tracked mut s = self;
+        s.settle(p);
+        s.held.tracked_unwrap()
+    }
+}
 
 } // verus!
 

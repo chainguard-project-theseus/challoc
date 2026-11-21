@@ -3589,6 +3589,22 @@ fn dallocx(p, flags)     ensures p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::
 // api/cxx.rs
 fn new_aligned(size, align, nothrow)  ensures !is_pow2(align) ==> r@.addr == 0,
 
+// heap/theorems.rs; class/table.rs (a stale slot, VULN-CLASSES.md E): the
+// bit test found the slot's token absent from its word's at the load
+pub open spec fn slot_checked(p: *mut u8) -> bool {
+    exists|t: SlabTable| t.is_process() && #[trigger] bit_set_at_load(t, p@.addr as int)
+}
+pub open spec fn bit_set_at_load(t: SlabTable, a: int) -> bool {
+    exists|slab: int, slot: int, toks: Set<int>|
+        process_regions().slot_at(t.spec_class() as int, slab, slot) == a
+            && #[trigger] t.word_tokens(slab, slot, toks)
+            && !slot_free_at(toks, t.spec_class() as int, slab, slot)
+}
+// api/libc.rs; api/cxx.rs: C's token is claimed (heap::live::Claim) only
+// past the bit test, so the proof of a slot's check does not rest on it
+fn free(p)    ensures p@.addr != 0 && slot_start(p) ==> slot_checked(p),
+fn delete(p)  ensures p@.addr != 0 && slot_start(p) ==> slot_checked(p),
+
 // heap/theorems.rs; heap/live.rs
 pub proof fn theorem_free_target_aligned(p: *mut u8)
     requires regions_ok(), free_target(p),
@@ -3621,7 +3637,7 @@ and for an error-result row, that a returning call returns that result:
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
 | `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
-| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | at the check, *(load)*: `check_live` and `check_located` return only if the slot was not free at their bitmap load; the rest is *(C)* |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`; on the fast path the bit test sends it to that check) | `free`, `delete`: yes at the entry point, *(load)*: a returning call of a slot start ensures `slot_checked(p)` (the slot was not free at the load of either path's bit test), and C's token is claimed only past that test (`Claim::settle`). `free_usable`, the `realloc` family, `dallocx`: at the check, *(load)*: `check_live` and `check_located` return only if the slot was not free at their bitmap load; the rest is *(C)* |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | at the check, *(load)*, as above |
 | The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`); with the opt-in `exact_sized_free` key, at the call (`check_live`) | no: excluded by the C contract, *(C)*; under the key, that the free reaches the test is `theorem_exact_sized_free` |
 | Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort at the call: the slot's state byte (`heap::slotstate`) is not `LIVE`; else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |

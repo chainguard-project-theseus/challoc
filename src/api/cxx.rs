@@ -469,7 +469,8 @@ pub fn new_aligned_block(
 
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 /// C++ holds the token of the block it frees
-/// ([`crate::heap::live::axiom_c_claim`]).
+/// ([`crate::heap::live::axiom_c_claim`]), which `free` claims only past
+/// its check of a slot ([`crate::heap::slot_checked`]).
 #[inline(always)]
 pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
@@ -480,6 +481,7 @@ pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&m
     ensures
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
+        p@.addr != 0 && crate::heap::slot_start(p) ==> crate::heap::slot_checked(p),
         *final(ord) == *old(ord),
 {
     libc::free(p, Tracked(c), Tracked(errno), Tracked(ord))

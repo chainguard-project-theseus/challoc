@@ -132,12 +132,15 @@ pub(crate) use table::lemma_tz_shl;
 pub(crate) use table::load_mirror;
 pub(crate) use table::word_index;
 #[cfg(verus_keep_ghost)]
+pub use table::{
+    bit_set_at_load, committed_ns, mark_loc, mask_shape, owner_mark, owner_ns, slot_free_at,
+    slot_loc, slot_owner,
+};
+#[cfg(verus_keep_ghost)]
 use table::{
     bits_ghost, bits_shape, desc_at, desc_loc, guard_marked, lemma_bit_in_slab, slab_marked,
     slab_mask_of, slab_owner, words_of,
 };
-#[cfg(verus_keep_ghost)]
-pub use table::{committed_ns, mark_loc, mask_shape, owner_mark, owner_ns, slot_loc, slot_owner};
 use verify::{fresh_with_live, release_into_fresh};
 #[cfg(verus_keep_ghost)]
 use vstd::set::Set as VSet;

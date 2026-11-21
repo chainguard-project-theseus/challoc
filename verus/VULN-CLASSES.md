@@ -218,6 +218,14 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   view. The huge half: the huge free's checks (THEOREMS.md "Bad
   input", *(lock)*) return only for a page where a live run starts at
   the lock.
+- `free` and `delete` state it at the entry point: a returning call of a
+  slot start ensures `heap::slot_checked(p)`, on the fast path (the bit
+  test in `Shared::set_slot`) and the slow one (`check_live` in
+  `Shared::classify_free`). C's token reaches them unclaimed
+  (`heap::live::Claim`) and is claimed only past that test, so the
+  check's proof does not use the C contract. The other plain frees
+  (`free_usable`, the `realloc` family, `dallocx`) and the huge route
+  still claim it first (#835).
 
 **What the code does (read, not proved; `docs/hardening.md` (1)).** An
 unsized free of a slot whose bitmap bit is clear aborts at the call

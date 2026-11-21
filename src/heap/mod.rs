@@ -69,7 +69,7 @@ use compact::{
     PROBE_MASK,
 };
 pub use compact::{MODE_OFF, MODE_PROBE, MODE_STATE};
-pub use live::Live;
+pub use live::{Claim, Live};
 pub use others::ArenaCaches;
 pub(crate) use others::NodeHead;
 #[cfg(test)]
@@ -3075,10 +3075,16 @@ impl Heap {
             return false;
         }
         // The flush released every cached slot: test `p`'s bit again.
-        match shared.classify_free(p, Tracked(&*blk)) {
+        let tracked mut own = Live::empty();
+        proof {
+            vstd::modes::tracked_swap(blk, &mut own);
+            shared.lemma_regions_ok();
+            own.lemma_claims(p);
+        }
+        let tracked mut claim = Claim::held(own);
+        match shared.classify_free(p, Tracked(&mut claim)) {
             Ok((c, a)) => {
                 proof {
-                    shared.lemma_regions_ok();
                     crate::vspec::zero::lemma_slot_unique(c as int, class as int, p as usize);
                 }
                 debug_assert!(c == class && a == to)
@@ -3086,16 +3092,12 @@ impl Heap {
             Err(_) => {
                 proof {
                     // A slot start is no page start of the huge region.
-                    shared.lemma_regions_ok();
                     crate::vspec::zero::lemma_slot_not_huge(class as int, p as usize);
                 }
                 invalid_free(p as usize)
             },
         }
-        let tracked mut own = Live::empty();
-        proof {
-            vstd::modes::tracked_swap(blk, &mut own);
-        }
+        let tracked own = claim.held.tracked_unwrap();
         self.push(shared, class, p, Tracked(own), Tracked(errno), Tracked(cell), Tracked(ord));
         true
     }

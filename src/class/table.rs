@@ -704,6 +704,18 @@ pub open spec fn slot_free_at(toks: Set<int>, c: int, slab: int, slot: int) -> b
     toks.contains(process_regions().slot_at(c, slab, slot))
 }
 
+/// A load of `t`'s bitmap found the slot at address `a` allocated: for
+/// some slab and slot at `a`, a token set the slot's word's invariant
+/// admits ([`SlabTable::word_tokens`]) lacked the slot's token
+/// ([`slot_free_at`]). What the `free` bit test establishes before the
+/// free claims the block (`VULN-CLASSES.md` E).
+pub open spec fn bit_set_at_load(t: SlabTable, a: int) -> bool {
+    exists|slab: int, slot: int, toks: Set<int>|
+        process_regions().slot_at(t.spec_class() as int, slab, slot) == a
+            && #[trigger] t.word_tokens(slab, slot, toks)
+            && !slot_free_at(toks, t.spec_class() as int, slab, slot)
+}
+
 /// `p` is an initialised permission to the `T` at `addr`, through a
 /// pointer of the provenance an address cast picks up
 /// ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr)).
@@ -4449,9 +4461,14 @@ impl SlabTable {
     /// has it for every set slot bit ([`SlabTable::lemma_held_seen`]).
     /// Without the token the value returned is not specified: the release
     /// it routes to reads the owner again, with the witness
-    /// ([`owner`](SlabTable::owner)).
-    // `credit` is read only by the proof (ghost).
-    #[allow(unused_variables)]
+    /// ([`owner`](SlabTable::owner)). The frees run its two halves apart,
+    /// [`check_live`] and [`located_owner`], so as to claim the block
+    /// between them (`Shared::classify_free`); the build's one caller is
+    /// the tests' `SlabTable::check`.
+    ///
+    /// [`check_live`]: SlabTable::check_live
+    /// [`located_owner`]: SlabTable::located_owner
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize, held: Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut Ghost<Set<int>>>) -> (r: u16)
         requires
@@ -4467,12 +4484,42 @@ impl SlabTable {
             self.word_tokens(slab as int, slot as int, final(obs)@),
     {
         self.check_live(slab, slot, p, held, Tracked(obs));
+        // SAFETY: `check_live` returned.
+        unsafe { self.located_owner(slab, slot, held) }
+    }
+
+    /// The owner read of [`check_located`], after its bit test
+    /// ([`check_live`]): the arena that owns `slab`, exactly so with the
+    /// slot's token (`held`, [`holds_slot`]), which is the witness the
+    /// read needs. Split out so that a free can run the bit test with no
+    /// token, claim the block, and then read the owner with its token
+    /// (`Shared::classify_free`).
+    ///
+    /// # Safety
+    /// [`check_live`] returned for `slab` and `slot`: `slab` is below a
+    /// value the watermark held, so its group's owner word is committed.
+    ///
+    /// [`check_located`]: SlabTable::check_located
+    /// [`check_live`]: SlabTable::check_live
+    // `credit` is read only by the proof (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    pub unsafe fn located_owner(&self, slab: usize, slot: usize, held: Tracked<&Option<GhostSingleton<int>>>) -> (r: u16)
+        requires
+            self.is_process(),
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            holds_slot(*held@, self.spec_class() as int, slab as int, slot as int)
+                ==> r == slab_owner(self.spec_class() as int, slab as int),
+    {
         let credit = vstd::invariant::create_open_invariant_credit();
         proof {
             use_type_invariant(self);
         }
         let tracked seen = self.lemma_held_seen(held.get(), credit.get(), slab, slot);
-        // SAFETY: `check_live` returned, so `slab` is below the watermark.
+        // SAFETY: `slab` is below the slab count; the caller's bit test
+        // (`check_live`) returned, so it is below the watermark.
         unsafe { self.owner_at(slab, Tracked(seen)) }
     }
 
@@ -5755,12 +5802,23 @@ impl SlabTable {
             index == bit / 64,
         ensures
             (x >> (bit % 64)) & 1 != 0 ==> !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+            // A set bit: the slot's token was not among the word's at the
+            // load.
+            (x >> (bit % 64)) & 1 != 0 ==> exists|toks: Set<int>|
+                #[trigger] self.word_tokens(slab as int, slot as int, toks)
+                    && !slot_free_at(toks, self.spec_class() as int, slab as int, slot as int),
         opens_invariants [crate::bitmap::word_ns()]
     {
         let tracked none = None;
         let tracked mut obs = Ghost(Set::empty());
         // SAFETY: guaranteed by the caller.
-        unsafe { self.bit_word_held(bits_base, index, Ghost(slab), Ghost(slot), Ghost(bit), Tracked(&none), Tracked(&mut obs)) }
+        let x = unsafe { self.bit_word_held(bits_base, index, Ghost(slab), Ghost(slot), Ghost(bit), Tracked(&none), Tracked(&mut obs)) };
+        proof {
+            let s = self.spec_slots();
+            assert(obs@ == crate::bitmap::addrs(s, crate::bitmap::free_bits(s, (slab as int * class_table()[self.spec_class() as int].slab_bits + slot as int) / 64, x)));
+            assert(self.word_tokens(slab as int, slot as int, obs@));
+        }
+        x
     }
 
     /// The owner word of `slab`'s group, through the class line's copies

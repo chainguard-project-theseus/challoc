@@ -580,17 +580,17 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     // `tcache` names on no other thread (the `MALLOCX_TCACHE` contract).
     let tracked mut u = super::axiom_heap_use();
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p, Tracked(blk), Tracked(errno), Tracked(ord)),
+        Tcache::Default => crate::heap::free(shared, p, Tracked(super::Claim::held(blk)), Tracked(errno), Tracked(ord)),
         Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u)) {
             Some(h) => {
                 // The calling thread's slot cell, for the explicit cache's
                 // tick (`purge::on_tick`).
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
-                h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord))
+                h.free(shared, p, Tracked(super::Claim::held(blk)), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord))
             },
             None => invalid_tcache(t),
         },
-        Tcache::None => crate::heap::free_direct(shared, p, Tracked(blk), Tracked(ord)),
+        Tcache::None => crate::heap::free_direct(shared, p, Tracked(super::Claim::held(blk)), Tracked(ord)),
     }
 }
 
