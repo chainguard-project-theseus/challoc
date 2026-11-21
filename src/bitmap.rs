@@ -3655,85 +3655,135 @@ pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<in
 pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
 
 // Seen values. Each word's invariant also holds two fragments at the
-// class bitmap's `hloc` ([`Slots::hloc`]): `(j, x)` for every value `x`
-// of word `j` not yet seen, owned, and for every value seen, persistent.
-// The current value is seen ([`seen_ok`]). A write of a value not yet
-// seen moves it from the owned part to the persistent one
-// ([`lemma_seen_write`]), so a persistent `(j, x)` at `hloc` is a value
-// word `j` held: `SlabTable::new` makes the location's authority over
-// `{(j, x) : 0 <= j < nwords}` and drops it, and only the word
-// invariants hold fragments of it. That a writer persists only the
-// value it stores is the ghost code's, not restated by the invariant.
+// class bitmap's `hloc` ([`Slots::hloc`]) and a ghost version `n`, the
+// number of writes to the word so far. A fragment `(j, m, x)` reads
+// "word `j` held `x` after its `m`-th write". Every `(j, m, x)` of word
+// `j` is owned or persistent; the current `(j, n, x)` is persistent; no
+// persistent one has a version above `n`; and at most one value is
+// persistent per version ([`seen_ok`]). A write of `y` bumps the version
+// and moves `(j, n + 1, y)` from the owned part to the persistent one
+// ([`lemma_seen_write`]), so a persistent `(j, m, x)` at `hloc` is the
+// value word `j` held at version `m`: `SlabTable::new` makes the
+// location's authority over `{(j, m, x) : 0 <= j < nwords}` and drops
+// it, and only the word invariants hold fragments of it. A persistent
+// fragment is never owned, so a witness some caller kept is ordered
+// against the word's current version ([`lemma_seen_order`], #850).
+// That a writer persists only the value it stores is the ghost code's,
+// not restated by the invariant.
 
-/// What a bitmap word's invariant holds of its seen values: the values
-/// not yet seen, owned, and those seen, persistent (above).
-pub type SeenVals = (GhostISubset<(int, u64)>, GhostPersistentISubset<(int, u64)>);
+/// What a bitmap word's invariant holds of its seen values: the
+/// versioned values not yet seen, owned, those seen, persistent, and the
+/// current version (above).
+pub type SeenVals = (GhostISubset<(int, nat, u64)>, GhostPersistentISubset<(int, nat, u64)>, Ghost<nat>);
 
 /// Word `k.j`'s seen values, as its invariant holds them (`h`) for its
-/// value `x`: both parts at `k.slots.hloc`, every value of the word in
-/// one or the other, and `x` seen. Opaque, so the writers' contexts do
-/// not carry its quantifier ([`lemma_seen_write`] reveals it).
+/// value `x`: both parts at `k.slots.hloc`, every versioned value of the
+/// word in one or the other, `x` seen at the current version `h.2`, no
+/// version above it seen, and one value seen per version. Opaque, so the
+/// writers' contexts do not carry its quantifiers ([`lemma_seen_write`]
+/// reveals it).
 #[verifier::opaque]
 pub open spec fn seen_ok(k: WordKey, h: SeenVals, x: u64) -> bool {
     &&& h.0.id() == k.slots.hloc
     &&& h.1.id() == k.slots.hloc
-    &&& forall|y: u64| #[trigger] h.0@.contains((k.j, y)) || h.1@.contains((k.j, y))
-    &&& h.1@.contains((k.j, x))
+    &&& forall|m: nat, y: u64| #[trigger] h.0@.contains((k.j, m, y)) || h.1@.contains((k.j, m, y))
+    &&& h.1@.contains((k.j, h.2@, x))
+    &&& forall|m: nat, y: u64| #[trigger] h.1@.contains((k.j, m, y)) ==> m <= h.2@
+    &&& forall|m: nat, y: u64, z: u64| #[trigger] h.1@.contains((k.j, m, y)) && #[trigger] h.1@.contains((k.j, m, z)) ==> y == z
 }
 
-/// A write of `y` over `x` into word `k.j`: `y` is seen afterwards, and
-/// nothing seen before is lost.
+/// A write of `y` over `x` into word `k.j`: the version goes up by one,
+/// `y` is seen at it, and nothing seen before is lost.
 pub proof fn lemma_seen_write(k: WordKey, tracked h: &mut SeenVals, x: u64, y: u64)
     requires
         seen_ok(k, *old(h), x),
     ensures
         seen_ok(k, *final(h), y),
+        final(h).2@ == old(h).2@ + 1,
         old(h).1@.subset_of(final(h).1@),
 {
     reveal(seen_ok);
-    if !h.1@.contains((k.j, y)) {
-        assert(h.0@.contains((k.j, y)));
-        let tracked s = h.0.split_singleton((k.j, y));
-        h.1.combine_points_to(s.persist());
+    let n = h.2@;
+    let v = (k.j, (n + 1) as nat, y);
+    assert(h.0@.contains(v) || h.1@.contains(v));
+    assert(!h.1@.contains(v));
+    let tracked s = h.0.split_singleton(v);
+    h.1.combine_points_to(s.persist());
+    h.2 = Ghost((n + 1) as nat);
+    assert forall|m: nat, z: u64| #[trigger] h.0@.contains((k.j, m, z)) || h.1@.contains((k.j, m, z)) by {
+        assert(old(h).0@.contains((k.j, m, z)) || old(h).1@.contains((k.j, m, z)));
     }
-    assert forall|z: u64| #[trigger] h.0@.contains((k.j, z)) || h.1@.contains((k.j, z)) by {
-        assert(old(h).0@.contains((k.j, z)) || old(h).1@.contains((k.j, z)));
+    assert forall|m: nat, z: u64| #[trigger] h.1@.contains((k.j, m, z)) implies m <= h.2@ by {
+        if (k.j, m, z) != v {
+            assert(old(h).1@.contains((k.j, m, z)));
+        }
+    }
+    assert forall|m: nat, z1: u64, z2: u64| #[trigger] h.1@.contains((k.j, m, z1)) && #[trigger] h.1@.contains((k.j, m, z2)) implies z1 == z2 by {
+        if (k.j, m, z1) != v && (k.j, m, z2) != v {
+            assert(old(h).1@.contains((k.j, m, z1)));
+            assert(old(h).1@.contains((k.j, m, z2)));
+        } else if (k.j, m, z1) != v {
+            assert(old(h).1@.contains((k.j, m, z1)));
+        } else if (k.j, m, z2) != v {
+            assert(old(h).1@.contains((k.j, m, z2)));
+        }
     }
 }
 
 /// The witness a load of `x` from word `k.j` takes from its invariant's
-/// seen values `h`: the persistent `(k.j, x)` at `k.slots.hloc`, a copy;
-/// `h` is left as it was.
-pub proof fn lemma_seen_witness(k: WordKey, tracked h: &SeenVals, x: u64) -> (tracked w: GhostPersistentISingleton<(int, u64)>)
+/// seen values `h`: the persistent `(k.j, n, x)` at `k.slots.hloc`, `n`
+/// the current version, a copy; `h` is left as it was.
+pub proof fn lemma_seen_witness(k: WordKey, tracked h: &SeenVals, x: u64) -> (tracked w: GhostPersistentISingleton<(int, nat, u64)>)
     requires
         seen_ok(k, *h, x),
     ensures
         w.id() == k.slots.hloc,
-        w@ == (k.j, x),
+        w@ == (k.j, h.2@, x),
 {
     reveal(seen_ok);
     let tracked mut c = h.1.duplicate();
-    c.split_singleton((k.j, x))
+    c.split_singleton((k.j, h.2@, x))
 }
 
-/// The seen values of a fresh word `j`, at value 0, split off `vals`,
-/// which holds every value of word `j` at `s.hloc`.
-pub proof fn fresh_seen(tracked vals: &mut GhostISubset<(int, u64)>, s: Slots, j: int) -> (tracked h: SeenVals)
+/// Any witness `w` of word `k.j`, against its invariant's seen values
+/// `h` at value `x`: its version is at most the current one, and at the
+/// current one its value is `x`. So a witness kept from an earlier
+/// event is no newer than any later load's.
+pub proof fn lemma_seen_order(k: WordKey, tracked h: &SeenVals, x: u64, tracked w: &GhostPersistentISingleton<(int, nat, u64)>)
     requires
-        old(vals).id() == s.hloc,
-        forall|y: u64| #[trigger] old(vals)@.contains((j, y)),
+        seen_ok(k, *h, x),
+        w.id() == k.slots.hloc,
+        w@.0 == k.j,
     ensures
-        final(vals).id() == s.hloc,
-        forall|p: (int, u64)| #[trigger] final(vals)@.contains(p) <==> old(vals)@.contains(p) && p.0 != j,
-        forall|k: WordKey| k.slots == s && k.j == j ==> #[trigger] seen_ok(k, h, 0u64),
+        w@.1 <= h.2@,
+        w@.1 == h.2@ ==> w@.2 == x,
 {
     reveal(seen_ok);
-    let tracked mut mine = vals.split(ISet::new(|p: (int, u64)| p.0 == j && old(vals)@.contains(p)));
-    let tracked z = mine.split_singleton((j, 0u64));
-    let tracked h: SeenVals = (mine, z.persist().subset());
+    let tracked mut c = w.duplicate();
+    c.disjoint_subset(&h.0);
+    assert(h.1@.contains((k.j, w@.1, w@.2)));
+    assert(h.1@.contains((k.j, h.2@, x)));
+}
+
+/// The seen values of a fresh word `j`, at value 0 and version 0, split
+/// off `vals`, which holds every versioned value of word `j` at `s.hloc`.
+pub proof fn fresh_seen(tracked vals: &mut GhostISubset<(int, nat, u64)>, s: Slots, j: int) -> (tracked h: SeenVals)
+    requires
+        old(vals).id() == s.hloc,
+        forall|m: nat, y: u64| #[trigger] old(vals)@.contains((j, m, y)),
+    ensures
+        final(vals).id() == s.hloc,
+        forall|p: (int, nat, u64)| #[trigger] final(vals)@.contains(p) <==> old(vals)@.contains(p) && p.0 != j,
+        forall|k: WordKey| k.slots == s && k.j == j ==> #[trigger] seen_ok(k, h, 0u64),
+        h.2@ == 0,
+{
+    reveal(seen_ok);
+    let tracked mut mine = vals.split(ISet::new(|p: (int, nat, u64)| p.0 == j && old(vals)@.contains(p)));
+    let tracked z = mine.split_singleton((j, 0nat, 0u64));
+    let tracked h: SeenVals = (mine, z.persist().subset(), Ghost(0nat));
     assert forall|k: WordKey| k.slots == s && k.j == j implies #[trigger] seen_ok(k, h, 0u64) by {
-        assert forall|y: u64| #[trigger] h.0@.contains((k.j, y)) || h.1@.contains((k.j, y)) by {
-            assert(old(vals)@.contains((j, y)));
+        assert forall|m: nat, y: u64| #[trigger] h.0@.contains((k.j, m, y)) || h.1@.contains((k.j, m, y)) by {
+            assert(old(vals)@.contains((j, m, y)));
         }
     }
     h
@@ -3759,21 +3809,22 @@ pub open spec fn slot_set(s: Slots) -> Set<int> {
 /// `toks`, which holds at least those, and the fresh markers of all its
 /// bits, split off `marks`, which holds at least those; no owner-word
 /// witness markers, at the location of `seen`'s; and its seen values,
-/// 0 seen and every other value of the word owned, split off `vals`
+/// 0 seen at version 0 and every other versioned value of the word
+/// owned, split off `vals`
 /// ([`fresh_seen`]).
 pub proof fn fresh_word_invs(
     tracked perms: Map<int, WordPerm>,
     tracked toks: GhostSubset<int>,
     tracked marks: GhostSubset<int>,
     tracked seen: &GhostPersistentSubset<int>,
-    tracked vals: GhostISubset<(int, u64)>,
+    tracked vals: GhostISubset<(int, nat, u64)>,
     s: Slots,
     base: usize,
     n: nat,
 ) -> (tracked r: Map<int, WordInv>)
     requires
         vals.id() == s.hloc,
-        forall|p: (int, u64)| 0 <= p.0 < n ==> #[trigger] vals@.contains(p),
+        forall|p: (int, nat, u64)| 0 <= p.0 < n ==> #[trigger] vals@.contains(p),
         forall|j: int| #![trigger perms.contains_key(j)] #![trigger perms[j]] 0 <= j < n ==> perms.contains_key(j) && perms[j].id() == word_at(base + 8 * j) && perms[j].value() == 0,
         s.wf(),
         toks.id() == s.loc,
@@ -3827,14 +3878,15 @@ pub proof fn fresh_word_invs(
         // A zero word has no set bit, so no witness marker is needed.
         let tracked w = seen.empty();
         assert(owners_ok(s, j, p.value(), w@));
-        // Its seen values: 0, persistent, and the rest of word `j`'s.
+        // Its seen values: 0 at version 0, persistent, and the rest of
+        // word `j`'s.
         let tracked mut vals = vals;
-        assert forall|y: u64| #[trigger] vals@.contains((j, y)) by {
-            assert(0 <= (j, y).0 < n);
+        assert forall|m: nat, y: u64| #[trigger] vals@.contains((j, m, y)) by {
+            assert(0 <= (j, m, y).0 < n);
         }
         let tracked h = fresh_seen(&mut vals, s, j);
         assert(seen_ok(k, h, p.value()));
-        assert forall|q: (int, u64)| 0 <= q.0 < n - 1 implies #[trigger] vals@.contains(q) by {
+        assert forall|q: (int, nat, u64)| 0 <= q.0 < n - 1 implies #[trigger] vals@.contains(q) by {
             assert(0 <= q.0 < n);
         }
         let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d, w, h), word_ns());
