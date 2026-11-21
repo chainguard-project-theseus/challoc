@@ -208,14 +208,16 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   `heap::paths::theorem_exact_sized_free`: a sized free reaches plain
   `free`'s bit test; that the test aborts on a clear bit is read from
   the code.
-- In every configuration, the bit test itself
-  (`SlabTable::check_live`, `check_located`; THEOREMS.md "Bad input",
-  *(load)*): a call returns only if the slot's token was not in the
-  token set its bitmap word's invariant held at the load, so a slot that
-  was free at that load does not pass. `bit_word_held`'s contract ties
-  that set to the loaded value; `check_live`'s states it is the set of
-  some value of the word (`word_tokens`). A fact about the load, not C's
-  view. The huge half: the huge free's checks (THEOREMS.md "Bad
+- Not proved: the slab bit test at its load (`SlabTable::check_live`,
+  `check_located`; THEOREMS.md "Bad input", *(load)*). Their ensures
+  (`!slot_free_at(obs, ..)` and `word_tokens(.., obs)`) verify against
+  the body, but `word_tokens` is `exists v`, and `v = u64::MAX` gives
+  the empty token set, so `obs = {}` meets them for every slot without
+  a load
+  ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)).
+  That a slot free at the load aborts is read from the code. What they
+  do state for callers: a returning call's slab is no guard slab. The
+  huge half is proved: the huge free's checks (THEOREMS.md "Bad
   input", *(lock)*) return only for a page where a live run starts at
   the lock.
 
@@ -368,11 +370,13 @@ is the only reader of the environment is a source test.
 > `SlabTable::check_live`, `Shared::classify_free`, `Huge::free_run`
 > (`already_free`, `not_a_run`), `Huge::usable_size`.
 
-Partly proved: the slab bit test at its load (`check_live`,
-`check_located`: `slot_free_at`, THEOREMS.md "Bad input" *(load)*),
-and the huge free's checks at the lock (`Huge::live_run_checks`,
-THEOREMS.md "Bad input" *(lock)*). Open: C's view of a stale pointer
-past the checks.
+Partly proved: the huge free's checks at the lock
+(`Huge::live_run_checks`, THEOREMS.md "Bad input" *(lock)*). Open: the
+slab bit test at its load (`check_live`, `check_located`), whose
+`slot_free_at` ensures holds without a load until the word's
+invariant carries a history the load can witness
+([#843](https://github.com/chainguard-project-theseus/challoc/issues/843));
+and C's view of a stale pointer past the checks.
 
 **[#735](https://github.com/chainguard-project-theseus/challoc/issues/735): integer overflow in pvalloc's page rounding (CVE-2013-4332, CVE-2021-3420)**
 
