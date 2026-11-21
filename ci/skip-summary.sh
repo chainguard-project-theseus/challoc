@@ -9,7 +9,8 @@
 # c_mseal ...`) or a program's claim name (`SKIP thp/auto ...`). Only the
 # first word: parallel tests write to the same stream and another test's
 # output can land inside a line after it (a lone `test` or `ok` key, from a
-# libtest line cut in two the same way, is dropped). Then
+# libtest line cut in two the same way, is dropped, and a key with a
+# libtest `ok` glued on counts as the manifest key it starts with). Then
 #
 #   - a key not in the manifest fails (exit 1): coverage was lost;
 #   - a manifest key that did not appear is only reported: coverage was
@@ -25,10 +26,17 @@ log=$1; manifest=$2
 
 seen=$(mktemp); want=$(mktemp)
 trap 'rm -f "$seen" "$want"' EXIT
-{ grep -a '^SKIP ' "$log" || true; } | awk '$2 != "" && $2 != "test" && $2 != "ok" { print $2 }' | sort -u >"$seen"
 if [ -f "$manifest" ]; then
   sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$manifest" | { grep -v '^$' || true; } | sort -u >"$want"
 fi
+# A key with a libtest `ok` glued on (`SKIP c_cgroup_policy_highok`: another
+# test's ` ... ok` landed right after the key, #109) counts as the manifest
+# key it starts with. Only `ok`: a glued `FAILED` fails the run anyway.
+{ grep -a '^SKIP ' "$log" || true; } | awk -v want="$want" '
+  BEGIN { while ((getline k < want) > 0) w[k] = 1 }
+  $2 == "" || $2 == "test" || $2 == "ok" { next }
+  { k = $2; if (!(k in w) && k ~ /ok$/ && (substr(k, 1, length(k) - 2) in w)) k = substr(k, 1, length(k) - 2); print k }
+' | sort -u >"$seen"
 
 new=$(comm -23 "$seen" "$want")
 gone=$(comm -13 "$seen" "$want")
