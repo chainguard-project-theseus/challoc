@@ -35,6 +35,7 @@ use crate::vspec::zero::axiom_zero_word;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
+use vstd::resource::iset::{GhostISubset, GhostPersistentISubset};
 use vstd::resource::set::{GhostPersistentSubset, GhostSubset};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::{
@@ -777,7 +778,7 @@ impl<'a> AtomicBitmap<'a> {
                 }
                 let tracked inv = self.invs.borrow().tracked_borrow(j);
                 vstd::open_atomic_invariant!(inv => pair => {
-                    let tracked (mut perm, g, mut u, mut d, sn) = pair;
+                    let tracked (mut perm, g, mut u, mut d, sn, mut h) = pair;
                     let tracked mut fw = f.split(init_marks(64 * j, 64 * j + 64));
                     let ghost x0 = perm.value();
                     proof {
@@ -797,7 +798,8 @@ impl<'a> AtomicBitmap<'a> {
                         p.combine(uw.persist());
                         d.combine(fw);
                         assert(owners_ok(sl, j, perm.value(), sn@));
-                        pair = (perm, g, u, d, sn);
+                        lemma_seen_write(inv.constant(), &mut h, x0, perm.value());
+                        pair = (perm, g, u, d, sn, h);
                     }
                 });
                 proof {
@@ -833,7 +835,7 @@ impl<'a> AtomicBitmap<'a> {
             // Clear the slab's bits (all clear already) and initialise its
             // slots.
             vstd::open_atomic_invariant!(inv => pair => {
-                let tracked (mut perm, g, mut u, mut d, sn) = pair;
+                let tracked (mut perm, g, mut u, mut d, sn, mut h) = pair;
                 let ghost x0 = perm.value();
                 proof {
                     f.disjoint(&d);
@@ -864,7 +866,8 @@ impl<'a> AtomicBitmap<'a> {
                     p.combine(ur.persist());
                     d.combine(fr);
                     assert(owners_ok(sl, j, perm.value(), sn@));
-                    pair = (perm, g, u, d, sn);
+                    lemma_seen_write(inv.constant(), &mut h, x0, perm.value());
+                    pair = (perm, g, u, d, sn, h);
                 }
             });
             proof {
@@ -874,7 +877,7 @@ impl<'a> AtomicBitmap<'a> {
             if pad != 0 {
                 // Set its padding bits.
                 vstd::open_atomic_invariant!(inv => pair => {
-                    let tracked (mut perm, g, mut u, mut d, sn) = pair;
+                    let tracked (mut perm, g, mut u, mut d, sn, mut h) = pair;
                     let ghost x0 = perm.value();
                     proof {
                         f.disjoint(&d);
@@ -896,7 +899,8 @@ impl<'a> AtomicBitmap<'a> {
                         let tracked fp = f.take();
                         d.combine(fp);
                         assert(owners_ok(sl, j, perm.value(), sn@));
-                        pair = (perm, g, u, d, sn);
+                        lemma_seen_write(inv.constant(), &mut h, x0, perm.value());
+                        pair = (perm, g, u, d, sn, h);
                     }
                 });
                 proof {
@@ -1116,7 +1120,7 @@ impl<'a> AtomicBitmap<'a> {
         // Release half of `release`'s: the new owner's accesses to the
         // slot happen after the previous owner's.
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (mut perm, mut g, mut u, d, mut sn) = pair;
+            let tracked (mut perm, mut g, mut u, d, mut sn, mut h) = pair;
             let ghost x0 = perm.value();
             prev = crate::vspec::word::fetch_or(w, want, Tracked(&mut perm));
             proof {
@@ -1190,7 +1194,8 @@ impl<'a> AtomicBitmap<'a> {
                         }
                     }
                 }
-                pair = (perm, g, u, d, sn);
+                lemma_seen_write(inv.constant(), &mut h, prev, perm.value());
+                pair = (perm, g, u, d, sn, h);
             }
         });
         proof {
@@ -1328,7 +1333,7 @@ impl<'a> AtomicBitmap<'a> {
         let prev;
         let tracked mut toks = toks.take();
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (mut perm, mut g, u, d, sn) = pair;
+            let tracked (mut perm, mut g, u, d, sn, mut h) = pair;
             prev = crate::vspec::word::fetch_and(w, !m, Tracked(&mut perm));
             proof {
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
@@ -1388,7 +1393,8 @@ impl<'a> AtomicBitmap<'a> {
                         lemma_bit_ops(prev, m, (b - 64 * j) as u64);
                     }
                 }
-                pair = (perm, g, u, d, sn);
+                lemma_seen_write(inv.constant(), &mut h, prev, perm.value());
+                pair = (perm, g, u, d, sn, h);
             }
         });
         proof {
@@ -1430,10 +1436,10 @@ impl<'a> AtomicBitmap<'a> {
         let w = &self.words[i];
         let x;
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (perm, g, u, d, sn) = pair;
+            let tracked (perm, g, u, d, sn, h) = pair;
             x = crate::vspec::word::load(w, Tracked(&perm));
             proof {
-                pair = (perm, g, u, d, sn);
+                pair = (perm, g, u, d, sn, h);
             }
         });
         x
@@ -1482,11 +1488,11 @@ impl<'a> AtomicBitmap<'a> {
         let w = &self.words[i];
         let prev;
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (mut perm, g, u, d, sn) = pair;
+            let tracked (mut perm, g, u, d, sn, h) = pair;
             prev = crate::vspec::word::fetch_or(w, 0, Tracked(&mut perm));
             proof {
                 assert(prev | 0u64 == prev) by (bit_vector);
-                pair = (perm, g, u, d, sn);
+                pair = (perm, g, u, d, sn, h);
             }
         });
         proof {
@@ -3304,7 +3310,8 @@ impl TwoLevelBitmap {
 /// One class bitmap's geometry: `loc` and `mloc`, two ghost resource
 /// locations that name the class's slots in ghost state, and `sloc`, the
 /// location of its table's owner-word witness markers
-/// (`class::owner_mark`); the bits per slab (`sb`), the slots per slab,
+/// (`class::owner_mark`), and `hloc`, that of its words' seen values
+/// ([`seen_ok`]); the bits per slab (`sb`), the slots per slab,
 /// the bits of the whole region (`nslabs * sb`); the slot geometry (the
 /// class region's base, the slab size and the slot size); and the guard
 /// geometry (the slab table's `lg_slabs_per_page` and `guard_mask`).
@@ -3314,6 +3321,7 @@ pub ghost struct Slots {
     pub loc: Loc,
     pub mloc: Loc,
     pub sloc: Loc,
+    pub hloc: Loc,
     pub sb: int,
     pub nslots: int,
     pub nbits: int,
@@ -3606,7 +3614,8 @@ pub open spec fn owners_ok(s: Slots, j: int, x: u64, w: Set<int>) -> bool {
 /// exactly the slots whose bits are clear, the markers of its bits'
 /// initialisation ([`marks_ok`]), a guard slab's bits never initialised
 /// ([`guards_ok`]), and the owner-word witness markers of its set slot
-/// bits' slabs ([`owners_ok`]).
+/// bits' slabs ([`owners_ok`]), and the word's seen values
+/// ([`seen_ok`]).
 pub struct WordPred;
 
 impl InvariantPredicate<WordKey, WordVal> for WordPred {
@@ -3620,6 +3629,7 @@ impl InvariantPredicate<WordKey, WordVal> for WordPred {
         &&& guards_ok(k.slots, k.j, v.2@)
         &&& v.4.id() == k.slots.sloc
         &&& owners_ok(k.slots, k.j, v.0.value(), v.4@)
+        &&& seen_ok(k, v.5, v.0.value())
     }
 }
 
@@ -3637,10 +3647,80 @@ pub proof fn lemma_guard_clear(k: WordKey, v: WordVal, b: int)
 }
 
 /// What a bitmap word's invariant holds.
-pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>, GhostPersistentSubset<int>);
+pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>, GhostPersistentSubset<int>, SeenVals);
 
 /// The invariant of one bitmap word.
 pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
+
+// Seen values. Each word's invariant also holds two fragments at the
+// class bitmap's `hloc` ([`Slots::hloc`]): `(j, x)` for every value `x`
+// of word `j` not yet seen, owned, and for every value seen, persistent.
+// The current value is seen ([`seen_ok`]). A write of a value not yet
+// seen moves it from the owned part to the persistent one
+// ([`lemma_seen_write`]), so a persistent `(j, x)` at `hloc` is a value
+// word `j` held: `SlabTable::new` makes the location's authority over
+// `{(j, x) : 0 <= j < nwords}` and drops it, and only the word
+// invariants hold fragments of it. That a writer persists only the
+// value it stores is the ghost code's, not restated by the invariant.
+
+/// What a bitmap word's invariant holds of its seen values: the values
+/// not yet seen, owned, and those seen, persistent (above).
+pub type SeenVals = (GhostISubset<(int, u64)>, GhostPersistentISubset<(int, u64)>);
+
+/// Word `k.j`'s seen values, as its invariant holds them (`h`) for its
+/// value `x`: both parts at `k.slots.hloc`, every value of the word in
+/// one or the other, and `x` seen. Opaque, so the writers' contexts do
+/// not carry its quantifier ([`lemma_seen_write`] reveals it).
+#[verifier::opaque]
+pub open spec fn seen_ok(k: WordKey, h: SeenVals, x: u64) -> bool {
+    &&& h.0.id() == k.slots.hloc
+    &&& h.1.id() == k.slots.hloc
+    &&& forall|y: u64| #[trigger] h.0@.contains((k.j, y)) || h.1@.contains((k.j, y))
+    &&& h.1@.contains((k.j, x))
+}
+
+/// A write of `y` over `x` into word `k.j`: `y` is seen afterwards, and
+/// nothing seen before is lost.
+pub proof fn lemma_seen_write(k: WordKey, tracked h: &mut SeenVals, x: u64, y: u64)
+    requires
+        seen_ok(k, *old(h), x),
+    ensures
+        seen_ok(k, *final(h), y),
+        old(h).1@.subset_of(final(h).1@),
+{
+    reveal(seen_ok);
+    if !h.1@.contains((k.j, y)) {
+        assert(h.0@.contains((k.j, y)));
+        let tracked s = h.0.split_singleton((k.j, y));
+        h.1.combine_points_to(s.persist());
+    }
+    assert forall|z: u64| #[trigger] h.0@.contains((k.j, z)) || h.1@.contains((k.j, z)) by {
+        assert(old(h).0@.contains((k.j, z)) || old(h).1@.contains((k.j, z)));
+    }
+}
+
+/// The seen values of a fresh word `j`, at value 0, split off `vals`,
+/// which holds every value of word `j` at `s.hloc`.
+pub proof fn fresh_seen(tracked vals: &mut GhostISubset<(int, u64)>, s: Slots, j: int) -> (tracked h: SeenVals)
+    requires
+        old(vals).id() == s.hloc,
+        forall|y: u64| #[trigger] old(vals)@.contains((j, y)),
+    ensures
+        final(vals).id() == s.hloc,
+        forall|p: (int, u64)| #[trigger] final(vals)@.contains(p) <==> old(vals)@.contains(p) && p.0 != j,
+        forall|k: WordKey| k.slots == s && k.j == j ==> #[trigger] seen_ok(k, h, 0u64),
+{
+    reveal(seen_ok);
+    let tracked mut mine = vals.split(ISet::new(|p: (int, u64)| p.0 == j && old(vals)@.contains(p)));
+    let tracked z = mine.split_singleton((j, 0u64));
+    let tracked h: SeenVals = (mine, z.persist().subset());
+    assert forall|k: WordKey| k.slots == s && k.j == j implies #[trigger] seen_ok(k, h, 0u64) by {
+        assert forall|y: u64| #[trigger] h.0@.contains((k.j, y)) || h.1@.contains((k.j, y)) by {
+            assert(old(vals)@.contains((j, y)));
+        }
+    }
+    h
+}
 
 /// `invs` holds the invariant of each of the `nwords` words of the class
 /// bitmap `s` at `base`.
@@ -3660,18 +3740,23 @@ pub open spec fn slot_set(s: Slots) -> Set<int> {
 /// The word invariants of a fresh class bitmap of `n` words at `base`:
 /// every word zero, so each holds the tokens of all its slots, split off
 /// `toks`, which holds at least those, and the fresh markers of all its
-/// bits, split off `marks`, which holds at least those; and no owner-word
-/// witness markers, at the location of `seen`'s.
+/// bits, split off `marks`, which holds at least those; no owner-word
+/// witness markers, at the location of `seen`'s; and its seen values,
+/// 0 seen and every other value of the word owned, split off `vals`
+/// ([`fresh_seen`]).
 pub proof fn fresh_word_invs(
     tracked perms: Map<int, WordPerm>,
     tracked toks: GhostSubset<int>,
     tracked marks: GhostSubset<int>,
     tracked seen: &GhostPersistentSubset<int>,
+    tracked vals: GhostISubset<(int, u64)>,
     s: Slots,
     base: usize,
     n: nat,
 ) -> (tracked r: Map<int, WordInv>)
     requires
+        vals.id() == s.hloc,
+        forall|p: (int, u64)| 0 <= p.0 < n ==> #[trigger] vals@.contains(p),
         forall|j: int| #![trigger perms.contains_key(j)] #![trigger perms[j]] 0 <= j < n ==> perms.contains_key(j) && perms[j].id() == word_at(base + 8 * j) && perms[j].value() == 0,
         s.wf(),
         toks.id() == s.loc,
@@ -3725,8 +3810,18 @@ pub proof fn fresh_word_invs(
         // A zero word has no set bit, so no witness marker is needed.
         let tracked w = seen.empty();
         assert(owners_ok(s, j, p.value(), w@));
-        let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d, w), word_ns());
-        let tracked mut r = fresh_word_invs(perms, toks, marks, seen, s, base, (n - 1) as nat);
+        // Its seen values: 0, persistent, and the rest of word `j`'s.
+        let tracked mut vals = vals;
+        assert forall|y: u64| #[trigger] vals@.contains((j, y)) by {
+            assert(0 <= (j, y).0 < n);
+        }
+        let tracked h = fresh_seen(&mut vals, s, j);
+        assert(seen_ok(k, h, p.value()));
+        assert forall|q: (int, u64)| 0 <= q.0 < n - 1 implies #[trigger] vals@.contains(q) by {
+            assert(0 <= q.0 < n);
+        }
+        let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d, w, h), word_ns());
+        let tracked mut r = fresh_word_invs(perms, toks, marks, seen, vals, s, base, (n - 1) as nat);
         r.tracked_insert(j, inv);
         r
     }

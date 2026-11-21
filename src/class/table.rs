@@ -61,6 +61,8 @@ use vstd::raw_ptr::{PointsTo, ptr_ref};
 use vstd::raw_ptr::{PtrData, ptr_mut_from_data};
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
+#[cfg(verus_keep_ghost)]
+use vstd::resource::iset::GhostISetAuth;
 use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSingleton, GhostSubset};
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::bits::u64_trailing_zeros;
@@ -419,6 +421,10 @@ pub struct SlabTable {
     /// run on.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub(super) mark_auth: Tracked<GhostSetAuth<int>>,
+    /// Ghost (no bytes): the location of the bitmap words' seen values
+    /// (`bitmap::seen_ok`), fixed at `new`, whose authority `new` drops.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub(super) hloc: Ghost<Loc>,
     /// Ghost (no bytes): the permissions to every slab's descriptor,
     /// made by `new` from the descriptor array's reservation
     /// ([`SlabTable::perms_ok`]).
@@ -1430,6 +1436,7 @@ impl SlabTable {
             loc: self.slot_auth@.id(),
             mloc: self.mark_auth@.id(),
             sloc: self.spec_sloc(),
+            hloc: self.hloc@,
             sb: self.slab_bits as int,
             nslots: class_table()[self.class as int].nslots as int,
             nbits: self.nslabs * self.slab_bits,
@@ -1973,6 +1980,7 @@ impl SlabTable {
             loc: vstd::pervasive::arbitrary(),
             mloc: vstd::pervasive::arbitrary(),
             sloc: vstd::pervasive::arbitrary(),
+            hloc: vstd::pervasive::arbitrary(),
             sb: cls.slab_bits as int,
             nslots: cls.nslots as int,
             nbits: nslabs * cls.slab_bits,
@@ -1998,10 +2006,17 @@ impl SlabTable {
         let ghost sloc = smarks.id();
         let tracked seen0 = smarks.empty().persist();
         let tracked seen1 = seen0.duplicate();
+        // The bitmap words' seen values: every value of every word, split
+        // among the word invariants (`bitmap::fresh_word_invs`); the
+        // authority is dropped, so no other fragment at the location is
+        // ever made.
+        let tracked (_hauth, hvals) = GhostISetAuth::<(int, u64)>::new(ISet::new(|p: (int, u64)| 0 <= p.0 < nwords));
+        let ghost hloc = hvals.id();
         let ghost slots = Slots {
             loc: slot_auth.id(),
             mloc: mark_auth.id(),
             sloc,
+            hloc,
             sb: geo.sb,
             nslots: geo.nslots,
             nbits: geo.nbits,
@@ -2044,7 +2059,7 @@ impl SlabTable {
             assert(Set::<int>::range(bits_base as int, bits_base + 8 * nwords).subset_of(braw.dom()));
         }
         let tracked (perms, wperms) = fresh_words(braw, bits_base, bits.spec_base(), align, nwords as nat, class as int, words_once);
-        let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, &seen0, slots, bits_base, nwords as nat);
+        let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, &seen0, hvals, slots, bits_base, nwords as nat);
         // The permissions to every descriptor and owner word, made from
         // the two reservations (`SlabTable::perms_ok`).
         proof {
@@ -2187,6 +2202,7 @@ impl SlabTable {
             word_invs: Tracked(vstd::modes::tracked_static_ref(word_invs)),
             word_perms: Tracked(vstd::modes::tracked_static_ref(wperms)),
             mark_auth: Tracked(mark_auth),
+            hloc: Ghost(hloc),
             desc_perms: Tracked(dmap),
             desc_invs: Tracked(vstd::modes::tracked_static_ref(dinvs)),
             pages_perms: Tracked(pmap),
@@ -3938,7 +3954,7 @@ impl SlabTable {
         let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
         let x;
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (perm, mut g, u, d, sn) = pair;
+            let tracked (perm, mut g, u, d, sn, h) = pair;
             x = crate::vspec::word::load(w, Tracked(&perm));
             proof {
                 self.lemma_guard_slab(slab as int);
@@ -3948,7 +3964,7 @@ impl SlabTable {
                 assert((v >> k) & 1u64 != 1u64 ==> (v >> k) & 1u64 == 0u64) by (bit_vector);
                 if crate::layout::guard_slab(self.spec_class() as int, slab as int) {
                     crate::bitmap::lemma_slab_bit(s, slab as int, slot as int);
-                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d, sn), bit as int);
+                    crate::bitmap::lemma_guard_clear(inv.constant(), (perm, g, u, d, sn, h), bit as int);
                 }
                 if holds_slot(*held, self.spec_class() as int, slab as int, slot as int) {
                     // The slot's token is not in the word, which holds the
@@ -3977,7 +3993,7 @@ impl SlabTable {
                     assert(crate::bitmap::free_bits(s, j, v).contains(bit as int));
                     assert(g@.contains(s.addr(bit as int)));
                 }
-                pair = (perm, g, u, d, sn);
+                pair = (perm, g, u, d, sn, h);
             }
         });
         x
@@ -4039,7 +4055,7 @@ impl SlabTable {
         let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
         let tracked mut r = None;
         vstd::open_atomic_invariant_in_proof!(credit => inv => pair => {
-            let tracked (perm, mut g, u, d, sn) = pair;
+            let tracked (perm, mut g, u, d, sn, h) = pair;
             if holds_slot(*held, self.spec_class() as int, slab as int, slot as int) {
                 let tracked t = held.tracked_borrow();
                 g.disjoint_singleton(t);
@@ -4054,7 +4070,7 @@ impl SlabTable {
                 assert(crate::bitmap::owner_seen(s, sn@, bit));
                 r = Some(vstd::modes::tracked_static_ref(sn.duplicate()));
             }
-            pair = (perm, g, u, d, sn);
+            pair = (perm, g, u, d, sn, h);
         });
         r
     }
@@ -5200,7 +5216,7 @@ impl SlabTable {
             let tracked inv = (*self.word_invs.borrow()).tracked_borrow(j);
             assert(inv.constant().slots == sl);
             vstd::open_atomic_invariant_in_proof!(credit => inv => pair => {
-                let tracked (perm, toks, mut u, mut d, sn) = pair;
+                let tracked (perm, toks, mut u, mut d, sn, h) = pair;
                 assert(64 * j <= b < 64 * j + 64);
                 assert(u.id() == sl.mloc && d.id() == sl.mloc);
                 assert(crate::bitmap::marks_ok(sl, j, perm.value(), u@, d@));
@@ -5211,7 +5227,7 @@ impl SlabTable {
                     assert(d@.contains(init_mark(b)));
                     d.disjoint(fresh);
                 }
-                pair = (perm, toks, u, d, sn);
+                pair = (perm, toks, u, d, sn, h);
             });
         }
     }
