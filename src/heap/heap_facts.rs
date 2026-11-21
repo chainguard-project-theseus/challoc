@@ -1,5 +1,7 @@
-//! The set-free part of the test checker of what `tcaches::heap_at`
-//! trusts (`r.wf()` and `r.home_at(p)` of the heap at `p`), shared by the
+//! The set-free part of the test checker of `h.wf()` and `h.home_at(p)`
+//! of the heap `h` at `p` (what `Heap::destroy` requires of the permission
+//! it is handed, and what the table's registry and the slot premise
+//! `TlsSlot::entry` state of the heaps they hold), shared by the
 //! unit tests' `heap_at_tests::check` and the debug TLS check's
 //! `tlscheck::deep` (`cfg(challoc_tls_check)`).
 //!
@@ -165,7 +167,7 @@ pub(crate) unsafe fn headers<'a>(
     Ok(())
 }
 
-/// The conjuncts of what `heap_at(p)` ensures that need no sets, of `h`,
+/// The conjuncts of `wf()` and `home_at(p)` that need no sets, of `h`,
 /// the heap at `p`, created on `s`: `shared`, `Heap::home_at`, the
 /// `others` walk (nodes in metadata, not wrapping, not on a home header,
 /// pads, blocks, keys in range, not the home arena and distinct), every

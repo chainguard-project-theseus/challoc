@@ -2434,11 +2434,11 @@ src/heap/shared.rs    Shared: process-wide state, init, the free checks and rout
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap creation, the exit destructor
 src/heap/tcaches.rs   explicit caches (tcache.create)
 src/heap/slotstate.rs the per-slot state bytes (free, cached, live) of the double-free scan (6.3)
-src/heap/heap_facts.rs  the set-free checker of what tcaches::heap_at trusts, shared by heap_at_tests and tlscheck
+src/heap/heap_facts.rs  the set-free checker of Heap::wf and Heap::home_at, shared by heap_at_tests and tlscheck
 src/heap/tlscheck.rs  debug-only (cfg(challoc_tls_check)) run-time check of the TLS slot premise
 src/heap/mallocx.rs   MALLOCX_* flag decoding and the mallocx/dallocx routing
 src/heap/tests/, src/heap/linux_tests.rs   heap tests
-src/heap/heap_at_tests.rs, src/api/heap_at_tests.rs   test-only: the heap_at checker on every heap heap_at hands out, and through the C API's MALLOCX_TCACHE paths
+src/heap/heap_at_tests.rs, src/api/heap_at_tests.rs   test-only: the heap checker on every heap Heap::destroy's callers and Tcaches::get hand on, and through the C API's MALLOCX_TCACHE paths
 src/huge/mod.rs       huge allocator: extents, guards, first fit, the audit
 src/huge/kernel.rs    commits, guard pages and the zeroing write; theorem_huge_commit_avoids_guards
 src/huge/free.rs      free_run and its Merge model, the retention cap, usable_size and lookup

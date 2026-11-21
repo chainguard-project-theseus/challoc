@@ -1,8 +1,12 @@
-//! A test-only checker of what [`tcaches::heap_at`] trusts, and the tests
-//! that run it on every heap `heap_at` hands out.
+//! A test-only checker of `h.wf()` and `h.home_at(p)` for the heap `h`
+//! at `p`, and the tests that run it on every heap `Heap::destroy`'s
+//! callers and `Tcaches::get` hand on.
 //!
-//! `heap_at` is `external_body`: it ensures `r.wf()` and `r.home_at(p)`
-//! for the heap at `p` with no proof. [`check`] tests every part of those
+//! Those facts are not proved of the heap's bytes: for an explicit cache
+//! they come from the table's registry (`tcaches::heap_ok`), for a thread
+//! heap from the slot premise (`TlsSlot::entry`'s `slot_ok`), and for a
+//! heap not yet published from creation, and `Heap::destroy` requires them
+//! of the permission it is handed. [`check`] tests every part of those
 //! two specs that a heap's bytes can show, for a `&Heap` and the pointer
 //! `p` its caller had: it is a transcription of `Heap::wf`, `Heap::home_at`
 //! and the specs they name, conjunct by conjunct, in [`SPECS`]. Each
@@ -28,12 +32,14 @@
 //! created on, which is the process's for the C library and a
 //! [`TestShared`](crate::testutil::TestShared) in the unit tests.
 //!
-//! The tests reach every caller of `heap_at` and run the checker on the
-//! heap that caller is handed, with the pointer it hands `heap_at`:
-//! `Tcaches::get` (the table entry), `heap_destructor` (the thread key's
-//! value) and `Heap::destroy` (the pointer `Heap::create` returned, the
-//! table entry `Tcaches::destroy` swapped out, the key's value). The
-//! `MALLOCX_TCACHE` paths of the C API are `api::heap_at_tests`.
+//! The tests reach every path that hands on a heap with these facts and
+//! run the checker on that heap, with the pointer it is handed at:
+//! `Tcaches::get` (the table entry) and `Heap::destroy`'s three callers
+//! (`create_heap_for_thread`'s unpublished heap, the pointer
+//! `Heap::create` returned; `Tcaches::destroy`, the table entry it
+//! swapped out; `heap_destructor`, the heap the thread's slot names,
+//! which is the thread key's value). The `MALLOCX_TCACHE` paths of the
+//! C API are `api::heap_at_tests`.
 //!
 //! `checker_fails_each_corrupted_fact` has a mutant for each [`Broken`]
 //! variant but these:
@@ -519,7 +525,7 @@ const SPECS: &[Spec] = &[
     },
     Spec {
         file: "mod.rs",
-        sig: "pub(super) closed spec fn home_at(&self, h: *mut Heap) -> bool {",
+        sig: "pub closed spec fn home_at(&self, h: *mut Heap) -> bool {",
         items: &[
             (
                 "&&& self.home_hdrs@ == Seq::new(NCLASSES as nat, |c: int| home_hdr(h, c))",
@@ -683,8 +689,8 @@ const BROKEN: &[&str] = &[
     "BoundUncounted",
 ];
 
-/// Check what `heap_at(p)` ensures, `r.wf()` and `r.home_at(p)`, of
-/// `h`, the heap `heap_at` handed out for `p`, created on `s`; the first
+/// Check `h.wf()` and `h.home_at(p)` of `h`, the heap handed on at `p`
+/// (by `Tcaches::get`, or to `Heap::destroy`), created on `s`; the first
 /// broken conjunct, in the order below, if any. [`SPECS`] says how each
 /// conjunct is covered. The conjuncts that need no sets are
 /// [`heap_facts::set_free`] and [`heap_facts::homed_ok`], which the debug
@@ -809,7 +815,7 @@ fn check_tcache(s: &Shared, id: u16) -> Result<(), Broken> {
     let p = s.tcaches.entry(id);
     let h = s
         .tcaches
-        .get(id, Tracked::assume_new())
+        .get(id, Tracked::assume_new(), Tracked::assume_new())
         .expect("a live explicit cache");
     // SAFETY: the caller's cache, which it uses on no other thread.
     unsafe { check_both(h, p, s) }
@@ -1052,13 +1058,19 @@ fn explicit_cache_lifecycle_passes_the_checker() {
         xfree(s, p, t);
         assert_tcache_ok(s, t, "dallocx");
     }
-    let h = s.tcaches.get(t, Tracked::assume_new()).unwrap();
+    let h = s
+        .tcaches
+        .get(t, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     let nodes = Heap::nodes(h.others).count();
     assert_eq!(nodes, 2, "the a1 node and the FOREIGN node");
     assert!(h.caches.iter().any(|k| k.len > 0), "caches hold slots");
     assert!(s.tcaches.flush(s, t, Tracked::assume_new()));
     assert_tcache_ok(s, t, "tcache.flush");
-    let h = s.tcaches.get(t, Tracked::assume_new()).unwrap();
+    let h = s
+        .tcaches
+        .get(t, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert!(h.caches.iter().all(|k| k.len == 0));
     for o in Heap::nodes(h.others) {
         // SAFETY: a node of the live heap's list.
@@ -1066,12 +1078,19 @@ fn explicit_cache_lifecycle_passes_the_checker() {
     }
     let old = s.tcaches.entry(t);
     assert!(tcache_destroy(s, t));
-    assert!(s.tcaches.get(t, Tracked::assume_new()).is_none());
+    assert!(
+        s.tcaches
+            .get(t, Tracked::assume_new(), Tracked::assume_new())
+            .is_none()
+    );
     assert!(s.tcaches.entry(t).is_null());
     // The id comes back, for a fresh heap that passes.
     assert_eq!(tcache_create(s, 0), t);
     assert_tcache_ok(s, t, "the id's reuse");
-    let h = s.tcaches.get(t, Tracked::assume_new()).unwrap();
+    let h = s
+        .tcaches
+        .get(t, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     assert!(
         is_fresh(h),
         "the reused id's heap ({:#x}, the old one was {:#x}) is not fresh",
@@ -1132,15 +1151,17 @@ fn fill_thread_heap(s: &Shared, a1: u16) {
 }
 
 /// The thread key's value on this thread: the pointer the C library
-/// hands `heap_destructor`, which hands it to `heap_at`.
+/// hands `heap_destructor`. The destructor only tests it for null and
+/// hands `Heap::destroy` the heap the thread's slot names, which is the
+/// heap at this pointer.
 fn key_value(s: &Shared) -> *mut Heap {
     let key = s.thread_key().expect("the thread key");
     // SAFETY: `key` is the allocator's live thread key.
     unsafe { libc::pthread_getspecific(key) as *mut Heap }
 }
 
-/// Thread heaps reach `heap_at` through `heap_destructor` and
-/// `Heap::destroy`: the checker passes on the heap the thread key holds
+/// Thread heaps reach `Heap::destroy` through `heap_destructor`, with
+/// the permission the thread's slot loan holds: the checker passes on the heap the thread key holds
 /// with its caches filled, and the destructor then frees it, run by hand
 /// (the bound count and the metadata go back) and by thread exit (the
 /// bound count goes back).
@@ -1356,7 +1377,11 @@ fn fork_child_uses_the_parents_explicit_cache() {
         assert!(s.tcaches.flush(s, t, Tracked::assume_new()));
         assert_tcache_ok(s, t, "the child's flush");
         assert!(tcache_destroy(s, t));
-        assert!(s.tcaches.get(t, Tracked::assume_new()).is_none());
+        assert!(
+            s.tcaches
+                .get(t, Tracked::assume_new(), Tracked::assume_new())
+                .is_none()
+        );
     });
     assert_tcache_ok(s, t, "the child's exit");
     for &p in &kept {
@@ -1396,15 +1421,15 @@ fn filled_cache() -> (&'static Shared, u16, *mut Heap, u16) {
 /// Each mutation corrupts one fact the checker reads, which the heap
 /// shows in memory, then puts it back: the checker reports the conjunct
 /// it breaks, and passes again once it is restored. The mutations go
-/// through raw pointers, so the checker's and `heap_at`'s references are
-/// the only ones to the heap while they live.
+/// through raw pointers, so the checker's and `Tcaches::get`'s references
+/// are the only ones to the heap while they live.
 #[test]
 fn checker_fails_each_corrupted_fact() {
     let (s, t, hp, a1) = filled_cache();
     let c64 = class_of(64).unwrap();
     let c100 = class_of(100).unwrap();
     // `check` makes its own `&Heap`, and `restored` reaches the heap
-    // through `heap_at`'s `&mut Heap`, so no reference to the heap, a
+    // through `Tcaches::get`'s `&mut Heap`, so no reference to the heap, a
     // header or a node is live across either call: every mutation reads
     // and writes in place through `hp`, `hdr(..)` and the node pointers,
     // and the only references are the ones `check` makes for its call.
@@ -1446,13 +1471,13 @@ fn checker_fails_each_corrupted_fact() {
     unsafe { (*hp).shared = saved };
     restored("shared");
 
-    // The pointer `heap_at` is handed is not the heap's.
+    // The pointer the heap is handed on at is not the heap's.
     // SAFETY: as in `run`.
     let got = unsafe { check_both(&*hp, (hp as usize + 64) as *const Heap, s) };
     assert_eq!(got, Err(Broken::HomeAt { class: 0 }), "mutant `p`");
 
-    // The pointer `heap_at` is handed is a `Heap`'s size from the top of
-    // the address space (the checker does arithmetic on it, no more).
+    // The pointer the heap is handed on at is a `Heap`'s size from the
+    // top of the address space (the checker does arithmetic on it, no more).
     let top = usize::MAX - core::mem::size_of::<Heap>() + 1;
     // SAFETY: as in `run`.
     let got = unsafe { check_both(&*hp, top as *const Heap, s) };

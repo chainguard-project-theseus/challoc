@@ -15,7 +15,7 @@
 //!   `pthread_self`, which `fork` keeps) to the child's IDs and marks every
 //!   other parent thread's heap orphaned; a use before that handler from
 //!   the forking thread re-homes the same way;
-//! - **where `heap_at`'s facts say**: the heap's `shared` field is the one
+//! - **where `slot_ok`'s facts say**: the heap's `shared` field is the one
 //!   it was published with (the process's `Shared` in the library), the
 //!   heap lies in that `Shared`'s metadata region, and, at publication,
 //!   exit and every 64th use, the part of the test checker
@@ -396,7 +396,7 @@ fn deep(h: usize, heap: &Heap, when: &str) {
     // uses while the check runs.
     if let Err(b) = unsafe { heap_facts::no_sets(heap, h as *const Heap, s) } {
         crate::abort!(
-            "tls check: heap {:#x} on thread {} {}: heap_at fact broken: {:?}",
+            "tls check: heap {:#x} on thread {} {}: heap fact broken: {:?}",
             h,
             crate::sys::gettid(),
             when,

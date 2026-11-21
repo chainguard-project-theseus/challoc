@@ -8,9 +8,10 @@ made during [#138](https://github.com/chainguard-project-theseus/challoc/pull/13
 audit. It machine-checked two derivations of `false`, through
 `from_raw` and `Lock::get_unlocked`, whose contracts it fixed.*
 
-*This file lists the 36 of those seams that the ledger still lists: the
+*This file lists the 35 of those seams that the ledger still lists: the
 37 the ledger at `26f535a9` listed, less `addr_mix`, which is verified
-since. The others are verified at `26f535a9` or no longer exist,
+since, and `heap_at`, which #844 removed (`Heap::destroy` takes the
+heap's permission from its caller instead). The others are verified at `26f535a9` or no longer exist,
 so their rows are left out; among them are `Heap::destroy`,
 `LockGuard::deref_mut`, `SlabDesc::at`, `Set::ensure`, `Arenas::init`,
 `save_sigmask`, `from_raw` and `Lock::get_unlocked`, all verified there.
@@ -39,7 +40,7 @@ found the contract false or unsound and corrected it; the reason gives
 the corrected contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 36 seams listed: 32 sound, 4 fixed.
+Totals for the 35 seams listed: 31 sound, 4 fixed.
 
 | seam | ledger file | status | verdict | reason |
 |---|---|---|---|---|
@@ -50,7 +51,6 @@ Totals for the 36 seams listed: 32 sound, 4 fixed.
 | `Heap::arena_volatile` | `heap/mod.rs` | discharged | sound | No `ensures`. |
 | `axiom_shared_built` | `heap/shared.rs` | trusted | sound | Consumes its permissions and returns none, so padding does not matter. A second call needs a second set of field permissions, which only `Shared::begin` mints, once per process. |
 | `axiom_shared_regions` | `heap/shared.rs` | trusted | sound | The permission is frozen behind `&'static`; two calls give the same value. |
-| `heap_at` | `heap/tcaches.rs` | trusted | sound | Ensures `wf` and `home_at(p)` for a heap that `Heap::create` or `Heap::create_detached` returned and nothing destroyed (the `# Safety` duty). The result borrows the `HeapUse` token mutably, so two results for one pointer cannot coexist. |
 | `axiom_zero_entry` | `huge/table.rs` | discharged | sound | Consumes the uninitialised permission and a 16-byte zero token; all-zero bytes are an empty entry (null `desc`). |
 | `ClassTable` | `layout/mod.rs` | trusted | sound | Opaque type with one private constructor. |
 | `ClassTable::new` | `layout/mod.rs` | discharged | sound | No contract. |
@@ -128,10 +128,11 @@ These verdicts are sound; each rests on an assumption worth knowing.
   axiom combines a `Zeroed` token with an initialised permission), and
   every call uses its bound at once, on memory no permission covers, as
   `vspec/ptr.rs` documents.
-- **Truth under `# Safety`.** `heap_at` and `shared_arg` claim `wf` of
-  their result for the pointers their callers pass by the `# Safety`
-  contract; nothing checks that duty. Neither relates two results, so
-  neither proves `false`.
+- **Truth under `# Safety`.** `shared_arg` claims `wf` of its result
+  for the pointer its caller passes by the `# Safety` contract; nothing
+  checks that duty. It relates no two results, so it does not prove
+  `false`. (`heap_at`, which made the same kind of claim for heaps, was
+  removed by #844.)
 - **`class_table()` across `adopt_page_geometry`.** One constant names
   the table before and after the init-time rewrite (`ClassTable`,
   `ClassTable::new`, `ClassTable::table`). No verified code reads the

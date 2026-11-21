@@ -233,6 +233,16 @@ impl HeapLoan {
         &&& old.heap() is None ==> self.heap() is None
     }
 
+    /// A loan holding no permission, for a heap reached outside TLS (an
+    /// explicit cache, `heap::tcaches::Tcaches::get`). It makes no
+    /// permission, so it mints nothing.
+    pub(crate) proof fn empty() -> (tracked r: HeapLoan)
+        ensures
+            r.heap() is None,
+    {
+        HeapLoan { heap: None }
+    }
+
     /// Put the thread heap's permission in the loan, which holds none.
     pub(crate) proof fn put(tracked &mut self, tracked h: HeapPerm)
         requires
@@ -279,11 +289,15 @@ impl TlsSlot {
     /// The calling thread's token at a top-level user of the slot, as the
     /// slot's last user left it: what [`heap::thread::slot_ok`] states of
     /// the value it holds (a heap value comes with the heap's permission,
-    /// the heap well formed, and nothing else with one), and `tp` this
+    /// the heap well formed with its home headers and block at the cast
+    /// pointer to its address, and nothing else with one), and `tp` this
     /// thread's thread pointer. Trusted: the slot premise above, and that
     /// the thread's heap is as the last verified writer left it (every
-    /// writer of a heap proves `Heap::wf` kept, and no ghost state
-    /// survives from one top-level call to the next); the `&'static mut`
+    /// writer of a heap proves `Heap::wf` kept; `Heap::home_at` is of the
+    /// heap's private ghost fields `home_hdrs` and `head`, which only
+    /// creation sets (`create_heap_for_thread` for a thread heap) and only
+    /// `Heap::destroy` takes from; and no ghost state survives from
+    /// one top-level call to the next); the `&'static mut`
     /// stands for the thread's one slot, of which a top-level user is the
     /// only one using it while it runs (the slot premise: a nested user is
     /// lent the outer token), so the heap it borrows (a `&'static mut
@@ -299,10 +313,11 @@ impl TlsSlot {
     /// `heap_destructor` stores `TLS_EXITED` before `Heap::destroy` frees
     /// the heap, so a nested user that allocates during the destroy (a
     /// signal handler) finds a sentinel, not the heap being freed: an
-    /// assertion records the token at `TLS_EXITED` just before the call,
-    /// but `Heap::destroy` takes no part of the token, so nothing verified
-    /// ties its frees to the slot's value; the order is read off the
-    /// code. Called only at the top-level users above, once each: a verified
+    /// assertion records the token at `TLS_EXITED`, with the heap's
+    /// permission taken out of it for `Heap::destroy`, just before the
+    /// call, but a nested user makes a token of its own here, so nothing
+    /// verified ties its frees to the slot's value; the order is read off
+    /// the code. Called only at the top-level users above, once each: a verified
     /// function that used two tokens would hold two copies of the heap's
     /// ghost state (the two frees are done with their token before their
     /// slow path makes the next one), and a stale one would read and

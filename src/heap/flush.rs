@@ -79,6 +79,7 @@ impl Heap {
             final(self).homed == old(self).homed,
             final(self).rehome == old(self).rehome,
             final(self).heads == old(self).heads,
+            final(self).head == old(self).head,
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, cs.spec_class() as int, 0, r.0.n as int),
