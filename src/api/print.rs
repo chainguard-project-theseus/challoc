@@ -81,6 +81,14 @@ verus! {
 #[allow(dead_code)]
 pub struct ExWriteCallback(WriteCallback);
 
+/// No callback, `WriteCallback(None)`: a report to it goes to the
+/// `malloc_message` path ([`emit`]). For verified code, its value opaque
+/// to the verifier, which cannot build the type. Out of the test binary,
+/// as its one user, `exports::print_at_exit`, is.
+#[cfg(not(test))]
+#[verifier::external_body]
+pub(crate) const NO_CALLBACK: WriteCallback = WriteCallback(None);
+
 /// Where a report goes.
 enum Target {
     /// The caller's callback, or with `None` the `malloc_message` path.
@@ -1819,6 +1827,14 @@ mod exports {
         super::stats_print_at_exit(write_cb, Tracked(ord))
     }
 
+    /// [`PRINT_AT_EXIT`]'s function: [`stats_print_exit`] with the
+    /// `malloc_message` path as the callback ([`super::NO_CALLBACK`]).
+    /// Verus's build has no static to use it.
+    #[cfg_attr(verus_keep_ghost, allow(dead_code))]
+    extern "C" fn print_at_exit() {
+        stats_print_exit(super::NO_CALLBACK)
+    }
+
     } // verus!
 
     /// jemalloc prints its `stats_print` report from an `atexit` handler it
@@ -1833,14 +1849,6 @@ mod exports {
     #[used]
     #[unsafe(link_section = ".fini_array")]
     static PRINT_AT_EXIT: extern "C" fn() = print_at_exit;
-
-    /// [`stats_print_exit`] with the `malloc_message` path as the callback
-    /// (`WriteCallback(None)`, which Verus cannot build: the type is
-    /// opaque to it).
-    #[cfg(not(verus_keep_ghost))]
-    extern "C" fn print_at_exit() {
-        stats_print_exit(super::WriteCallback(None))
-    }
 }
 
 #[cfg(test)]
@@ -1892,6 +1900,26 @@ mod kani_print {
         if called {
             assert_eq!(got, (opaque as usize, buf.as_ptr() as usize));
         }
+    }
+
+    /// `NO_CALLBACK`, trusted as a value of its type: it is no callback,
+    /// so `call_back` calls nothing and returns false for it, and the
+    /// report goes to the `malloc_message` path (`emit`).
+    #[kani::proof]
+    fn no_callback_calls_nothing() {
+        use super::NO_CALLBACK;
+        assert!(NO_CALLBACK.0.is_none());
+        let opaque: *mut c_void = ptr::without_provenance_mut(kani::any());
+        let mut buf: [u8; 1024] = kani::any();
+        buf[1023] = 0;
+        assert!(!call_back(
+            &NO_CALLBACK,
+            opaque,
+            &buf,
+            Tracked::assume_new()
+        ));
+        // SAFETY: as in `record`.
+        assert_eq!(unsafe { CALLS }, 0);
     }
 }
 
