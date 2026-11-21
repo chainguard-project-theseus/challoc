@@ -1093,9 +1093,12 @@ verus! {
 /// slab number (and the batch's minimum address); a batch from one slab is
 /// done; one spanning fewer than [`GROUP_BUCKETS`] slabs is permuted by
 /// [`flag_sort`] on `slab - lowest`; anything wider, a cache holding slots
-/// of more than 256 slabs' span, falls back to a sort on the address
-/// ([`super::sort::sort_ptrs`]). Every path is O(n) but the last, a full sort of half the
-/// entries.
+/// of more than 256 slabs' span, is flag-sorted on `(slab - lowest) >>
+/// sh`, `sh` the least shift that fits the span in the buckets, and
+/// each bucket then sorted on the address
+/// ([`super::sort::sort_ptrs_range`]), which leaves the batch in
+/// address order. Every path is O(n) but the last, O(n) plus the
+/// buckets' sorts.
 ///
 /// Verus checks the sweep and the dispatch: every key is in `[kmin,
 /// kmax]`, so [`flag_sort`]'s keys are below `span <= GROUP_BUCKETS`,
@@ -1183,7 +1186,77 @@ pub(super) fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8])
                 { key(p) - kmin },
         );
     } else {
-        super::sort::sort_ptrs(high);
+        // Wider than the buckets: one flag sort on `(slab - lowest) >> sh`
+        // (`sh` the least shift that fits the span in the buckets), then
+        // an address sort of each bucket. The slab number rises with the
+        // address, so the buckets are in address order and the result is
+        // the whole batch's address order, as one sort of it gives.
+        let d = kmax - kmin;
+        let mut sh = 0u32;
+        while sh < 63 && d >> sh >= GROUP_BUCKETS
+            invariant
+                sh <= 63,
+            decreases 63 - sh,
+        {
+            sh += 1;
+        }
+        assert(d >> sh < 256) by (bit_vector)
+            requires
+                sh <= 63,
+                sh == 63 || d >> sh < 256,
+        ;
+        let nb = (d >> sh) + 1;
+        assert(forall|x: usize| x <= d ==> #[trigger] (x >> sh) <= d >> sh) by (bit_vector)
+            requires
+                sh <= 63,
+        ;
+        flag_sort(
+            high,
+            nb,
+            |p: *mut u8| -> (k: usize)
+                requires
+                    1 <= lg < 64,
+                    sh <= 63,
+                    kmin <= slab_key(p, base, lg) <= kmax,
+                ensures
+                    k == (slab_key(p, base, lg) - kmin) as usize >> sh,
+                { (key(p) - kmin) >> sh },
+        );
+        // The same bucket, total, to find each bucket's end.
+        let bucket = |p: *mut u8| -> (k: usize)
+            requires
+                1 <= lg < 64,
+                sh <= 63,
+            { ((p as usize).wrapping_sub(base) >> lg).wrapping_sub(kmin) >> sh };
+        let len = high.len();
+        let ghost m = high@.to_multiset();
+        let mut i = 0usize;
+        while i < len
+            invariant
+                1 <= lg < 64,
+                sh <= 63,
+                i <= len == high@.len(),
+                high@.to_multiset() == m,
+                forall|p: *mut u8| #[trigger] bucket.requires((p,)),
+            decreases len - i,
+        {
+            let b = bucket(high[i]);
+            let mut j = i + 1;
+            while j < len && bucket(high[j]) == b
+                invariant
+                    1 <= lg < 64,
+                    sh <= 63,
+                    i < j <= len == high@.len(),
+                    forall|p: *mut u8| #[trigger] bucket.requires((p,)),
+                decreases len - j,
+            {
+                j += 1;
+            }
+            if j - i > 1 {
+                super::sort::sort_ptrs_range(high, i, j);
+            }
+            i = j;
+        }
     }
     low
 }

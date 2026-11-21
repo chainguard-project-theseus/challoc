@@ -566,6 +566,49 @@ fn group_by_slab_single_slab_and_wide_span() {
     assert_eq!(wide, expect, "wider than GROUP_BUCKETS slabs: sorted");
 }
 
+/// The wide fallback (a flag sort on coarser buckets, then a sort of
+/// each bucket) gives the batch's full address order, as one sort does:
+/// scrambled batches of every length a flush releases, over spans from
+/// just past 256 slabs, some slabs holding many entries.
+#[test]
+fn group_by_slab_wide_span_matches_a_full_sort() {
+    let s = shared();
+    let c = class_with(64);
+    let cls = &CLASSES[c];
+    let mut st = 0x5eed_0786_1234_abcdu64;
+    for span in [257usize, 300, 511, 1001] {
+        for len in [2usize, 3, 21, 64, 128, 512, 2048] {
+            let mut v: Vec<*mut u8> = (0..len)
+                .map(|i| {
+                    // The ends of the span, then slabs drawn from a
+                    // quarter of it, so buckets get long runs.
+                    let sl = match i {
+                        0 => 0,
+                        1 => span - 1,
+                        _ => (xorshift(&mut st) as usize) % (span / 4),
+                    };
+                    let k = (xorshift(&mut st) as usize) % cls.nslots();
+                    (s.regions.slab_addr(c, sl) + k * cls.size()) as *mut u8
+                })
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            for i in (1..v.len()).rev() {
+                let j = (xorshift(&mut st) % (i as u64 + 1)) as usize;
+                v.swap(i, j);
+            }
+            let mut expect = v.clone();
+            expect.sort_unstable();
+            assert_eq!(
+                group_by_slab(s, c, &mut v),
+                expect[0],
+                "span {span}, len {len}: lowest"
+            );
+            assert_eq!(v, expect, "span {span}, len {len}: sorted");
+        }
+    }
+}
+
 /// The in-place counting sort behind the bucket pass: 1000 entries
 /// with random 8-bit keys come out in non-decreasing key order as a
 /// permutation of the input.

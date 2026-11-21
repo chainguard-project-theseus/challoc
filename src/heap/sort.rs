@@ -369,6 +369,19 @@ pub(crate) fn sort_ptrs(s: &mut [*mut u8])
     sort_ptrs_by_key(s, |p: *mut u8| p as usize)
 }
 
+/// Sorts `s[lo..hi]` by address, ascending: permutes `s` (the entries
+/// outside the range are not touched, which no proof needs).
+pub(crate) fn sort_ptrs_range(s: &mut [*mut u8], lo: usize, hi: usize)
+    requires
+        lo <= hi <= old(s)@.len(),
+    ensures
+        final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
+{
+    let ghost s0 = s@;
+    quicksort(s, lo, hi, depth_limit(hi - lo), &|p: *mut u8| p as usize, Ghost(s0.to_multiset()));
+}
+
 } // verus!
 
 #[cfg(test)]
