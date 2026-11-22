@@ -44,6 +44,15 @@ and that the snapshot reloads to the digest from before them. Under
 MALLOC=challoc the epoch is open throughout, so a collection written
 over a collection takes dbSetValue's new-object path.
 
+tests/unit/fork-drain.tcl checks the drain's trigger: with activedefrag
+on and the fragmentation thresholds out of reach
+(active-defrag-threshold-lower 1000, active-defrag-ignore-bytes 1000gb),
+it overwrites a tenth of 200k 64-byte values while a BGSAVE child runs,
+and requires active_defrag_hits to rise once the child exits, with
+challoc's drain_moves (the "fork epochs:" line of MEMORY MALLOC-STATS)
+counting the moves. With the trigger taken out it fails. It skips unless
+the server runs on challoc with fork epochs.
+
 All of it is compiled only under challoc (CHALLOC_COW, which
 <challoc/challoc.h> defines), and the three entry points are weak
 references: on a libchalloc.so.0 without fork epochs they are null and
@@ -62,8 +71,9 @@ MiB, challoc with 1/6 to 4/6 against 1/6 to 6/6:
  src/defrag.c                   |   21 ++++++++++++++++++++-
  src/server.c                   |   24 ++++++++++++++++++++++++
  src/server.h                   |    4 ++++
+ tests/unit/fork-drain.tcl      |   76 +++++++++++++++++++++++++++++++++
  tests/unit/fork-overwrite.tcl  |   81 +++++++++++++++++++++++++++++++++++
- 5 files changed, 139 insertions(+), 2 deletions(-)
+ 6 files changed, 215 insertions(+), 2 deletions(-)
 
 diff --git a/src/db.c b/src/db.c
 index 9f802ad..77f57e9 100644
@@ -199,6 +209,88 @@ index 6a615e1..775eac5 100644
  
  /* acl.c -- Authentication related prototypes. */
  extern rax *Users;
+diff --git a/tests/unit/fork-drain.tcl b/tests/unit/fork-drain.tcl
+new file mode 100644
+index 0000000..91fa1ef
+--- /dev/null
++++ b/tests/unit/fork-drain.tcl
+@@ -0,0 +1,76 @@
++# The fork epoch's drain (contrib/redis 0006 of
++# chainguard-project-theseus/challoc). After a fork child exits, the values
++# written while it ran sit above the holes the epoch left, and while challoc
++# reports a size class still draining (challoc_cow_stat(CHALLOC_COW_DRAINING))
++# computeDefragCycles starts a defrag cycle whatever the fragmentation
++# thresholds. Here the thresholds are out of reach, so only that trigger can
++# start one: the defragmenter must move values once the child is gone.
++
++# challoc's fork-epoch figures, from the line its malloc_stats_print writes
++# ("fork epochs: epochs N open N ... drain_floors N"), as a dict; empty under
++# another allocator or a libchalloc.so.0 without fork epochs.
++proc fork_drain_stats {} {
++    foreach line [split [r memory malloc-stats] "\n"] {
++        if {[string match {fork epochs: *} $line]} {
++            return [string range $line [string length {fork epochs: }] end]
++        }
++    }
++    return {}
++}
++
++start_server {tags {"memefficiency external:skip needs:debug"}} {
++    set name {Active defrag drains the fork epoch whatever the thresholds}
++    if {![string match {*challoc*} [s mem_allocator]] || [fork_drain_stats] eq {}} {
++        # Not challoc, or a challoc without fork epochs: nothing to drain.
++        incr ::num_skipped
++        send_data_packet $::test_server_fd skip "$name (needs MALLOC=challoc with fork epochs)"
++    } else {
++        test $name {
++            r config set save ""
++            r config set appendonly no
++            r config set activedefrag yes
++            # No fragmentation reaches these: stock heuristics start no cycle.
++            r config set active-defrag-threshold-lower 1000
++            r config set active-defrag-threshold-upper 1000
++            r config set active-defrag-ignore-bytes 1000gb
++            r config set active-defrag-cycle-min 1
++            r config set active-defrag-cycle-max 25
++            # 64-byte values: raw strings, one size class.
++            r debug populate 200000 key 64
++            after 1000
++            assert_equal 0 [s active_defrag_hits]
++            assert_equal 0 [s active_defrag_running]
++
++            set epochs [dict get [fork_drain_stats] epochs]
++            r config set rdb-key-save-delay -5
++            r bgsave
++            wait_for_condition 50 100 {
++                [s rdb_bgsave_in_progress] == 1
++            } else {
++                fail "bgsave did not start"
++            }
++            # A tenth of the keys overwritten while the child runs.
++            r eval {
++                for i = 1, 20000 do
++                    redis.call('set', 'key:' .. math.random(0, 199999), string.rep('o', 64))
++                end
++            } 0
++            assert_equal 1 [s rdb_bgsave_in_progress]
++            # No cycle while the child runs.
++            assert_equal 0 [s active_defrag_hits]
++            r config set rdb-key-save-delay 0
++            waitForBgsave r
++            assert_equal [expr {$epochs + 1}] [dict get [fork_drain_stats] epochs]
++
++            wait_for_condition 100 100 {
++                [s active_defrag_hits] > 0
++            } else {
++                fail "no defrag cycle after the child exited: [fork_drain_stats]"
++            }
++            # The moves were the drain's: challoc's utilisation query asked
++            # for them.
++            assert_morethan [dict get [fork_drain_stats] drain_moves] 0
++            r config set activedefrag no
++        }
++    }
++}
 diff --git a/tests/unit/fork-overwrite.tcl b/tests/unit/fork-overwrite.tcl
 new file mode 100644
 index 0000000..8e5c115

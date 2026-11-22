@@ -1373,6 +1373,53 @@ env = { MODE = "rec", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}",
 metrics = [{ name = "recover_s", unit = "s", better = "lower", class = "soak-rss" }]
 est_s = 270
 
+# Client throughput while the fork epoch's drain runs (Valkey): activedefrag
+# on throughout, the overwrite during the save, then the benchmark's SET and
+# GET (50 clients, pipeline 16) right after the child exits, while the drain
+# holds a defrag cycle at active-defrag-cycle-max. Pair head with
+# noepoch=head@cow_epoch:false (no drain) for what the drain costs clients.
+[row.valkey-cow-drain]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "set_drain_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { MODE = "drain", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", DRAIN_WAIT = "300" }
+metrics = [
+  { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+]
+est_s = 480
+
+[row.valkey-cow-drain-d1k]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "set_drain_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { MODE = "drain", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2", DRAIN_WAIT = "300" }
+metrics = [
+  { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+]
+est_s = 480
+
 # The same four on Redis 8.10 (SERVER=redis): challoc is the runpath build
 # with contrib/redis 0001 to 0006 (0005: no write to an overwritten or
 # deleted value; 0006: the epoch around redisFork, a new object instead of
@@ -1442,3 +1489,50 @@ placement = "one-variant-per-vm"
 env = { SERVER = "redis", MODE = "rec", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", RECOVER = "120" }
 metrics = [{ name = "recover_s", unit = "s", better = "lower", class = "soak-rss" }]
 est_s = 270
+
+# Client throughput while the fork epoch's drain runs (Redis): activedefrag
+# on throughout, the overwrite during the save, then the benchmark's SET and
+# GET (50 clients, pipeline 16) right after the child exits, while the drain
+# holds a defrag cycle at active-defrag-cycle-max. Pair head with
+# noepoch=head@cow_epoch:false (no drain) for what the drain costs clients.
+[row.redis-cow-drain]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "set_drain_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { SERVER = "redis", MODE = "drain", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", DRAIN_WAIT = "300" }
+metrics = [
+  { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+]
+est_s = 480
+
+[row.redis-cow-drain-d1k]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "set_drain_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { SERVER = "redis", MODE = "drain", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2", DRAIN_WAIT = "300" }
+metrics = [
+  { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+]
+est_s = 480

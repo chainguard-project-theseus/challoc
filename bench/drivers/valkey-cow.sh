@@ -21,7 +21,17 @@
 #              rss_end_rel_pct (RSS at the end as a percentage of the RSS
 #              before the save, the score), recover_s (seconds until RSS is
 #              within 5% of it, at least 1; RECOVER when never)
+#   MODE=drain the overwrite with activedefrag on throughout, and the
+#              benchmark's SET and GET (50 clients, pipeline 16) right after
+#              the child exits, while the fork epoch's drain runs its defrag
+#              cycle: set_drain_rps (the score), set_drain_p99_ms,
+#              get_drain_rps, get_drain_p99_ms; the same with no child
+#              before the save (set_quiet_rps, get_quiet_rps), and drain_s
+#              (seconds from the child's exit until no defrag cycle runs,
+#              DRAIN_WAIT when never). Pair head with
+#              noepoch=head@cow_epoch:false for the drain against no drain.
 #   SERVER=valkey KEYS=10000000 SIZE=64 WRITES=1000000 DELAY=-10 RECOVER=120
+#   DRAIN_WAIT=300
 . "$(dirname "$0")/cb.sh"
 ROOT=${CB_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 KV_SERVER=${SERVER:-valkey}
@@ -32,6 +42,7 @@ SIZE=${SIZE:-64}
 WRITES=${WRITES:-1000000}
 DELAY=${DELAY:--10}
 RECOVER=${RECOVER:-120}
+DRAIN_WAIT=${DRAIN_WAIT:-300}
 kv_ensure_jemalloc
 kv_resolve "$CB_ALLOC" native
 conf_env=${KV_PRELOAD:+LD_PRELOAD=$KV_PRELOAD}
@@ -46,7 +57,8 @@ case $MODE in
   cow) set -- "$@" --writes "$WRITES";;
   tput) set -- "$@" --bench "$KV_BENCH";;
   rec) set -- "$@" --writes "$WRITES" --recover "$RECOVER" --defrag;;
-  *) die "MODE must be cow, tput or rec, got '$MODE'";;
+  drain) set -- "$@" --writes "$WRITES" --bench "$KV_BENCH" --drain-bench --drain-wait "$DRAIN_WAIT";;
+  *) die "MODE must be cow, tput, rec or drain, got '$MODE'";;
 esac
 # shellcheck disable=SC2086 # conf_env is VAR=value words
 env $conf_env COWBENCH_DATA="$D" python3 "$ROOT/bench/cow/cowbench.py" "$@" > "$D/run.json" || die "cowbench failed"
@@ -61,6 +73,11 @@ if mode == "cow":
            "rss_after_mib": r["rss_after_save"] / M}
 elif mode == "tput":
     out = {"set_outside_rps": r["set_ops_s"]["outside"], "set_inside_rps": r["set_ops_s"]["inside"]}
+elif mode == "drain":
+    d, q = r["drain"], r["quiet"]
+    out = {"set_drain_rps": d["set"]["rps"], "set_drain_p99_ms": d["set"]["p99_ms"],
+           "get_drain_rps": d["get"]["rps"], "get_drain_p99_ms": d["get"]["p99_ms"],
+           "set_quiet_rps": q["set"]["rps"], "get_quiet_rps": q["get"]["rps"], "drain_s": d["s"]}
 else:
     b = r["rss_before"]
     within = [t for t, rss, *_ in r["recover"] if rss <= b * 1.05]
