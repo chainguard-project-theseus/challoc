@@ -221,7 +221,7 @@ axiom fn axiom_arena_assemble(
 ## `Arena::put_stats`
 
 src/arena.rs:1123. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`).
+Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the lock's other ghost state, which has no bytes either: its word and cell invariants (`lock::RawPred`, `lock::CellPred`), which `Lock::new` builds for every other lock and which here are taken to describe the bytes written (a free word, and the empty record with `lock_inv`, as a test compares with `Lock::new(ArenaStats::empty(index), ..)`); the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`).
 
 > The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
 

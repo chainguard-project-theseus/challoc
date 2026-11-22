@@ -6,9 +6,12 @@
 sound, 28 sound (premise), 11 fixed, 1 weakened, 1 removed and 0
 unsound-open.*
 
-*This file lists the 25 of those seams that are still seams in the
+*This file lists the 24 of those seams that are still seams in the
 ledger. The others are verified or no longer exist, so their rows are
-left out: among them `axiom_raw_valid`, gone; `axiom_process_shared`,
+left out: among them `axiom_raw_valid`, gone; `axiom_acquired`
+(`lock.rs`), gone (#856), its hand-off verified through the lock's
+cell invariant (`lock::CellPred`), with the fork window's part now
+`axiom_window_cell`, which this audit did not cover; `axiom_process_shared`,
 which `lemma_process_shared` (`heap/shared.rs`) proves from the
 opaque definitions of `process_regions` and `pac_mode`;
 `axiom_run_locs`, gone, its facts following from the opaque
@@ -75,7 +78,6 @@ Totals for the 24 seams listed: 7 sound, 11 sound (premise), 6 fixed.
 | `Reserved::is_apart_from_static` | `layout/regions.rs` | fixed | Requires a non-empty reservation; an empty one inside the static would make the claim false. |
 | `Reserved::is_disjoint` | `layout/regions.rs` | fixed | Requires both reservations non-empty, for the same reason. |
 | `Reserved::into_unbacked` | `layout/regions.rs` | sound | Consumes the token. |
-| `axiom_acquired` | `lock.rs` | sound (premise) | Private, called on the guard just built; `deref_mut` havocs the guard, so a changed guard cannot meet its `requires` (see "Premises"). |
 | `axiom_user_va_limit` | `sys/pac.rs` | sound | Linux's default map window is at most 2^48 on both targets. |
 | `axiom_auth_sign` | `sys/pac.rs` | sound | True for every address below `user_va_limit()` and every modifier, and with the keys disabled. |
 | `axiom_ptr_add_addr` | `vspec/ptr.rs` | sound | True: `add` is `wrapping_add` where it is defined (see "Premises" for the harness's reach). |
@@ -147,7 +149,8 @@ These seams are sound under a premise worth naming.
   prepare handler returned.
 - **The C contract** (`axiom_c_claim`). The C program hands each block
   back once; two claims of one pointer prove `false`.
-- **Lock holders restore the invariant** (`axiom_acquired`, and every
+- **Lock holders restore the invariant** (`axiom_acquired` at the
+  audit, now a dropped guard's release, `LockGuard::drop`; and every
   `*_lock_inv` axiom). A holder that ends with `LockGuard::unlock` is
   checked, since the unlock requires `lock_inv`. A guard that drops
   instead is not checked: a verified holder ends with the value
@@ -160,7 +163,8 @@ These seams are sound under a premise worth naming.
   `false` follows, since two holds share only `lock_frame`).
   `take_group`, the one holder that takes them, asserts the invariant
   before its release.
-- **`axiom_acquired`'s view.** `LockGuard`'s view is an uninterpreted
+- **`axiom_acquired`'s view** (at the audit; the axiom is gone, #856).
+  `LockGuard`'s view is an uninterpreted
   function of a struct whose only field is the lock reference, so every
   acquisition of one lock has the same spec value. Callers cannot see
   `g.lock == self`; if `Lock::lock` ensured it, two acquisitions' values

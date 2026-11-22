@@ -546,14 +546,18 @@ trusted only in how it is reached:
 - `sys::pac::axiom_user_va_limit` (`sys/pac.rs`): the limit is at
   most `2^48`.
 
-**Locks.** `lock::axiom_acquired`: an acquisition takes the permission
-of the lock's cell (a vstd `PCell`) out of the free lock's invariant,
-and the value satisfies `lock_inv` and `lock_frame`, for a guard or for
+**Locks.** `lock::axiom_window_cell` (the fork window's served
+acquisition; outside the window the hand-off is verified, theorem 13's
+mutex premise): an acquisition takes the permission
+of the lock's cell (a vstd `PCell`) out of the lock's cell invariant
+(`lock::CellPred`), and the value satisfies `lock_inv` and `lock_frame`,
+for a guard or for
 a holder with no guard (`Lock::lock_held_perm`). The guard's `deref` and
 `deref_mut` are verified, and so are the two helpers they call
 (`cell_ref`, `cell_mut`), which pass the guard's permission to vstd's
-`PCell::borrow` and `borrow_mut`; `drop` (`lock.rs`) is `external_body` and checks
-nothing. `LockGuard::unlock` (`lock.rs`, verified, empty body: the
+`PCell::borrow` and `borrow_mut`; `drop` (`lock.rs`) is `external_body`:
+it calls the verified `Lock::release_cell`, which puts the permission
+back, without checking its `lock_inv` and `lock_frame` requirement. `LockGuard::unlock` (`lock.rs`, verified, empty body: the
 release is the guard's drop at its end) requires `lock_inv` and
 `lock_frame` of the value. Every holder of the metadata lock outside the tests ends with it, on every path to a
 return (`Meta::alloc`, `alloc_raw`, `alloc_zeroed`, `free`, `reserve`,
@@ -579,7 +583,7 @@ frame are not checked at the release: each verified holder ends with them
 through its last call's postcondition or an `assert`. Ten locks'
 holders all end with it. For all ten no axiom states `lock_inv` and
 `lock_frame`: each type's `LockSpec` impl defines them, and what is
-left is the mutex contract (`lock::axiom_acquired`) and that every
+left is the fork window's premise (`lock::axiom_window_cell`) and that every
 holder outside the tests reaches `LockGuard::unlock`, which the source
 test `api::tests::guards_end_in_unlock` checks. The arena creation lock
 and the state lock are also held by the fork handlers, whose release,
@@ -2853,15 +2857,47 @@ with the token at top 0 that `fork_release` returns once its root token
 has handed back every hold (theorem 33), so outside this statement.
 
 The tokens: `RawLock::lock_held` (`lock.rs`) is `lock` plus a
-`LockHeld` whose `held()` is the lock. The field is private to
+`LockHeld` whose `held()` is the lock, carrying the lock's `Unlocked`
+token, which `RawLock::lock` returns and `unlock_held` hands back to
+the word's invariant. The fields are private to
 `lock.rs`, so outside it only `lock_held` and `Lock::lock_held_perm`
 build a token; the handoff axioms below are the other source.
 
 **Premises beyond the common ones.**
 - *The mutex.* `lock` returns only once this thread holds the lock, and
-  no other thread holds it until `unlock`. This is `RawLock`'s futex
-  contract; Verus does not check it (atomics return any value). The
-  token records the calls; the mutex turns them into exclusive holds.
+  no other thread holds it until `unlock`. Verus checks the word's side
+  of it (#856 step 1): `RawLock::state` is a vstd `PAtomicU32` whose
+  permission lives in the lock's atomic invariant (`lock::RawPred`)
+  with the lock's `Unlocked` token (a vstd `GhostVar` half), exactly
+  while the word is `UNLOCKED`. The exchange that moves the word off
+  `UNLOCKED` (`try_acquire`'s CAS, or `lock_slow`'s `swap(CONTENDED)`
+  returning `UNLOCKED`) takes the token out, `release`'s swap back to
+  `UNLOCKED` puts it back, and a `LockHeld` (or a guard) carries it
+  (its type invariant: the token is its lock's). So outside the fork
+  window a token is the one the word's history gave. Still premised:
+  vstd's `PAtomicU32` (each operation one `SeqCst` atomic operation on
+  the word, and one permission per atomic), and in the fork window
+  `lock::axiom_window_served`, which gives the acquisition the window
+  serves a second token standing for the prepare handler's hold (called
+  once, on that path; `lock::tests::permission_axioms_are_called_only_at_acquisitions`).
+  The cell's side is checked too (#856 step 2): a `Lock`'s cell
+  invariant (`lock::CellPred`) holds the cell's permission, with
+  `lock_inv` and `lock_frame`, and the other half of the token
+  (`GhostVarAuth`), at `false` exactly while the permission is in. An
+  acquisition agrees its token (from the word, at `false`) with that
+  half, takes the permission and sets both to `true`; the release puts
+  it back and sets both to `false` (`Lock::acquired`, `Lock::returned`).
+  So outside the fork window a holder's permission is the one the
+  invariant gave up. In the window, `lock::axiom_window_cell` gives a
+  `Lock`'s served acquisition its token and permission; for a lock the prepare handler holds
+  bare, that pair duplicates the cell invariant's permission and
+  contradicts its half, which is sound only because the window path
+  opens no cell invariant of a lock it was served (`Lock::release_cell`
+  returns on its own `fork_holder_is_me` test before `Lock::returned`;
+  Verus does not tie the two tests, so the release's text is pinned by
+  `permission_axioms_are_called_only_at_acquisitions`). A bare hold keeps its token at `false`
+  (`LockHeld::raw`, which `RawLock::unlock_held` requires and
+  `ForkHeld::bare` carries for every fork hold but the creation lock's).
 - *The handoff* (`axiom_fork_resumed_state`, `api/mod.rs`, and
   `axiom_fork_resumed`; axioms). Ghost state does not cross the
   C calls, so the hold `fork_prepare` ends with is restated where the
@@ -2873,7 +2909,14 @@ build a token; the handoff axioms below are the other source.
   each handler names, the `&STATE` that `purge::background::state`
   returns, which it requires to be of rank `rank_state`, and ensures
   the hold is of that lock (`StateHold::lock`); the release unlocks the
-  lock the hold names. That it is the lock `fork_prepare` took (through
+  lock the hold names. The holds restated carry tokens (#856): each
+  `LockHeld` has its lock's `Unlocked`, so `axiom_fork_resumed` hands the
+  release one token per fork lock, at `false` for every lock but the
+  creation lock's (`ForkHeld::bare`, in `ForkHeld::wf`), and
+  `axiom_fork_resumed_state` the state lock's, at `true`; the release,
+  after `fork_window_close`, gives each back to its word's invariant.
+  Both restate what `fork_prepare` proved before the C call that drops
+  the hold (`fork_holds`, `bare` included). That it is the lock `fork_prepare` took (through
   `fork_lock`, from `state` too) is part of the premise, as Verus does
   not read statics in specifications: a static is one object, and
   `STATE` is the only `Lock<State>`, which
@@ -2953,7 +2996,7 @@ build a token; the handoff axioms below are the other source.
   `lock::axiom_c_entry`, minted only in export bodies, which
   `api::tests::c_call_tokens_only_in_export_bodies` checks; and the init,
   thread and fork roots). No such read runs in the fork window: the guards the window
-  serves stand for the hold (`lock::axiom_acquired`), and that they
+  serves stand for the hold (`lock::axiom_window_cell`), and that they
   leave the count and the table as read is `axiom_fork_resumed`'s
   premise.
 - The state lock's rank is proved (`STATE`'s postcondition, which
@@ -6863,7 +6906,9 @@ states its rank's range (`rank_sets(0) <= rank < rank_sets(0x1_0000)`).
   (`axiom_arenas_assemble` requires the creation lock's rank that
   `Arenas::type_inv` states).
 - *The mutex*, as for fork safety: `lock` returns only once this thread
-  holds the lock.
+  holds the lock (the word's side checked through the lock's token,
+  `lock::RawPred`; the fork window's served acquisition premised,
+  `lock::axiom_window_served`).
 
 **Where the statement is weaker than the code.**
 - Partial correctness and per-thread: the theorem rules out circular
