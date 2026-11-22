@@ -202,3 +202,83 @@ challoc's medians: redis-ops 980k -> 986k (amd64), 703k -> 699k (arm64);
 redis-ops-d1k 631k -> 640k, 499k -> 497k. The patches move none of the
 gaps beyond the runs' margins. The 2..5% gap on redis-ops at 64 B is
 main's, not this change's. Positive percentages are challoc slower.
+
+# Client throughput during the drain
+
+After a save with the fork epoch, 0006 (Redis) and 0004 (Valkey) hold a
+defrag cycle at active-defrag-cycle-max (25 by default) while challoc
+reports a size class draining. What that costs clients: `cowbench.py
+--drain-bench` (valkey-cow.sh MODE=drain, the `*-cow-drain` rows) turns
+activedefrag on before the save, overwrites a tenth of the keys during
+it, and runs the benchmark (50 clients, pipeline 16, 1M requests per
+pass, GET then SET: SETs refill the holes the drain fills and end it
+sooner) with no child before the save (quiet) and right after the child
+exits (drain). The comparison is one build with the epoch (cow, head)
+and without it (noepoch, `cow_epoch:false`: no epoch, so no drain), both
+with activedefrag on. Under this load the drain is short: no defrag cycle
+runs a second after the SET pass (`drain_s` is measured from the child's
+exit to the first of three idle samples a second apart, so it includes
+both passes, which take 2 to 3 s; noepoch's is the passes alone).
+
+## Session measurements
+
+Not harness-tier: one develop session, amd64 Xeon 6975P-C, 4 vCPU, 15
+GiB, kernel 6.18.62, two repetitions, medians (`run-drain.sh`,
+`results-drain.jsonl`). Builds: tests/consumers/redis-build.sh and
+valkey-build.sh at challoc main deda0db (quantum8), Redis 8.10.3 with
+contrib/redis 0001 to 0006, Valkey 9.1.2 with contrib/valkey 0001 to
+0004. Requests/s, p99 in ms:
+
+| cell | GET noepoch | GET cow | SET noepoch | SET cow |
+|---|---|---|---|---|
+| Redis 64 B x 10M | 790k, 1.88 | 561k (-29%), 2.70 | 1029k, 1.23 | 666k (-35%), 2.07 |
+| Redis 1 KiB x 2M | 860k, 1.69 | 663k (-23%), 1.91 | 784k, 1.44 | 572k (-27%), 1.94 |
+| Valkey 64 B x 10M | 1263k, 1.22 | 844k (-33%), 1.70 | 1172k, 1.22 | 877k (-25%), 1.49 |
+| Valkey 1 KiB x 2M | 853k, 1.71 | 627k (-26%), 1.97 | 756k, 1.47 | 572k (-24%), 1.90 |
+
+With no child (quiet) the two builds are within 3% of each other on
+every cell. The drain's cycle moved 0.33M to 1.07M values (defrag hits)
+and was over 2.4 to 3.5 s after the child exited.
+
+## Harness tier (cb launch, gate cells ref-amd64 and ref-arm64)
+
+`cow --base origin/main --rows valkey-cow-drain,valkey-cow-drain-d1k,redis-cow-drain,redis-cow-drain-d1k
+--variants 'noepoch=head@cow_epoch:false,base,head' --controls ''`,
+head f91c385, base main deda0db (run `20261122t0621z-f91c385-cow-sufvy`,
+one variant per VM, 3 replicas). base and head build the same library
+(sha256 413978c3c47ac8a9; this change touches no allocator code), so
+head against noepoch is the drain's cost. Medians, noepoch -> head,
+requests/s and p99 ms; every throughput and p99 change below is `worse`
+for head except the two marked inconclusive:
+
+| row | amd64 | arm64 |
+|---|---|---|
+| valkey-cow-drain GET | 1181k -> 763k (-35%); p99 0.82 -> 1.66 | 1171k -> 685k (-41%); p99 0.81 -> 1.83 |
+| valkey-cow-drain SET | 1008k -> 744k (-26%, inconclusive); p99 0.95 -> 1.46 | 911k -> 646k (-29%); p99 1.00 -> 1.64 |
+| valkey-cow-drain-d1k GET | 935k -> 615k (-34%); p99 1.05 -> 1.68 | 767k -> 573k (-25%); p99 1.19 -> 1.73 |
+| valkey-cow-drain-d1k SET | 724k -> 474k (-35%); p99 1.42 -> 2.26 | 597k -> 424k (-29%); p99 1.78 -> 2.63 |
+| redis-cow-drain GET | 815k -> 556k (-32%); p99 1.74 -> 2.63 | 615k -> 425k (-31%); p99 2.38 -> 3.25 |
+| redis-cow-drain SET | 1009k -> 577k (-43%); p99 1.14 -> 2.25 | 751k -> 460k (-39%); p99 1.42 -> 3.44 |
+| redis-cow-drain-d1k GET | 837k -> 661k (-21%); p99 1.13 -> 1.62 | 747k -> 582k (-22%); p99 1.21 -> 1.73 |
+| redis-cow-drain-d1k SET | 647k -> 513k (-21%); p99 1.62 -> 2.14 | 561k -> 449k (-20%); p99 2.02 -> 2.35 (inconclusive) |
+| drain_s (64 B, 1 KiB) | Valkey 1.9 -> 2.7, 2.5 -> 3.8; Redis 2.2 -> 3.5, 2.7 -> 3.5 | Valkey 2.0 -> 3.0, 3.0 -> 4.1; Redis 3.0 -> 4.5, 3.1 -> 3.9 |
+
+With no child (`set_quiet_rps`, `get_quiet_rps`) every row is
+inconclusive within about +-10% on both cells. head against base (the
+same library on different VMs, an A/A in effect): every row inconclusive
+except redis-cow-drain SET on amd64, +10.6% [+5.9%, +15.5%] `worse`,
+which is the spread between three VMs per variant, not a code change.
+
+So while the drain runs, clients get a fifth to two fifths less
+throughput and a p99 1.2 to 2.4 times higher, on both servers and
+architectures, more at 64 B than at 1 KiB; under a steady write load
+that lasts about 1 to 2 s past the passes, 3 to 5 s after the child
+exits. A server with fewer writes after the save drains longer: the
+`*-cow-rec` rows above (activedefrag turned on after the save, no client
+load) take 24 to 84 s for RSS to come back within 5%.
+
+One more observation, from developing fork-drain.tcl (200k keys, no
+client load): after the drain's moves, Redis kept starting cycles at
+active-defrag-cycle-max with `reallocated=0` for at least 30 s while
+challoc's `drain_floors` stayed at 11, so the forced cycle can outlast
+the work it was started for, up to challoc's 300 s drain window.
