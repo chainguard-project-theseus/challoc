@@ -202,3 +202,102 @@ challoc's medians: redis-ops 980k -> 986k (amd64), 703k -> 699k (arm64);
 redis-ops-d1k 631k -> 640k, 499k -> 497k. The patches move none of the
 gaps beyond the runs' margins. The 2..5% gap on redis-ops at 64 B is
 main's, not this change's. Positive percentages are challoc slower.
+
+# Client throughput during the drain
+
+After a save with the fork epoch, 0006 (Redis) and 0004 (Valkey) hold a
+defrag cycle at active-defrag-cycle-max (25 by default) while challoc
+reports a size class draining. What that costs clients: `cowbench.py
+--drain-bench` (valkey-cow.sh MODE=drain, the `*-cow-drain` rows) turns
+activedefrag on before the save, overwrites a tenth of the keys during
+it, and runs the benchmark (50 clients, pipeline 16, 1M requests per
+pass, GET then SET) with no child before the save (quiet) and right
+after the child exits (drain). The comparison is one build with the
+epoch (cow, head) and without it (noepoch, `cow_epoch:false`: no epoch,
+so no drain), both with activedefrag on. After the passes it samples
+`active_defrag_running` (INFO memory) and `active_defrag_hits` (INFO
+stats) once a second: `drain_s` runs from the child's exit to the first
+of three samples with no cycle running, and `moves_s` to the last
+sample on which the hits still rose (noepoch's are the two passes,
+about 2.5 s). Before this was fixed the sampler read
+`active_defrag_running` from INFO stats, where neither server prints it,
+so every sample read 0 and `drain_s` was the length of the passes; the
+figures below are from the fixed sampler.
+
+## Session measurements
+
+Not harness-tier: one develop session, amd64 Xeon 6975P-C, 4 vCPU, 15
+GiB, kernel 6.18.62, two repetitions, medians (`run-drain.sh`,
+`results-drain.jsonl`). Builds: tests/consumers/redis-build.sh and
+valkey-build.sh at challoc main deda0db (quantum8), Redis 8.10.3 with
+contrib/redis 0001 to 0006, Valkey 9.1.2 with contrib/valkey 0001 to
+0004. Requests/s, p99 in ms:
+
+| cell | GET noepoch | GET cow | SET noepoch | SET cow |
+|---|---|---|---|---|
+| Redis 64 B x 10M | 766k, 2.12 | 551k (-28%), 2.63 | 1003k, 1.33 | 602k (-40%), 2.65 |
+| Redis 1 KiB x 2M | 853k, 1.77 | 646k (-24%), 1.98 | 770k, 1.38 | 551k (-28%), 1.96 |
+| Valkey 64 B x 10M | 1263k, 1.40 | 815k (-35%), 1.69 | 1160k, 1.16 | 834k (-28%), 1.41 |
+| Valkey 1 KiB x 2M | 814k, 2.18 | 623k (-23%), 1.78 | 750k, 1.41 | 554k (-26%), 1.97 |
+
+With no child (quiet), where no epoch has opened, the two builds differ
+by up to 8.6% (Valkey 64 B SET; the other seven cells within 3%): that
+is this session's run-to-run spread, the yardstick for the drain
+figures. (The earlier run's spread was 4.6%.)
+
+How long the drain lasts (both repetitions; noepoch 1.7 to 2.7 s):
+
+| cell | `drain_s` | `moves_s` | defrag hits |
+|---|---|---|---|
+| Redis 64 B | 319, 323 | 88, 70 | 5.57M |
+| Redis 1 KiB | 304, 304 | 18, 14 | 0.87M |
+| Valkey 64 B | 302, 309 | 302, 309 | 2.45M |
+| Valkey 1 KiB | 305, 303 | 305, 303 | 0.45M |
+
+On every cow run the cycle ran at active-defrag-cycle-max (25) until
+challoc's 300 s drain window closed (`DRAIN_WINDOW_NS`, src/cow.rs:92,
+from the child's exit), with `drain_floors` 6 to 9 at the end. On Redis
+the values stopped moving after 14 to 88 s and the cycle ran on with
+nothing to move; on Valkey the hits still rose at the last samples.
+
+## Harness tier (cb launch, gate cells ref-amd64 and ref-arm64)
+
+`cow --base origin/main --rows valkey-cow-drain,valkey-cow-drain-d1k,redis-cow-drain,redis-cow-drain-d1k
+--variants 'noepoch=head@cow_epoch:false,base,head' --controls ''`,
+head f91c385, base main deda0db (run `20261122t0621z-f91c385-cow-sufvy`,
+one variant per VM, 3 replicas). base and head build the same library
+(sha256 413978c3c47ac8a9; this change touches no allocator code), so
+head against noepoch is the drain's cost. Medians, noepoch -> head,
+requests/s and p99 ms; every throughput and p99 change below is `worse`
+for head except the two marked inconclusive:
+
+| row | amd64 | arm64 |
+|---|---|---|
+| valkey-cow-drain GET | 1181k -> 763k (-35%); p99 0.82 -> 1.66 | 1171k -> 685k (-41%); p99 0.81 -> 1.83 |
+| valkey-cow-drain SET | 1008k -> 744k (-26%, inconclusive); p99 0.95 -> 1.46 | 911k -> 646k (-29%); p99 1.00 -> 1.64 |
+| valkey-cow-drain-d1k GET | 935k -> 615k (-34%); p99 1.05 -> 1.68 | 767k -> 573k (-25%); p99 1.19 -> 1.73 |
+| valkey-cow-drain-d1k SET | 724k -> 474k (-35%); p99 1.42 -> 2.26 | 597k -> 424k (-29%); p99 1.78 -> 2.63 |
+| redis-cow-drain GET | 815k -> 556k (-32%); p99 1.74 -> 2.63 | 615k -> 425k (-31%); p99 2.38 -> 3.25 |
+| redis-cow-drain SET | 1009k -> 577k (-43%); p99 1.14 -> 2.25 | 751k -> 460k (-39%); p99 1.42 -> 3.44 |
+| redis-cow-drain-d1k GET | 837k -> 661k (-21%); p99 1.13 -> 1.62 | 747k -> 582k (-22%); p99 1.21 -> 1.73 |
+| redis-cow-drain-d1k SET | 647k -> 513k (-21%); p99 1.62 -> 2.14 | 561k -> 449k (-20%); p99 2.02 -> 2.35 (inconclusive) |
+
+With no child (`set_quiet_rps`, `get_quiet_rps`) every row is
+inconclusive within about +-10% on both cells. head against base (the
+same library on different VMs, an A/A in effect): every row inconclusive
+except redis-cow-drain SET on amd64, +10.6% [+5.9%, +15.5%] `worse`,
+which is the spread between three VMs per variant, not a code change.
+This run's `drain_s` came from the broken sampler (the passes' length)
+and is left out; the session table above has the fixed figures.
+
+So while the drain runs, clients get a fifth to two fifths less
+throughput and a p99 1.2 to 2.4 times higher, on both servers and
+architectures, more at 64 B than at 1 KiB, and the cycle runs for
+challoc's whole 300 s drain window after every save, also after it has
+nothing left to move. One ad-hoc check (1 KiB x 2M, one run each, not in
+results-drain.jsonl): the same passes 120 s after the child exited, when
+Redis's moves had ended, still cost Redis GET -31% (610k against
+noepoch's 882k) and SET -29% (709k against 994k), and Valkey -19% and
+-20%. So a cycle that moves nothing costs clients about as much as one
+that does, for the rest of the window. Ending the forced cycle when it
+stops moving values is not in this change.

@@ -7,6 +7,13 @@ by rdb-key-save-delay, overwrite W random keys at a constant rate during
 the save, sample the child's smaps
 (Private_Dirty by VMA name) and the parent's RSS, then (optionally) watch
 the parent's RSS recover with activedefrag on. Prints one JSON line.
+
+With --drain-bench (and --bench), activedefrag is on from before the
+save, and the benchmark's GET and then SET throughput and p99 are measured with
+no child before the save (quiet) and right after the child exits (drain:
+challoc's fork-epoch drain, contrib/redis 0006 and contrib/valkey 0004,
+runs a defrag cycle at active-defrag-cycle-max then), followed by how long
+the drain ran.
 """
 import argparse, json, os, random, socket, subprocess, threading, time
 
@@ -67,6 +74,13 @@ def info(c, sec):
             d[k] = v
     return d
 
+def defrag_hits_running(c):
+    """(active_defrag_hits, active_defrag_running). Both pinned servers
+    print the hits under INFO stats and running (the cycle's CPU percent,
+    0 when no cycle runs) under INFO memory; a missing field raises rather
+    than reading as 0."""
+    return int(info(c, "stats")["active_defrag_hits"]), int(info(c, "memory")["active_defrag_running"])
+
 def smaps_by_name(pid):
     """Private_Dirty bytes summed per span: adjacent anonymous VMAs merged
     into one span (challoc's reservations: the class superblock, the huge
@@ -125,12 +139,33 @@ def children(pid):
         return []
 
 def run_bench(a, n):
+    return run_bench_lat(a, n, "set")[0]
+
+def run_bench_lat(a, n, test):
+    """One benchmark pass of TEST (set or get) over the loaded keys
+    (-r a.keys: "key:%012d", the names the fill used): (requests/s, p99 ms)
+    from its CSV line ("test","rps","avg","min","p50","p95","p99","max")."""
     out = subprocess.run([a.bench, "-p", str(a.port), "-n", str(n), "-c", "50", "-P", "16", "-r", str(a.keys),
-                          "-d", str(a.vsize), "-t", "set", "-q", "--csv"], capture_output=True, text=True).stdout
+                          "-d", str(a.vsize), "-t", test, "-q", "--csv"], capture_output=True, text=True).stdout
     for l in out.splitlines():
-        if l.startswith('"SET"'):
-            return float(l.split(",")[1].strip('"'))
-    return None
+        f = [x.strip('"') for x in l.split(",")]
+        if f[0] == test.upper():
+            return float(f[1]), (float(f[6]) if len(f) > 6 else None)
+    return None, None
+
+def cow_stats(c):
+    """challoc's fork-epoch figures from its malloc_stats_print report
+    (MEMORY MALLOC-STATS: "fork epochs: epochs N open N ... drain_floors N"),
+    {} under another allocator or a library without fork epochs."""
+    try:
+        txt = c.cmd("MEMORY", "MALLOC-STATS").decode(errors="replace")
+    except RuntimeError:
+        return {}
+    for l in txt.splitlines():
+        if l.startswith("fork epochs:"):
+            w = l.split(":", 1)[1].split()
+            return {w[i]: int(w[i + 1]) for i in range(0, len(w) - 1, 2)}
+    return {}
 
 def main():
     ap = argparse.ArgumentParser()
@@ -151,7 +186,13 @@ def main():
     ap.add_argument("--bench", default="", help="valkey-benchmark or redis-benchmark: SET throughput outside and inside the save")
     ap.add_argument("--extra", default="", help="extra server args, space separated")
     ap.add_argument("--op", default="SET", help="SET, DEL or GET during the save")
+    ap.add_argument("--drain-bench", action="store_true",
+                    help="with --bench: SET and GET throughput and p99 before the save and right after it, activedefrag on")
+    ap.add_argument("--drain-n", type=int, default=1_000_000, help="requests per --drain-bench pass")
+    ap.add_argument("--drain-wait", type=float, default=300, help="seconds to wait for the drain to end after --drain-bench")
     a = ap.parse_args()
+    if a.drain_bench and not a.bench:
+        ap.error("--drain-bench needs --bench")
 
     data = os.environ.get("COWBENCH_DATA", "/tmp/cowbench") + "/%s-%d" % (a.label, a.port)
     os.makedirs(data, exist_ok=True)
@@ -183,7 +224,26 @@ def main():
              "encoding": c.cmd("OBJECT", "ENCODING", "key:%012d" % 5).decode(),
              "mem_allocator": im.get("mem_allocator")}
         tput = {}
-        if a.bench:
+        def defrag_state():
+            return defrag_hits_running(c)
+        def drain_pass(test):
+            h0 = defrag_state()[0]
+            t = time.time()
+            rps, p99 = run_bench_lat(a, a.drain_n, test)
+            h1, running = defrag_state()
+            return {"rps": rps, "p99_ms": p99, "s": round(time.time() - t, 2), "defrag_hits": h1 - h0,
+                    "defrag_running_after": running}
+        if a.drain_bench:
+            # Both phases with activedefrag on, as a server configured for
+            # it runs: before the save no child and no drain (quiet), after
+            # it the drain's defrag cycle, if the build runs one.
+            c.cmd("CONFIG", "SET", "activedefrag", "yes")
+            r["cow_before"] = cow_stats(c)
+            # GET first: SETs refill the holes the drain moves values into,
+            # which ends it sooner.
+            r["quiet"] = {"get": drain_pass("get"), "set": drain_pass("set")}
+            r["rss_before"] = int(info(c, "memory")["used_memory_rss"])
+        elif a.bench:
             tput["outside"] = run_bench(a, 300000)
             r["rss_before"] = int(info(c, "memory")["used_memory_rss"])
         if a.purge:
@@ -236,10 +296,15 @@ def main():
                 if d > 0:
                     time.sleep(d)
             r["write_s"] = round(time.time() - t0, 1)
-        if a.bench:
+        if a.bench and not a.drain_bench:
             tput["inside"] = run_bench(a, 300000)
         while info(c, "persistence")["rdb_bgsave_in_progress"] == "1":
-            time.sleep(0.2)
+            time.sleep(0.05 if a.drain_bench else 0.2)
+        t_end = time.time()
+        if a.drain_bench:
+            # Right after the child is reaped: the drain (when there is one)
+            # starts on the next cron tick.
+            r["drain"] = {"get": drain_pass("get"), "set": drain_pass("set")}
         stop.set(); th.join()
         ip = info(c, "persistence")
         r.update({"save_s": round(time.time() - t0, 1), "rdb_last_cow_size": int(ip["rdb_last_cow_size"]),
@@ -248,6 +313,35 @@ def main():
                   "rss_after_save": int(info(c, "memory")["used_memory_rss"])})
         if tput:
             r["set_ops_s"] = tput
+        if a.drain_bench:
+            # How long the drain ran: from the child's exit until no defrag
+            # cycle runs on three samples a second apart (while challoc
+            # reports a class draining, the server starts the next cycle
+            # within a cron tick of the last one ending); drain_wait when
+            # it never ends within it. moves_s: from the child's exit to the
+            # last sample on which the hits still rose (the drain's work;
+            # cycles after it move nothing).
+            done_at, idle = None, 0
+            last_hits, last_move = defrag_state()[0], time.time()
+            while time.time() - t_end < a.drain_wait:
+                hits, running = defrag_state()
+                if hits > last_hits:
+                    last_hits, last_move = hits, time.time()
+                if running == 0:
+                    if idle == 0:
+                        done_at = time.time()
+                    idle += 1
+                    if idle == 3:
+                        break
+                else:
+                    done_at, idle = None, 0
+                time.sleep(1.0)
+            if idle < 3:
+                done_at = None
+            r["drain"].update({"s": round((done_at or time.time()) - t_end, 1), "ended": done_at is not None,
+                               "moves_s": round(last_move - t_end, 1),
+                               "defrag_hits": defrag_state()[0], "cow_after": cow_stats(c),
+                               "rss_end": int(info(c, "memory")["used_memory_rss"])})
         if a.recover:
             c.cmd("CONFIG", "SET", "rdb-key-save-delay", "0")
             if a.defrag:
@@ -256,9 +350,8 @@ def main():
             t1 = time.time()
             while time.time() - t1 < a.recover:
                 im = info(c, "memory")
-                st = info(c, "stats")
-                series.append((round(time.time() - t1), int(im["used_memory_rss"]), int(im["used_memory"]),
-                               int(st.get("active_defrag_hits", 0)), int(st.get("active_defrag_running", 0))))
+                series.append((round(time.time() - t1), int(im["used_memory_rss"]), int(im["used_memory"]))
+                              + defrag_hits_running(c))
                 time.sleep(max(1.0, a.recover / 30))
             r["recover"] = series
             r["rss_end"] = series[-1][1]
