@@ -2697,6 +2697,16 @@ premise below that nothing writes them in between.
   slow halves all free through `heap::free`, `Heap::free` or (for
   `MALLOCX_TCACHE_NONE`) `heap::free_direct`, so through the paths
   above. A free before init aborts (`free_before_init`).
+- The one release of huge pages outside those paths is the in-place
+  shrink of `realloc`, `rallocx` and `challoc_realloc_usable`
+  (`Shared::shrink_huge`, `heap/shared.rs`): it frees the run's released
+  tail with `Huge::free_run` directly, below both `zero_huge` call sites,
+  and does not clear it. It declines under `zero_on_free`, before it
+  takes the run token, so the call moves and the old run is freed (and
+  cleared) through `Heap::free_huge` or `heap::free_direct`.
+  `Shared::shrink_huge` and `shrink_kept` (`api/libc.rs`) ensure
+  `r is Some ==> flags() & PUSH_ZERO == 0`, so a shrink that releases
+  pages is proved to happen only with `zero_on_free` unset.
 
 **Paths that move freed slots without clearing them.** Flushes, GC,
 cache rebuilds, `tcache.flush`/`destroy` and thread exit release slots

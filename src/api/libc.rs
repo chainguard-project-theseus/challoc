@@ -1848,7 +1848,8 @@ pub(super) fn grow_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usize
 /// `Shared::shrink_huge` shrank it in place ([`shrank_in_place`]); `blk`
 /// is then the shrunk run's token, which gives `size` bytes at `p`, a fit
 /// at the quantum ([`kept`]) whose usable size is a new run's for `size`
-/// ([`usable_is`]). `None`, `blk` as it was, when it did not.
+/// ([`usable_is`]), with `zero_on_free` unset (no shrink under it: theorem
+/// 12). `None`, `blk` as it was, when it did not.
 #[inline(always)]
 pub(super) fn shrink_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Option<usize>)
     requires
@@ -1865,6 +1866,7 @@ pub(super) fn shrink_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usi
         r is None ==> *final(blk) == *old(blk),
         r matches Some(n) ==> {
             &&& n == final(blk).len()
+            &&& shared.flags() & heap::PUSH_ZERO == 0
             &&& shrank_in_place(p, size, *old(blk), *final(blk))
             &&& kept(p, size as int, 1)
             &&& final(blk).gives(p, size as int)

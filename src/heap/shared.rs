@@ -3590,7 +3590,9 @@ impl Shared {
     /// page start of the huge region or the run does not shrink where it
     /// is, or `zero_on_free` is set (the move clears the old run, the
     /// released pages would keep its bytes), and the caller moves the
-    /// block. The run's arena counts the
+    /// block; so it shrinks only with `zero_on_free` unset (`flags()`
+    /// without [`PUSH_ZERO`], ensured), which keeps theorem 12 true for
+    /// every huge release. The run's arena counts the
     /// pages it released, and the calling thread's heap, when it has one,
     /// counts the shrink as the move would have: the shrunk run's usable
     /// bytes in `thread.allocated` and the old run's, `old_len`, in
@@ -3610,6 +3612,7 @@ impl Shared {
             r is None ==> *final(blk) == *old(blk),
             r matches Some(n) ==> {
                 &&& n == final(blk).len()
+                &&& self.flags() & PUSH_ZERO == 0
                 &&& crate::layout::process_regions().is_huge_block(p@.addr, 1)
                 &&& crate::layout::process_regions().is_huge_block(p@.addr, final(blk).len())
                 &&& old(blk).block(p)
