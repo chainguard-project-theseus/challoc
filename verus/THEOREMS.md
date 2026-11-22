@@ -692,11 +692,10 @@ another thread's build of the feature line), `api::init_gate_enter` and
 `api::fork_gate_enter` (the waits for another thread's init or fork),
 `sys::cgroup::Deferred::discover` (a waiting discovery's wait for
 another thread's), `api/cxx.rs` `oom`, `purge/background.rs` `main`,
-`getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`),
-and `sys::cgroup::scan_lines`. The theorems are
-partial correctness: they say what holds if the call returns. None of
-these is on the thread-cache fast paths, which terminate and take no
-lock (theorem 9).
+and `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`).
+The theorems are partial correctness: they say what holds if the call
+returns. None of these is on the thread-cache fast paths, which
+terminate and take no lock (theorem 9).
 
 ## 1. Region separation
 
@@ -2199,8 +2198,8 @@ no mask.
   `ClassState::claim_with`'s retry (`class/mod.rs`), `api::init_slow`,
   `line_ready`, `wait_line`, `init_gate_enter` and `fork_gate_enter`
   (`api/mod.rs`), the OOM handler loop `api::cxx::oom`, the purge
-  thread's `main` (`purge/background.rs`), `sys::cgroup::scan_lines` and
-  `Deferred::discover` (`sys/cgroup.rs`), and the kernel retry loops
+  thread's `main` (`purge/background.rs`),
+  `sys::cgroup::Deferred::discover`, and the kernel retry loops
   `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`). They
   need a liveness model.
   Theorem 45 checks the compiled fast paths for back-edges (none).
