@@ -1391,6 +1391,16 @@ impl Arena {
         self.large.fetch_sub(Self::large_word(pages), Ordering::Relaxed);
     }
 
+    /// A huge run of this arena grew in place by `pages`
+    /// (`Huge::grow_run`): its pages, not its count, so the free of the
+    /// grown run subtracts what was added.
+    pub fn note_huge_grow(&self, pages: usize)
+        requires
+            pages < 0x1_0000_0000,
+    {
+        self.large.fetch_add(pages as u64, Ordering::Relaxed);
+    }
+
     /// Live huge runs of this arena and their pages, guards included, as
     /// one snapshot (see the field).
     pub fn large(&self) -> (r: (usize, usize))

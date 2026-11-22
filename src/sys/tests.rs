@@ -380,6 +380,7 @@ const SINKS: &[(&str, &[Site])] = &[
             ("heap/slotstate.rs", "pub(super) fn init(", 2),
             ("heap/slotstate.rs", "pub(crate) fn commit(", 1),
             ("huge/free.rs", "pub fn free_run(", 1),
+            ("huge/grow.rs", "pub fn grow_run(", 1),
             ("purge.rs", "fn discard(", 1),
             ("sys/mod.rs", "fn sigprocmask_failed(", 1),
         ],

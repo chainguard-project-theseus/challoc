@@ -50,9 +50,9 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
-use super::libc::{class_for, old_size_or_keep, usable_size};
+use super::libc::{class_for, grow_kept, old_size_or_keep, usable_size};
 #[cfg(verus_keep_ghost)]
-use super::libc::{keeps, lemma_class_aligned, spec_class_for};
+use super::libc::{grew_in_place, keeps, lemma_class_aligned, spec_class_for};
 use super::print::{cancel_disable, cancel_restore};
 #[cfg(verus_keep_ghost)]
 use crate::heap::mallocx::MALLOCX_ZERO;
@@ -497,6 +497,8 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>
 /// `p` ([`Live::claims`]), and `out` gets the result's: a new block's, or
 /// `blk` itself when `p` is kept or the move fails (`p` is then still the
 /// caller's).
+// The in-place grow's alignment test keeps `%`, the form its proof reads.
+#[allow(clippy::manual_is_multiple_of)]
 pub fn rallocx_zeroed(
     p: *mut u8,
     size: usize,
@@ -536,7 +538,12 @@ pub fn rallocx_zeroed(
         p@.addr != 0 && r.0@.addr != 0 && r.0 != p ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && r.0@.addr == 0 ==> *final(out) == blk,
-        p@.addr != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, (1usize << ((flags as u32) & 0x3f)), blk.len())),
+        p@.addr != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, (1usize << ((flags as u32) & 0x3f)), blk.len()) || grew_in_place(
+            p,
+            size,
+            blk,
+            *final(out),
+        )),
 {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
@@ -561,6 +568,22 @@ pub fn rallocx_zeroed(
         }
         return (p, Ghost(0), Tracked(Zeroed::empty(0)));
     };
+    // As `realloc`: a run that needs more pages grows in place when it
+    // can, at `p` if `p` meets the alignment. Not under `MALLOCX_ZERO`,
+    // whose bytes past the old size the move zeroes.
+    if !f.zero && old > crate::layout::MEDIUM_MAX && size > old && (p as usize) % align == 0 && grow_kept(
+        shared,
+        p,
+        size,
+        old,
+        Tracked(&mut blk),
+        Tracked(&mut *ord),
+    ).is_some() {
+        proof {
+            out.set(blk);
+        }
+        return (p, Ghost(0), Tracked(Zeroed::empty(0)));
+    }
     let (q, Tracked(z)) = alloc_with(shared, size, &f, Tracked(out), Tracked(&mut *errno), Tracked(&mut *ord));
     if q.is_null() {
         // The block at `p` stays the caller's, with its token.

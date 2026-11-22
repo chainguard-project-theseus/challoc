@@ -514,6 +514,21 @@ impl Heap {
         self.uncached.deallocated = self.uncached.deallocated.wrapping_add(bytes as u64);
     }
 
+    /// A huge run grew in place on this thread (`Shared::grow_huge`): count
+    /// it as the move it replaces, `alloc` bytes in `thread.allocated` and
+    /// `freed` in `thread.deallocated` (wrapping).
+    #[inline]
+    pub(super) fn count_uncached_move(&mut self, alloc: usize, freed: usize)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            final(self).caches_same(*old(self)),
+    {
+        self.uncached.allocated = self.uncached.allocated.wrapping_add(alloc as u64);
+        self.uncached.deallocated = self.uncached.deallocated.wrapping_add(freed as u64);
+    }
+
     /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on
     /// this thread: count it.
     #[inline(always)]

@@ -1167,6 +1167,20 @@ ctests! {
     /// the allocator keeps working. A `SKIP` line where `mseal` is
     /// unavailable (Docker's default seccomp profile filters it).
     c_mseal => [ CTest { prog: "mseal", ..BASE } ];
+    /// `tests/c/realloc_grow.c` (`huge/grow.rs`): a huge run grown by
+    /// exact sizes through `realloc` stays where it is once it is the last
+    /// run (at most one move), keeps its bytes and its guard; two runs
+    /// grown in turn move only now and then; a grown run's usable size is
+    /// `nallocx`'s, and the sized frees take it; `rallocx` and
+    /// `challoc_realloc_usable` grow too, `MALLOCX_ZERO` zeroes the new
+    /// bytes, `xallocx` never resizes; a grown run's pages come back zero
+    /// through `calloc`; in a fork epoch a run grows past the mark but not
+    /// into an extent freed during it. With `MADV_GUARD_INSTALL` markers,
+    /// and under `guards:false`.
+    c_realloc_grow => [
+        CTest { prog: "realloc_grow", gate: Gate::GuardInstall, ..BASE },
+        CTest { prog: "realloc_grow", conf: Some("abort_conf:true,guards:false"), ..BASE },
+    ];
     /// `tests/c/features.c`: `challoc_features()` is a
     /// NUL-terminated `key=value` line equal to the `Kernel and CPU features:`
     /// line of `malloc_stats_print`, with every CPU key of this architecture.

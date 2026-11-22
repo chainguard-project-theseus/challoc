@@ -530,7 +530,10 @@ pages the child never had:
   the largest medium class) is not steered: `begin` purges its free
   runs, but a huge block freed during the epoch is retained (below
   `huge_retain_max`) and a later huge request may reuse its pages while
-  the child shares them.
+  the child shares them. A run growing in place (7) takes no such
+  pages: while the floors hold it grows into a free extent only when the
+  extent is `Purged` and every purge so far was eager (the child holds
+  the only copy), or past the mark, and otherwise moves.
 
 The protocol model (`model/`, scenarios `cow_epoch`, `cow_epoch_lazy` and
 `cow_epoch_exhausted`) checks that no refill under a floor takes a slot of
@@ -810,7 +813,18 @@ usable size.
 and `rallocx`) classifies and tests the bit as `free` does, aborting on a
 clear bit, and returns the class size (a huge run's usable size from the
 huge table). `realloc` returns the same pointer if the new size maps to
-the same class, otherwise allocates, copies `min(old, new)`, frees.
+the same class, otherwise allocates, copies `min(old, new)`, frees. A
+huge run that needs more pages first tries to grow in place (7,
+`huge/grow.rs`): when the free extent right after its guard holds the
+new pages or reaches the high-water mark, or the run is the last one, it
+takes those pages, moves its guard and keeps its pointer, so a buffer
+grown by appending (a CPython `str` or `bytearray`, a Ruby string or
+`IO#read` buffer) is not copied at every step. Its usable size is then
+what a new run of that size has, so the sized frees' rule (13.1) is
+unchanged. `rallocx` grows the same way when the run's address meets the
+alignment and `MALLOCX_ZERO` is not set (under it the move zeroes the
+new bytes), and `challoc_realloc_usable` reports the grown size. A run
+never shrinks in place: a smaller page count moves.
 `xallocx` never resizes in place and reports `sallocx(p)`, so a caller
 that needs more falls back to `rallocx`, as jemalloc's contract allows.
 
@@ -1028,6 +1042,20 @@ with page granularity (`huge/`).
 - Alignment above the page is satisfied inside a free extent, at the
   extent's start rounded up to the alignment; the pages around the run
   stay free extents.
+- A live run grows in place for `realloc` and `rallocx` (6.3,
+  `Huge::grow_run`, `huge/grow.rs`): when the free extent that starts
+  right after its guard holds the new pages, or reaches the high-water
+  mark, or the run ends at the mark, the run takes those pages (the
+  extent keeps what is left, with its state, age and place in the
+  `Empty` list), pages past the mark are committed, the new guard gets
+  its marker and the old one's is removed, and the run keeps its
+  descriptor, start and arena. Its page count is the one a new run of
+  the requested size has. Nothing taken is reported zero, and a run of a
+  PMD or more gets the `thp:always` advice as a new run does. It
+  declines, and the caller moves the block, where the guards are
+  `PROT_NONE` pages (the fallback mode, or `mixed_guards`): the grown
+  run's guard would have to be split off again, which the move's
+  placement already does. Shrinking never happens in place.
 - Freed runs become `Empty` and decay like slabs (section 8). Runs whose
   usable size is above `huge_retain_max` (default 64 MiB,
   `huge::DEFAULT_RETAIN_MAX`) are purged at once.

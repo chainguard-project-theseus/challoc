@@ -403,6 +403,14 @@ pub fn fork_child(shared: &Shared) {
     DEPTH.store(0, Ordering::Release);
 }
 
+/// Test only: the floors hold, or stop holding, with no epoch begun, for
+/// a test of an allocator of its own (`huge::grow_tests`), in a fork
+/// child.
+#[cfg(test)]
+pub fn test_set_in_force(on: bool) {
+    IN_FORCE.store(on, Ordering::Relaxed);
+}
+
 /// Test only: an outermost transition under way in another thread
 /// ([`BUSY`]), as a fork child inherits it.
 #[cfg(test)]
