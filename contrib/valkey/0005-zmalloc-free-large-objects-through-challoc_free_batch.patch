@@ -1,0 +1,209 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH] zmalloc: free large objects and keyspaces through
+ challoc_free_batch (proof of concept)
+
+Valkey 9.1.2 (tag 9.1.2, commit 7f1dffedff6de73058b2c2a389422b6ecd56c8fb),
+on top of 0001 (MALLOC=challoc) and 0002 (the usable-size entry points).
+
+Tearing down a large set, hash, sorted set or list, or a whole keyspace
+(FLUSHALL, FLUSHDB, and their lazyfree jobs on the bio thread), frees its
+elements in bucket order, which is no address order: challoc's thread
+cache then flushes half a cache at a time spread over thousands of slabs,
+and the flush's address sort and one-or-two-slots-per-slab releases were
+about a third of the teardown's time.
+
+zfree_defer_begin() and zfree_defer_end() bracket freeListObject,
+freeSetObject, freeZsetObject, freeHashObject, kvstoreEmpty and
+kvstoreRelease. In between, this thread's zfree and zfree_with_size
+collect their pointers (ZFREE_DEFER_N, 4096 by default) and release them
+with challoc_free_batch (<challoc/challoc.h>), which runs free's checks on
+every pointer, sorts the batch and releases each slab's slots together;
+its return, the usable bytes freed, goes to used_memory. Nothing freed in
+a bracket is reused before the bracket's flush.
+
+challoc_free_batch is a weak reference: on a libchalloc.so.0 without it
+nothing is deferred and the server runs as without this patch.
+---
+diff --git a/src/kvstore.c b/src/kvstore.c
+index 71d1068..decf5e8 100644
+--- a/src/kvstore.c
++++ b/src/kvstore.c
+@@ -313,6 +313,7 @@ kvstore *kvstoreCreate(hashtableType *type, int num_hashtables_bits, int flags)
+ }
+ 
+ void kvstoreEmpty(kvstore *kvs, void(callback)(hashtable *)) {
++    zfree_defer_begin();
+     for (int didx = 0; didx < kvs->num_hashtables; didx++) {
+         hashtable *ht = kvstoreGetHashtable(kvs, didx);
+         if (!ht) continue;
+@@ -333,9 +334,11 @@ void kvstoreEmpty(kvstore *kvs, void(callback)(hashtable *)) {
+     kvs->bucket_count = 0;
+     if (kvs->hashtable_size_index) memset(kvs->hashtable_size_index, 0, sizeof(unsigned long long) * (kvs->num_hashtables + 1));
+     kvs->overhead_hashtable_rehashing = 0;
++    zfree_defer_end();
+ }
+ 
+ void kvstoreRelease(kvstore *kvs) {
++    zfree_defer_begin();
+     for (int didx = 0; didx < kvs->num_hashtables; didx++) {
+         hashtable *ht = kvstoreGetHashtable(kvs, didx);
+         if (!ht) continue;
+@@ -351,6 +354,7 @@ void kvstoreRelease(kvstore *kvs) {
+     if (kvs->hashtable_size_index) zfree(kvs->hashtable_size_index);
+ 
+     zfree(kvs);
++    zfree_defer_end();
+ }
+ 
+ unsigned long long int kvstoreSize(kvstore *kvs) {
+diff --git a/src/object.c b/src/object.c
+index fe2e76f..32e7aca 100644
+--- a/src/object.c
++++ b/src/object.c
+@@ -558,7 +558,14 @@ void freeStringObject(robj *o) {
+     }
+ }
+ 
++static void freeListObjectBody(robj *o);
+ void freeListObject(robj *o) {
++    zfree_defer_begin();
++    freeListObjectBody(o);
++    zfree_defer_end();
++}
++
++static void freeListObjectBody(robj *o) {
+     if (o->encoding == OBJ_ENCODING_QUICKLIST) {
+         quicklistRelease(objectGetVal(o));
+     } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
+@@ -568,7 +575,14 @@ void freeListObject(robj *o) {
+     }
+ }
+ 
++static void freeSetObjectBody(robj *o);
+ void freeSetObject(robj *o) {
++    zfree_defer_begin();
++    freeSetObjectBody(o);
++    zfree_defer_end();
++}
++
++static void freeSetObjectBody(robj *o) {
+     switch (o->encoding) {
+     case OBJ_ENCODING_HASHTABLE: hashtableRelease((hashtable *)objectGetVal(o)); break;
+     case OBJ_ENCODING_INTSET:
+@@ -577,7 +591,14 @@ void freeSetObject(robj *o) {
+     }
+ }
+ 
++static void freeZsetObjectBody(robj *o);
+ void freeZsetObject(robj *o) {
++    zfree_defer_begin();
++    freeZsetObjectBody(o);
++    zfree_defer_end();
++}
++
++static void freeZsetObjectBody(robj *o) {
+     zset *zs;
+     switch (o->encoding) {
+     case OBJ_ENCODING_SKIPLIST:
+@@ -591,7 +612,14 @@ void freeZsetObject(robj *o) {
+     }
+ }
+ 
++static void freeHashObjectBody(robj *o);
+ void freeHashObject(robj *o) {
++    zfree_defer_begin();
++    freeHashObjectBody(o);
++    zfree_defer_end();
++}
++
++static void freeHashObjectBody(robj *o) {
+     switch (o->encoding) {
+     case OBJ_ENCODING_HASHTABLE:
+         hashTypeFreeVolatileSet(o);
+diff --git a/src/zmalloc.c b/src/zmalloc.c
+index 77ae364..b0ae887 100644
+--- a/src/zmalloc.c
++++ b/src/zmalloc.c
+@@ -502,10 +502,59 @@ static inline void zfree_internal(void *ptr, size_t size) {
+ #endif
+ }
+ 
++#ifdef USE_CHALLOC
++/* Deferred frees for teardown of large objects and keyspaces: between
++ * zfree_defer_begin() and zfree_defer_end() this thread's zfree and
++ * zfree_with_size calls collect their pointers and release them through
++ * challoc_free_batch, which runs free's checks on each pointer and releases
++ * slab slots grouped by slab instead of one by one through the thread cache. */
++#ifndef ZFREE_DEFER_N
++#define ZFREE_DEFER_N 4096
++#endif
++/* Weak: on a libchalloc.so.0 without the batch free it is null, nothing is
++ * deferred, and zfree frees at once as without this patch. */
++extern size_t challoc_free_batch(void **ptrs, size_t n) __attribute__((weak));
++static __thread void **zdefer_buf;
++static __thread size_t zdefer_len;
++static __thread int zdefer_depth;
++
++static void zfree_defer_flush(void) {
++    if (zdefer_len == 0) return;
++    update_zmalloc_stat_free(challoc_free_batch(zdefer_buf, zdefer_len));
++    zdefer_len = 0;
++}
++
++void zfree_defer_begin(void) {
++    if (challoc_free_batch == NULL) return;
++    if (zdefer_buf == NULL) {
++        zdefer_buf = malloc(ZFREE_DEFER_N * sizeof(void *));
++        if (zdefer_buf == NULL) return;
++    }
++    zdefer_depth++;
++}
++
++void zfree_defer_end(void) {
++    if (zdefer_depth == 0) return;
++    if (--zdefer_depth == 0) zfree_defer_flush();
++}
++
++/* Returns 1 when ptr was deferred. */
++static inline int zfree_defer(void *ptr) {
++    if (likely(zdefer_depth == 0)) return 0;
++    zdefer_buf[zdefer_len++] = ptr;
++    if (zdefer_len == ZFREE_DEFER_N) zfree_defer_flush();
++    return 1;
++}
++#else
++void zfree_defer_begin(void) {}
++void zfree_defer_end(void) {}
++#endif
++
+ void zfree(void *ptr) {
+     if (ptr == NULL) return;
+ 
+ #ifdef USE_CHALLOC
++    if (zfree_defer(ptr)) return;
+     /* One call: the free reports the usable size it verified, so the
+      * zmalloc_size() query before the sized free is gone. */
+     update_zmalloc_stat_free(challoc_free_usable(ptr));
+@@ -532,6 +581,9 @@ void zfree(void *ptr) {
+ /* Like zfree(), but doesn't call zmalloc_size(). */
+ void zfree_with_size(void *ptr, size_t size) {
+     if (ptr == NULL) return;
++#ifdef USE_CHALLOC
++    if (zfree_defer(ptr)) return;
++#endif
+ 
+ #ifndef HAVE_MALLOC_SIZE
+     unsigned char *prefix = (unsigned char *)ptr - PREFIX_SIZE;
+diff --git a/src/zmalloc.h b/src/zmalloc.h
+index 15472b9..13a5f65 100644
+--- a/src/zmalloc.h
++++ b/src/zmalloc.h
+@@ -140,6 +140,8 @@ __attribute__((malloc, alloc_size(1), noinline)) void *ztrycalloc(size_t size);
+ __attribute__((alloc_size(2), noinline)) void *ztryrealloc(void *ptr, size_t size);
+ void zfree(void *ptr);
+ void zfree_with_size(void *ptr, size_t size);
++void zfree_defer_begin(void);
++void zfree_defer_end(void);
+ void *zmalloc_usable(size_t size, size_t *usable);
+ void *zcalloc_usable(size_t size, size_t *usable);
+ void *zrealloc_usable(void *ptr, size_t size, size_t *usable);

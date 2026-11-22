@@ -96,6 +96,7 @@ macro_rules! verified_export_pair {
 
 // The C++ and libc exports are compiled out of the test binary, which
 // leaves the helpers only they call unused there.
+pub mod batch;
 #[cfg_attr(test, allow(dead_code))]
 pub mod cxx;
 pub mod glibc;

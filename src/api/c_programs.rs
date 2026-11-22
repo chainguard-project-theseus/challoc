@@ -952,6 +952,17 @@ ctests! {
         CTest { prog: "usable_api", cflags: &["-Iinclude"],
             conf: Some("abort_conf:true,zero_on_free:true,double_free_scan:true,pac_pointers:true"), ..BASE },
     ];
+    /// `challoc_free_batch` from C (`tests/c/batch_api.c`, a proof of
+    /// concept): mixed tiers and nulls, reuse, cross-thread blocks, and the
+    /// aborts (a duplicate, a stale, an interior and a stack pointer), under
+    /// the default configuration, without guard slabs, and under the
+    /// hardening keys (where every pointer goes through `free`).
+    c_batch_api => [
+        CTest { prog: "batch_api", cflags: &["-Iinclude"], ..BASE },
+        CTest { prog: "batch_api", cflags: &["-Iinclude"], conf: Some("abort_conf:true,guards:false"), ..BASE },
+        CTest { prog: "batch_api", cflags: &["-Iinclude"],
+            conf: Some("abort_conf:true,zero_on_free:true,double_free_scan:true,pac_pointers:true"), ..BASE },
+    ];
     /// challoc's fork epochs from C (`tests/c/cow_epoch.c`, design 5,
     /// "Fork epochs", and 13.7): around a real `fork`, no block of before
     /// the epoch is handed out again while it is open, plain and sized
@@ -1708,6 +1719,7 @@ fn jemalloc_symbols_in_release_so() {
         "challoc_cow_begin",
         "challoc_cow_end",
         "challoc_cow_stat",
+        "challoc_free_batch",
         "je_mallocx",
         "je_rallocx",
         "je_xallocx",

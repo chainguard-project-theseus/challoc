@@ -110,6 +110,8 @@ extern void *challoc_malloc_usable(size_t, size_t *) WEAK;
 extern void *challoc_calloc_usable(size_t, size_t, size_t *) WEAK;
 extern void *challoc_realloc_usable(void *, size_t, size_t *) WEAK;
 extern size_t challoc_free_usable(void *) WEAK;
+/* challoc_free_batch (tests/c/batch_api.c). */
+extern size_t challoc_free_batch(void **, size_t) WEAK;
 
 /* jemalloc.h's flag encodings. */
 #define MALLOCX_LG_ALIGN(la) ((int)(la))

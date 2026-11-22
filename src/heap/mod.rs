@@ -34,6 +34,7 @@
 //! `pthread_key` destructor flushes and frees the heap at thread exit
 //! (design 6.5).
 
+pub mod batch;
 mod cache;
 mod compact;
 mod flush;

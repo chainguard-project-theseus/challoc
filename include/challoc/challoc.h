@@ -62,6 +62,16 @@ void *challoc_realloc_usable(void *ptr, size_t size, size_t *usable);
  * this). */
 size_t challoc_free_usable(void *ptr);
 
+/* Batch free (proof of concept). Frees ptrs[0..n] (nulls skipped) and
+ * returns the sum of their usable sizes, what challoc_free_usable would
+ * have returned for each. Every pointer gets free's checks; slab slots are
+ * released straight to their slabs, sorted and grouped by slab, instead of
+ * through the thread cache, which makes a burst of frees scattered over
+ * many slabs (a large table torn down) cheaper. The array is reordered.
+ * Defining CHALLOC_FREE_BATCH announces it. */
+#define CHALLOC_FREE_BATCH 1
+size_t challoc_free_batch(void **ptrs, size_t n);
+
 /* Fork epochs (design 5, "Fork epochs", and 13.7). While a child made by
  * fork(2) shares the parent's pages, every write of the parent to one of
  * them copies the page, and the parent's new allocations land on shared
