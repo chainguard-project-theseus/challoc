@@ -20,7 +20,7 @@ and not run.
 
 ## Inventory
 
-376 lines of source carry an `Ordering::` (`grep` over `src/`,
+375 lines of source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
 `src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
 `cfg(challoc_tls_check)`), `src/sync.rs`'s `cfg(loom)` stand-ins for
@@ -49,7 +49,7 @@ a compiler barrier.
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 4 | `SlabDesc::live` (state, arena, dirty, `shadow`, and `SlabPages`' `closed` and `stamp` are vstd `PAtomic*`s, `SeqCst`, every operation inside the descriptor's invariant, with no ordering argument) |
-| `arena.rs` | 13 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
+| `arena.rs` | 12 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
 | `api/mod.rs` | 22 | `STATE.line`, `INIT_TID`, `SEALED`, `FORK_SIGMASK`'s store |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 15 | watermark; owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
