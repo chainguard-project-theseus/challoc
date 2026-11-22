@@ -107,7 +107,17 @@ impl Env {
     /// are committed, by reading the first and last usable byte (a
     /// `PROT_NONE` page would fault). The guard page is never touched.
     pub fn alloc(&self, h: &Huge, size: usize, align: usize) -> (*mut u8, bool) {
-        let r = h.alloc(&self.meta, size, align, 0);
+        self.alloc_placed(h, size, align, false)
+    }
+
+    /// [`Env::alloc`] for the new run of a growth that moves
+    /// (`grow`, [`Huge::find_gap`]).
+    pub fn alloc_grown(&self, h: &Huge, size: usize) -> *mut u8 {
+        self.alloc_placed(h, size, 1, true).0
+    }
+
+    fn alloc_placed(&self, h: &Huge, size: usize, align: usize, grow: bool) -> (*mut u8, bool) {
+        let r = h.alloc_placed(&self.meta, size, align, 0, true, grow);
         h.audit();
         if !r.0.is_null() {
             let info = h
@@ -1647,6 +1657,20 @@ impl Huge {
         arena: u16,
         zero: bool,
     ) -> (*mut u8, bool) {
+        self.alloc_placed(meta, size, align, arena, zero, false)
+    }
+
+    /// [`Huge::alloc_run`] with its `zero` and `grow` arguments, as the
+    /// pointer and the zero flag alone.
+    pub fn alloc_placed(
+        &self,
+        meta: &Meta,
+        size: usize,
+        align: usize,
+        arena: u16,
+        zero: bool,
+        grow: bool,
+    ) -> (*mut u8, bool) {
         let r = self
             .alloc_run(
                 meta,
@@ -1654,6 +1678,7 @@ impl Huge {
                 align,
                 arena,
                 zero,
+                grow,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             )

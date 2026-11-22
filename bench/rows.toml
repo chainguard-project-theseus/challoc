@@ -1238,6 +1238,22 @@ fixed_work = true
 metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
 est_s = 8
 
+# Four containers grown in turn by an eighth, above the largest slab
+# class: bytearrays, BytesIOs and lists (bench/probes/python/grow4_bench.py).
+# The row for growth moves: none of the four is the last run for long, so a
+# growth stays in place only where the last move left free pages behind
+# the new run.
+[row.python-grow4]
+cmd = ["python3", "{root}/bench/probes/python/grow4_bench.py"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 3
+
 # Buffers cut to their length, above the largest slab class: os.read and
 # FileIO.read for more than a file holds (allocated for the request,
 # trimmed to what was read), and a bytearray cut below half its

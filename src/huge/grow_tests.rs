@@ -487,3 +487,92 @@ fn under_the_floors_a_run_grows_into_a_purged_extent_only_while_purges_are_eager
         });
     }
 }
+
+/// A growth that moves (`alloc_run` with `grow`, `Huge::find_gap`) at the
+/// top of the region starts as many pages past the mark as it takes,
+/// leaving them to the run that ended there; the next one does the same,
+/// so the first keeps a gap behind its guard and grows into it in place.
+/// A plain allocation still takes the lowest fit, the gaps included.
+#[test]
+fn growth_moves_at_the_top_leave_a_gap_behind_each_run() {
+    let env = Env::new();
+    let Some(h) = huge(
+        &env,
+        "huge::grow_tests::growth_moves_at_the_top_leave_a_gap_behind_each_run",
+    ) else {
+        return;
+    };
+    let ps = page_size();
+    let (a, _) = env.alloc(&h, ps, 1); // pages [0, 2)
+    // 5 pages, 5 of gap: fresh pages from the mark at 2, so from 7.
+    let g1 = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g1), 7);
+    // The next one: the hole [2, 7) is too short, so from 12 + 5.
+    let g2 = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g2), 17);
+    fill(g1, 4 * ps, 1);
+    // `g1` grows into [12, 17) behind its guard, where it is.
+    assert_eq!(grow(&env, &h, g1, 8 * ps), Some((0, 4)));
+    assert_eq!(info(&env, &h, g1), (8 * ps, 9));
+    check(g1, 4 * ps, 1);
+    // No reservation: a plain allocation takes the lowest fit.
+    let (b, _) = env.alloc(&h, 2 * ps, 1);
+    assert_eq!(env.page_of(b), 2);
+    for p in [a, b, g1, g2] {
+        env.free(&h, p);
+    }
+    let st = h.stats(Tracked::assume_new());
+    assert_eq!((st.runs, st.empty + st.purged), (0, 1));
+}
+
+/// Inside the region a growth that moves takes the lowest free extent
+/// with room for its gap: from the extent's start when the extent holds
+/// the run and its gap alone, and its gap's length in when it holds a gap
+/// on both sides, so that the next move does not land behind its guard.
+#[test]
+fn growth_moves_inside_the_region_keep_their_gap() {
+    let env = Env::new();
+    let Some(h) = huge(
+        &env,
+        "huge::grow_tests::growth_moves_inside_the_region_keep_their_gap",
+    ) else {
+        return;
+    };
+    let ps = page_size();
+    // An extent of exactly the run and its gap: [0, 10).
+    let (x, _) = env.alloc(&h, 9 * ps, 1); // pages [0, 10)
+    let (y, _) = env.alloc(&h, 30 * ps, 1); // pages [10, 41)
+    let (z, _) = env.alloc(&h, ps, 1); // pages [41, 43)
+    env.free(&h, x);
+    let g1 = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g1), 0);
+    assert_eq!(grow(&env, &h, g1, 8 * ps), Some((0, 4)));
+    // A wide one, [9, 41) (the page `g1` left, and `y`'s): the run
+    // starts 5 pages in, at 14, leaving [9, 14) to `g1`.
+    env.free(&h, y);
+    let g2 = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g2), 14);
+    // The next move takes the extent after `g2`, [19, 41), 5 pages in:
+    // `g2` keeps [19, 24).
+    let g3 = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g3), 24);
+    assert_eq!(grow(&env, &h, g2, 8 * ps), Some((0, 4)));
+    assert_eq!(grow(&env, &h, g3, 8 * ps), Some((0, 4)));
+    for p in [g1, g2, g3, z] {
+        env.free(&h, p);
+    }
+}
+
+/// Where `grow_run` declines (the `PROT_NONE` guard mode), a gap buys
+/// nothing: a growth that moves takes the lowest fit, as any run does.
+#[test]
+fn growth_moves_in_the_prot_none_mode_take_the_lowest_fit() {
+    let env = Env::new();
+    let h = env.huge_with(false, true);
+    let ps = page_size();
+    let (a, _) = env.alloc(&h, ps, 1); // pages [0, 2)
+    let g = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g), 2);
+    env.free(&h, g);
+    env.free(&h, a);
+}

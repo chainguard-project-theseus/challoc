@@ -504,8 +504,9 @@ fn alloc_direct(
 }
 
 /// Routing of a `MALLOCX` huge allocation on the calling thread (caches
-/// play no part; the arena is recorded in the run's descriptor). `blk`
-/// gets the run's token.
+/// play no part; the arena is recorded in the run's descriptor). `grow`:
+/// the run is a growth move's (`Shared::alloc_huge`). `blk` gets the run's
+/// token.
 // The ghost tokens are part of the signature.
 #[allow(clippy::too_many_arguments)]
 pub fn alloc_huge(
@@ -515,6 +516,7 @@ pub fn alloc_huge(
     arena: Option<u16>,
     tcache: Tcache,
     zero: bool,
+    grow: bool,
     Tracked(blk): Tracked<&mut super::Live>,
     Tracked(ord): Tracked<&mut LockOrder>,
 ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
@@ -554,8 +556,8 @@ pub fn alloc_huge(
         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
     }
     match crate::heap::heap_for_thread(shared, Tracked(&mut *ord)) {
-        Some(h) => h.alloc_huge_in(shared, size, align, a, zero, Tracked(blk), Tracked(ord)),
-        None => shared.alloc_huge(size, align, a, zero, Tracked(blk), Tracked(ord)),
+        Some(h) => h.alloc_huge_in(shared, size, align, a, zero, grow, Tracked(blk), Tracked(ord)),
+        None => shared.alloc_huge(size, align, a, zero, grow, Tracked(blk), Tracked(ord)),
     }
 }
 

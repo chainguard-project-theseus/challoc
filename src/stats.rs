@@ -2970,6 +2970,7 @@ mod tests {
             16,
             a1,
             false,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
         );

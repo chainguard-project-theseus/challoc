@@ -105,6 +105,9 @@ pub const REDISCARD_MIN: usize = 16 << 10;
 /// Runs with more usable bytes than this are purged as soon as they are
 /// freed (`huge_retain_max`).
 pub const DEFAULT_RETAIN_MAX: usize = 64 << 20;
+/// The most free bytes a growth move asks to find after its new run
+/// ([`Huge::find_gap`]): the gap is the run's own page count up to this.
+pub const GROW_GAP_MAX: usize = 1 << 30;
 
 /// State of an extent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4520,14 +4523,17 @@ impl Huge {
     /// caller will clear the run unless it is reported zero (`calloc`,
     /// `MALLOCX_ZERO`): only then may a run reusing a `Purged` extent be
     /// discarded again to report it zero ([`Huge::rediscard`]); any other
-    /// caller never pays that call.
+    /// caller never pays that call. `grow` says the run is the new home of
+    /// a run that `realloc` grows and could not grow in place: it is
+    /// placed where free pages follow it ([`Huge::find_gap`]), so that its
+    /// next growth can take them; any other run goes at the lowest fit.
     /// Ghost: the run's token goes to `tok`, and the second result is the
     /// token that the run's usable bytes read as zero when `zeroed`.
     // Cold: out of line in `Shared::alloc_huge`, so the ghost arguments that
     // verified code erases cannot change whether it is inlined.
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
-    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, grow: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4549,14 +4555,14 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        self.alloc_aligned(meta, size, align, arena, zero, Tracked(tok), Tracked(ord))
+        self.alloc_aligned(meta, size, align, arena, zero, grow, Tracked(tok), Tracked(ord))
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
     /// two.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
-    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
+    fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, grow: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -4597,7 +4603,8 @@ impl Huge {
             self.lemma_process_runs();
             self.lemma_run_ids(g@);
         }
-        let r = if let Some((s, ext)) = self.find(&g, need, align) {
+        let placed = if grow { self.find_gap(&g, need, align) } else { self.find(&g, need, align) };
+        let r = if let Some((s, ext)) = placed {
             let end = s + need;
             // The lock's value at the placement: `prepare`'s commits are apart
             // from its live runs' guards. The `ensure` calls below change neither
@@ -4922,6 +4929,88 @@ impl Huge {
         // The head, if any, is a live `Empty` extent.
         let new = if g.empty_head.is_null() { 0 } else { g.desc(g.empty_head).dirty_at };
         self.gate.set_oldest_empty(new)
+    }
+
+    /// The placement of a run that `realloc` moves because it could not
+    /// grow in place (design 7): `need` pages at `align` where a gap of as
+    /// many free pages again (at most [`GROW_GAP_MAX`] bytes) follows
+    /// them, so that the run's next growth finds them free behind its
+    /// guard ([`Huge::grow_run`]). That is [`Huge::find`] for `need` plus
+    /// the gap: the lowest free extent that holds both, or else the one
+    /// that touches the high-water mark, or the mark itself, where a run
+    /// grows freely. Only when even that does not fit in the region is it
+    /// `find` for `need` alone. The gap stays free pages, no reservation:
+    /// it keeps its state under decay and purge, and any allocation may
+    /// take it.
+    ///
+    /// Where a grown run's guard would be a `PROT_NONE` page (the fallback
+    /// mode, or [`Huge::mixed_guards`]) `grow_run` declines, so the gap
+    /// would buy nothing: plain `find`.
+    ///
+    /// Proved as `find` is, without its lowest-address clause: the start
+    /// fits ([`Huge::fits`]: a fit for more pages is one for fewer), and
+    /// `None` only when nothing fits.
+    fn find_gap(&self, g: &Inner, need: usize, align: usize) -> (r: Option<(usize, *mut HugeDesc)>)
+        requires
+            crate::sys::may_abort(),
+            (self.base as int) % (pow2(self.lg_page as nat) as int) == 0,
+            g.wf(),
+            g.spec_np() == self.npages,
+            g.spec_lg() == self.lg_page,
+            1 <= need <= self.npages,
+            align > 0,
+            align & sub(align, 1) == 0,
+            align <= self.npages * pow2(self.lg_page as nat),
+        ensures
+            r matches Some((s, e)) ==> s + need <= self.npages && if e@.addr == 0 {
+                s >= g.next_page
+            } else {
+                let v = g.descs@[e].value();
+                &&& g.descs@.contains_key(e)
+                &&& v.state != RunState::Active as u8
+                &&& v.start <= s
+                &&& (s + need <= v.start + v.pages || v.start + v.pages == g.next_page)
+            },
+            r matches Some((s, _)) ==> (align > pow2(self.lg_page as nat) ==> (self.base + s * pow2(self.lg_page as nat)) % (align as int) == 0),
+            r matches Some((s, e)) ==> (e@.addr == 0 ==> none_ends_at(g.descs@, g.next_page as int)),
+            r matches Some((s, _)) ==> self.fits(g, s as int, need as int, align),
+            r is None ==> forall|q: int| !#[trigger] self.fits(g, q, need as int, align),
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+        }
+        let cap = GROW_GAP_MAX >> self.lg_page;
+        let gap = if need < cap { need } else { cap };
+        let prot_none = self.guards && (!self.guard_install || self.mixed_guards.load(Ordering::Relaxed));
+        // Nested `if`s, as verus takes no let chains.
+        #[allow(clippy::collapsible_if)]
+        if !prot_none && gap <= self.npages - need {
+            if let Some((s, e)) = self.find(g, need + gap, align) {
+                // Where the free pages after the run would be the first
+                // the next search reaches (the top: fresh pages, or an
+                // extent that runs into them; or an extent with room for
+                // a gap on both sides), a later move would land right
+                // behind this run's guard and take them. So the run starts
+                // `gap` pages in: the run before keeps those, and this one
+                // keeps the pages after it, or grows past the mark. An
+                // aligned start stays where it is.
+                let roomy = e.is_null() || {
+                    let e_end = g.desc(e).end();
+                    e_end == g.next_page || gap <= e_end - (s + need + gap)
+                };
+                let t = if !roomy || align > self.page_size() { s } else { s + gap };
+                proof {
+                    // `need` of the `need + gap` free pages from `s`.
+                    assert forall|p: int| t <= p < t + need implies #[trigger] page_free(g.descs@, g.next_page as int, p) by {
+                        assert(self.fits(g, s as int, (need + gap) as int, align));
+                        assert(s <= p < s + need + gap);
+                    }
+                }
+                return Some((t, e));
+            }
+        }
+        self.find(g, need, align)
     }
 
     /// Lowest-address first fit for `need` pages at `align`. Returns the

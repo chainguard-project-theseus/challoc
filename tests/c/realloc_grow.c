@@ -10,6 +10,10 @@
  *     page past the grown run still faults;
  *   - two buffers grown in turn, which cannot both be the last run, move
  *     only now and then;
+ *   - four buffers grown in turn by an eighth (as CPython grows a
+ *     bytearray or a list) move at most one step in four: a growth that
+ *     moves places its new run with free pages after it, so the next few
+ *     growths stay in place;
  *   - a grown run has the usable size a new run of its size has
  *     (nallocx), so free_sized and sdallocx with that size accept it;
  *   - rallocx grows in place too, and under MALLOCX_ZERO the bytes past the
@@ -250,6 +254,37 @@ int main(int argc, char **argv)
     } else {
         printf("SKIP realloc_grow epoch: challoc_cow_begin unavailable\n");
     }
+
+    /* Four buffers grown in turn by an eighth, to 16 MiB each: none is
+     * the last run for long. First fit put each new run right behind the
+     * others, so nearly every other step moved. */
+    char *bufs[4];
+    size_t lens[4], steps4 = 0, moves4 = 0;
+    for (int k = 0; k < 4; k++) {
+        lens[k] = START;
+        bufs[k] = malloc(lens[k]);
+        REQUIRE(bufs[k], "malloc");
+        memset(bufs[k], 0x30 + k, lens[k]);
+    }
+    while (lens[0] < END / 3) {
+        for (int k = 0; k < 4; k++) {
+            size_t m = lens[k] + (lens[k] >> 3);
+            char *q = realloc(bufs[k], m);
+            REQUIRE(q, "realloc %d", k);
+            moves4 += q != bufs[k];
+            steps4++;
+            memset(q + lens[k], 0x30 + k, m - lens[k]);
+            bufs[k] = q;
+            lens[k] = m;
+        }
+    }
+    for (int k = 0; k < 4; k++) {
+        for (size_t i = 0; i < lens[k]; i += 4093)
+            CHECK((unsigned char)bufs[k][i] == 0x30 + k, "buffer %d: byte %zu", k, i);
+        free(bufs[k]);
+    }
+    CHECK(moves4 * 4 <= steps4, "four buffers: %zu moves over %zu reallocs, want at most a quarter", moves4, steps4);
+    printf("four buffers: %zu moves over %zu reallocs\n", moves4, steps4);
 
     size_t after = allocated();
     CHECK(after <= base + (64u << 10), "stats.allocated %zu after, %zu before", after, base);

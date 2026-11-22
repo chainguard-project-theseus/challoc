@@ -279,6 +279,7 @@ fn alloc_with(
     shared: &Shared,
     size: usize,
     f: &Flags,
+    grow: bool,
     Tracked(blk): Tracked<&mut Live>,
     errno: Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
@@ -345,6 +346,7 @@ fn alloc_with(
                 f.arena,
                 f.tcache,
                 f.zero,
+                grow,
                 Tracked(blk),
                 Tracked(&mut *ord),
             );
@@ -453,7 +455,7 @@ pub fn mallocx_zeroed(
         tcache_checked(size, flags),
 {
     let f = Flags::decode(flags as u32);
-    alloc_with(super::shared(), size, &f, Tracked(blk), errno, Tracked(ord))
+    alloc_with(super::shared(), size, &f, false, Tracked(blk), errno, Tracked(ord))
 }
 
 /// `rallocx(p, size, flags)`: in place when the new size maps to the same
@@ -547,7 +549,7 @@ pub fn rallocx_zeroed(
 {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
-        let (q, z) = alloc_with(super::shared(), size, &f, Tracked(out), Tracked(errno), Tracked(ord));
+        let (q, z) = alloc_with(super::shared(), size, &f, false, Tracked(out), Tracked(errno), Tracked(ord));
         return (q, Ghost(0), z);
     }
     let Some(shared) = super::shared_if_ready() else {
@@ -569,9 +571,11 @@ pub fn rallocx_zeroed(
         return (p, Ghost(0), Tracked(Zeroed::empty(0)));
     };
     // As `realloc`: a run that needs more pages grows in place when it
-    // can, at `p` if `p` meets the alignment. Not under `MALLOCX_ZERO`,
-    // whose bytes past the old size the move zeroes.
-    if !f.zero && old > crate::layout::MEDIUM_MAX && size > old && (p as usize) % align == 0 && grow_kept(
+    // can, at `p` if `p` meets the alignment, and else moves to a run
+    // placed with free pages after it. Not under `MALLOCX_ZERO`, whose
+    // bytes past the old size the move zeroes.
+    let grows = !f.zero && old > crate::layout::MEDIUM_MAX && size > old;
+    if grows && (p as usize) % align == 0 && grow_kept(
         shared,
         p,
         size,
@@ -600,7 +604,7 @@ pub fn rallocx_zeroed(
         }
         return (p, Ghost(0), Tracked(Zeroed::empty(0)));
     }
-    let (q, Tracked(z)) = alloc_with(shared, size, &f, Tracked(out), Tracked(&mut *errno), Tracked(&mut *ord));
+    let (q, Tracked(z)) = alloc_with(shared, size, &f, grows, Tracked(out), Tracked(&mut *errno), Tracked(&mut *ord));
     if q.is_null() {
         // The block at `p` stays the caller's, with its token.
         proof {

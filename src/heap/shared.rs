@@ -3320,9 +3320,12 @@ impl Shared {
     /// not exist leaves the run to arena 0, which only counts it (the
     /// callers that take an explicit index, `mallocx`, check it exists
     /// first). Null on exhaustion; the flag says the memory is known
-    /// zero. `zero`: the caller clears the run unless it is reported zero
+    /// zero. `zero`: the caller clears the run unless it is reported zero;
+    /// `grow`: the run is a growth move's, placed with free pages after it
     /// ([`crate::huge::Huge::alloc_run`]).
-    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, zero: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    // The ghost tokens are part of the signature.
+    #[allow(clippy::too_many_arguments)]
+    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16, zero: bool, grow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -3350,7 +3353,7 @@ impl Shared {
             None => (&self.arena0, 0u16),
         };
         let tracked mut tok = vstd::map::Map::<int, crate::huge::RunToken>::tracked_empty();
-        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, zero, Tracked(&mut tok), Tracked(ord));
+        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena, zero, grow, Tracked(&mut tok), Tracked(ord));
         proof {
             self.lemma_huge_placeable(size, align);
             if r.ptr@.addr != 0 {

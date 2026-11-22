@@ -269,7 +269,9 @@ pub(super) proof fn lemma_class_gives(blk: Live, p: *mut u8, c: int, size: usize
 /// Huge allocation on the calling thread, counted in its heap when it has
 /// one. `align` is a power of two; `1` means none. `zero` is true for a
 /// caller that clears the run unless it is reported zero (`calloc`). `blk`
-/// gets the run's token.
+/// gets the run's token. Placed at the lowest fit: [`alloc_huge_placed`]
+/// with `grow` false, out of line, so its callers' code does not carry
+/// the argument.
 #[cold]
 #[inline(never)]
 fn alloc_huge(shared: &Shared, size: usize, align: usize, zero: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
@@ -287,9 +289,31 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize, zero: bool, Tracked(bl
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
         r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
 {
+    alloc_huge_placed(shared, size, align, zero, false, Tracked(blk), Tracked(ord))
+}
+
+/// [`alloc_huge`] with its placement: `grow` is true for the new run of a
+/// growth that moves ([`malloc_grown`]), which is placed with free pages
+/// after it (`Huge::find_gap`).
+#[inline(always)]
+fn alloc_huge_placed(shared: &Shared, size: usize, align: usize, zero: bool, grow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        crate::meta::is_pow2(align),
+        old(ord).top() == 0,
+    ensures
+        *final(ord) == *old(ord),
+        r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+        r.0@.addr != 0 ==> size <= shared.huge_usable(size),
+        r.0@.addr != 0 ==> shared.huge_ok(size),
+        r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+        r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
+{
     match heap::heap_for_thread(shared, Tracked(&mut *ord)) {
-        Some(h) => h.alloc_huge(shared, size, align, zero, Tracked(blk), Tracked(ord)),
-        None => shared.alloc_huge(size, align, 0, zero, Tracked(blk), Tracked(ord)),
+        Some(h) => h.alloc_huge(shared, size, align, zero, grow, Tracked(blk), Tracked(ord)),
+        None => shared.alloc_huge(size, align, 0, zero, grow, Tracked(blk), Tracked(ord)),
     }
 }
 
@@ -501,6 +525,41 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
             p
         },
     };
+    if p.is_null() { enomem(Tracked(errno)) } else { p }
+}
+
+/// The new block of a `realloc` growth that moves: a run that needed
+/// more pages and could not take them in place ([`grow_kept`] declined).
+/// `malloc` of `size`, with the run placed where free pages follow it
+/// (`Huge::find_gap`), so that its next growth can stay in place; a size
+/// a class serves, which the callers never pass (they test
+/// `size > old > MEDIUM_MAX`), is plain `malloc`. Null with
+/// `errno = ENOMEM` on failure.
+#[cold]
+#[inline(never)]
+fn malloc_grown(shared: &Shared, size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: *mut u8)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).top() == 0,
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+        final(blk).gives(r, size as int),
+        r@.addr == 0 ==> final(errno).val() == ENOMEM,
+        *final(ord) == *old(ord),
+{
+    if class_index(size).is_some() {
+        return malloc_slow(size, Tracked(blk), Tracked(errno), Tracked(ord));
+    }
+    proof {
+        crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
+    }
+    let p = alloc_huge_placed(shared, size, 1, false, true, Tracked(blk), Tracked(ord)).0;
+    proof {
+        lemma_huge_result(p, size, 1);
+    }
     if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
 
@@ -1753,8 +1812,10 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         return p;
     };
     // A run that needs more pages takes the free pages after it when it
-    // can, and stays where it is.
-    if old > MEDIUM_MAX && size > old && grow_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)).is_some() {
+    // can, and stays where it is; else it moves to a run placed with free
+    // pages after it, for its next growth.
+    let grows = old > MEDIUM_MAX && size > old;
+    if grows && grow_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)).is_some() {
         proof {
             out.set(blk);
         }
@@ -1768,7 +1829,11 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         }
         return p;
     }
-    let q = malloc_block(size, Tracked(out), Tracked(errno), Tracked(&mut *ord));
+    let q = if grows {
+        malloc_grown(shared, size, Tracked(out), Tracked(errno), Tracked(&mut *ord))
+    } else {
+        malloc_block(size, Tracked(out), Tracked(errno), Tracked(&mut *ord))
+    };
     if q.is_null() {
         // The block at `p` stays the caller's, with its token.
         proof {
@@ -2103,7 +2168,7 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(uout): Trac
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
-    let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable, Tracked(uout), Tracked(blk), Tracked(errno), Tracked(ord)) };
+    let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable, false, Tracked(uout), Tracked(blk), Tracked(errno), Tracked(ord)) };
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else {
         let (p, s) = malloc_usable_class(c, usable, Tracked(uout), Tracked(blk), Tracked(errno), Tracked(&mut *ord));
@@ -2186,10 +2251,11 @@ fn malloc_usable_class(class: usize, usable: *mut usize, Tracked(uout): Tracked<
 }
 
 /// `malloc_usable` of a huge size: the run's usable bytes come from the
-/// huge table, the same read `malloc_usable_size` does.
+/// huge table, the same read `malloc_usable_size` does. `grow`: the run
+/// is a growth move's ([`malloc_grown`]).
 #[cold]
 #[inline(never)]
-fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, Tracked<Stored>))
+fn malloc_usable_huge(size: usize, usable: *mut usize, grow: bool, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(blk): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, Tracked<Stored>))
     requires
         old(uout).of(usable),
         crate::sys::may_abort(),
@@ -2211,7 +2277,7 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, Tracked(uout): Tracked<&m
         crate::meta::lemma_is_pow2_one();
         shared.lemma_regions_ok();
     }
-    let (p, _, _) = alloc_huge(shared, size, 1, false, Tracked(blk), Tracked(&mut *ord));
+    let (p, _, _) = alloc_huge_placed(shared, size, 1, false, grow, Tracked(blk), Tracked(&mut *ord));
     proof {
         lemma_huge_result(p, size, 1);
     }
@@ -2507,8 +2573,9 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
     // As `realloc_block`: a run that needs more pages grows in place when
     // it can, and reports its new usable size. Nested `if`s, as verus
     // takes no let chains.
+    let grows = old > MEDIUM_MAX && size > old;
     #[allow(clippy::collapsible_if)]
-    if old > MEDIUM_MAX && size > old {
+    if grows {
         if let Some(n) = grow_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)) {
             let s = store_usable(usable, n, Tracked(uout));
             proof {
@@ -2529,7 +2596,13 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
             return (p, s);
         }
     }
-    let (q, s) = malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno), Tracked(&mut *ord));
+    // As `realloc_block`: a growth that moves places its run with free
+    // pages after it.
+    let (q, s) = if grows {
+        malloc_usable_huge(size, usable, true, Tracked(uout), Tracked(out), Tracked(errno), Tracked(&mut *ord))
+    } else {
+        malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno), Tracked(&mut *ord))
+    };
     if q.is_null() {
         // The block at `p` stays the caller's, with its token.
         proof {

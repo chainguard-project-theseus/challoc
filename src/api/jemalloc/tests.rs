@@ -840,6 +840,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
             Some(4000),
             Tcache::Default,
             false,
+            false,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         )
@@ -854,6 +855,7 @@ fn arenas_route_mallocx_allocations_and_plain_frees() {
         1,
         Some(lua),
         Tcache::Default,
+        false,
         false,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),

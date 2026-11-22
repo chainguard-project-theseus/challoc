@@ -986,6 +986,7 @@ fn xalloc(s: &Shared, size: usize, arena: Option<u16>, t: u16) -> *mut u8 {
                 arena,
                 mallocx::Tcache::Explicit(t),
                 false,
+                false,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             )

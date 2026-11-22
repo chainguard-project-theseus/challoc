@@ -105,6 +105,7 @@ impl TestHeap {
             size,
             align,
             true,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
         );
