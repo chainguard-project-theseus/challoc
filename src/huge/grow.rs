@@ -795,7 +795,7 @@ impl Huge {
     /// leaving the checks' facts (a quantifier over the run authorities
     /// among them) out of its context keeps its proof within its rlimit.
     #[inline(always)]
-    fn grow_live_checks(&self, g: &Inner, page: usize, d: *mut HugeDesc)
+    pub(super) fn grow_live_checks(&self, g: &Inner, page: usize, d: *mut HugeDesc)
         requires
             crate::sys::may_abort(),
             g.wf(),

@@ -179,6 +179,27 @@ impl UserMem {
         UserMem { raw: joined, bytes: joined_bytes }
     }
 
+    /// The permission to the bytes of `keep` alone, each reading as it
+    /// did; the permission to the others is given up
+    /// (`heap::live::Live::put_shrunk_run`, which keeps the bytes a run
+    /// still has once it shrank in place: the others are no longer the
+    /// block's).
+    pub proof fn restrict(tracked self, keep: Set<int>) -> (tracked r: UserMem)
+        requires
+            keep.subset_of(self.dom()),
+        ensures
+            r.dom() == keep,
+            r.provenance() == self.provenance(),
+            r.wf(),
+            forall|i: int| #[trigger] keep.contains(i) ==> r.bytes()[i] == self.bytes()[i],
+    {
+        let tracked UserMem { raw, bytes } = self;
+        let tracked (kept, _gone) = raw.split(keep);
+        let kept_bytes = Map::new(keep, |i: int| bytes[i]);
+        assert(kept_bytes.dom() =~= kept.dom());
+        UserMem { raw: kept, bytes: kept_bytes }
+    }
+
     /// Two permissions held at once own no byte in common
     /// (`vspec::ptr::lemma_raw_disjoint`). Both are unchanged.
     pub proof fn lemma_apart(tracked &mut self, tracked other: &mut UserMem)

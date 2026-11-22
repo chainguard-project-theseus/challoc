@@ -272,11 +272,13 @@ fn a_refused_marker_declines() {
 }
 
 /// `Live::take_run` lends a run token out while its block's permission
-/// stays held (`heap/live.rs`, `axiom_hand_out`'s discipline): its one
-/// caller is `Shared::grow_huge`, which hands the token to `grow_run` and
-/// puts back what comes back with `Live::put_run`, its one caller too.
+/// stays held (`heap/live.rs`, `axiom_hand_out`'s discipline): its
+/// callers are `Shared::grow_huge` and `Shared::shrink_huge`, which hand
+/// the token to `grow_run` or `shrink_run` and put back what comes back
+/// with `Live::put_run` (or, for a shrunk run, `Live::put_shrunk_run`,
+/// which mints nothing), their only callers too.
 #[test]
-fn take_run_and_put_run_only_in_grow_huge() {
+fn take_run_and_put_run_only_in_grow_huge_and_shrink_huge() {
     let mut files = std::vec::Vec::new();
     super::tests::src_files(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
@@ -284,16 +286,44 @@ fn take_run_and_put_run_only_in_grow_huge() {
         &mut files,
     );
     // Split, so this test's own source does not match.
-    let needles = [[".take", "_run()"].concat(), [".put", "_run("].concat()];
-    let mut calls = [0, 0];
+    let needles = [
+        [".take", "_run()"].concat(),
+        [".put", "_run("].concat(),
+        [".put", "_shrunk_run("].concat(),
+    ];
+    let free = [".free", "_run("].concat();
+    // Per function: grow_huge, shrink_huge.
+    let mut calls = [[0, 0, 0], [0, 0, 0]];
+    // In shrink_huge, the lines of its put_shrunk_run and of the tail's
+    // free_run: the permission to the tail's bytes is given up before
+    // the tail's pages can be handed out again.
+    let (mut put_at, mut free_at) = (std::vec::Vec::new(), std::vec::Vec::new());
     for (rel, text) in &files {
-        let mut in_grow_huge = false;
-        for line in text.lines() {
+        let mut within = None;
+        for (ln, line) in text.lines().enumerate() {
             let t = line.trim();
+            if !t.starts_with("//") && t.contains(free.as_str()) {
+                assert!(
+                    rel != "huge/shrink.rs",
+                    "{rel}: got = {t}, want = no free_run in huge/shrink.rs: Shared::shrink_huge frees the tail"
+                );
+                if rel == "heap/shared.rs" && within == Some(1) {
+                    free_at.push(ln);
+                }
+            }
+            if rel == "heap/shared.rs"
+                && within == Some(1)
+                && !t.starts_with("//")
+                && t.contains(needles[2].as_str())
+            {
+                put_at.push(ln);
+            }
             if t.starts_with("pub(crate) fn grow_huge(") {
-                in_grow_huge = true;
-            } else if in_grow_huge && line == "    }" {
-                in_grow_huge = false;
+                within = Some(0);
+            } else if t.starts_with("pub(crate) fn shrink_huge(") {
+                within = Some(1);
+            } else if within.is_some() && line == "    }" {
+                within = None;
             }
             if t.starts_with("//") {
                 continue;
@@ -301,15 +331,30 @@ fn take_run_and_put_run_only_in_grow_huge() {
             for (i, n) in needles.iter().enumerate() {
                 if t.contains(n.as_str()) {
                     assert!(
-                        rel == "heap/shared.rs" && in_grow_huge,
-                        "{rel}: got = {t}, want = a call in Shared::grow_huge only"
+                        rel == "heap/shared.rs" && within.is_some(),
+                        "{rel}: got = {t}, want = a call in Shared::grow_huge or Shared::shrink_huge only"
                     );
-                    calls[i] += 1;
+                    calls[within.unwrap()][i] += 1;
                 }
             }
         }
     }
-    assert_eq!(calls, [1, 1], "take_run and put_run calls in grow_huge");
+    assert_eq!(
+        calls,
+        [[1, 1, 0], [1, 1, 1]],
+        "take_run, put_run and put_shrunk_run calls in grow_huge and shrink_huge"
+    );
+    assert_eq!(
+        (put_at.len(), free_at.len()),
+        (1, 1),
+        "put_shrunk_run and free_run calls in shrink_huge"
+    );
+    assert!(
+        put_at[0] < free_at[0],
+        "shrink_huge: got = free_run at line {} before put_shrunk_run at line {}, want = put_shrunk_run first",
+        free_at[0] + 1,
+        put_at[0] + 1
+    );
 }
 
 /// A grow of a run a racing free already freed aborts, as the free its

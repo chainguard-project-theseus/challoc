@@ -1238,6 +1238,22 @@ fixed_work = true
 metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
 est_s = 8
 
+# Buffers cut to their length, above the largest slab class: os.read and
+# FileIO.read for more than a file holds (allocated for the request,
+# trimmed to what was read), and a bytearray cut below half its
+# allocation (bench/probes/python/trim_bench.py). The row for realloc of
+# a huge run to fewer pages: in place, or by a copy of what it keeps.
+[row.python-trim]
+cmd = ["python3", "{root}/bench/probes/python/trim_bench.py"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 3
+
 # PostgreSQL 17 under pgbench (bench/drivers/postgres.sh): select-only at
 # 100 and 500 clients, TPC-B, and a connection per transaction.
 [row.pg-select100]

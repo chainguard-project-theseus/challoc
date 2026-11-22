@@ -15,7 +15,9 @@
  * runs including multi-megabyte ones. Allocation flavours rotate through
  * malloc, calloc (with a random nmemb/size split), aligned_alloc,
  * posix_memalign and memalign with alignments up to 64 KiB, and realloc
- * covers grow, shrink, realloc(p, 0), realloc(NULL, n) and reallocarray.
+ * covers grow, shrink (a quarter of a huge block's reallocs trim it to a
+ * smaller run size, the in-place shrink), realloc(p, 0), realloc(NULL, n)
+ * and reallocarray.
  * A share of frees crosses threads through a per-thread mailbox. The
  * table's frees and the mailbox's (`release`; not realloc's, nor the
  * leftover mailbox blocks `main` frees) pick a route from the block's seed:
@@ -82,7 +84,7 @@ struct mailbox {
 };
 
 struct counts {
-    long alloc, free_, realloc_, handoff, foreign, inspect, aligned, zeroed, sized;
+    long alloc, free_, realloc_, trims, handoff, foreign, inspect, aligned, zeroed, sized;
     long bytes_filled;
 };
 
@@ -267,6 +269,13 @@ static void do_realloc(struct worker *w, long op, struct blk *b, uint64_t *rng)
 {
     verify(w, op, b, "realloc");
     size_t n = random_size(rng);
+    /* A huge block is trimmed a quarter of the time, to a smaller size
+     * that is still a run's (a read buffer cut to its length): the
+     * in-place shrink, which a random size reaches only rarely. */
+    if (b->n > 256 * 1024 + 1 && (rng_next(rng) & 3) == 0) {
+        n = 256 * 1024 + 1 + (size_t)(rng_next(rng) % (b->n - 256 * 1024 - 1));
+        w->c.trims++;
+    }
     unsigned char *p;
     if ((rng_next(rng) & 15) == 0) {
         /* reallocarray with a split, like calloc */
@@ -446,6 +455,7 @@ int main(int argc, char **argv)
         t.alloc += workers[i].c.alloc;
         t.free_ += workers[i].c.free_;
         t.realloc_ += workers[i].c.realloc_;
+        t.trims += workers[i].c.trims;
         t.handoff += workers[i].c.handoff;
         t.foreign += workers[i].c.foreign;
         t.inspect += workers[i].c.inspect;
@@ -458,9 +468,9 @@ int main(int argc, char **argv)
           t.alloc, t.free_, t.foreign, leftover);
     CHECK(t.handoff == t.foreign + leftover, "handoffs %ld vs foreign %ld + leftover %ld", t.handoff, t.foreign,
           leftover);
-    printf("fuzz: %ld allocs (%ld aligned, %ld calloc) %ld frees (%ld cross-thread, %ld sized) %ld reallocs "
+    printf("fuzz: %ld allocs (%ld aligned, %ld calloc) %ld frees (%ld cross-thread, %ld sized) %ld reallocs (%ld huge trims) "
            "%ld inspections, %.1f MiB filled\n",
-           t.alloc, t.aligned, t.zeroed, t.free_ + t.foreign + leftover, t.foreign + leftover, t.sized, t.realloc_,
+           t.alloc, t.aligned, t.zeroed, t.free_ + t.foreign + leftover, t.foreign + leftover, t.sized, t.realloc_, t.trims,
            t.inspect, (double)t.bytes_filled / (1024.0 * 1024.0));
     free(boxes);
     free(workers);

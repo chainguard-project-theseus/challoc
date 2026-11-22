@@ -1401,6 +1401,16 @@ impl Arena {
         self.large.fetch_add(pages as u64, Ordering::Relaxed);
     }
 
+    /// A huge run of this arena shrank in place by `pages`
+    /// (`Huge::shrink_run`): its pages, not its count, so the free of the
+    /// shrunk run subtracts what is left.
+    pub fn note_huge_shrink(&self, pages: usize)
+        requires
+            pages < 0x1_0000_0000,
+    {
+        self.large.fetch_sub(pages as u64, Ordering::Relaxed);
+    }
+
     /// Live huge runs of this arena and their pages, guards included, as
     /// one snapshot (see the field).
     pub fn large(&self) -> (r: (usize, usize))

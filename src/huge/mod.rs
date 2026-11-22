@@ -51,7 +51,7 @@
 //!
 //! Submodules: [`table`] is the open-addressing descriptor table
 //! (`Table`), [`kernel`] the page-protection calls, [`free`] frees a run,
-//! [`grow`] grows a live run in place,
+//! [`grow`] grows a live run in place, [`shrink`] shrinks one,
 //! [`decay`] holds the purge and decay walks, `tests` the allocator's tests
 //! and test-only helpers, and `linux_tests` the tests that need the
 //! process's own regions.
@@ -77,6 +77,7 @@ mod decay;
 mod free;
 mod grow;
 mod kernel;
+mod shrink;
 mod table;
 use kernel::*;
 
@@ -5794,7 +5795,7 @@ verus! {
 ///
 /// `Huge::new` builds the value (`Lock::new` requires `wf`), and both
 /// are checked at every release: each holder outside the tests
-/// (`alloc_aligned`, `free_run`, `grow_run`, `usable_size`, `lookup`,
+/// (`alloc_aligned`, `free_run`, `grow_run`, `shrink_run`, `usable_size`, `lookup`,
 /// `purge_empty`, `purge_curve`, `empty_bytes` and `stats`) ends with
 /// `LockGuard::unlock`, which requires both, on every path to a return
 /// (`api::tests::guards_end_in_unlock`). A panic aborts
@@ -5840,3 +5841,6 @@ mod linux_tests;
 
 #[cfg(test)]
 mod grow_tests;
+
+#[cfg(test)]
+mod shrink_tests;

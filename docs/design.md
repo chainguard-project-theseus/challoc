@@ -533,7 +533,10 @@ pages the child never had:
   the child shares them. A run growing in place (7) takes no such
   pages: while the floors hold it grows into a free extent only when the
   extent is `Purged` and every purge so far was eager (the child holds
-  the only copy), or past the mark, and otherwise moves.
+  the only copy), or past the mark, and otherwise moves. A run shrinking
+  in place frees the pages it releases as any huge free does, retained
+  and shared with the child like a run freed in the epoch, which a
+  growth under the floors then declines to take back.
 
 The protocol model (`model/`, scenarios `cow_epoch`, `cow_epoch_lazy` and
 `cow_epoch_exhausted`) checks that no refill under a floor takes a slot of
@@ -824,7 +827,19 @@ what a new run of that size has, so the sized frees' rule (13.1) is
 unchanged. `rallocx` grows the same way when the run's address meets the
 alignment and `MALLOCX_ZERO` is not set (under it the move zeroes the
 new bytes), and `challoc_realloc_usable` reports the grown size. A run
-never shrinks in place: a smaller page count moves.
+trimmed to fewer pages shrinks in place (7, `huge/shrink.rs`) when the
+new size is still above `MEDIUM_MAX`: it keeps its pointer and bytes,
+gets the page count a new run of that size has (so the sized frees'
+rule holds), and the pages after its new guard are freed as a run's
+are, so a buffer cut to its length (Ruby's `IO#read`, a CPython
+`bytes` or `bytearray` once a read is done) is not copied at the trim.
+A new size of `MEDIUM_MAX` or less moves to its class, as a new block
+of that size would be a slot: a run kept for it would break the sized
+frees' rule (`nallocx` names the class, `sallocx` the run). `rallocx`
+shrinks the same way when the run's address meets the alignment, with
+or without `MALLOCX_ZERO` (a shrink adds no byte), and
+`challoc_realloc_usable` reports the shrunk size. Under `zero_on_free`
+a trim moves, so the freed bytes are cleared as at any free.
 `xallocx` never resizes in place and reports `sallocx(p)`, so a caller
 that needs more falls back to `rallocx`, as jemalloc's contract allows.
 
@@ -1055,7 +1070,46 @@ with page granularity (`huge/`).
   declines, and the caller moves the block, where the guards are
   `PROT_NONE` pages (the fallback mode, or `mixed_guards`): the grown
   run's guard would have to be split off again, which the move's
-  placement already does. Shrinking never happens in place.
+  placement already does.
+- A live run shrinks in place for `realloc` and `rallocx` to a size
+  above `MEDIUM_MAX` (6.3, `Huge::shrink_run`, `huge/shrink.rs`). Under
+  the huge lock, after `free_run`'s live-run checks, it takes a
+  descriptor for the pages it releases, room in the table for their key
+  and for their free (as an allocation reserves it, 14.1), and puts the
+  new guard's marker on its new last page; then it splits in two: the
+  run keeps its descriptor, start and arena with the page count a new
+  run of the requested size has, and the pages after it become a run of
+  their own, which still ends with the old guard. Once the lock is
+  released, `shrink_run` returns the tail's token unfreed, and
+  `Shared::shrink_huge` frees it only after it has given up the
+  permission to the tail's bytes (`Live::put_shrunk_run`), so no other
+  thread can be handed those pages while a permission to them is still
+  held. That free is `free_run`'s, as any run's is: its guard's
+  marker is removed, it coalesces with a free extent after it, and it is
+  purged at once above `huge_retain_max` or under
+  `huge_dirty_decay_ms:0`, else left `Empty` for decay, so `calloc`
+  clears it when it is handed out again. Nothing is reported zero. It
+  declines, and the caller moves the block, under `zero_on_free` (the
+  move's free clears the old run's bytes, which the released pages would
+  otherwise keep for their next owner); when it would release a
+  single page (the old guard alone, which is no run of its own); when
+  the descriptor, the table's room or the marker cannot be had; and
+  where the guards are `PROT_NONE` pages (the fallback mode of kernels
+  before 6.13, or `mixed_guards`), whose new guard would split the
+  run's VMA, which the move's placement does anyway. Under a fork
+  epoch's floors the tail's free is a huge free in the epoch, which the
+  floors do not steer (5, "Scope").
+  Between `shrink_run`'s unlock and the tail's free the tail is an
+  `Active` run keyed at its first page, the page just past the shrunk
+  run's guard. For that window a free of that address, which no
+  allocation handed out, passes the live-run checks instead of aborting
+  with `not_a_run`. Alone it frees the tail, and the shrink's own
+  `free_run` then aborts (`already_free` / `not_a_run`). If another
+  thread's allocation takes a run starting at that page in between, the
+  shrink's `free_run` frees that run instead. Such a free is outside the
+  C contract (`axiom_c_claim`), as any free of a pointer never handed
+  out is, and THEOREMS states the window as a premise (theorem 25 and
+  the huge free's *(lock)* note).
 - Freed runs become `Empty` and decay like slabs (section 8). Runs whose
   usable size is above `huge_retain_max` (default 64 MiB,
   `huge::DEFAULT_RETAIN_MAX`) are purged at once.
