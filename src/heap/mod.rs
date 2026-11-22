@@ -1639,58 +1639,55 @@ unsafe fn stack_mut<'a>(
 
 verus! {
 
-/// `assert_eq!(*len, 0, ..)`, the abort of [`Heap::free_caches`] and
-/// [`Heap::free_caches_in`] on a cache that still holds slots: `*len == 0`
-/// after it returns.
-///
-/// Trusted: as [`assert_refill_empty`].
-#[verifier::external_body]
+/// The abort of [`Heap::free_caches`] and [`Heap::free_caches_in`] on a
+/// cache that still holds slots: `*len == 0` after it returns. Verified:
+/// the abort ([`crate::sys::abort`], which requires `may_abort()`) is
+/// reached only when `*len != 0`, where the `requires` gives `may_abort()`.
 #[inline(always)]
-#[track_caller]
 fn assert_flushed(len: &u32)
     requires
         crate::sys::may_abort() || *len == 0,
     ensures
         *len == 0,
 {
-    assert_eq!(*len, 0, "heap: freeing a cache that was not flushed");
+    if *len != 0 {
+        crate::sys::abort("heap: freeing a cache that was not flushed");
+    }
 }
 
 } // verus!
 
 verus! {
 
-/// `assert_eq!(*len, 0, ..)`, [`Heap::refill`]'s abort on a heap
-/// inconsistency: `*len == 0` after it returns.
-///
-/// Trusted: `assert_eq!` calls `core::panicking::assert_failed`, which
-/// vstd specifies only as unreachable (`requires false`), while this
-/// abort stays reachable when `crate::sys::may_abort()` holds.
-#[verifier::external_body]
+/// [`Heap::refill`]'s abort on a heap inconsistency, a cache that is not
+/// empty: `*len == 0` after it returns. Verified: as [`assert_flushed`].
+/// (Not `assert_eq!`: vstd specifies its `core::panicking::assert_failed`
+/// only as unreachable, `requires false`, and this abort is reachable
+/// when `may_abort()` holds.)
 #[inline(always)]
-#[track_caller]
 fn assert_refill_empty(len: &u32)
     requires
         crate::sys::may_abort() || *len == 0,
     ensures
         *len == 0,
 {
-    assert_eq!(*len, 0, "heap: refill of a cache that is not empty");
+    if *len != 0 {
+        crate::sys::abort("heap: refill of a cache that is not empty");
+    }
 }
 
-/// `assert_eq!(*len, 0, ..)`, [`CacheHeader::rekey`]'s abort on a cache
-/// that still holds slots: `*len == 0` after it returns. Trusted: as
-/// [`assert_refill_empty`].
-#[verifier::external_body]
+/// [`CacheHeader::rekey`]'s abort on a cache that still holds slots:
+/// `*len == 0` after it returns. Verified: as [`assert_flushed`].
 #[inline(always)]
-#[track_caller]
 fn assert_rekey_flushed(len: &u32)
     requires
         crate::sys::may_abort() || *len == 0,
     ensures
         *len == 0,
 {
-    assert_eq!(*len, 0, "heap: re-keying a cache that was not flushed");
+    if *len != 0 {
+        crate::sys::abort("heap: re-keying a cache that was not flushed");
+    }
 }
 
 /// `head` is the permission to the 128 bytes of the heap at `h` before
@@ -4647,57 +4644,6 @@ impl Heap {
 }
 
 } // verus!
-
-/// Kani checks of the three `assert_eq!` aborts
-/// (`verus/ledger/src/heap/mod.rs.md`; `cfg(kani)` only, see
-/// `verus/README.md`, "Kani").
-#[cfg(kani)]
-mod kani_aborts {
-    use super::{assert_flushed, assert_refill_empty, assert_rekey_flushed};
-    use crate::kani_proofs::must_not_return;
-
-    /// `assert_flushed`, `requires may_abort() || *len == 0`, `ensures
-    /// *len == 0`: on any other `len` the call never returns.
-    #[kani::proof]
-    #[kani::should_panic]
-    fn assert_flushed_returns_only_on_zero() {
-        let len: u32 = kani::any();
-        assert_flushed(&len);
-        if len != 0 {
-            must_not_return();
-        }
-    }
-
-    /// `assert_refill_empty`, the same contract: as `assert_flushed`.
-    #[kani::proof]
-    #[kani::should_panic]
-    fn assert_refill_empty_returns_only_on_zero() {
-        let len: u32 = kani::any();
-        assert_refill_empty(&len);
-        if len != 0 {
-            must_not_return();
-        }
-    }
-
-    /// `assert_rekey_flushed`, the same contract: as `assert_flushed`.
-    #[kani::proof]
-    #[kani::should_panic]
-    fn assert_rekey_flushed_returns_only_on_zero() {
-        let len: u32 = kani::any();
-        assert_rekey_flushed(&len);
-        if len != 0 {
-            must_not_return();
-        }
-    }
-
-    /// All three return on 0, the `requires`'s case without `may_abort`.
-    #[kani::proof]
-    fn asserts_return_on_zero() {
-        assert_flushed(&0);
-        assert_refill_empty(&0);
-        assert_rekey_flushed(&0);
-    }
-}
 
 /// Kani check of `Heap::arena_volatile` (`verus/ledger/src/heap/mod.rs.md`;
 /// `cfg(kani)` only, see `verus/README.md`, "Kani").

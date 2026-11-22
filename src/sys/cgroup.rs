@@ -878,9 +878,10 @@ verus! {
 /// is dropped. `read` returns the bytes it filled, 0 at end of file, or
 /// `None` on error, which ends the scan with no line taken: a final line
 /// without a newline is passed on only at end of file, never one the
-/// error may have cut. Runs until `read` reports the end or an error, so
-/// a reader that never does keeps it going.
-#[verifier::exec_allows_no_decreases_clause]
+/// error may have cut. Runs until `read` reports the end or an error, or
+/// after `usize::MAX` reads, each of at least one byte, which ends it as
+/// an error does: no reader here (`/proc` and cgroup files) delivers
+/// 2^64 bytes, so the cap only gives the loop a measure.
 pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: Option<(usize, usize)>)
     where
         R: FnMut(&mut [u8]) -> Option<usize>,
@@ -896,6 +897,7 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
 {
     let mut len = 0;
     let mut dropping = false;
+    let mut reads: usize = 0;
     loop
         invariant
             len <= buf@.len(),
@@ -904,7 +906,13 @@ pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: 
             forall|b: &mut [u8], r: Option<usize>|
                 call_ensures(read, (b,), r) ==> (r matches Some(n) ==> n <= b@.len()) && final(b)@.len() == b@.len(),
             forall|l: &[u8]| call_requires(on_line, (l,)),
+        decreases usize::MAX - reads,
     {
+        if reads == usize::MAX {
+            // At least 2^64 bytes read: no reader here gets this far.
+            return None;
+        }
+        reads += 1;
         let n = match read(&mut buf[len..]) {
             Some(0) => break,
             None => return None,

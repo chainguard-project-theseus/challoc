@@ -20,7 +20,7 @@ and not run.
 
 ## Inventory
 
-376 lines of source carry an `Ordering::` (`grep` over `src/`,
+375 lines of source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
 `src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
 `cfg(challoc_tls_check)`), `src/sync.rs`'s `cfg(loom)` stand-ins for
@@ -49,7 +49,7 @@ a compiler barrier.
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 4 | `SlabDesc::live` (state, arena, dirty, `shadow`, and `SlabPages`' `closed` and `stamp` are vstd `PAtomic*`s, `SeqCst`, every operation inside the descriptor's invariant, with no ordering argument) |
-| `arena.rs` | 13 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
+| `arena.rs` | 12 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
 | `api/mod.rs` | 22 | `STATE.line`, `INIT_TID`, `SEALED`, `FORK_SIGMASK`'s store |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 15 | watermark; owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
@@ -102,10 +102,13 @@ a compiler barrier.
 ### P2. `Lock`
 
 - `RawLock` (`lock.rs`) is a futex mutex over one `u32` (Drepper's
-  "mutex, take 3"): `try_acquire`'s `compare_exchange(0, 1, Acquire,
-  Relaxed)`; in `lock_slow`, a `Relaxed` spin of up to `SPINS` (100)
-  rounds, then `swap(2, Acquire)` and `FUTEX_WAIT`; `release`'s
-  `swap(0, Release)`, and `FUTEX_WAKE` when the old value was 2.
+  "mutex, take 3"), a vstd `PAtomicU32` since #856 step 1, so every
+  operation is `SeqCst`: `try_acquire`'s `compare_exchange(0, 1)`; in
+  `lock_slow`, a spin of up to `SPINS` (100) rounds of a load, then
+  `swap(2)` and `FUTEX_WAIT`; `release`'s `swap(0)`, and `FUTEX_WAKE`
+  when the old value was 2. The weakest orderings the protocol needs
+  are an `Acquire` CAS, a `Relaxed` spin, an `Acquire` `swap(2)` and a
+  `Release` `swap(0)`, which the weakening table below names.
 - Every lock value (class `Inner`, the commit lock's `TableInner`,
   sets, `meta::Inner`, `huge::Inner`, the arena registry, statistics,
   `Tcaches`, the background `STATE`) is plain data under the lock, with
@@ -771,7 +774,6 @@ another thread's exchange as often as other threads retake the lock.
 | `api/mod.rs.md` | `init_slow` | partly checked (loom, GenMC copy) |
 | `class/table.rs.md` | `store_owner` | partly checked (loom, GenMC copy) |
 | `lock.rs.md` | `RawLock::lock_slow` | trusted |
-| `lock.rs.md` | `axiom_acquired` | partly checked (loom) |
 | `lock.rs.md` | `LockGuard::drop` | partly checked (loom) |
 | `purge/background.rs.md` | `main` | partly checked (loom, GenMC copy) |
 | `vspec/atom.rs.md` | `store_usize` | partly checked (Kani, loom, GenMC) |
@@ -795,13 +797,14 @@ The arguments, by group (the overrides comments give each in full):
 - `background::main` (exit models): it returns after a final
   `request(false)`, given each pass returns and the exit takes the state
   lock.
-- `LockGuard::drop` (P2 models): its body is `RawLock::release`.
-- `axiom_acquired` (P2 models): the permission passes from holder to
-  holder across `RawLock`'s mutual exclusion and its acquire/release
-  edge, which the models check; the permission itself is Verus's model,
-  its invariant and frame rest on the holders' releases, and at the first
-  acquisition the initial value's frame is checked by nothing and its
-  visibility rests on the lock's publication.
+- `LockGuard::drop` (P2 models): its body is `Lock::release_cell`, whose
+  word step is `RawLock::release`'s.
+- The cell's hand-off is verified, not a seam: the permission passes from holder to holder through the lock's
+  cell invariant (`lock::CellPred`) and the word's (`lock::RawPred`),
+  over vstd's `SeqCst` `PAtomicU32`, under vstd's sequentially
+  consistent model; the P2 models check the same edge on a copy of
+  `RawLock`. The initial value's visibility still rests on the lock's
+  publication.
 - The bitmap word wrappers (`vspec/word.rs`) are not in the table:
   they are verified over vstd's `PAtomicU64`, whose `SeqCst` operations
   vstd specifies under its sequentially consistent model. The P1, P5
