@@ -3661,7 +3661,7 @@ and for an error-result row, that a returning call returns that result:
 | Pointer outside every class region and the huge region, in a gap, in the metadata, in a guard slab | every free, the `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | abort | yes: `free_target` (theorem 3, theorem 7's `theorem_guard_free`) |
 | Misaligned pointer (not a multiple of the quantum) | as above | abort | yes: `free_target` and `theorem_free_target_aligned` |
 | Interior pointer of a slot, or of a huge run off a page boundary | as above | abort | yes: `free_target` and `Live::theorem_interior` (`lemma_slot_interior`, `lemma_run_interior`) |
-| Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | at the check, *(lock)*: `Huge::live_run_checks` returns only if no live run has `page` as a later page; the rest is *(C)* |
+| Interior page start of a huge run | frees, `realloc` family | abort (`Huge::free_run`: `not_a_run`) | at the check, *(lock)*: `Huge::live_run_checks` returns only if no live run has `page` as a later page; the rest is *(C)*, including the window of an in-place shrink, when the page past the shrunk run's guard is the start of the live tail until `Shared::shrink_huge` frees it (theorem 25's premises) |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`Huge::usable_size`: `not_a_run`) | yes, for every live run: `api::libc::usable_size`, which the three call, ensures `!run_interior(t, p)` for any run token `t` its ghost `blk` holds (`Huge::usable_size`: `t.start() <= page < t.start() + t.npages() ==> t.start() == page`), and the code never reads `blk` *(ghost token)* |
 | Slot freed with the size of another class, or a huge size | `free_sized`, `free_aligned_sized`, `sdallocx`, sized `delete`s | abort (`hint_mismatch`) | yes for a live slot: `hint_ok`; for a non-live one, *(C)* |
 | Non-power-of-two alignment to `free_aligned_sized` or the sized aligned `delete` | as above | abort on a slot | as above: `hint_ok(p, None)`, so no slot start returns |
@@ -3713,7 +3713,11 @@ run's interior page or guard does not return. That is current
 liveness, not the pointer's history: once a later allocation starts a
 run at the same page, a stale pointer to the freed run is that run's
 start and passes (ABA, the "Free of a block that was freed and
-reallocated" row).
+reallocated" row). An in-place shrink makes such a run start for a
+short time: from `shrink_run`'s unlock to `Shared::shrink_huge`'s free
+of the tail, the tail is a live run keyed at the page past the shrunk
+run's guard, so a free of that never-handed-out address passes for
+that window (theorem 25's premises).
 
 ```rust
 // huge/free.rs
@@ -5293,6 +5297,19 @@ are false at `n` (`lemma_keeps_usable`'s second `ensures`).
   usable size `malloc_usable_size` reads. `grow_run` and `shrink_run` do
   not rely on it at run time: under the huge lock they check the run
   live, as `free_run` does, and abort otherwise.
+- The same contract for every other thread during a shrink: between
+  `shrink_run`'s unlock and `Shared::shrink_huge`'s `free_run` of the
+  tail, the tail is an `Active` run keyed at its first page (the page
+  past the shrunk run's guard), so a free of that address, which was
+  never handed out, passes `free_run`'s live-run checks for that window
+  rather than aborting with `not_a_run`. Alone, it frees the tail and
+  the shrink's `free_run` aborts (`already_free` / `not_a_run`). If a
+  third thread's allocation then takes a run starting at that page, the
+  shrink's `free_run` finds it live and frees it. Nothing here proves
+  that out: the tail's token, which the shrink holds, has no run-time
+  form, and the checks see only the page. Such a free is outside the C
+  contract (`axiom_c_claim`), as the "Interior page start of a huge
+  run" row's *(C)* part says.
 - `heap::live::axiom_hand_out` for the bytes a grown run gains
   (`Live::put_run`), as for a new block's. A shrink mints nothing.
 - vstd's `PointsToRaw::split` (`UserMem::restrict`), for the

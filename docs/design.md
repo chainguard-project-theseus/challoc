@@ -1099,6 +1099,17 @@ with page granularity (`huge/`).
   run's VMA, which the move's placement does anyway. Under a fork
   epoch's floors the tail's free is a huge free in the epoch, which the
   floors do not steer (5, "Scope").
+  Between `shrink_run`'s unlock and the tail's free the tail is an
+  `Active` run keyed at its first page, the page just past the shrunk
+  run's guard. For that window a free of that address, which no
+  allocation handed out, passes the live-run checks instead of aborting
+  with `not_a_run`. Alone it frees the tail, and the shrink's own
+  `free_run` then aborts (`already_free` / `not_a_run`). If another
+  thread's allocation takes a run starting at that page in between, the
+  shrink's `free_run` frees that run instead. Such a free is outside the
+  C contract (`axiom_c_claim`), as any free of a pointer never handed
+  out is, and THEOREMS states the window as a premise (theorem 25 and
+  the huge free's *(lock)* note).
 - Freed runs become `Empty` and decay like slabs (section 8). Runs whose
   usable size is above `huge_retain_max` (default 64 MiB,
   `huge::DEFAULT_RETAIN_MAX`) are purged at once.
