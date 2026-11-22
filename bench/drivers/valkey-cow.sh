@@ -26,12 +26,13 @@
 #              the child exits, while the fork epoch's drain runs its defrag
 #              cycle: set_drain_rps (the score), set_drain_p99_ms,
 #              get_drain_rps, get_drain_p99_ms; the same with no child
-#              before the save (set_quiet_rps, get_quiet_rps), and drain_s
+#              before the save (set_quiet_rps, get_quiet_rps), drain_s
 #              (seconds from the child's exit until no defrag cycle runs,
-#              DRAIN_WAIT when never). Pair head with
+#              DRAIN_WAIT when never) and drain_moves_s (until the cycle's
+#              hits last rose). Pair head with
 #              noepoch=head@cow_epoch:false for the drain against no drain.
 #   SERVER=valkey KEYS=10000000 SIZE=64 WRITES=1000000 DELAY=-10 RECOVER=120
-#   DRAIN_WAIT=300
+#   DRAIN_WAIT=330 (challoc's drain window is 300 s from the child's exit)
 . "$(dirname "$0")/cb.sh"
 ROOT=${CB_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 KV_SERVER=${SERVER:-valkey}
@@ -42,7 +43,7 @@ SIZE=${SIZE:-64}
 WRITES=${WRITES:-1000000}
 DELAY=${DELAY:--10}
 RECOVER=${RECOVER:-120}
-DRAIN_WAIT=${DRAIN_WAIT:-300}
+DRAIN_WAIT=${DRAIN_WAIT:-330}
 kv_ensure_jemalloc
 kv_resolve "$CB_ALLOC" native
 conf_env=${KV_PRELOAD:+LD_PRELOAD=$KV_PRELOAD}
@@ -77,7 +78,8 @@ elif mode == "drain":
     d, q = r["drain"], r["quiet"]
     out = {"set_drain_rps": d["set"]["rps"], "set_drain_p99_ms": d["set"]["p99_ms"],
            "get_drain_rps": d["get"]["rps"], "get_drain_p99_ms": d["get"]["p99_ms"],
-           "set_quiet_rps": q["set"]["rps"], "get_quiet_rps": q["get"]["rps"], "drain_s": d["s"]}
+           "set_quiet_rps": q["set"]["rps"], "get_quiet_rps": q["get"]["rps"], "drain_s": d["s"],
+           "drain_moves_s": d["moves_s"]}
 else:
     b = r["rss_before"]
     within = [t for t, rss, *_ in r["recover"] if rss <= b * 1.05]

@@ -9,8 +9,10 @@
 # with contrib/redis 0001 to 0006, Valkey with contrib/valkey 0001 to 0004,
 # quantum8 challoc):
 #   REDIS REDIS_BENCH VALKEY VALKEY_BENCH
-# REP repetitions (default 1). Session measurements, not a cb suite: see
-# bench/cow/README.md.
+# REP repetitions (default 1). DRAIN_WAIT seconds to watch for the drain's
+# end after the passes (default 330: challoc's drain window is 300 s from
+# the child's exit, so the end is seen even when the cycle runs it out).
+# Session measurements, not a cb suite: see bench/cow/README.md.
 set -eu
 B=$(dirname "$0")/cowbench.py
 OUT=${OUT:-drain.jsonl}
@@ -24,9 +26,9 @@ while [ "$rep" -le "${REP:-1}" ]; do
       IFS=, read -r v k w d <<EOT
 $cell
 EOT
-      python3 "$B" --server "$2" --bench "$3" --drain-bench --label "$1-cow" --vsize "$v" --keys "$k" \
+      python3 "$B" --server "$2" --bench "$3" --drain-bench --drain-wait "${DRAIN_WAIT:-330}" --label "$1-cow" --vsize "$v" --keys "$k" \
         --writes "$w" --save-delay "$d" --seed "$rep" >> "$OUT"
-      python3 "$B" --server "$2" --bench "$3" --drain-bench --label "$1-noepoch" --malloc-conf cow_epoch:false \
+      python3 "$B" --server "$2" --bench "$3" --drain-bench --drain-wait "${DRAIN_WAIT:-330}" --label "$1-noepoch" --malloc-conf cow_epoch:false \
         --vsize "$v" --keys "$k" --writes "$w" --save-delay "$d" --seed "$rep" >> "$OUT"
     done
   done

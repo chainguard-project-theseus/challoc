@@ -1388,7 +1388,7 @@ class = "server"
 features = "quantum8"
 allocs = ["challoc", "jemalloc"]
 placement = "one-variant-per-vm"
-env = { MODE = "drain", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", DRAIN_WAIT = "300" }
+env = { MODE = "drain", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", DRAIN_WAIT = "330" }
 metrics = [
   { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
   { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
@@ -1396,6 +1396,7 @@ metrics = [
   { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
 ]
 est_s = 480
 
@@ -1409,7 +1410,7 @@ class = "server"
 features = "quantum8"
 allocs = ["challoc", "jemalloc"]
 placement = "one-variant-per-vm"
-env = { MODE = "drain", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2", DRAIN_WAIT = "300" }
+env = { MODE = "drain", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2", DRAIN_WAIT = "330" }
 metrics = [
   { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
   { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
@@ -1417,6 +1418,7 @@ metrics = [
   { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
 ]
 est_s = 480
 
@@ -1505,7 +1507,7 @@ class = "server"
 features = "quantum8"
 allocs = ["challoc", "jemalloc"]
 placement = "one-variant-per-vm"
-env = { SERVER = "redis", MODE = "drain", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", DRAIN_WAIT = "300" }
+env = { SERVER = "redis", MODE = "drain", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", DRAIN_WAIT = "330" }
 metrics = [
   { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
   { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
@@ -1513,6 +1515,7 @@ metrics = [
   { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
 ]
 est_s = 480
 
@@ -1526,7 +1529,7 @@ class = "server"
 features = "quantum8"
 allocs = ["challoc", "jemalloc"]
 placement = "one-variant-per-vm"
-env = { SERVER = "redis", MODE = "drain", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2", DRAIN_WAIT = "300" }
+env = { SERVER = "redis", MODE = "drain", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2", DRAIN_WAIT = "330" }
 metrics = [
   { name = "set_drain_p99_ms", unit = "ms", better = "lower", class = "server" },
   { name = "get_drain_rps", unit = "req/s", better = "higher", class = "server" },
@@ -1534,5 +1537,6 @@ metrics = [
   { name = "set_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
 ]
 est_s = 480

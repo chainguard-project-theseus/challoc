@@ -74,6 +74,13 @@ def info(c, sec):
             d[k] = v
     return d
 
+def defrag_hits_running(c):
+    """(active_defrag_hits, active_defrag_running). Both pinned servers
+    print the hits under INFO stats and running (the cycle's CPU percent,
+    0 when no cycle runs) under INFO memory; a missing field raises rather
+    than reading as 0."""
+    return int(info(c, "stats")["active_defrag_hits"]), int(info(c, "memory")["active_defrag_running"])
+
 def smaps_by_name(pid):
     """Private_Dirty bytes summed per span: adjacent anonymous VMAs merged
     into one span (challoc's reservations: the class superblock, the huge
@@ -218,8 +225,7 @@ def main():
              "mem_allocator": im.get("mem_allocator")}
         tput = {}
         def defrag_state():
-            st = info(c, "stats")
-            return int(st.get("active_defrag_hits", 0)), int(st.get("active_defrag_running", 0))
+            return defrag_hits_running(c)
         def drain_pass(test):
             h0 = defrag_state()[0]
             t = time.time()
@@ -312,10 +318,16 @@ def main():
             # cycle runs on three samples a second apart (while challoc
             # reports a class draining, the server starts the next cycle
             # within a cron tick of the last one ending); drain_wait when
-            # it never ends within it.
+            # it never ends within it. moves_s: from the child's exit to the
+            # last sample on which the hits still rose (the drain's work;
+            # cycles after it move nothing).
             done_at, idle = None, 0
+            last_hits, last_move = defrag_state()[0], time.time()
             while time.time() - t_end < a.drain_wait:
-                if defrag_state()[1] == 0:
+                hits, running = defrag_state()
+                if hits > last_hits:
+                    last_hits, last_move = hits, time.time()
+                if running == 0:
                     if idle == 0:
                         done_at = time.time()
                     idle += 1
@@ -327,6 +339,7 @@ def main():
             if idle < 3:
                 done_at = None
             r["drain"].update({"s": round((done_at or time.time()) - t_end, 1), "ended": done_at is not None,
+                               "moves_s": round(last_move - t_end, 1),
                                "defrag_hits": defrag_state()[0], "cow_after": cow_stats(c),
                                "rss_end": int(info(c, "memory")["used_memory_rss"])})
         if a.recover:
@@ -337,9 +350,8 @@ def main():
             t1 = time.time()
             while time.time() - t1 < a.recover:
                 im = info(c, "memory")
-                st = info(c, "stats")
-                series.append((round(time.time() - t1), int(im["used_memory_rss"]), int(im["used_memory"]),
-                               int(st.get("active_defrag_hits", 0)), int(st.get("active_defrag_running", 0))))
+                series.append((round(time.time() - t1), int(im["used_memory_rss"]), int(im["used_memory"]))
+                              + defrag_hits_running(c))
                 time.sleep(max(1.0, a.recover / 30))
             r["recover"] = series
             r["rss_end"] = series[-1][1]
