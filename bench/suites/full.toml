@@ -30,7 +30,7 @@ rows = [
   "ruby-binary-trees", "ruby-hash-aref-str", "ruby-array-sample", "ruby-sort-block", "ruby-gc-churn",
   "node-json-churn", "node-server",
   "python1", "python1-malloc", "python-dict-list", "python-dict-list-malloc", "python-regex",
-  "python-regex-malloc", "python-object-graph", "python-object-graph-malloc",
+  "python-regex-malloc", "python-object-graph", "python-object-graph-malloc", "python-grow",
   "pg-select100", "pg-tpcb100", "pg-select500", "pg-connect20",
 ]
 replicas = 3

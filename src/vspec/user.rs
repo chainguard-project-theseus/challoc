@@ -158,6 +158,27 @@ impl UserMem {
         crate::vspec::ptr::axiom_raw_readable(&self.raw, p, len);
     }
 
+    /// The two permissions as one (`heap::live::Live::put_run`, which adds
+    /// the bytes a run grew by to the permission it kept): the bytes of
+    /// both, of their one provenance, each of `self`'s reading as it did.
+    pub proof fn join(tracked self, tracked other: UserMem) -> (tracked r: UserMem)
+        requires
+            self.provenance() == other.provenance(),
+        ensures
+            r.dom() == self.dom() + other.dom(),
+            r.provenance() == self.provenance(),
+            r.wf(),
+            forall|i: int| #[trigger] self.dom().contains(i) ==> r.bytes()[i] == self.bytes()[i],
+    {
+        let tracked UserMem { raw, bytes } = self;
+        let tracked UserMem { raw: raw2, bytes: bytes2 } = other;
+        let dom = raw.dom() + raw2.dom();
+        let joined_bytes = Map::new(dom, |i: int| if raw.dom().contains(i) { bytes[i] } else { bytes2[i] });
+        let tracked joined = raw.join(raw2);
+        assert(joined_bytes.dom() =~= joined.dom());
+        UserMem { raw: joined, bytes: joined_bytes }
+    }
+
     /// Two permissions held at once own no byte in common
     /// (`vspec::ptr::lemma_raw_disjoint`). Both are unchanged.
     pub proof fn lemma_apart(tracked &mut self, tracked other: &mut UserMem)

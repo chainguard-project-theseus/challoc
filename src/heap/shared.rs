@@ -3496,6 +3496,82 @@ impl Shared {
         run.usable
     }
 
+    /// Grow the live huge run at `p` in place to hold `size` bytes
+    /// ([`crate::huge::Huge::grow_run`]), for a `realloc` that needs more
+    /// pages: its new usable size when it grew, `blk` (`p`'s token,
+    /// [`Live::claims`]) then the grown run's, with the usable bytes a new
+    /// run of `size` bytes has ([`Shared::huge_usable`], so the sized
+    /// frees' rule holds), whose bytes before the growth read as they did;
+    /// `None`, nothing changed, when `p` is no page start of the huge
+    /// region or the run cannot grow where it is, and the caller moves the
+    /// block. The run's arena counts the pages it gained. Out of line: the
+    /// move is the caller's other path.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn grow_huge(&self, p: *mut u8, size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            self.wf(),
+            old(ord).allows(rank_huge()),
+            old(blk).claims(p),
+        ensures
+            *final(ord) == *old(ord),
+            r is None ==> *final(blk) == *old(blk),
+            r matches Some(n) ==> {
+                &&& n == final(blk).len()
+                &&& crate::layout::process_regions().is_huge_block(p@.addr, 1)
+                &&& crate::layout::process_regions().is_huge_block(p@.addr, final(blk).len())
+                &&& old(blk).block(p)
+                &&& final(blk).block(p)
+                &&& size + self.huge.spec_page() - 1 <= usize::MAX
+                &&& final(blk).len() == self.huge.spec_usable(size)
+                &&& size <= final(blk).len()
+                &&& old(blk).len() < final(blk).len()
+                &&& final(blk).copied_from(*old(blk), old(blk).len())
+                &&& forall|q: *mut u8| #[trigger] old(blk).claims(q) ==> final(blk).claims(q)
+            },
+    {
+        proof {
+            self.lemma_wf_slow();
+            self.lemma_huge_process();
+            self.lemma_regions_ok();
+        }
+        let page = match self.regions.classify(p as usize) {
+            Kind::Huge { page } => page,
+            _ => return None,
+        };
+        proof {
+            self.lemma_run_page(p, page, *blk);
+            blk.lemma_run_block(p, page);
+            blk.lemma_huge_block();
+            assert(self.huge.spec_base() + page * self.huge.spec_page() == p@.addr);
+        }
+        let ghost orig = *blk;
+        let tracked t = blk.take_run();
+        let (r, Tracked(t2)) = self.huge.grow_run(&self.meta, page, size, Tracked(t), Tracked(ord));
+        proof {
+            let pg = self.huge.spec_page();
+            if r is Some {
+                self.lemma_run_token(t2, p);
+                assert((orig.run_opt().unwrap().npages() - crate::huge::GUARD_PAGES) * pg < (t2.npages() - crate::huge::GUARD_PAGES) * pg)
+                    by (nonlinear_arith)
+                    requires
+                        orig.run_opt().unwrap().npages() < t2.npages(),
+                        pg > 0,
+                ;
+            }
+            blk.put_run(t2, orig);
+        }
+        match r {
+            Some((arena, k)) => {
+                self.owner(arena).0.note_huge_grow(k);
+                self.huge.usable_for(size)
+            },
+            None => None,
+        }
+    }
+
     /// The sized free's abort: a slab pointer whose class is not the one
     /// the size hint names (`sdallocx`'s contract is `nallocx(size, flags)
     /// == sallocx(p)`), or the start of an active huge run whose page count

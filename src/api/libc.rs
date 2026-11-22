@@ -1293,6 +1293,20 @@ pub open spec fn keeps(p: *mut u8, size: usize, align: usize, len: int) -> bool 
     }
 }
 
+/// The other way `realloc` and its kin keep `p` ([`grow_kept`]): the live
+/// run `p`, whose token was `blk`, grew in place to the usable bytes of a
+/// run of `size` bytes, more than it had (`Shared::grow_huge`), and `out`
+/// is the grown run's token, whose bytes before the growth read as
+/// `blk`'s. Its usable size is a new run's for `size`, so the sized frees'
+/// rule holds as for a moved block.
+pub open spec fn grew_in_place(p: *mut u8, size: usize, blk: Live, out: Live) -> bool {
+    &&& crate::layout::process_regions().is_huge_block(p@.addr, 1)
+    &&& blk.len() < crate::vspec::zero::huge_usable(size as int)
+    &&& out.len() == crate::vspec::zero::huge_usable(size as int)
+    &&& out.block(p)
+    &&& out.copied_from(blk, blk.len())
+}
+
 /// For a slot of class `c`, [`keeps`] is "`size` at `align` maps to `c`".
 proof fn lemma_keeps_slot(p: *mut u8, c: int, size: usize, align: usize, len: int)
     requires
@@ -1438,6 +1452,7 @@ pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
         usable_of(p, n as int),
     ensures
         keeps(p, n, 1, n as int) <==> heap::slot_start(p) || n > MEDIUM_MAX,
+        !heap::slot_start(p) ==> crate::vspec::zero::huge_usable(n as int) == n,
 {
     let r = crate::layout::process_regions();
     if heap::slot_start(p) {
@@ -1700,7 +1715,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r@.addr == 0 ==> *final(out) == blk,
         p@.addr != 0 && size != 0 && r@.addr != 0 && r@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
-        p@.addr != 0 && size != 0 ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
+        p@.addr != 0 && size != 0 ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
@@ -1722,6 +1737,14 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         }
         return p;
     };
+    // A run that needs more pages takes the free pages after it when it
+    // can, and stays where it is.
+    if old > MEDIUM_MAX && size > old && grow_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)).is_some() {
+        proof {
+            out.set(blk);
+        }
+        return p;
+    }
     let q = malloc_block(size, Tracked(out), Tracked(errno), Tracked(&mut *ord));
     if q.is_null() {
         // The block at `p` stays the caller's, with its token.
@@ -1747,12 +1770,63 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
     q
 }
 
+/// The in-place growth `realloc`, `rallocx` and `challoc_realloc_usable`
+/// try before they move a live run `p` whose usable bytes `old_len` ([`usable_of`],
+/// `blk`'s) are fewer than `size` needs ([`grow_kept`]'s callers test
+/// `size > old > MEDIUM_MAX`): the run's new usable size when
+/// `Shared::grow_huge` grew it in place ([`grew_in_place`]); `blk` is then
+/// the grown run's token, which gives `size` bytes at `p`, a fit at the
+/// quantum ([`kept`]) whose usable size is a new run's for `size`
+/// ([`usable_is`]). `None`, `blk` as it was, when it did not.
+#[inline(always)]
+// `old_len` is read only by the proof.
+#[allow(unused_variables)]
+pub(super) fn grow_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Option<usize>)
+    requires
+        crate::sys::may_abort(),
+        crate::sys::may_syscall(),
+        shared.wf(),
+        old(ord).top() == 0,
+        old(blk).claims(p),
+        old(blk).block(p),
+        usable_of(p, old_len as int),
+        old_len == old(blk).len(),
+    ensures
+        *final(ord) == *old(ord),
+        r is None ==> *final(blk) == *old(blk),
+        r matches Some(n) ==> {
+            &&& n == final(blk).len()
+            &&& grew_in_place(p, size, *old(blk), *final(blk))
+            &&& kept(p, size as int, 1)
+            &&& final(blk).gives(p, size as int)
+            &&& usable_is(p, size as int, n as int)
+            &&& forall|q: *mut u8| #[trigger] old(blk).claims(q) ==> final(blk).claims(q)
+        },
+{
+    let r = shared.grow_huge(p, size, Tracked(&mut *blk), Tracked(ord));
+    proof {
+        if r is Some {
+            shared.lemma_regions_ok();
+            lemma_usable_for_run(shared, p, size, old_len);
+            crate::meta::lemma_is_pow2_one();
+            heap::lemma_quantum_pow2();
+            heap::lemma_huge_fits(p, size, 1, QUANTUM);
+            assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) implies blk.len() == class_table()[c].size by {
+                crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+            }
+        }
+    }
+    r
+}
+
 /// Realloc follows the class/page keep rule, composed as C
 /// calls it: `n = malloc_usable_size(p)` ([`usable_size`], the live block's
 /// usable size with its token `blk`), then `realloc(p, n)`
 /// ([`realloc_block`] with the same token, as `axiom_c_claim` gives it)
 /// returns `p` exactly when `p` is a slot, or a run of more than
-/// `MEDIUM_MAX` usable bytes ([`lemma_keeps_usable`]).
+/// `MEDIUM_MAX` usable bytes ([`lemma_keeps_usable`]). A run already has
+/// the usable bytes `n` asks for, so it never grows in place here
+/// ([`grew_in_place`] needs more).
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
@@ -1775,8 +1849,18 @@ fn theorem_realloc_to_usable_size(p: *mut u8, Tracked(blk): Tracked<Live>, Track
         blk.lemma_len_pos();
         lemma_keeps_usable(p, n);
     }
+    let ghost b = blk;
     let tracked mut out = Live::empty();
     let q = realloc_block(p, n, Tracked(blk), Tracked(&mut out), Tracked(errno), Tracked(ord));
+    proof {
+        // No growth: a slot is no page start of the huge region, and a
+        // run's usable bytes already round `n` up to themselves.
+        if heap::slot_start(p) {
+            let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+            crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+        }
+        assert(!grew_in_place(p, n, b, out));
+    }
     (n, q)
 }
 
@@ -2324,7 +2408,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         p@.addr != 0 ==> blk.block(p),
         p@.addr != 0 && size != 0 && r.0@.addr == 0 ==> *final(out) == blk,
         p@.addr != 0 && size != 0 && r.0@.addr != 0 && r.0@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
-        p@.addr != 0 && size != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())),
+        p@.addr != 0 && size != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))),
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
@@ -2346,6 +2430,17 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
             out.set(blk);
         }
         return (p, s);
+    }
+    // As `realloc_block`: a run that needs more pages grows in place when
+    // it can, and reports its new usable size.
+    if old > MEDIUM_MAX && size > old {
+        if let Some(n) = grow_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)) {
+            let s = store_usable(usable, n, Tracked(uout));
+            proof {
+                out.set(blk);
+            }
+            return (p, s);
+        }
     }
     let (q, s) = malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno), Tracked(&mut *ord));
     if q.is_null() {

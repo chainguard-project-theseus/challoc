@@ -779,7 +779,13 @@ half's bound: the keep test is `usable_for(size) == Some(old)`, so
 `size <= old`, and `old`, the usable bytes `Huge::usable_size` reads
 from the run's descriptor, ensures `spec_run_usable` (the usable pages
 and the guard inside the region); `vspec::usable::lemma_run_bytes_block`
-turns that into `is_huge_block(p, max(size, 1))`.
+turns that into `is_huge_block(p, max(size, 1))`. A run grown in place
+(`grow_kept`, `Shared::grow_huge`) ensures `kept` too: its token's usable
+bytes, `spec_usable(size) >= size`, lie in the region (`Live::put_run`'s
+`is_huge_block`), and `realloc_block`, `realloc_usable_stored` and
+`rallocx_zeroed` keep `p` exactly when `keeps` holds or it grew
+(`grew_in_place`: the grown token, at `p`, of `huge_usable(size)` bytes
+that read as the old ones).
 
 **Premises beyond the common ones.**
 - Slab results: `CachePerms::tracks` (`heap/perms.rs`), part of the
@@ -1171,7 +1177,8 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
   held by its `Live` token), so it stays inside the block's usable bytes,
   given the permission model's trusted mint: the permission is minted at
   hand-out by `heap::live::axiom_hand_out`, at most once per block while
-  held (the `Live` API keeps it with the slot or run token), and at the
+  held (the `Live` API keeps it with the slot or run token; a run grown
+  in place gets the permission to the bytes it gained, `Live::put_run`), and at the
   C boundary by `axiom_c_claim`.
   That no other write reaches user memory is discipline, not proof: the raw
   primitives `zero_raw` and `copy_nonoverlapping` stay callable on

@@ -240,7 +240,19 @@ fn realloc_moves_and_preserves_content() {
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
-    assert_ne!(h2, h);
+    // One page more: the run grows where it is when the pages after it
+    // are free (`huge/grow.rs`), else it moves; either way it has the
+    // usable size a new run of that size has.
+    assert!(!h2.is_null());
+    assert_eq!(
+        usable_size(
+            super::super::shared(),
+            h2,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
+        MEDIUM_MAX + 2 * page
+    );
     free(
         h2,
         vstd::prelude::Tracked::assume_new(),

@@ -363,6 +363,7 @@ const UNLOCKED_LOCKS: &[(&str, &[&str])] = &[
         &[
             "huge/mod.rs:alloc_aligned",
             "huge/free.rs:free_run",
+            "huge/grow.rs:grow_run",
             "huge/free.rs:usable_size",
             "huge/free.rs:lookup",
             "huge/decay.rs:purge_empty",
@@ -2013,6 +2014,7 @@ fn lock_holders_match_inv_docs() {
             &[
                 ("huge/mod.rs:", "fn alloc_aligned(", "inner"),
                 ("huge/free.rs:", "pub fn free_run(", "inner"),
+                ("huge/grow.rs:", "pub fn grow_run(", "inner"),
                 ("huge/free.rs:", "pub fn usable_size(", "inner"),
                 ("huge/free.rs:", "pub fn lookup(", "inner"),
                 ("huge/decay.rs:", "pub fn purge_empty(", "inner"),

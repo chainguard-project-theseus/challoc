@@ -481,6 +481,135 @@ impl Live {
         run.tracked_unwrap()
     }
 
+    /// `self` without its run token, the permission kept: what
+    /// [`Live::take_run`] leaves.
+    pub closed spec fn without_run(self) -> Live {
+        Live { run: None, ..self }
+    }
+
+    /// Take the run token out for an in-place growth of the run
+    /// (`Shared::grow_huge`), keeping the permission to its bytes, which
+    /// the growth leaves alone; [`Live::put_run`] puts the token back.
+    pub proof fn take_run(tracked &mut self) -> (tracked t: RunToken)
+        requires
+            old(self).run_opt() is Some,
+        ensures
+            Some(t) == old(self).run_opt(),
+            *final(self) == old(self).without_run(),
+    {
+        self.run.tracked_take()
+    }
+
+    /// Put back the run token [`Live::take_run`] took from `orig`, a live
+    /// run's, as it was or as the same run grown in place
+    /// (`Huge::grow_run`: the same start, more pages). A grown run's token
+    /// gets the permission to the bytes it gained ([`axiom_hand_out`]),
+    /// joined to the one it kept, so its bytes before the growth read as
+    /// they did ([`Live::copied_from`]).
+    pub proof fn put_run(tracked &mut self, tracked t: RunToken, orig: Live)
+        requires
+            crate::heap::regions_ok(),
+            *old(self) == orig.without_run(),
+            orig.wf(),
+            orig.run_opt() is Some,
+            t.wf(),
+            t.start() == orig.run_opt().unwrap().start(),
+            t.npages() >= orig.run_opt().unwrap().npages(),
+            process_regions().is_huge_block(orig.addr(), run_usable(t.npages())),
+        ensures
+            final(self).run_opt() == Some(t),
+            final(self).wf(),
+            final(self).addr() == orig.addr(),
+            final(self).prov() == orig.prov(),
+            final(self).len() == run_usable(t.npages()),
+            final(self).copied_from(orig, orig.len()),
+            forall|p: *mut u8| #[trigger] orig.block(p) ==> final(self).block(p),
+            forall|p: *mut u8| #[trigger] orig.claims(p) ==> final(self).claims(p),
+            t == orig.run_opt().unwrap() ==> *final(self) == orig,
+    {
+        let t0 = orig.run_opt().unwrap();
+        let len0 = orig.len();
+        let len1 = run_usable(t.npages());
+        let r = process_regions();
+        let a = orig.addr() as int;
+        t0.lemma_wf();
+        t.lemma_wf();
+        assert(len0 == run_usable(t0.npages()));
+        if t.npages() > t0.npages() {
+            // The bytes the run gained: whole pages from the end of its old
+            // usable bytes (its old guard, then the pages after it) up to its
+            // new guard. No permission holds them: they were no live block's
+            // usable bytes, and the grown run's token, which holds their
+            // pages, is the one being put back.
+            let lg = r.lg_page as usize;
+            let pg = page_size();
+            assert(12 <= lg <= crate::layout::LG_MAX_SLAB);
+            vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+            vstd::bits::lemma_usize_shl_is_mul(1, lg);
+            vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+            assert(pg > 0);
+            let k = t0.npages() - GUARD_PAGES;
+            assert(len0 == k * pg);
+            assert(len1 - len0 == (t.npages() - t0.npages()) * pg) by (nonlinear_arith)
+                requires
+                    len1 == (t.npages() - GUARD_PAGES) * pg,
+                    len0 == (t0.npages() - GUARD_PAGES) * pg,
+            ;
+            assert(len1 - len0 > 0) by (nonlinear_arith)
+                requires
+                    len1 - len0 == (t.npages() - t0.npages()) * pg,
+                    t.npages() > t0.npages(),
+                    pg > 0,
+            ;
+            assert(k >= 1);
+            assert(len0 > 0) by (nonlinear_arith)
+                requires
+                    len0 == k * pg,
+                    k >= 1,
+                    pg > 0,
+            ;
+            vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(k, a - r.huge_base, pg);
+            assert((a + len0 - r.huge_base) % pg == 0) by {
+                assert(a + len0 - r.huge_base == pg * k + (a - r.huge_base)) by (nonlinear_arith)
+                    requires
+                        len0 == k * pg,
+                ;
+            }
+            let q = vstd::raw_ptr::ptr_mut_from_data::<u8>(
+                vstd::raw_ptr::PtrData::<u8> { addr: (a + len0) as usize, provenance: orig.prov(), metadata: () },
+            );
+            assert(q@.addr == a + len0 && q@.provenance == orig.prov()) by {
+                broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+            }
+            assert(r.is_huge_block(q@.addr, len1 - len0));
+            let tracked gained = axiom_hand_out(q, len1 - len0);
+            let tracked kept = self.mem.tracked_take();
+            let tracked joined = kept.join(gained);
+            self.mem = Some(joined);
+            assert(self.mem().covers(a, len1)) by {
+                assert forall|i: int| #[trigger] self.mem().dom().contains(i) <==> a <= i < a + len1 by {
+                    assert(kept.dom().contains(i) <==> a <= i < a + len0);
+                    assert(gained.dom().contains(i) <==> a + len0 <= i < a + len1);
+                }
+            }
+            assert forall|x: int| a <= x < a + len0 implies #[trigger] self.mem().bytes()[x] == orig.mem().bytes()[a + (x - a)] by {
+                assert(kept.dom().contains(x));
+            }
+        } else {
+            assert(t.npages() == t0.npages());
+        }
+        self.run = Some(t);
+        assert(self.run_of());
+        if t == t0 {
+            assert(*self == orig);
+        }
+        assert forall|p: *mut u8| #[trigger] orig.claims(p) implies self.claims(p) by {
+            if crate::heap::slot_start(p) {
+                assert(orig.run is None);
+            }
+        }
+    }
+
     /// The run token the token holds, if any.
     pub closed spec fn run_opt(self) -> Option<RunToken> {
         self.run
@@ -656,7 +785,16 @@ impl Live {
 /// through [`Live::take_slot`] and [`Live::into_run`], which drop the
 /// permission. There is one token per block (the class bitmap's and the
 /// huge allocator's authorities), so no second permission can be minted
-/// for bytes whose first is still held. The one permission made elsewhere,
+/// for bytes whose first is still held. The third caller,
+/// [`Live::put_run`], mints the permission to the bytes a run gained by
+/// growing in place, past those its kept permission covers: they were no
+/// live block's usable bytes (the run's old guard page and pages no live
+/// run held, `Huge::grow_run`'s authorities show it). Its run token comes
+/// out without dropping the permission, through [`Live::take_run`], only
+/// in `Shared::grow_huge`, which hands it to `Huge::grow_run` and puts back
+/// what comes back (`huge::grow_tests::take_run_and_put_run_only_in_grow_huge`
+/// pins both calls there), so it reaches no [`Live::from_run`]. The one
+/// permission made elsewhere,
 /// `class::axiom_fresh_slab_mem`'s, covers a `Fresh` slab's slots, which no
 /// claim has taken (their tokens are in the bitmap), so this axiom mints
 /// none for them while it is lent.

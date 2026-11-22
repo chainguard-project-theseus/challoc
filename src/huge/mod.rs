@@ -51,6 +51,7 @@
 //!
 //! Submodules: [`table`] is the open-addressing descriptor table
 //! (`Table`), [`kernel`] the page-protection calls, [`free`] frees a run,
+//! [`grow`] grows a live run in place,
 //! [`decay`] holds the purge and decay walks, `tests` the allocator's tests
 //! and test-only helpers, and `linux_tests` the tests that need the
 //! process's own regions.
@@ -74,6 +75,7 @@ use crate::vspec::slice::array_iter_rest;
 
 mod decay;
 mod free;
+mod grow;
 mod kernel;
 mod table;
 use kernel::*;
@@ -1773,8 +1775,8 @@ spec fn keys_inside(t: Table, d: Map<*mut HugeDesc, PointsTo<HugeDesc>>, mark: i
 /// past the extent it touches, which then ends at the mark) or from a
 /// `Purged` extent whose pages under the run [`Huge::rediscard`] has just
 /// discarded again under the lock (`ve` the extent). Pages at or past the
-/// mark are fresh ([`axiom_fresh_anon_zero`]: only `take` raises the mark,
-/// and no run has covered them); the run's pages in a `Purged` extent were
+/// mark are fresh ([`axiom_fresh_anon_zero`]: only `take` and `grow_run` raise
+/// the mark, and no run has covered them); the run's pages in a `Purged` extent were
 /// discarded with `MADV_DONTNEED` ([`axiom_discarded_zero`]; the
 /// `requires` carries `rediscard`'s success for exactly those pages),
 /// and when the run runs past such an extent the extent ends at the mark
@@ -1836,7 +1838,8 @@ proof fn zero_run(base: int, pg: int, s: int, usable: int, mark: int, has_ext: b
 /// callers (`huge::tests::zero_axioms_called_from_listed_sites` pins
 /// them). [`zero_run`], for pages at or past the high-water mark it is
 /// given; its `requires` ties that mark to the run `Huge::take` places
-/// (only `take` raises the mark, and no run has covered pages past it).
+/// (only `take` and `grow_run` raise the mark, and no run has covered
+/// pages past it).
 /// And `class::table::SlabTable::new`, for its whole class region, which
 /// it makes one token of: `new` runs once per class (its `words_once`
 /// token, `vspec::once`), before any slab of the region is handed out, and
@@ -5791,8 +5794,8 @@ verus! {
 ///
 /// `Huge::new` builds the value (`Lock::new` requires `wf`), and both
 /// are checked at every release: each holder outside the tests
-/// (`alloc_aligned`, `free_run`, `usable_size`, `lookup`, `purge_empty`,
-/// `purge_curve`, `empty_bytes` and `stats`) ends with
+/// (`alloc_aligned`, `free_run`, `grow_run`, `usable_size`, `lookup`,
+/// `purge_empty`, `purge_curve`, `empty_bytes` and `stats`) ends with
 /// `LockGuard::unlock`, which requires both, on every path to a return
 /// (`api::tests::guards_end_in_unlock`). A panic aborts
 /// (`panic = "abort"`) outside the tests, so it never releases. The
@@ -5834,3 +5837,6 @@ mod tests;
 
 #[cfg(test)]
 mod linux_tests;
+
+#[cfg(test)]
+mod grow_tests;

@@ -1222,6 +1222,22 @@ class = "st"
 fixed_work = true
 est_s = 4
 
+# Containers grown by appending, above the largest slab class: a str grown
+# by `+=` (a realloc to the exact size at every step), two grown in turn, a
+# list, a bytearray and a BytesIO (bench/probes/python/grow_bench.py). The
+# row for realloc of a huge run that grows: in place, or by a copy at
+# every step.
+[row.python-grow]
+cmd = ["python3", "{root}/bench/probes/python/grow_bench.py"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
+est_s = 8
+
 # PostgreSQL 17 under pgbench (bench/drivers/postgres.sh): select-only at
 # 100 and 500 clients, TPC-B, and a connection per transaction.
 [row.pg-select100]

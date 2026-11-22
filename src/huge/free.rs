@@ -1154,7 +1154,7 @@ proof fn lemma_retain_cap(
 /// value: `lemma_free_start`'s, the run authorities' and the `Active`
 /// descriptors', and, when the run authority holds an extent starting
 /// at `page`, that its descriptor is keyed there in the table.
-proof fn lemma_live_keyed(g: Inner, page: usize)
+pub(super) proof fn lemma_live_keyed(g: Inner, page: usize)
     requires
         g.wf(),
     ensures

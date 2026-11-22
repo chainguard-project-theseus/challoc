@@ -26,3 +26,9 @@
 # function within max-share, and say in REASON what it uses on its own
 # prover (`name: 17.5M, 58% of the default and 19% of 30`).
 max-share 65
+
+# Huge::grow_run (huge/grow.rs, in-place growth of a run): 29.7M on its own
+# prover, 99% of the default and 49% of 20, after its proofs moved to
+# spun-off lemmas (lemma_grew_*); what is left is the bookkeeping steps'
+# table, counter and list facts, which name the intermediate states.
+rlimit-raised challoc::huge::Huge::grow_run 20 grow_run: 29.7M, 99% of the default and 49% of 20

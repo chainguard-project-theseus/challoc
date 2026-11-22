@@ -1545,7 +1545,7 @@ fn placeable_matches_alloc_on_an_empty_region() {
 }
 
 /// Every source file under `src/`, as `(path relative to src/, text)`.
-fn src_files(
+pub(super) fn src_files(
     dir: &std::path::Path,
     rel: &str,
     out: &mut Vec<(std::string::String, std::string::String)>,
