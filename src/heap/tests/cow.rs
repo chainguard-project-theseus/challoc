@@ -397,7 +397,7 @@ fn a_pair_stops_draining_when_its_blocks_above_the_floor_fit_in_one_slab() {
 }
 
 /// A pair keeps draining while a defragmenter is asking for moves, and
-/// all drains end once none has been asked for in `DRAIN_STALL_NS` (the
+/// all drains end once none has been asked for in `DRAIN_STALL_S` (the
 /// defragmenter found nothing more to move), well before the window
 /// closes.
 #[test]
@@ -410,7 +410,7 @@ fn the_drain_ends_when_no_move_is_asked_for_in_a_stall() {
         let cs = s.arena0.class(c);
         assert_eq!(draining(s), 1);
         // A query asks for a move: progress, so a stall's age is no stall.
-        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_NS);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
         let slab = slab_of(s, c, new[0]);
         assert!(
             crate::cow::drain_move(cs, slab, Tracked::assume_new()).0,
@@ -419,10 +419,10 @@ fn the_drain_ends_when_no_move_is_asked_for_in_a_stall() {
         assert_eq!(draining(s), 1, "a move was asked for: still draining");
         assert_eq!(cs.drain_floor(), f);
         // Just short of a stall: still draining.
-        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_NS / 2);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S / 2);
         assert_eq!(draining(s), 1, "half a stall without a move");
         // A stall without a move ends it, three slabs above or not.
-        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_NS / 2);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S / 2);
         assert_eq!(draining(s), 0, "a stall without a move ends the drain");
         assert_eq!(cs.drain_floor(), 0);
         assert!(
@@ -430,5 +430,25 @@ fn the_drain_ends_when_no_move_is_asked_for_in_a_stall() {
             "and the queries stop asking for moves"
         );
         assert_eq!(draining(s), 0);
+    });
+}
+
+/// The stall clock starts at the first read of figure 8, not at the
+/// epoch's end: a program that turns its defragmenter on (and so first
+/// reads the figure) long after the save still gets its drain, and the
+/// stall then counts from that read.
+#[test]
+fn the_stall_clock_starts_at_the_first_read() {
+    in_fork_child("cow drain first read", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, _new) = drain_setup(s, &t, c, 3);
+        // However long before the first read: no progress to age yet.
+        crate::cow::test_age_drain_progress(10 * crate::cow::DRAIN_STALL_S);
+        assert_eq!(draining(s), 1, "the first read, late, finds the drain");
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        assert_eq!(draining(s), 0, "a stall after the first read ends it");
     });
 }

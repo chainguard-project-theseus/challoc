@@ -123,5 +123,20 @@ class MaxrssMetric(unittest.TestCase):
         self.assertEqual(m[0]["better"], "lower")
 
 
+class ZeroMetric(unittest.TestCase):
+    def test_a_zero_metric_keeps_its_zeros(self):
+        # valkey-cow.sh's drain_ended is 100 for a run whose cycles stopped
+        # and 0 for one that hit DRAIN_WAIT: both are samples. A metric
+        # without `zero` still drops a 0 (not reported).
+        r = spec.load_rows()
+        runs = [{"row": "valkey-cow-drain", "score": 800000.0, "error": "",
+                 "extra": {"drain_ended": e, "drain_moves_s": 30.0, "drain_hits_s": 0}} for e in (100, 0, 0)]
+        out = report.expand_metrics(runs, r)
+        ended = [x["score"] for x in out if x["row"] == "valkey-cow-drain.drain_ended"]
+        self.assertEqual(sorted(ended), [0.0, 0.0, 100.0])
+        self.assertFalse([x for x in out if x["row"] == "valkey-cow-drain.drain_hits_s"])
+        self.assertTrue(all(not x["error"] for x in out))
+
+
 if __name__ == "__main__":
     unittest.main()

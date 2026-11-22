@@ -513,9 +513,11 @@ pages the child never had:
   the floor, live blocks above it in at least two slabs
   (`slabs_live_at_or_above`, from the descriptors; blocks in one slab
   give back at most that slab), and a drain move asked for by the
-  queries within the last 10 s (`DRAIN_STALL_NS`; a defragmenter that
-  runs flat out and asks for none has passed over the heap and found
-  nothing it can move). A pair that fails one of these ends its drain
+  queries within the last 10 s between reads of the figure
+  (`DRAIN_STALL_S`, counted from the first read after `cow::end`, so a
+  program that turns its defragmenter on late still gets its drain; a
+  defragmenter that runs flat out and asks for none has passed over the
+  heap and found nothing it can move). A pair that fails one of these ends its drain
   for good (its drain floor goes), so the figure only falls and the
   forced cycle ends when the work does. On Redis and Valkey the figure
   reaches 0 within seconds of the last drain move, 10 to 65 s after the

@@ -227,7 +227,10 @@ def compare_row(
 def expand_metrics(samples: list[dict[str, Any]], rows: Rows) -> list[dict[str, Any]]:
     """Every sample of a driver row with `metrics` also becomes one sample
     per metric (row `<row>.<metric>`, the metric's value as the score), so
-    RSS after settle or p99 get a verdict of their own."""
+    RSS after settle or p99 get a verdict of their own. A metric's 0 is
+    "not reported" and dropped, unless the metric says `zero = true` (a
+    flag or a count whose 0 is a measurement, such as valkey-cow.sh's
+    drain_ended for a run that hit DRAIN_WAIT)."""
     out = list(samples)
     for s in samples:
         r = rows.rows.get(s["row"])
@@ -237,7 +240,7 @@ def expand_metrics(samples: list[dict[str, Any]], rows: Rows) -> list[dict[str, 
             d = rows.rows[f"{r.name}.{m['name']}"]
             v = (s.get("extra") or {}).get(m["name"])
             parent_ok = s.get("score") is not None and not s.get("error")
-            ok = parent_ok and isinstance(v, (int, float)) and v > 0
+            ok = parent_ok and isinstance(v, (int, float)) and (v > 0 or (v == 0 and bool(m.get("zero"))))
             if parent_ok and not ok:
                 # The driver ran but did not report this figure (a phase
                 # too short to happen): no sample, not a broken run.

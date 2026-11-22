@@ -87,10 +87,16 @@ exec static DRAIN_MOVES: AtomicU64 = AtomicU64::new(0);
 /// coarse monotonic time (ns; 0 for none): [`DRAIN_WINDOW_NS`] after the
 /// last [`end`].
 exec static DRAIN_UNTIL: AtomicU64 = AtomicU64::new(0);
-/// [`DRAIN_MOVES`] as [`draining_pairs`] last saw it change, and when
-/// (coarse monotonic ns): the drain's progress, which [`end`] resets.
+/// The drain's progress as the readers of figure 8 saw it ([`stalled`]):
+/// [`seen_word`] of the time [`DRAIN_MOVES`] last changed between two
+/// reads and of its count then, or 0 before the first read since [`end`]
+/// (which stores 0). One word, so a reader never pairs one reader's count
+/// with another's time, and the stall clock starts at the first read, not
+/// at [`end`]: a program that turns its defragmenter on late still gets
+/// its drain.
 exec static DRAIN_SEEN: AtomicU64 = AtomicU64::new(0);
-exec static DRAIN_SEEN_AT: AtomicU64 = AtomicU64::new(0);
+/// [`DRAIN_SEEN`]'s split: the time above, the count's low 32 bits below.
+const SEEN_SPLIT: u64 = 0x1_0000_0000;
 
 /// How long after an epoch its drain may run: a block above the floor
 /// that no defragmenter moves by then (it is not the defragmenter's to
@@ -107,8 +113,9 @@ pub const DRAIN_WINDOW_NS: u64 = 300_000_000_000;
 /// work is done (bench/cow/RESULTS.md, "Ending the drain with its work"),
 /// so this only ends a drain left with blocks, in more than one slab,
 /// that no defragmenter moves (Redis's allocations of other threads'
-/// arenas in tests/unit/fork-drain.tcl).
-pub const DRAIN_STALL_NS: u64 = 10_000_000_000;
+/// arenas in tests/unit/fork-drain.tcl). Seconds of the coarse
+/// monotonic clock, from the first read after [`end`].
+pub const DRAIN_STALL_S: u64 = 10;
 
 /// A pair whose live blocks above its drain floor sit in fewer slabs
 /// than this has nothing worth moving: moving them would give back at
@@ -401,10 +408,9 @@ pub fn end_within(shared: &Shared, max_tries: u32, Tracked(ord): Tracked<&mut Lo
     FLUSH_AFTER.store(0, Ordering::Relaxed);
     shared.set_epoch(false);
     each_class_settle(shared, Tracked(&mut *ord));
-    let now = crate::sys::now_coarse_ns();
-    DRAIN_SEEN.store(DRAIN_MOVES.load(Ordering::Relaxed), Ordering::Relaxed);
-    DRAIN_SEEN_AT.store(now, Ordering::Relaxed);
-    DRAIN_UNTIL.store(now.saturating_add(DRAIN_WINDOW_NS), Ordering::Relaxed);
+    // The stall clock starts at the first read of figure 8 ([`stalled`]).
+    DRAIN_SEEN.store(0, Ordering::Relaxed);
+    DRAIN_UNTIL.store(crate::sys::now_coarse_ns().saturating_add(DRAIN_WINDOW_NS), Ordering::Relaxed);
     // The transition is done: the next begin may open an epoch.
     DEPTH.store(0, Ordering::Release);
     0
@@ -445,12 +451,16 @@ pub fn test_set_busy() {
     DEPTH.fetch_or(BUSY, Ordering::Relaxed);
 }
 
-/// Test only: the drain's last progress ([`DRAIN_SEEN_AT`]) `ns` earlier,
-/// as if no drain move had been asked for in that long.
+/// Test only: the drain's last progress ([`DRAIN_SEEN`]) `secs` earlier,
+/// as if no drain move had been asked for in that long; nothing before
+/// the first read since [`end`], when there is no progress to age.
 #[cfg(test)]
-pub fn test_age_drain_progress(ns: u64) {
-    let at = DRAIN_SEEN_AT.load(Ordering::Relaxed);
-    DRAIN_SEEN_AT.store(at.saturating_sub(ns), Ordering::Relaxed);
+pub fn test_age_drain_progress(secs: u64) {
+    let w = DRAIN_SEEN.load(Ordering::Relaxed);
+    if w != 0 {
+        let t = (w / SEEN_SPLIT).saturating_sub(secs).max(1);
+        DRAIN_SEEN.store(t * SEEN_SPLIT + w % SEEN_SPLIT, Ordering::Relaxed);
+    }
 }
 
 /// The drain's rule (design 5, "Fork epochs"): a block of slab `slab`
@@ -557,29 +567,57 @@ pub fn drain_floors(shared: &Shared) -> u64 {
     k
 }
 
+/// [`DRAIN_SEEN`]'s word for coarse monotonic time `now_ns` and drain-move
+/// count `moves`: `(t + 1) * 2^32 + m`, with `t` the time in seconds
+/// modulo 2^31 and `m` the count's low 32 bits. Never 0.
+fn seen_word(now_ns: u64, moves: u64) -> (r: u64)
+    ensures
+        r != 0,
+{
+    let t = (now_ns / 1_000_000_000) % 0x8000_0000;
+    let m = moves % SEEN_SPLIT;
+    proof {
+        assert((t + 1) * 0x1_0000_0000 + m <= u64::MAX && (t + 1) * 0x1_0000_0000 > 0) by (nonlinear_arith)
+            requires
+                t < 0x8000_0000,
+                m < 0x1_0000_0000,
+        ;
+    }
+    (t + 1) * SEEN_SPLIT + m
+}
+
 /// Whether the drain stopped making progress: no query asked for a drain
-/// move ([`DRAIN_MOVES`]) in the last [`DRAIN_STALL_NS`]. Each call that
-/// sees the count changed records it and the time ([`DRAIN_SEEN`]).
+/// move ([`DRAIN_MOVES`]) in the last [`DRAIN_STALL_S`] seconds between
+/// reads of figure 8. The first read since [`end`], and any read that
+/// finds the count changed, records the count and the time in
+/// [`DRAIN_SEEN`] with one compare-and-exchange (a reader that loses it
+/// saw progress too) and answers no.
 fn stalled() -> bool
     requires
         crate::sys::may_syscall(),
 {
     let moves = DRAIN_MOVES.load(Ordering::Relaxed);
-    let now = crate::sys::now_coarse_ns();
-    if moves != DRAIN_SEEN.load(Ordering::Relaxed) {
-        DRAIN_SEEN.store(moves, Ordering::Relaxed);
-        DRAIN_SEEN_AT.store(now, Ordering::Relaxed);
-        false
-    } else {
-        now.saturating_sub(DRAIN_SEEN_AT.load(Ordering::Relaxed)) >= DRAIN_STALL_NS
+    let fresh = seen_word(crate::sys::now_coarse_ns(), moves);
+    let w = DRAIN_SEEN.load(Ordering::Relaxed);
+    if w == 0 || w % SEEN_SPLIT != moves % SEEN_SPLIT {
+        let _ = DRAIN_SEEN.compare_exchange(w, fresh, Ordering::Relaxed, Ordering::Relaxed);
+        return false;
     }
+    let at = w / SEEN_SPLIT;
+    let now = fresh / SEEN_SPLIT;
+    if now < at {
+        // The clock's seconds wrapped past 2^31: start the clock again.
+        let _ = DRAIN_SEEN.compare_exchange(w, fresh, Ordering::Relaxed, Ordering::Relaxed);
+        return false;
+    }
+    now - at >= DRAIN_STALL_S
 }
 
 /// `(arena, class)` pairs still draining, with work left worth a
 /// defragmenter's effort: a drain floor set, the drain window open, a
 /// slab below the floor with a free slot to move a block into, live
 /// blocks above it in at least [`DRAIN_MIN_SLABS`] slabs, and a drain
-/// move asked for within [`DRAIN_STALL_NS`] ([`stalled`]). A pair that
+/// move asked for within [`DRAIN_STALL_S`] ([`stalled`]). A pair that
 /// fails any of these ends its drain here, for good (its drain floor
 /// goes), so the figure never rises again before the next epoch: blocks
 /// in one slab are at most that slab to give back, and a defragmenter
