@@ -207,8 +207,10 @@ autoscaler.
 
 Fork epochs (design 5, "Fork epochs"): with
 `contrib/valkey/0004` (and `0003`, without which an overwrite of an
-embedded string writes the old value anyway), a `BGSAVE`, AOF rewrite or
-full sync runs inside an epoch: the writes the server takes while the
+embedded string writes the old value anyway), or on Redis
+`contrib/redis/0006` (and `0005`, without which every overwrite and delete
+writes the old value's refcount), a `BGSAVE`, AOF rewrite or full sync
+runs inside an epoch: the writes the server takes while the
 child runs land on pages the child does not share, so the child's
 copy-on-write (`rdb_last_cow_size`, the fork's peak memory) falls with the
 write rate instead of rising to the dataset size. The price is the bytes

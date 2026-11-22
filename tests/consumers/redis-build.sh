@@ -23,7 +23,8 @@
 #      libchalloc.so.0 in DT_NEEDED (the soname, design 13.6) ahead of
 #      libc.so.6, so challoc serves malloc for the whole process, and calls
 #      challoc's usable-size entry points (patch 0002) rather than falling
-#      back to zmalloc_size() lookups;
+#      back to zmalloc_size() lookups, and references its fork epoch entry
+#      points (patch 0006);
 #   5. runs the test suite (tests/test_helper.tcl, as ./runtest does, from
 #      any tclsh 8.5 or newer): `unit/memefficiency` alone (the active
 #      defrag tests), then the full suite, every active-defrag test at its
@@ -106,7 +107,12 @@ for f in challoc_malloc_usable challoc_calloc_usable challoc_realloc_usable chal
     printf '%s\n' "$undef" | grep -qx "$f" \
         || fail "redis-server does not call $f (HAVE_ALLOC_WITH_USIZE off?)"
 done
-echo "DT_NEEDED: $(printf '%s\n' "$needed" | paste -sd' ' -); usable-size entry points: linked"
+# Patch 0006: the fork epoch's entry points, weak references.
+for f in challoc_cow_begin challoc_cow_end challoc_cow_stat; do
+    printf '%s\n' "$undef" | grep -qx "$f" \
+        || fail "redis-server does not reference $f (CHALLOC_COW off?)"
+done
+echo "DT_NEEDED: $(printf '%s\n' "$needed" | paste -sd' ' -); usable-size and fork epoch entry points: linked"
 [ "$STAGE" = build ] && exit 0
 
 # 5. Tests.

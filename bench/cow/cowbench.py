@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Fork/COW bench for Valkey under different allocators.
+"""Fork/COW bench for Valkey (or Redis) under different allocators.
 
-One run: start valkey-server, load N keys "key:%012d" with V-byte values,
-optionally MEMORY PURGE, BGSAVE stretched by rdb-key-save-delay, overwrite
-W random keys at a constant rate during the save, sample the child's smaps
+One run: start the server (valkey-server or redis-server), load N keys
+"key:%012d" with V-byte values, optionally MEMORY PURGE, BGSAVE stretched
+by rdb-key-save-delay, overwrite W random keys at a constant rate during
+the save, sample the child's smaps
 (Private_Dirty by VMA name) and the parent's RSS, then (optionally) watch
 the parent's RSS recover with activedefrag on. Prints one JSON line.
 """
@@ -147,7 +148,7 @@ def main():
     ap.add_argument("--defrag", action="store_true")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--malloc-conf", default="")
-    ap.add_argument("--bench", default="", help="valkey-benchmark: SET throughput outside and inside the save")
+    ap.add_argument("--bench", default="", help="valkey-benchmark or redis-benchmark: SET throughput outside and inside the save")
     ap.add_argument("--extra", default="", help="extra server args, space separated")
     ap.add_argument("--op", default="SET", help="SET, DEL or GET during the save")
     a = ap.parse_args()

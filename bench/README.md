@@ -338,7 +338,7 @@ check that the process maps exactly the variant's library.
   `jemalloc53`, `jemalloc54`, `tcmalloc`, `mimalloc`), and the runpath
   build above with the server's challoc integration (Valkey:
   `contrib/valkey/000{1,2}`, challoc as Wolfi ships it; Redis:
-  `contrib/redis/000{1,2,3}`). A challoc variant whose label
+  `contrib/redis/0001` to `0006`). A challoc variant whose label
   contains `preload` (`challoc-preload=head`) runs preloaded on the libc
   build instead, which separates the allocator from the integration. The
   libc build has no active defrag: the soaks run it off there and on

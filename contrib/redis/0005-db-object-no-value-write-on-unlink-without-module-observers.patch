@@ -1,0 +1,245 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH 5/6] db, object: no write to a key's value on overwrite,
+ delete or its last decrRefCount when no module observes it
+
+Redis 8.10.3 (tag 8.10.3, commit 1a2574ce1551d3de6e0b4a56756c0fdbc6659e4f).
+Independent of patches 1/6 to 4/6 and of the allocator: it applies to stock
+8.10.3. The Redis counterpart of contrib/valkey/0003, with two differences
+Redis needs.
+
+Every overwrite (dbSetValue) and every delete (dbGenericDelete: DEL,
+UNLINK, expiration, eviction) wrote the old value's refcount twice: the
+pin around moduleNotifyKeyUnlink (incrRefCount, then decrRefCount),
+because a module's key event callback may call RM_StringDMA, whose
+dbUnshareStringValue can free the value, and then the final
+decrRefCount, which decrements the count to 0 before it frees the
+object. While a fork child is alive (BGSAVE, BGREWRITEAOF, full sync)
+either write copies the page holding the kvobj.
+
+- The pin is taken only when module code runs: the key carries module
+  metadata (keyMetaOnUnlink, which Valkey does not have, runs under the
+  same pin), a module listens for the key event, or the value is a
+  module type. moduleNotifyKeyUnlink returns at once otherwise; module.c
+  keeps a count of key event listeners (subscribe, unsubscribe, unload)
+  for moduleKeyUnlinkObserved.
+- decrRefCount frees an object whose count is 1 without writing the
+  count first, and decrements it otherwise. Valkey's decrRefCount already
+  does this.
+
+Measured in a develop session (8 vCPU, 31 GiB, amd64), 10M keys with
+64-byte values (raw strings in Redis: its embstr limit is 44 bytes), 1M
+random keys changed during a 60 s BGSAVE, rdb_last_cow_size in MiB:
+
+                     jemalloc  +this   challoc  +this   challoc fork epoch (0006)  +this
+  SET                1141      1141    1175     1175    616                        235
+  DEL                 623       620     651      646    619                        237
+
+Alone it saves nothing on Redis: a freed kvobj's slot is handed out again
+to the next command's argument objects, which write the page anyway. With
+challoc's fork epoch (patch 6/6), which hands out no block freed during
+the save and places new objects on pages the child does not share, it is
+what takes the copy from 616 to 235 MiB on SET and from 619 to 237 on DEL.
+
+tests/unit/moduleapi/postnotifications.tcl gains a test that the listener
+count follows module unload and load (the key event reaches a reloaded
+module, and overwrites and deletes of every encoding work without one).
+The existing "Test removed key event" in hooks.tcl covers the pinned path
+with RM_StringDMA.
+
+---
+ src/db.c                                   |   21 +++++++++++++-------
+ src/module.c                               |   16 +++++++++++++++
+ src/object.c                               |    8 +++++++
+ src/server.h                               |    1 +
+ tests/unit/moduleapi/postnotifications.tcl |   30 ++++++++++++++++++++++++++++
+ 5 files changed, 68 insertions(+), 8 deletions(-)
+
+diff --git a/src/db.c b/src/db.c
+index 3aa7216..9f802ad 100644
+--- a/src/db.c
++++ b/src/db.c
+@@ -609,8 +609,12 @@ static void dbSetValue(redisDb *db, robj *key, robj **valref, dictEntryLink link
+         /* On overwrite, discard module metadata excluding expire if set */
+         newKeyMetaBits &= KEY_META_MASK_EXPIRE;
+         /* RM_StringDMA may call dbUnshareStringValue which may free val, so we
+-         * need to incr to retain old */
+-        incrRefCount(old);
++         * need to incr to retain old while module code runs. With no module
++         * metadata on the key and no module observing the unlink, no module
++         * code runs, and the pin is skipped: it would write old's refcount,
++         * copying its page while a fork child shares it. */
++        int pin = getModuleMetaBits(old->metabits) || moduleKeyUnlinkObserved(old);
++        if (pin) incrRefCount(old);
+ 
+         /* Free related metadata. Ignore builtin metadata (currently only expire) */
+         if (getModuleMetaBits(old->metabits)) {
+@@ -623,8 +627,8 @@ static void dbSetValue(redisDb *db, robj *key, robj **valref, dictEntryLink link
+          * callback of the module. */
+         moduleNotifyKeyUnlink(key,old,db->id,DB_FLAG_KEY_OVERWRITE);
+         /* We want to try to unblock any module clients or clients using a blocking XREADGROUP */
+-        signalDeletedKeyAsReady(db,key,old->type);
+-        decrRefCount(old);
++        signalDeletedKeyAsReady(db,key,oldtype);
++        if (pin) decrRefCount(old);
+         /* Because of RM_StringDMA, old may be changed, so we need get old again */
+         old = dictGetKV(*link);
+     }
+@@ -873,8 +877,11 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
+             streamKeyRemoved(db, key, kv);
+ 
+         /* RM_StringDMA may call dbUnshareStringValue which may free kv, so we
+-         * need to incr to retain kv */
+-        incrRefCount(kv); /* refcnt=1->2 */
++         * need to incr to retain kv while module code runs. When none runs
++         * (no module metadata, no module observing the unlink) the pin is
++         * skipped, as in dbSetValue: it would write kv's refcount. */
++        int pin = getModuleMetaBits(kv->metabits) || moduleKeyUnlinkObserved(kv);
++        if (pin) incrRefCount(kv); /* refcnt=1->2 */
+         /* Metadata hook: notify unlink for key metadata cleanup. */
+         if (getModuleMetaBits(kv->metabits)) keyMetaOnUnlink(db, key, kv);
+         /* Tells the module that the key has been unlinked from the database. */
+@@ -883,7 +890,7 @@ int dbGenericDelete(redisDb *db, robj *key, int async, int flags) {
+         signalDeletedKeyAsReady(db,key,type);
+         /* We should call decr before freeObjAsync. If not, the refcount may be
+          * greater than 1, so freeObjAsync doesn't work */
+-        decrRefCount(kv);
++        if (pin) decrRefCount(kv);
+ 
+         /* Because of dbUnshareStringValue, the val in db may change. */
+         kv = dictGetKV(*link);
+diff --git a/src/module.c b/src/module.c
+index ff646d5..e1f388e 100644
+--- a/src/module.c
++++ b/src/module.c
+@@ -452,6 +452,8 @@ typedef struct RedisModuleEventListener {
+ } RedisModuleEventListener;
+ 
+ list *RedisModule_EventListeners; /* Global list of all the active events. */
++/* How many of them listen for REDISMODULE_EVENT_KEY (moduleKeyUnlinkObserved). */
++static int keyEventListeners = 0;
+ 
+ /* Data structures related to the redis module users */
+ 
+@@ -13018,6 +13020,7 @@ int RM_SubscribeToServerEvent(RedisModuleCtx *ctx, RedisModuleEvent event, Redis
+     /* Modify or remove the event listener if we already had one. */
+     if (ln) {
+         if (callback == NULL) {
++            if (el->event.id == REDISMODULE_EVENT_KEY) keyEventListeners--;
+             listDelNode(RedisModule_EventListeners,ln);
+             zfree(el);
+         } else {
+@@ -13032,6 +13035,7 @@ int RM_SubscribeToServerEvent(RedisModuleCtx *ctx, RedisModuleEvent event, Redis
+     el->event = event;
+     el->callback = callback;
+     listAddNodeTail(RedisModule_EventListeners,el);
++    if (event.id == REDISMODULE_EVENT_KEY) keyEventListeners++;
+     return REDISMODULE_OK;
+ }
+ 
+@@ -13200,6 +13204,7 @@ void moduleUnsubscribeAllServerEvents(RedisModule *module) {
+     while((ln = listNext(&li))) {
+         el = ln->value;
+         if (el->module == module) {
++            if (el->event.id == REDISMODULE_EVENT_KEY) keyEventListeners--;
+             listDelNode(RedisModule_EventListeners,ln);
+             zfree(el);
+         }
+@@ -13229,7 +13234,18 @@ void processModuleLoadingProgressEvent(int is_aof) {
+ 
+ /* When a key is deleted (in dbAsyncDelete/dbSyncDelete/setKey), it
+ *  will be called to tell the module which key is about to be released. */
++/* Whether moduleNotifyKeyUnlink(kv) runs module code: a module listens for
++ * the key event, or kv is a module type (its unlink callbacks). When it
++ * does not, moduleNotifyKeyUnlink neither reads nor writes kv, and the
++ * callers need not retain kv around it (see dbSetValue and dbGenericDelete:
++ * that retain writes kv's refcount, which copies the page holding it while
++ * a fork child, BGSAVE, AOF rewrite or full sync, shares it). */
++int moduleKeyUnlinkObserved(kvobj *kv) {
++    return keyEventListeners != 0 || kv->type == OBJ_MODULE;
++}
++
+ void moduleNotifyKeyUnlink(robj *key, kvobj *kv, int dbid, int flags) {
++    if (!moduleKeyUnlinkObserved(kv)) return;
+     server.allow_access_expired++;
+     server.allow_access_trimmed++;
+     int subevent = REDISMODULE_SUBEVENT_KEY_DELETED;
+diff --git a/src/object.c b/src/object.c
+index 603ed7f..0c0c032 100644
+--- a/src/object.c
++++ b/src/object.c
+@@ -649,7 +649,11 @@ void decrRefCount(robj *o) {
+             o->type, o->encoding, o->refcount);
+     }
+ 
+-    if (--(o->refcount) == 0) {
++    /* The last reference frees the object without writing its count first:
++     * a write would copy the page holding the object while a fork child
++     * (BGSAVE, AOF rewrite, full sync) shares it, on every overwrite and
++     * delete of a key. */
++    if (o->refcount == 1) {
+         /* Fast path for embedded strings: no inner allocation to free, and we
+          * can compute the alloc size to hint jemalloc for a faster deallocation. */
+         if (o->type == OBJ_STRING && o->encoding == OBJ_ENCODING_EMBSTR && !o->iskvobj) {
+@@ -685,6 +689,8 @@ void decrRefCount(robj *o) {
+             }
+         }
+         zfree(alloc);
++    } else {
++        o->refcount--;
+     }
+ }
+ 
+diff --git a/src/server.h b/src/server.h
+index b4285df..6a615e1 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -3271,6 +3271,7 @@ void moduleUnblockClient(client *c);
+ int moduleBlockedClientMayTimeout(client *c);
+ int moduleClientIsBlockedOnKeys(client *c);
+ void moduleNotifyUserChanged(client *c);
++int moduleKeyUnlinkObserved(kvobj *kv);
+ void moduleNotifyKeyUnlink(robj *key, kvobj *kv, int dbid, int flags);
+ size_t moduleGetFreeEffort(robj *key, robj *val, int dbid);
+ size_t moduleGetMemUsage(robj *key, robj *val, size_t sample_size, int dbid);
+diff --git a/tests/unit/moduleapi/postnotifications.tcl b/tests/unit/moduleapi/postnotifications.tcl
+index 31a4669..6bf512b 100644
+--- a/tests/unit/moduleapi/postnotifications.tcl
++++ b/tests/unit/moduleapi/postnotifications.tcl
+@@ -216,4 +216,34 @@ tags "modules external:skip" {
+             close_replication_stream $repl
+         }
+     }
++
++    start_server {} {
++        test {Key event listener count follows module unload and load} {
++            r module load $testmodule with_key_events
++            r set k1 v1
++            r set k1 v2
++            assert_equal {k1} [r lrange before_overwritten 0 -1]
++
++            # With the only key event listener gone, overwrites and deletes
++            # of every encoding skip the module notification and still work.
++            r module unload postnotifications
++            r del before_overwritten
++            r set k1 123
++            r set k1 v3
++            r set k2 [string repeat x 100]
++            r set k2 456
++            r del k1 k2
++            r set k3 abcd px 1
++            after 10
++            assert_equal 0 [r exists k1 k2 k3 before_overwritten before_deleted]
++
++            # Loaded again, the listener is counted again and notified.
++            r module load $testmodule with_key_events
++            r set k1 v1
++            r set k1 789
++            r del k1
++            assert_equal {k1} [r lrange before_overwritten 0 -1]
++            assert_equal {k1} [r lrange before_deleted 0 -1]
++        }
++    }
+ }
+-- 
+2.56.1
+

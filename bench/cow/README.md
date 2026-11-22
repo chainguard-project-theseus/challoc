@@ -36,3 +36,13 @@ jemalloc as the control) and drives `cowbench.py` with its child sampler,
 one variant per VM on the gate cells. `run.sh` is the session matrix
 above: numbers from it are session measurements, not harness-tier;
 `RESULTS.md` keeps the two apart.
+
+Redis 8.10.3 (`SERVER=redis`): the same driver runs the `redis-cow*` rows
+on the runpath build with `contrib/redis/0001` to `0006` (0005: no write
+to an overwritten or deleted value, nor to the count `decrRefCount` is
+about to free; 0006: the epoch around `redisFork`, a new object instead
+of `dbSetValue`'s in-place swap while it is open, and the drain), with
+Redis's bundled jemalloc as the control. Both the cow suite's base and
+head open the epoch once the library has it, so the epoch's own effect is
+`--variants 'noepoch=head@cow_epoch:false,head'`. `run-redis.sh` is the
+session matrix, `results-redis.jsonl` its output.

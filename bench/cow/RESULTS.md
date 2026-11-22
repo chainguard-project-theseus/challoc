@@ -109,3 +109,96 @@ branch on the home branch. `quick` re-run, paired, head 0bba0c1 (run
 on ref-arm64 -1.3% [-4.3%, +1.8%] (instr/op -0.0%; was +4.5% worse), on
 ref-amd64 +0.1% same; no row worse on either cell (alloc-test1 amd64
 +0.7% and valkey1 +1.2..2.4% inconclusive within their margins).
+
+# Redis 8.10.3
+
+`contrib/redis/0005` and `0006`, the Redis counterparts of Valkey's 0003
+and 0004, with two Redis-specific additions: 0005 also stops
+`decrRefCount` writing the count of an object it is about to free, and
+0006 makes `dbSetValue` allocate a new object instead of swapping the new
+value into the old one while the epoch is open. Redis's 64-byte values are
+raw strings (its embstr limit is 44 bytes), so they take that swap, which
+writes the old object; Valkey's 64-byte values are embedded and do not.
+
+## Session measurements
+
+Not harness-tier: one develop session, amd64 Xeon 6975P-C, 8 vCPU, 31
+GiB, kernel 6.18.62, one repetition (`run-redis.sh`,
+`results-redis.jsonl`), the same cowbench cells as Valkey's. Builds:
+stock 8.10.3 under its bundled jemalloc 5.3.0 (je); + 0005 (je5); + 0001
+to 0004 on challoc main 053c930, quantum8 (ch); + 0001 to 0006 (cow).
+
+`rdb_last_cow_size`, MiB:
+
+| cell | je | je5 | ch | cow | ch / cow |
+|---|---|---|---|---|---|
+| 64 B x 10M keys, 10% SET | 1141 | 1141 | 1175 | 235 | **5.0x** |
+| 64 B x 10M keys, 10% DEL | 623 | 620 | 651 | 237 | 2.7x |
+| 1 KiB x 2M keys, 10% SET | 886 | 886 | 891 | 30 | **29.7x** |
+
+What each patch does at 64 B, challoc (MiB, SET / DEL): none 1175 / 651;
+0005 alone (the cow build with `cow_epoch:false`) 1175 / 646; 0006 alone
+(0001 to 0004 and 0006) 616 / 619; both 235 / 237. 0005 saves nothing
+alone, with either allocator: a freed kvobj's slot is handed out again to
+the next command's argument objects, which write the page anyway. With
+the epoch, which hands out no block freed during it, it is what halves
+the copy again. Most of what remains at 64 B is the main dict's bucket
+array (16M buckets, 128 MiB at 10M keys), which every overwrite and
+delete writes in place.
+
+Peak of parent RSS plus child dirty, MiB: 64 B SET ch 2582, cow 1751;
+1 KiB SET ch 3462, cow 2842. SET throughput during the save
+(redis-benchmark -c 50 -P 16): 64 B ch 312k, cow 529k ops/s; 1 KiB ch
+262k, cow 539k. RSS after the save, activedefrag on: 64 B 1435 before,
+1516 after the save, 1397 120 s later (back within 5% at 60 s); 1 KiB
+2574, 2811, 2571 (16 s).
+
+## Harness tier (cb launch, gate cells ref-amd64 and ref-arm64)
+
+`cow --rows redis-cow,redis-cow-d1k,redis-cow-tput,redis-cow-rec
+--variants 'noepoch=head@cow_epoch:false,head' --controls jemalloc`, head
+1627280 (run `20261122t0045z-1627280-cow-hshnq`, one variant per VM, 3
+replicas). Both challoc variants are the same library and the same
+runpath build with 0001 to 0006; `noepoch` turns the epoch off, so the
+pair is the epoch's effect with 0005 in both:
+
+| row | amd64 | arm64 |
+|---|---|---|
+| redis-cow (64 B, 10%) | -80.0% (1176 -> 234 MiB), better | -80.0% (1176 -> 235), better |
+| redis-cow.peak_mib | -32.2%, better | -32.2%, better |
+| redis-cow-d1k (1 KiB, 10%) | -96.6% (891 -> 30 MiB), better | -96.6%, better |
+| redis-cow-d1k.peak_mib | -17.9%, better | -17.9%, better |
+| redis-cow-tput.set_inside_rps | +43% (425k -> 606k), better | +36% (310k -> 422k), better |
+| redis-cow-tput (outside the save) | inconclusive [-10.6%, +19.6%] | inconclusive [-8.7%, +15.5%] |
+| redis-cow.rss_after_mib (right after the save) | +7.8%, worse | +7.8%, worse |
+| redis-cow-d1k.rss_after_mib | +9.4%, worse | +9.4%, worse |
+| redis-cow-rec (RSS 120 s later, activedefrag) | -2.4% inconclusive | -0.4%, sub-threshold |
+| redis-cow-rec.recover_s | 52 s | 84 s |
+
+Against Redis as shipped (bundled jemalloc, no patches): redis-cow 1141
+-> 234 MiB (-79.4%), redis-cow-d1k 887 -> 30 (-96.6%), SET during the save
++56% on amd64 (390k -> 606k) and +62% on arm64 (260k -> 422k).
+
+The run's headline is REGRESSION, from `rss_after_mib` and `recover_s`:
+the epoch's price, the bytes written during the save held above the old
+data until the drain moves them (as on Valkey, +8.1%). `noepoch` never
+rises above the 5% band, so its `recover_s` is 1. Redis takes longer to
+drain than Valkey (52 and 84 s against 24 and 32 s): its defragmenter
+walks the whole keyspace each cycle.
+
+`kv-redis --rows redis-ops,redis-ops-d1k --controls '' --blocks 4`,
+challoc against the bundled jemalloc, paired, once from main 053c930 (run
+`20261122t0046z-053c930-kv-redis-hmbmz`, contrib/redis 0001 to 0004) and
+once from head 1627280 (run `20261122t0046z-1627280-kv-redis-is7um`, 0001
+to 0006). The two runs are not paired with each other; challoc's gap to
+jemalloc is the comparison:
+
+| row | main amd64 | head amd64 | main arm64 | head arm64 |
+|---|---|---|---|---|
+| redis-ops (challoc vs jemalloc) | +3.2% [+0.8, +5.7] | +1.9% [+1.5, +2.3] | +4.7% [+4.3, +5.1] | +4.4% [+2.5, +6.3] |
+| redis-ops-d1k | -3.3% [-4.2, -2.5] | -3.2% [-5.1, -1.3] | -1.2% [-1.9, -0.5] | -1.4% [-3.4, +0.7] |
+
+challoc's medians: redis-ops 980k -> 986k (amd64), 703k -> 699k (arm64);
+redis-ops-d1k 631k -> 640k, 499k -> 497k. The patches move none of the
+gaps beyond the runs' margins. The 2..5% gap on redis-ops at 64 B is
+main's, not this change's. Positive percentages are challoc slower.
