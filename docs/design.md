@@ -1095,17 +1095,34 @@ with page granularity (`huge/`).
   or `Empty` extent like any, decayed and purged as any, and any
   allocation, first fit included, may take it. A gap the run starts at
   the top becomes a `Purged` extent of pages never written (read-write
-  like every page below the mark, `prepare`, but never faulted in), and
-  one past the mark is address space only. Neither costs resident
-  memory, only room in the region and a higher mark (the free-page set's
-  storage follows the mark), but the pages a run skips at the top are
-  writable private pages, so they count in VmData, against `RLIMIT_DATA`
-  (2) and against a strict overcommit limit (`vm.overcommit_memory=2`),
-  as every page below the mark does. Where that charge is refused (the
-  commit or the free-page set's growth fails), the move is placed again
-  at the lowest fit for the run alone, so a gap never turns a move that
-  fits into `ENOMEM` (`tests/c/resource.c`, `data_grow`). Where `grow_run` declines (the `PROT_NONE` guard
-  modes) the move is first fit, as a gap would buy nothing.
+  like every page below the mark, `prepare`, but not faulted in), and
+  one past the mark is address space only. Outside `mlockall` neither
+  costs resident memory, only room in the region and a higher mark (the
+  free-page set's storage follows the mark), but the pages a run skips at
+  the top are committed: they are writable private pages, so they count
+  in VmData, against `RLIMIT_DATA` (2) and against a strict overcommit
+  limit (`vm.overcommit_memory=2`), as every page below the mark does
+  (python-grow4: VmData 562 to 634 MiB, while peak RSS falls from 446 to
+  423 MiB, as fewer moves copy). The exception is
+  `mlockall(MCL_FUTURE)` with `guards:false`: the kernel populates and
+  locks a locked range when it is made writable, so the skipped pages
+  become resident and locked, as every page below the mark already is
+  in that mode (four buffers grown in turn to 64 MiB: +29 MiB, +6.5% of
+  locked RSS). A move skips at most `GROW_GAP_MAX` (1 GiB), which is
+  then the bound on the locked memory one move adds. With guards on,
+  nothing is added: the kernel refuses a guard marker in a locked range,
+  the first refusal (at the latest, the run a growth move starts from)
+  sets `mixed_guards`, and from then on every move is first fit for the
+  rest of the process, so the gap placement is off. The committed gap
+  is kept by decision rather than leaving the skipped pages uncommitted,
+  which would break the rule that every page below the mark is
+  committed. Where that charge is refused (the commit or the free-page
+  set's growth fails), the move is placed again at the lowest fit for
+  the run alone, so a gap never turns a move that fits into `ENOMEM`
+  (`tests/c/resource.c`, `data_grow`); `RLIMIT_DATA` and a strict
+  overcommit limit get placement without a gap that way. Where
+  `grow_run` declines (the `PROT_NONE` guard modes) the move is first
+  fit, as a gap would buy nothing.
 - A live run shrinks in place for `realloc` and `rallocx` to a size
   above `MEDIUM_MAX` (6.3, `Huge::shrink_run`, `huge/shrink.rs`). Under
   the huge lock, after `free_run`'s live-run checks, it takes a
