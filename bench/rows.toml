@@ -1408,7 +1408,8 @@ est_s = 270
 # Client throughput while the fork epoch's drain runs (Valkey): activedefrag
 # on throughout, the overwrite during the save, then the benchmark's GET and
 # SET (50 clients, pipeline 16) right after the child exits, while the drain
-# holds a defrag cycle at active-defrag-cycle-max. Pair head with
+# holds a defrag cycle at active-defrag-cycle-max, and again 120 s after it
+# (late). Pair head with
 # noepoch=head@cow_epoch:false (no drain) for what the drain costs clients.
 [row.valkey-cow-drain]
 kind = "driver"
@@ -1429,6 +1430,12 @@ metrics = [
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
   { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_hits_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_ended", unit = "%", better = "higher", class = "soak-rss" },
+  { name = "set_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "set_late_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_late_p99_ms", unit = "ms", better = "lower", class = "server" },
 ]
 est_s = 480
 
@@ -1451,6 +1458,12 @@ metrics = [
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
   { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_hits_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_ended", unit = "%", better = "higher", class = "soak-rss" },
+  { name = "set_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "set_late_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_late_p99_ms", unit = "ms", better = "lower", class = "server" },
 ]
 est_s = 480
 
@@ -1527,7 +1540,8 @@ est_s = 270
 # Client throughput while the fork epoch's drain runs (Redis): activedefrag
 # on throughout, the overwrite during the save, then the benchmark's GET and
 # SET (50 clients, pipeline 16) right after the child exits, while the drain
-# holds a defrag cycle at active-defrag-cycle-max. Pair head with
+# holds a defrag cycle at active-defrag-cycle-max, and again 120 s after it
+# (late). Pair head with
 # noepoch=head@cow_epoch:false (no drain) for what the drain costs clients.
 [row.redis-cow-drain]
 kind = "driver"
@@ -1548,6 +1562,12 @@ metrics = [
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
   { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_hits_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_ended", unit = "%", better = "higher", class = "soak-rss" },
+  { name = "set_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "set_late_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_late_p99_ms", unit = "ms", better = "lower", class = "server" },
 ]
 est_s = 480
 
@@ -1570,5 +1590,11 @@ metrics = [
   { name = "get_quiet_rps", unit = "req/s", better = "higher", class = "server" },
   { name = "drain_s", unit = "s", better = "lower", class = "soak-rss" },
   { name = "drain_moves_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_hits_s", unit = "s", better = "lower", class = "soak-rss" },
+  { name = "drain_ended", unit = "%", better = "higher", class = "soak-rss" },
+  { name = "set_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "set_late_p99_ms", unit = "ms", better = "lower", class = "server" },
+  { name = "get_late_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "get_late_p99_ms", unit = "ms", better = "lower", class = "server" },
 ]
 est_s = 480

@@ -217,9 +217,13 @@ epoch (cow, head) and without it (noepoch, `cow_epoch:false`: no epoch,
 so no drain), both with activedefrag on. After the passes it samples
 `active_defrag_running` (INFO memory) and `active_defrag_hits` (INFO
 stats) once a second: `drain_s` runs from the child's exit to the first
-of three samples with no cycle running, and `moves_s` to the last
-sample on which the hits still rose (noepoch's are the two passes,
-about 2.5 s). Before this was fixed the sampler read
+of three samples with no cycle running, `moves_s` to the last sample on
+which challoc's `drain_moves` (the moves its utilisation queries asked
+for: the drain's own work) still rose, and `hits_s` the same for the
+server's `active_defrag_hits`, which also count the moves the server's
+own fragmentation rule makes (noepoch's are the two passes, about 2.5
+s). The table in this section predates that split: its moves column
+followed the hits, so it is headed `hits_s` here. Before this was fixed the sampler read
 `active_defrag_running` from INFO stats, where neither server prints it,
 so every sample read 0 and `drain_s` was the length of the passes; the
 figures below are from the fixed sampler.
@@ -247,7 +251,7 @@ figures. (The earlier run's spread was 4.6%.)
 
 How long the drain lasts (both repetitions; noepoch 1.7 to 2.7 s):
 
-| cell | `drain_s` | `moves_s` | defrag hits |
+| cell | `drain_s` | `hits_s` | defrag hits |
 |---|---|---|---|
 | Redis 64 B | 319, 323 | 88, 70 | 5.57M |
 | Redis 1 KiB | 304, 304 | 18, 14 | 0.87M |
@@ -257,8 +261,13 @@ How long the drain lasts (both repetitions; noepoch 1.7 to 2.7 s):
 On every cow run the cycle ran at active-defrag-cycle-max (25) until
 challoc's 300 s drain window closed (`DRAIN_WINDOW_NS`, src/cow.rs:92,
 from the child's exit), with `drain_floors` 6 to 9 at the end. On Redis
-the values stopped moving after 14 to 88 s and the cycle ran on with
-nothing to move; on Valkey the hits still rose at the last samples.
+the hits stopped rising after 14 to 88 s and the cycle ran on with
+nothing to move. On Valkey the hits still rose at the last samples, but
+that does not show the drain still moving values: Valkey's hits include
+its own fragmentation moves, and ran 2.4 to 3 times challoc's
+`drain_moves` here (2.45M against 0.94M at 64 B). Sampling `drain_moves`
+shows Valkey's drain moves ending 17 to 61 s after the save, as Redis's
+do ("Ending the drain with its work", below).
 
 ## Harness tier (cb launch, gate cells ref-amd64 and ref-arm64)
 
@@ -299,5 +308,151 @@ results-drain.jsonl): the same passes 120 s after the child exited, when
 Redis's moves had ended, still cost Redis GET -31% (610k against
 noepoch's 882k) and SET -29% (709k against 994k), and Valkey -19% and
 -20%. So a cycle that moves nothing costs clients about as much as one
-that does, for the rest of the window. Ending the forced cycle when it
-stops moving values is not in this change.
+that does, for the rest of the window. Ending the forced cycle when the
+drain's work ends is #871 ("Ending the drain with its work", below).
+
+# Ending the drain with its work (#871)
+
+Before #871 a pair (arena x size class) drained while it had a hole
+below its drain floor and any live block above it, so
+`challoc_cow_stat(CHALLOC_COW_DRAINING)` stayed nonzero, and Redis's and
+Valkey's patches held the defrag cycle at active-defrag-cycle-max, for
+challoc's whole 300 s window. Sampling each pair's state once a second
+(a throwaway print of the drain pairs in the `fork epochs:` report, on
+Redis 64 B and 1 KiB and Valkey 64 B) showed why: the pairs with real
+work (Redis's 40- and 80-byte classes at 64 B, the 1280-byte class at
+1 KiB, Valkey's 64- and 96-byte classes) ended their drains 15 to 60 s
+after the save, when their holes ran out or their blocks above the
+floor were gone. What kept the figure up for the rest of the window
+were 6 to 10 other pairs, each with one slab above the floor holding 1
+to 8 live blocks that no defragmenter ever moved (the same counts at
+every sample to the window's end), and holes below. A small Redis case
+(tests/unit/fork-drain.tcl's 200k keys) also left pairs of another
+arena with two slabs above the floor, about 500 blocks each, which
+nothing moved either.
+
+challoc now ends a pair's drain when the work worth a forced cycle is
+done (src/cow.rs, `draining_pairs`; docs/design.md section 5,
+"Fork epochs"):
+
+- no hole below the floor, as before;
+- the live blocks above the floor sit in fewer than two slabs
+  (`DRAIN_MIN_SLABS`): moving them gives back at most one slab;
+- no drain move asked for in the last 10 s while the figure is read
+  (`DRAIN_STALL_NS`): the defragmenter, running flat out, found nothing
+  left it can move.
+
+An ended drain stays ended until the next epoch, so the figure only
+falls. The 300 s window stays as the bound for a program that never
+reads the figure.
+
+## Session measurements
+
+One develop session, amd64 Xeon 6975P-C, 4 vCPU, 15 GiB, two
+repetitions, medians; `results-drain-end.jsonl`. The servers are
+tests/consumers/redis-build.sh and valkey-build.sh builds (Redis
+8.10.3 with contrib/redis 0001 to 0006, Valkey 9.1.2 with contrib/valkey
+0001 to 0004, quantum8); each run is `cowbench.py --drain-bench
+--drain-wait 330 --late-s 120` (run-drain.sh's command) with the staged
+libchalloc.so.0 swapped between three variants: base (#863's tree, the
+drain as it was), head (this change on #863's tree; the same diff to
+src/ as on main) and noepoch (base with `cow_epoch:false`, no epoch, so
+no drain). `drain_s` is until the cycles stopped, `moves_s` until
+challoc's `drain_moves` last rose; every run's cycles stopped within
+the 330 s cap.
+
+| cell | `drain_s` base | `drain_s` head | `moves_s` base | `moves_s` head | `drain_floors` at the end, base / head |
+|---|---|---|---|---|---|
+| Redis 64 B x 10M | 302, 303 | 101, 116 | 60, 61 | 57, 66 | 8 / 0 |
+| Redis 1 KiB x 2M | 300, 301 | 22, 21 | 15, 14 | 13, 14 | 9 / 0 |
+| Valkey 64 B x 10M | 302, 308 | 42, 56 | 41, 61 | 42, 41 | 6 / 0 |
+| Valkey 1 KiB x 2M | 303, 304 | 18, 16 | 17, 22 | 11, 10 | 7 / 0 |
+
+With head the cycles stop 1 to 15 s after the last drain move, except
+Redis at 64 B, where they run about 40 s longer: challoc's figure is 0
+from about 62 s (sampled once every 2 s in a separate run), and Redis
+finishes the cycle it had started, a full scan of 10M keys at
+active-defrag-cycle-max (computeDefragCycles does not lower a running
+cycle's effort, and the hits it makes then are its own fragmentation
+moves, a few hundred a second). That part is the server's, not the
+drain's.
+
+The passes 120 s after the child's exit (late), against noepoch's,
+requests/s and p99 ms:
+
+| cell | noepoch | base | head |
+|---|---|---|---|
+| Redis 64 B GET | 1319k, 1.12 | 995k (-25%), 1.62 | 1356k (+3%), 1.13 |
+| Redis 64 B SET | 1300k, 0.86 | 1015k (-22%), 1.24 | 1296k (-0%), 1.09 |
+| Redis 1 KiB GET | 918k, 1.29 | 708k (-23%), 1.66 | 903k (-2%), 1.32 |
+| Redis 1 KiB SET | 1002k, 1.03 | 745k (-26%), 1.68 | 969k (-3%), 1.69 |
+| Valkey 64 B GET | 1299k, 1.11 | 971k (-25%), 1.54 | 1319k (+2%), 0.97 |
+| Valkey 64 B SET | 1209k, 0.87 | 883k (-27%), 1.44 | 1217k (+1%), 0.99 |
+| Valkey 1 KiB GET | 873k, 1.43 | 663k (-24%), 2.35 | 854k (-2%), 1.66 |
+| Valkey 1 KiB SET | 946k, 1.38 | 716k (-24%), 1.57 | 940k (-1%), 1.44 |
+
+The passes right after the child's exit, while the drain moves values,
+cost the same with base and head (within 3% of each other on every
+cell), as they should: the drain's work is unchanged. RSS at the end of
+the run, as a share of RSS before the save, is the same for base and
+head (Redis 64 B 0.924 and 0.924, Redis 1 KiB 0.994 and 0.994, Valkey
+64 B 0.989 and 0.992, Valkey 1 KiB 0.998 and 0.999): ending the drain
+early gives back no less memory.
+
+## Harness tier (cb launch, gate cells ref-amd64 and ref-arm64)
+
+`cow --base origin/main --cells ref-amd64,ref-arm64 --rows
+valkey-cow-drain,valkey-cow-drain-d1k,redis-cow-drain,redis-cow-drain-d1k,valkey-cow-rec,redis-cow-rec
+--variants 'noepoch=head@cow_epoch:false,base,head' --controls ''`, run
+`20261122t1639z-98ae215-cow-pp2v5`, base main fa5de545 (#863 merged;
+#868, which touches no drain code, landed after it), one variant per
+VM, 3 replicas. Medians:
+
+| row | cell | `drain_s` base -> head | `moves_s` base -> head |
+|---|---|---|---|
+| redis-cow-drain | amd64 | 304 -> 88 | 51 -> 53 |
+| redis-cow-drain | arm64 | 307 -> 141 | 84 -> 83 |
+| redis-cow-drain-d1k | amd64 | 303 -> 17 | 11 -> 11 |
+| redis-cow-drain-d1k | arm64 | 305 -> 28 | 19 -> 18 |
+| valkey-cow-drain | amd64 | 305 -> 34 | 32 -> 34 |
+| valkey-cow-drain | arm64 | 307 -> 73 | 49 -> 51 |
+| valkey-cow-drain-d1k | amd64 | 301 -> 14 | 10 -> 9 |
+| valkey-cow-drain-d1k | arm64 | 303 -> 24 | 23 -> 23 |
+
+Every run's cycles stopped within DRAIN_WAIT (`drain_ended` 100 on
+every row). The late passes (120 s after the child's exit), against
+noepoch, requests/s; base is `worse` than noepoch on every row but three
+(inconclusive), head is inconclusive against noepoch on every row but
+Redis 64 B on arm64:
+
+| row | cell | GET noepoch / base / head | SET noepoch / base / head |
+|---|---|---|---|
+| redis-cow-drain | amd64 | 1182k / 989k (-16%) / 1456k | 1032k / 885k (-14%) / 1307k |
+| redis-cow-drain | arm64 | 1058k / 782k (-26%) / 765k (-28%) | 981k / 756k (-23%) / 736k (-25%) |
+| redis-cow-drain-d1k | amd64 | 907k / 739k (-19%) / 948k | 853k / 684k (-20%) / 895k |
+| redis-cow-drain-d1k | arm64 | 782k / 518k (-34%) / 810k | 771k / 527k (-32%) / 823k |
+| valkey-cow-drain | amd64 | 1192k / 996k (-16%) / 1218k | 1016k / 886k (-13%) / 1044k |
+| valkey-cow-drain | arm64 | 1155k / 826k (-28%) / 1161k | 882k / 644k (-27%) / 887k |
+| valkey-cow-drain-d1k | amd64 | 949k / 660k (-30%) / 855k | 879k / 620k (-29%) / 784k |
+| valkey-cow-drain-d1k | arm64 | 773k / 568k (-27%) / 755k | 764k / 568k (-26%) / 762k |
+
+The late p99 follows: base 1.24 to 1.94 ms against noepoch's 0.82 to
+1.25 (`worse` on every row), head within noise of noepoch on every row
+but Redis 64 B on arm64 (1.46 and 1.49 ms against 0.88 and 0.95).
+
+Redis 64 B on arm64 is the session's Redis 64 B tail again, longer: the
+drain's moves end at 83 s, challoc reports nothing draining soon after,
+and Redis finishes the full scan of 10M keys it was running at
+active-defrag-cycle-max, about 55 s on this cell, so at 120 s the
+cycle still runs. Shortening that would need the server to stop a
+cycle the drain started when `CHALLOC_COW_DRAINING` falls to 0, a
+change to contrib/redis 0006 that this change does not make. Valkey
+stops its cycle within seconds on both cells.
+
+The passes right after the child's exit, while values move, cost the
+same with base and head (the drain's work is unchanged). The `*-cow-rec`
+rows (RSS 120 s after the save with activedefrag on, as a percentage of
+RSS before it) end within half a point of base with head: Redis 97.4
+-> 97.9 (amd64) and 97.7 -> 97.7 (arm64), Valkey 99.2 -> 99.6 and 99.1
+-> 99.4, with `recover_s` the same for both (52, 88, 24 and 32 s; noepoch's 1 s
+is no epoch at all).

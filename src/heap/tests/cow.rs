@@ -323,3 +323,112 @@ fn lazily_purged_slabs_below_the_floor_stay_unused() {
         assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
     });
 }
+
+/// An epoch over four half-empty slabs of class `c` (holes below the
+/// floor) whose writes fill `slabs` slabs above it, ended, with every
+/// cache flushed so that `live` counts only the blocks in use. Returns
+/// the floor and the blocks written during the epoch.
+fn drain_setup(s: &Shared, t: &TestHeap, c: usize, slabs: usize) -> (usize, Vec<*mut u8>) {
+    let nslots = CLASSES[c].nslots();
+    let all: Vec<*mut u8> = (0..4 * nslots).map(|_| t.alloc(c)).collect();
+    for p in all.iter().step_by(2) {
+        t.free(*p);
+    }
+    t.flush_all();
+    assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
+    let f = floor0(s, c);
+    let new: Vec<*mut u8> = (0..slabs * nslots).map(|_| t.alloc(c)).collect();
+    assert!(new.iter().all(|&p| slab_of(s, c, p) >= f));
+    assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
+    t.flush_all();
+    assert_eq!(
+        s.arena0.class(c).drain_floor(),
+        f,
+        "the floor became the drain floor"
+    );
+    (f, new)
+}
+
+/// `challoc_cow_stat(CHALLOC_COW_DRAINING)`.
+fn draining(s: &Shared) -> u64 {
+    crate::cow::stat(s, 8, Tracked::assume_new())
+}
+
+/// A pair drains while its blocks above the floor fill more than one
+/// slab and holes are open below, and stops once what is left above fits
+/// in one slab (at most that slab to give back): the figure a server
+/// reads to force its defragmenter on ends when the work does, not at the
+/// window's end. It does not come back.
+#[test]
+fn a_pair_stops_draining_when_its_blocks_above_the_floor_fit_in_one_slab() {
+    in_fork_child("cow drain ends with one slab", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, new) = drain_setup(s, &t, c, 3);
+        assert_eq!(draining(s), 1, "three slabs above the floor, holes below");
+        assert_eq!(draining(s), 1, "and again: nothing changed");
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+        // Free the blocks of every slab above the floor but the highest.
+        let top = new.iter().map(|&p| slab_of(s, c, p)).max().unwrap();
+        let mut kept = 0;
+        for &p in &new {
+            if slab_of(s, c, p) == top {
+                kept += 1;
+            } else {
+                t.free(p);
+            }
+        }
+        t.flush_all();
+        assert!(kept > 0);
+        assert_eq!(
+            draining(s),
+            0,
+            "the {kept} blocks left above fit in one slab"
+        );
+        assert_eq!(s.arena0.class(c).drain_floor(), 0, "the pair's drain ended");
+        // More blocks of the class do not bring the drain back.
+        let more: Vec<*mut u8> = (0..2 * CLASSES[c].nslots()).map(|_| t.alloc(c)).collect();
+        assert_eq!(draining(s), 0, "an ended drain stays ended");
+        for p in more {
+            t.free(p);
+        }
+    });
+}
+
+/// A pair keeps draining while a defragmenter is asking for moves, and
+/// all drains end once none has been asked for in `DRAIN_STALL_NS` (the
+/// defragmenter found nothing more to move), well before the window
+/// closes.
+#[test]
+fn the_drain_ends_when_no_move_is_asked_for_in_a_stall() {
+    in_fork_child("cow drain stall", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, new) = drain_setup(s, &t, c, 3);
+        let cs = s.arena0.class(c);
+        assert_eq!(draining(s), 1);
+        // A query asks for a move: progress, so a stall's age is no stall.
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_NS);
+        let slab = slab_of(s, c, new[0]);
+        assert!(
+            crate::cow::drain_move(cs, slab, Tracked::assume_new()).0,
+            "a block above the floor moves"
+        );
+        assert_eq!(draining(s), 1, "a move was asked for: still draining");
+        assert_eq!(cs.drain_floor(), f);
+        // Just short of a stall: still draining.
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_NS / 2);
+        assert_eq!(draining(s), 1, "half a stall without a move");
+        // A stall without a move ends it, three slabs above or not.
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_NS / 2);
+        assert_eq!(draining(s), 0, "a stall without a move ends the drain");
+        assert_eq!(cs.drain_floor(), 0);
+        assert!(
+            !crate::cow::drain_move(cs, slab, Tracked::assume_new()).0,
+            "and the queries stop asking for moves"
+        );
+        assert_eq!(draining(s), 0);
+    });
+}

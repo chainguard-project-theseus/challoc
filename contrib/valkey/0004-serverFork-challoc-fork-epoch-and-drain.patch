@@ -32,8 +32,10 @@ on and the fragmentation thresholds out of reach
 it overwrites a tenth of 200k 64-byte values while a BGSAVE child runs,
 and requires active_defrag_hits to rise once the child exits, with
 challoc's drain_moves (the "fork epochs:" line of MEMORY MALLOC-STATS)
-counting the moves. With the trigger taken out it fails. It skips unless
-the server runs on challoc with fork epochs.
+counting the moves, and then that the drain ends with its work: challoc
+reports no size class draining (drain_floors 0) and no cycle runs within
+60 s, where challoc's drain window is 300 s. With the trigger taken out
+it fails. It skips unless the server runs on challoc with fork epochs.
 
 Both are compiled only under challoc (CHALLOC_COW, which <challoc/challoc.h>
 defines), and the three entry points are weak references: on a
@@ -43,8 +45,8 @@ without this patch.
 ---
  src/defrag.c              | 19 ++++++++++++++++++-
  src/server.c              | 23 +++++++++++++++++++++++
- tests/unit/fork-drain.tcl | 76 +++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 117 insertions(+), 1 deletion(-)
+ tests/unit/fork-drain.tcl | 85 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 126 insertions(+), 1 deletion(-)
 
 diff --git a/src/defrag.c b/src/defrag.c
 index ce5e6f7..f05f1fb 100644
@@ -145,7 +147,7 @@ new file mode 100644
 index 0000000..3ffc521
 --- /dev/null
 +++ b/tests/unit/fork-drain.tcl
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,85 @@
 +# The fork epoch's drain (contrib/valkey 0004 of
 +# chainguard-project-theseus/challoc). After a fork child exits, the values
 +# written while it ran sit above the holes the epoch left, and while challoc
@@ -218,6 +220,15 @@ index 0000000..3ffc521
 +            # The moves were the drain's: challoc's utilisation query asked
 +            # for them.
 +            assert_morethan [dict get [fork_drain_stats] drain_moves] 0
++            # The drain ends with its work, not at challoc's 300 s drain
++            # window: once nothing is left worth moving, challoc reports no
++            # size class draining (drain_floors 0) and the forced cycles stop.
++            wait_for_condition 600 100 {
++                [dict get [fork_drain_stats] drain_floors] == 0 &&
++                [s active_defrag_running] == 0
++            } else {
++                fail "the drain outlasted its work: [fork_drain_stats], active_defrag_running [s active_defrag_running]"
++            }
 +            r config set activedefrag no
 +        }
 +    }

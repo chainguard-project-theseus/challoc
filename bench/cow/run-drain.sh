@@ -12,6 +12,8 @@
 # REP repetitions (default 1). DRAIN_WAIT seconds to watch for the drain's
 # end after the passes (default 330: challoc's drain window is 300 s from
 # the child's exit, so the end is seen even when the cycle runs it out).
+# LATE seconds after the child's exit the passes run again (default 120;
+# 0 for none).
 # Session measurements, not a cb suite: see bench/cow/README.md.
 set -eu
 B=$(dirname "$0")/cowbench.py
@@ -26,9 +28,9 @@ while [ "$rep" -le "${REP:-1}" ]; do
       IFS=, read -r v k w d <<EOT
 $cell
 EOT
-      python3 "$B" --server "$2" --bench "$3" --drain-bench --drain-wait "${DRAIN_WAIT:-330}" --label "$1-cow" --vsize "$v" --keys "$k" \
+      python3 "$B" --server "$2" --bench "$3" --drain-bench --drain-wait "${DRAIN_WAIT:-330}" --late-s "${LATE:-120}" --label "$1-cow" --vsize "$v" --keys "$k" \
         --writes "$w" --save-delay "$d" --seed "$rep" >> "$OUT"
-      python3 "$B" --server "$2" --bench "$3" --drain-bench --drain-wait "${DRAIN_WAIT:-330}" --label "$1-noepoch" --malloc-conf cow_epoch:false \
+      python3 "$B" --server "$2" --bench "$3" --drain-bench --drain-wait "${DRAIN_WAIT:-330}" --late-s "${LATE:-120}" --label "$1-noepoch" --malloc-conf cow_epoch:false \
         --vsize "$v" --keys "$k" --writes "$w" --save-delay "$d" --seed "$rep" >> "$OUT"
     done
   done

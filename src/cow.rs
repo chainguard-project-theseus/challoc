@@ -32,7 +32,10 @@
 //!   (`ClassState::cow_settle`): the utilisation queries and the defrag
 //!   hint tell a defragmenter to move a block of a slab at or above it
 //!   while a slab below it has a free slot ([`drain_move`]), so the blocks
-//!   written during the epoch move back into the holes it left.
+//!   written during the epoch move back into the holes it left. A pair
+//!   drains while that work is left ([`stat`]'s figure 8, which a server
+//!   reads to force its defragmenter on): holes below, blocks above in
+//!   more than one slab, and the queries still asking for moves.
 //!
 //! Epochs nest: only the outermost [`begin`] and [`end`] act, one at a
 //! time (a [`begin`] while another thread's is under way is refused,
@@ -84,12 +87,33 @@ exec static DRAIN_MOVES: AtomicU64 = AtomicU64::new(0);
 /// coarse monotonic time (ns; 0 for none): [`DRAIN_WINDOW_NS`] after the
 /// last [`end`].
 exec static DRAIN_UNTIL: AtomicU64 = AtomicU64::new(0);
+/// [`DRAIN_MOVES`] as [`draining_pairs`] last saw it change, and when
+/// (coarse monotonic ns): the drain's progress, which [`end`] resets.
+exec static DRAIN_SEEN: AtomicU64 = AtomicU64::new(0);
+exec static DRAIN_SEEN_AT: AtomicU64 = AtomicU64::new(0);
 
 /// How long after an epoch its drain may run: a block above the floor
 /// that no defragmenter moves by then (it is not the defragmenter's to
 /// move, or none runs) stops counting, so a defragmenter does not run
-/// forever for it.
+/// forever for it. The bound for a program that never reads figure 8;
+/// one that does sees the drain end with its work ([`draining_pairs`]).
 pub const DRAIN_WINDOW_NS: u64 = 300_000_000_000;
+
+/// How long the queries may go without asking for a drain move, while a
+/// program reads figure 8, before every pair's drain ends
+/// ([`draining_pairs`]): its defragmenter, which runs flat out while a
+/// pair drains, has passed over the heap and found nothing left that it
+/// can move. On Redis and Valkey the moves come continuously until the
+/// work is done (bench/cow/RESULTS.md, "Ending the drain with its work"),
+/// so this only ends a drain left with blocks, in more than one slab,
+/// that no defragmenter moves (Redis's allocations of other threads'
+/// arenas in tests/unit/fork-drain.tcl).
+pub const DRAIN_STALL_NS: u64 = 10_000_000_000;
+
+/// A pair whose live blocks above its drain floor sit in fewer slabs
+/// than this has nothing worth moving: moving them would give back at
+/// most one slab ([`draining_pairs`]).
+pub const DRAIN_MIN_SLABS: usize = 2;
 
 /// The smallest cap: an epoch begun over a nearly empty heap still has
 /// room for the writes of a short child.
@@ -377,7 +401,10 @@ pub fn end_within(shared: &Shared, max_tries: u32, Tracked(ord): Tracked<&mut Lo
     FLUSH_AFTER.store(0, Ordering::Relaxed);
     shared.set_epoch(false);
     each_class_settle(shared, Tracked(&mut *ord));
-    DRAIN_UNTIL.store(crate::sys::now_coarse_ns().saturating_add(DRAIN_WINDOW_NS), Ordering::Relaxed);
+    let now = crate::sys::now_coarse_ns();
+    DRAIN_SEEN.store(DRAIN_MOVES.load(Ordering::Relaxed), Ordering::Relaxed);
+    DRAIN_SEEN_AT.store(now, Ordering::Relaxed);
+    DRAIN_UNTIL.store(now.saturating_add(DRAIN_WINDOW_NS), Ordering::Relaxed);
     // The transition is done: the next begin may open an epoch.
     DEPTH.store(0, Ordering::Release);
     0
@@ -416,6 +443,14 @@ pub fn test_set_in_force(on: bool) {
 #[cfg(test)]
 pub fn test_set_busy() {
     DEPTH.fetch_or(BUSY, Ordering::Relaxed);
+}
+
+/// Test only: the drain's last progress ([`DRAIN_SEEN_AT`]) `ns` earlier,
+/// as if no drain move had been asked for in that long.
+#[cfg(test)]
+pub fn test_age_drain_progress(ns: u64) {
+    let at = DRAIN_SEEN_AT.load(Ordering::Relaxed);
+    DRAIN_SEEN_AT.store(at.saturating_sub(ns), Ordering::Relaxed);
 }
 
 /// The drain's rule (design 5, "Fork epochs"): a block of slab `slab`
@@ -522,10 +557,34 @@ pub fn drain_floors(shared: &Shared) -> u64 {
     k
 }
 
-/// `(arena, class)` pairs still draining: a drain floor set, the drain
-/// window open, a slab below the floor with a free slot to move a block
-/// into, and a live block above it to move. A pair with no hole or no
-/// block left ends its drain here. 0 once the window closed.
+/// Whether the drain stopped making progress: no query asked for a drain
+/// move ([`DRAIN_MOVES`]) in the last [`DRAIN_STALL_NS`]. Each call that
+/// sees the count changed records it and the time ([`DRAIN_SEEN`]).
+fn stalled() -> bool
+    requires
+        crate::sys::may_syscall(),
+{
+    let moves = DRAIN_MOVES.load(Ordering::Relaxed);
+    let now = crate::sys::now_coarse_ns();
+    if moves != DRAIN_SEEN.load(Ordering::Relaxed) {
+        DRAIN_SEEN.store(moves, Ordering::Relaxed);
+        DRAIN_SEEN_AT.store(now, Ordering::Relaxed);
+        false
+    } else {
+        now.saturating_sub(DRAIN_SEEN_AT.load(Ordering::Relaxed)) >= DRAIN_STALL_NS
+    }
+}
+
+/// `(arena, class)` pairs still draining, with work left worth a
+/// defragmenter's effort: a drain floor set, the drain window open, a
+/// slab below the floor with a free slot to move a block into, live
+/// blocks above it in at least [`DRAIN_MIN_SLABS`] slabs, and a drain
+/// move asked for within [`DRAIN_STALL_NS`] ([`stalled`]). A pair that
+/// fails any of these ends its drain here, for good (its drain floor
+/// goes), so the figure never rises again before the next epoch: blocks
+/// in one slab are at most that slab to give back, and a defragmenter
+/// that has gone a stall without a move has found nothing left it can
+/// move. 0 once the window closed.
 fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     requires
         crate::sys::may_syscall(),
@@ -536,6 +595,7 @@ fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     if !draining() {
         return 0;
     }
+    let stop = stalled();
     let n = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
     let mut k: u64 = 0;
     let mut i: usize = 0;
@@ -559,11 +619,15 @@ fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
                 let cs: &ClassState = a.class(c);
                 let f = cs.drain_floor();
                 if f != 0 {
-                    let holes = match cs.lowest_partial(Tracked(&mut *ord)) {
-                        Some(s) => s < f,
-                        None => false,
+                    let holes = if stop {
+                        false
+                    } else {
+                        match cs.lowest_partial(Tracked(&mut *ord)) {
+                            Some(s) => s < f,
+                            None => false,
+                        }
                     };
-                    if holes && cs.live_at_or_above(f) {
+                    if holes && cs.slabs_live_at_or_above(f, DRAIN_MIN_SLABS) >= DRAIN_MIN_SLABS {
                         k = k.saturating_add(1);
                     } else {
                         cs.drain_done();

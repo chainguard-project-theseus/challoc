@@ -18,8 +18,10 @@ RSS every few seconds for S seconds after the save with `activedefrag
 yes` (and the defragmenter's hits), or, with `--bench --drain-bench`,
 the benchmark's GET and SET throughput and p99 with activedefrag on, with
 no child before the save and right after the child exits, while the fork
-epoch's drain holds a defrag cycle at active-defrag-cycle-max (and how
-long the drain ran). `run.sh` is the matrix (64 B embedded
+epoch's drain holds a defrag cycle at active-defrag-cycle-max, and with
+`--late-s S` again S seconds after the child exits (and how long the
+drain ran: until the cycles stopped, until challoc's `drain_moves` last
+rose, and until the server's defrag hits last rose). `run.sh` is the matrix (64 B embedded
 and 1 KiB raw values, 1% and 10% of the keys overwritten during the save,
 three repetitions); `summarize.py` prints medians.
 

@@ -507,9 +507,23 @@ pages the child never had:
   in use, and `get_defrag_hint` (13.5) answers 1 for it, while the class
   has a partial slab below the floor (`cow::drain_move`): a
   defragmenter moves it into the lowest partial slab, below the floor.
-  `challoc_cow_stat(CHALLOC_COW_DRAINING)` counts the pairs with holes
-  below and live blocks above (`live_at_or_above`, from the
-  descriptors); a pair with neither ends its drain.
+  `challoc_cow_stat(CHALLOC_COW_DRAINING)`, which Redis and Valkey read
+  to hold a defrag cycle at its most effort, counts the pairs with work
+  left that is worth that effort (`cow::draining_pairs`): holes below
+  the floor, live blocks above it in at least two slabs
+  (`slabs_live_at_or_above`, from the descriptors; blocks in one slab
+  give back at most that slab), and a drain move asked for by the
+  queries within the last 10 s (`DRAIN_STALL_NS`; a defragmenter that
+  runs flat out and asks for none has passed over the heap and found
+  nothing it can move). A pair that fails one of these ends its drain
+  for good (its drain floor goes), so the figure only falls and the
+  forced cycle ends when the work does. On Redis and Valkey the figure
+  reaches 0 within seconds of the last drain move, 10 to 65 s after the
+  save in bench/cow's runs, rather than at the window's 300 s: what
+  kept the figure up before were pairs with one slab above the floor
+  holding a few blocks no defragmenter moves (bench/cow/RESULTS.md,
+  "Ending the drain with its work"). The window stays as the bound for
+  a program that reads the queries but never the figure.
 
 - **Begin and end** change the nesting depth only by compare-and-exchange,
   and the outermost transition holds a busy bit in the depth word until

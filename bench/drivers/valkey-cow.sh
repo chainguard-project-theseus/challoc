@@ -26,13 +26,21 @@
 #              the child exits, while the fork epoch's drain runs its defrag
 #              cycle: set_drain_rps (the score), set_drain_p99_ms,
 #              get_drain_rps, get_drain_p99_ms; the same with no child
-#              before the save (set_quiet_rps, get_quiet_rps), drain_s
-#              (seconds from the child's exit until no defrag cycle runs,
-#              DRAIN_WAIT when never) and drain_moves_s (until the cycle's
-#              hits last rose). Pair head with
-#              noepoch=head@cow_epoch:false for the drain against no drain.
+#              before the save (set_quiet_rps, get_quiet_rps), and LATE
+#              seconds after the child's exit (set_late_rps,
+#              set_late_p99_ms, get_late_rps, get_late_p99_ms); drain_ended
+#              (100 when the cycles stopped within DRAIN_WAIT, else 0: a
+#              percentage over replicas), drain_s
+#              (seconds from the child's exit until no defrag cycle runs;
+#              left out when the cycles outlast DRAIN_WAIT, so a capped
+#              run never reports the cap as a length), drain_moves_s (until
+#              challoc's drain_moves last rose: the drain's own moves) and
+#              drain_hits_s (until the server's active_defrag_hits last
+#              rose). Pair head with noepoch=head@cow_epoch:false for the
+#              drain against no drain.
 #   SERVER=valkey KEYS=10000000 SIZE=64 WRITES=1000000 DELAY=-10 RECOVER=120
 #   DRAIN_WAIT=330 (challoc's drain window is 300 s from the child's exit)
+#   LATE=120 (0 for no late passes)
 . "$(dirname "$0")/cb.sh"
 ROOT=${CB_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 KV_SERVER=${SERVER:-valkey}
@@ -44,6 +52,7 @@ WRITES=${WRITES:-1000000}
 DELAY=${DELAY:--10}
 RECOVER=${RECOVER:-120}
 DRAIN_WAIT=${DRAIN_WAIT:-330}
+LATE=${LATE:-120}
 kv_ensure_jemalloc
 kv_resolve "$CB_ALLOC" native
 conf_env=${KV_PRELOAD:+LD_PRELOAD=$KV_PRELOAD}
@@ -58,7 +67,7 @@ case $MODE in
   cow) set -- "$@" --writes "$WRITES";;
   tput) set -- "$@" --bench "$KV_BENCH";;
   rec) set -- "$@" --writes "$WRITES" --recover "$RECOVER" --defrag;;
-  drain) set -- "$@" --writes "$WRITES" --bench "$KV_BENCH" --drain-bench --drain-wait "$DRAIN_WAIT";;
+  drain) set -- "$@" --writes "$WRITES" --bench "$KV_BENCH" --drain-bench --drain-wait "$DRAIN_WAIT" --late-s "$LATE";;
   *) die "MODE must be cow, tput, rec or drain, got '$MODE'";;
 esac
 # shellcheck disable=SC2086 # conf_env is VAR=value words
@@ -78,8 +87,16 @@ elif mode == "drain":
     d, q = r["drain"], r["quiet"]
     out = {"set_drain_rps": d["set"]["rps"], "set_drain_p99_ms": d["set"]["p99_ms"],
            "get_drain_rps": d["get"]["rps"], "get_drain_p99_ms": d["get"]["p99_ms"],
-           "set_quiet_rps": q["set"]["rps"], "get_quiet_rps": q["get"]["rps"], "drain_s": d["s"],
-           "drain_moves_s": d["moves_s"]}
+           "set_quiet_rps": q["set"]["rps"], "get_quiet_rps": q["get"]["rps"],
+           "drain_ended": 100 if d["ended"] else 0, "drain_moves_s": d["moves_s"], "drain_hits_s": d["hits_s"]}
+    if d["ended"]:
+        out["drain_s"] = d["s"]
+    else:
+        print("valkey-cow.sh: the defrag cycles outlasted DRAIN_WAIT (%ss): no drain_s" % d["s"], file=sys.stderr)
+    if "late" in r:
+        l = r["late"]
+        out.update({"set_late_rps": l["set"]["rps"], "set_late_p99_ms": l["set"]["p99_ms"],
+                    "get_late_rps": l["get"]["rps"], "get_late_p99_ms": l["get"]["p99_ms"]})
 else:
     b = r["rss_before"]
     within = [t for t, rss, *_ in r["recover"] if rss <= b * 1.05]
