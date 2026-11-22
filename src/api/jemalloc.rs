@@ -879,15 +879,20 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
         // thread (the `MALLOCX_TCACHE` contract); the reference ends before
         // `mallocx::free` takes its own.
         let tracked mut u = crate::heap::axiom_heap_use();
-        if let Some(h) = shared.tcaches.get(t, Tracked(&mut u)) {
-            if crate::heap::free_sized_fast(
+        // The loan the registry's permission to the cache's heap comes in,
+        // handed back by `put_back` on each path.
+        let tracked mut loan = crate::sys::tls::HeapLoan::empty();
+        if let Some(h) = shared.tcaches.get(t, Tracked(&mut u), Tracked(&mut loan)) {
+            let freed = crate::heap::free_sized_fast(
                 shared,
                 h,
                 p,
                 hint,
                 shared.push_flags(),
                 Tracked(&mut blk),
-            ) {
+            );
+            shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+            if freed {
                 return;
             }
         }

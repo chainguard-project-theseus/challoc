@@ -683,6 +683,7 @@ impl Heap {
         ensures
             final(errno).val() == old(errno).val(),
             final(self).wf(),
+            !old(self).spec_rehome() ==> final(self).keeps(*old(self)),
             final(cell).kept(*old(cell)),
             *final(ord) == *old(ord),
     {

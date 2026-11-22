@@ -33,7 +33,6 @@ use vstd::raw_ptr::{PointsTo, ptr_mut_write};
 use vstd::resource::Loc;
 use vstd::resource::set::{GhostPersistentSingleton, GhostSetAuth};
 
-#[cfg(verus_keep_ghost)]
 use super::thread::HeapPerm;
 use super::thread::slot_heap_ref;
 use super::{FreshHeap, Heap, Shared};
@@ -71,7 +70,12 @@ pub struct Tcaches {
 /// authority of the generations' lower bounds (`bounds`, a set of
 /// `(entry, generation)` pairs, each at most its entry's generation), with
 /// the persistent token of each pair (`tokens`), which
-/// [`lower_bound`] hands out copies of.
+/// [`lower_bound`] hands out copies of. And the registry of the live
+/// caches (`heaps`, by entry): the permission to the heap of an entry
+/// holding a cache ([`heap_ok`]), which [`Tcaches::create`] puts in with
+/// the store that publishes it, [`Tcaches::get`] lends to its caller
+/// until [`Tcaches::put_back`], and [`Tcaches::destroy`] takes out with
+/// the swap that unpublishes it.
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct TableVal {
@@ -79,6 +83,19 @@ pub tracked struct TableVal {
     pub ghost gens: Map<int, nat>,
     pub tracked bounds: GhostSetAuth<(int, nat)>,
     pub tracked tokens: Map<(int, nat), Bound>,
+    pub tracked heaps: Map<int, HeapPerm>,
+}
+
+/// `hp` is the permission to the explicit cache's heap at `p`: a well
+/// formed heap at `p`'s address, not counted in any arena (so it holds no
+/// ticket and never moves its home, [`Heap::homed_ok`]), whose home
+/// headers and the rest of its block are at `p` ([`Heap::home_at`]).
+pub closed spec fn heap_ok(hp: HeapPerm, p: *mut u8) -> bool {
+    &&& hp.addr() == p@.addr
+    &&& p@.addr != 0
+    &&& hp.value().wf()
+    &&& !hp.value().spec_bound()
+    &&& hp.value().home_at(p as *mut Heap)
 }
 
 /// A lower bound on an entry's generation: the pair `(entry, generation)`
@@ -99,12 +116,14 @@ pub ghost struct TableKey {
 
 /// Table entry `i` in the table's invariant: its permission is for the
 /// atomic the key names (`k.entries[i]`, its [`entry_id`]), and it is
-/// null exactly when its generation is even.
+/// null exactly when its generation is even; a heap permission the
+/// registry holds for it is for the heap it holds ([`heap_ok`]).
 pub open spec fn entry_ok(k: TableKey, v: TableVal, i: int) -> bool {
     &&& v.entries.contains_key(i)
     &&& v.entries[i].id() == k.entries[i]
     &&& v.gens.contains_key(i)
     &&& (v.entries[i].value()@.addr == 0 <==> v.gens[i] % 2 == 0)
+    &&& v.heaps.contains_key(i) ==> heap_ok(v.heaps[i], v.entries[i].value())
 }
 
 /// Lower bound `p` in the table's invariant: an entry of the table, at
@@ -477,6 +496,7 @@ impl Tcaches {
                 gens: Map::new(Set::range(0, MAX_TCACHES as int), |j: int| 0nat),
                 bounds,
                 tokens: Map::tracked_empty(),
+                heaps: Map::tracked_empty(),
             };
             proof {
                 assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(key, val, j) by {
@@ -586,11 +606,9 @@ pub open spec fn seen_ok(s: EntrySeen) -> bool {
     &&& (s.floor matches Some(f) ==> f <= s.generation)
 }
 
-/// Ghost: the right to hold one reference to an existing heap, which
-/// [`heap_at`] (and through it [`Tcaches::get`]) lends for as long as the
-/// reference lives, so one token gives one reference at a time.
-/// `Heap::destroy` takes the token by value and keeps it, so a destroyed
-/// heap cannot be reached again with the token that destroyed it. It also
+/// Ghost: the right to hold one reference to an explicit cache's heap,
+/// which [`Tcaches::get`] lends for as long as the reference lives, so
+/// one token gives one reference at a time. It also
 /// keeps the record of the last table entry [`Tcaches::get`] read with it
 /// ([`HeapUse::read`]), and a lower-bound token to check that read against
 /// ([`HeapUse::watch`], set by [`HeapUse::watch_from`]). Its fields are
@@ -601,14 +619,25 @@ pub tracked struct HeapUse {
     ghost unit: (),
     ghost read: Option<EntrySeen>,
     tracked watch: Option<Bound>,
+    ghost lent: Option<(*mut u8, Heap)>,
 }
 
 impl HeapUse {
     /// A read record is one [`Tcaches::get`] made inside the table's
-    /// invariant ([`seen_ok`]).
+    /// invariant ([`seen_ok`]), and so is a lent record: the entry's
+    /// pointer, not null, and the heap the registry's permission
+    /// described, at that pointer and not counted ([`heap_ok`]).
     #[verifier::type_invariant]
     spec fn type_inv(self) -> bool {
-        self.read matches Some(s) ==> seen_ok(s)
+        &&& self.read matches Some(s) ==> seen_ok(s)
+        &&& self.lent matches Some((p, l)) ==> p@.addr != 0 && !l.spec_bound() && l.home_at(p as *mut Heap)
+    }
+
+    /// The record of the heap the last [`Tcaches::get`] with this token
+    /// lent out of the registry, if it found one: the entry's pointer and
+    /// the heap as the registry's permission described it then.
+    pub closed spec fn lent(&self) -> Option<(*mut u8, Heap)> {
+        self.lent
     }
 
     /// The record of the last table entry [`Tcaches::get`] read with this
@@ -639,13 +668,14 @@ impl HeapUse {
             w.last() is Some,
         ensures
             final(self).read() == old(self).read(),
+            final(self).lent() == old(self).lent(),
             final(self).watch() == Some((w.last()->Some_0.index, w.last()->Some_0.generation)),
             final(self).watch_loc() == w.bound_loc(),
     {
         use_type_invariant(w);
         use_type_invariant(&*self);
         let tracked b = w.bound.tracked_borrow().duplicate();
-        *self = HeapUse { unit: (), read: self.read, watch: Some(b) };
+        *self = HeapUse { unit: (), read: self.read, watch: Some(b), lent: self.lent };
     }
 }
 
@@ -694,19 +724,19 @@ impl TableWrite {
     }
 }
 
-/// Premise (the C caller's contract): the calling thread uses the heap it
-/// is about to reach through [`heap_at`] with no other reference to it
-/// live, here or on another thread: an explicit cache is used by one
-/// thread at a time and not after `tcache.destroy` (the contract of
-/// [`Tcaches::get`]), a destroyed cache is unreachable through the table,
-/// a thread's heap reaches its key destructor once, at thread exit, and
-/// a heap created and never published has no other reference.
+/// Premise (the C caller's contract): the calling thread uses the
+/// explicit cache it is about to reach through [`Tcaches::get`] with no
+/// other reference to it live, here or on another thread: an explicit
+/// cache is used by one thread at a time and not after `tcache.destroy`
+/// (the contract of [`Tcaches::get`]), and a destroyed cache is
+/// unreachable through the table.
 /// One token per call that reaches heaps that way, made where it starts,
 /// each before any reference it lends: `heap::mallocx`'s `alloc`,
 /// `alloc_huge` and `free` (the `MALLOCX_TCACHE` paths), `api::jemalloc`'s
-/// `sdallocx_routed`, [`Tcaches::flush`], [`Tcaches::destroy`],
-/// `heap::thread::heap_destructor` and `heap::thread::create_heap_for_thread`
-/// (the heap it could not register). The token it makes holds no read
+/// `sdallocx_routed` and [`Tcaches::flush`]. (`Heap::destroy` takes the
+/// heap's permission, not a token: [`Tcaches::destroy`] hands it the
+/// registry's, the thread key's destructor the slot loan's, and
+/// `create_heap_for_thread` creation's.) The token it makes holds no read
 /// record and no lower bound ([`HeapUse::read`] and [`HeapUse::watch`]
 /// are `None`).
 ///
@@ -715,68 +745,45 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
     ensures
         u.read() is None,
         u.watch() is None,
+        u.lent() is None,
 ;
 
-/// A heap [`Heap::create`] or [`Heap::create_detached`] returned and
-/// nothing has destroyed: an explicit cache's non-null table entry, or
-/// the heap `Heap::destroy` is handed. Trusted: Verus has no raw-pointer
-/// dereference, and such a heap is well formed ([`Heap::wf`]), as every
-/// existing heap a verified path is handed: creation makes it so
-/// ([`CachePerms::fresh`](super::CachePerms::fresh); `Tcaches::create`
-/// takes no reference to its heap, so it drops them), every writer of
-/// its caches proves it keeps `wf`, and no ghost state carries that from
-/// one call to the next. `Heap::wf` includes `api::ready()` and that the
-/// heap's `shared` is the process's `Shared`, so this asserts both: a
-/// heap is created under a well-formed `&Shared` (`init_fields`). That
-/// includes the heap's arena ticket ([`Heap::homed_ok`]): an explicit
-/// cache is not counted and holds none; a thread heap holds the one its
-/// creator installed and `set_arena` exchanged. The reference borrows
-/// `u` ([`HeapUse`]) for as long as it lives, so two of them cannot be
-/// live from one token, and two tokens rest on [`axiom_heap_use`]'s
-/// premise: that is what keeps a ticket from being used twice.
-/// It also includes the permissions to the `others` nodes' `arena`,
-/// `pad` and `next` fields and the rest of their blocks with the blocks'
-/// claims (`Heap::heads`). And the heap's home headers are the ones
-/// creation wrote at `p` (`Heap::home_at`): `p` is the pointer creation
-/// returned (the table stores it, and the C library hands back the value
-/// registered with it), so it has the address and the provenance the
-/// heap's home headers were recorded with; `Heap::destroy` gives the
-/// heap's block back from it, a metadata block, which does not wrap the
-/// address space. `Heap::home_at` also includes the rest of that block
-/// the heap keeps (`Heap::head`): the permission to the 128 bytes before
-/// the home headers and the block's claim. This asserts them as it
-/// asserts the home headers' permissions: creation returns them (a thread
-/// heap's go into its ghost state at [`heap_new`]; `Tcaches::create`
-/// drops them with the cache permissions), and `Heap::destroy`, the one
-/// place that takes them out, frees the block with them, so the block
-/// goes back once per heap on the same premise as the ticket. No
-/// memory precondition is stated: no caller can show
-/// one. `Tcaches::get` has a pointer loaded from its table, the thread
-/// key's destructor the one the C library hands it, and `Heap::destroy`
-/// the one either of them hands on; the permissions creation returned
-/// are dropped, and carrying them from one call to the next would need a
-/// ghost registry of live explicit caches, which callers use without a
-/// lock (the C caller's contract).
+/// Premise (the C caller's contract, [`axiom_heap_use`]'s): when
+/// [`Tcaches::get`] loads a non-null entry `i`, or [`Tcaches::destroy`]
+/// is about to swap one out, the table's registry ([`TableVal`]) holds
+/// the permission to its heap. [`Tcaches::create`]
+/// puts it in with the store that publishes the entry, and only
+/// `Tcaches::get` takes it out but [`Tcaches::destroy`], whose swap
+/// leaves the entry null. So it is out only while a caller of `get`
+/// holds the reference and has not yet handed it back
+/// ([`Tcaches::put_back`]): an explicit cache used by one thread at a time
+/// and not after `tcache.destroy` (nor destroyed while in use), with each
+/// `get` followed by its `put_back` on every path that returns (pinned by
+/// `heap::tcaches::tests::every_get_puts_back`), is never out at a `get`
+/// or a `destroy`.
+/// It states nothing of the heap: that it is well formed and at the
+/// entry's pointer is the registry's invariant ([`entry_ok`]).
+/// Proved state could narrow it but not replace it: a ghost set of
+/// lent-out entries in [`TableVal`] would make the premise "entry `i` is
+/// not lent out" and make a `create` that skips the insert fail to
+/// verify, but whether another thread has `i` lent out is still the C
+/// caller's contract, which no ghost state of this thread sees. That
+/// narrowing is tracked in chainguard-project-theseus/challoc#880.
 ///
-/// # Safety
-/// `p` is such a heap, and nothing else uses it while the reference
-/// lives (see [`Tcaches::get`]). The token is left as it was: the body
-/// never names it.
-#[verifier::external_body]
-#[inline(always)]
-pub(super) unsafe fn heap_at(p: *mut Heap, Tracked(_u): Tracked<&mut HeapUse>) -> (r: &mut Heap)
+/// Checked by `heap::tcaches::tests::entry_heap_axiom_only_in_get_and_destroy`.
+axiom fn axiom_entry_heap(k: TableKey, tracked v: &TableVal, i: int)
+    requires
+        0 <= i < MAX_TCACHES,
+        entry_ok(k, *v, i),
+        v.entries[i].value()@.addr != 0,
     ensures
-        *final(_u) == *old(_u),
-        r.wf(),
-        r.home_at(p),
-{
-    // SAFETY: guaranteed by the caller.
-    unsafe { &mut *p }
-}
+        v.heaps.contains_key(i),
+;
 
-/// The heap [`Heap::create`] has just returned, as a reference, before
-/// its ghost state is installed, borrowed from the thread's heap loan
-/// `loan`, which takes its permission ([`HeapPerm`], made here by
+/// The heap [`Heap::create`] (or, for [`Tcaches::create`],
+/// [`Heap::create_detached`]) has just returned, as a reference, before
+/// its ghost state is installed, borrowed from the heap loan `loan` (the
+/// thread's, or `Tcaches::create`'s own), which takes its permission ([`HeapPerm`], made here by
 /// [`HeapPerm::assemble`]) and is lent for as long as the reference
 /// lives: its `others` field is null, as `init_fields` stored it, and its
 /// `shared`, `arena` and `bound` are what `s` records (`init_fields` and
@@ -790,7 +797,8 @@ pub(super) unsafe fn heap_at(p: *mut Heap, Tracked(_u): Tracked<&mut HeapUse>) -
 /// ends.
 ///
 /// # Safety
-/// `p` is a heap `Heap::create` has just returned, and nothing else uses
+/// `p` is a heap `Heap::create` or `Heap::create_detached` has just
+/// returned, and nothing else uses
 /// it while the reference lives.
 #[inline(always)]
 pub(super) unsafe fn heap_new<'a>(
@@ -809,6 +817,7 @@ pub(super) unsafe fn heap_new<'a>(
         r.others@.addr == 0,
         r.arena as int == s.arena(),
         r.bound == s.bound(),
+        r.rehome == s.rehome(),
         r.shared == s.shared(),
         r.head@ == (s.head(), s.claim()),
         final(loan).heap() matches Some(hp) && hp.addr() == p@.addr && hp.value() == *final(r),
@@ -835,6 +844,8 @@ impl Tcaches {
     /// each entry in an opening of its own).
     // Not isolated: the search returns while the guard borrows `ord`.
     #[verifier::loop_isolation(false)]
+    // The heap's reference (`heap`) is read by the ghost code only.
+    #[allow(unused_variables)]
     pub fn create(&self, shared: &Shared, arena: u16, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u16>)
         requires
             crate::sys::may_syscall(),
@@ -863,7 +874,7 @@ impl Tcaches {
                 return None;
             }
         }
-        let (h, _, _) = Heap::create_detached(shared, arena, Tracked(&mut under));
+        let (h, Tracked(perms), Tracked(fresh)) = Heap::create_detached(shared, arena, Tracked(&mut under));
         if h.is_null() {
             g.unlock();
             return None;
@@ -871,6 +882,28 @@ impl Tcaches {
         let hp = h as *mut u8;
         proof {
             assert(hp@.addr != 0);
+            shared.lemma_wf();
+            shared.lemma_wf_ready();
+        }
+        // The heap's permission, for the registry: what creation returned,
+        // installed as the heap's ghost state as `create_heap_for_thread`
+        // installs a thread heap's, with no ticket (the cache is not
+        // counted).
+        let tracked mut loan = HeapLoan::empty();
+        let tracked stored = fresh.tracked_unwrap();
+        // SAFETY: freshly created, and unpublished: nothing else uses it.
+        let heap = unsafe { heap_new(h, Tracked(stored), Tracked(&perms), Tracked(&mut loan)) };
+        proof {
+            heap.perms = Tracked(perms);
+            heap.homed = Tracked(None);
+            heap.list = Ghost(Seq::empty());
+            heap.keys = Ghost(Seq::empty());
+            heap.home_hdrs = Ghost(Seq::new(crate::layout::NCLASSES as nat, |c: int| super::home_hdr(h, c)));
+            heap.lemma_fresh_detached_wf(h);
+        }
+        let tracked perm = loan.take().tracked_unwrap();
+        proof {
+            assert((hp as *mut Heap) == h);
         }
         // Inside the table's invariant ([`TablePred`]): the entry's
         // permission takes the pointer, at an odd generation.
@@ -884,6 +917,12 @@ impl Tcaches {
             crate::vspec::entry::store(&self.table[slot], hp, Tracked(v.entries.tracked_borrow_mut(slot as int)));
             proof {
                 v.gens = v.gens.insert(slot as int, if was == 0 { g + 1 } else { g + 2 });
+                // The registry takes the new heap's permission (any it
+                // held for the entry, which the search read as null, goes).
+                if v.heaps.contains_key(slot as int) {
+                    let tracked _old = v.heaps.tracked_remove(slot as int);
+                }
+                v.heaps.tracked_insert(slot as int, perm);
                 assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
                     assert(entry_ok(self.inv@.constant(), v0, j));
                     if j != slot as int {
@@ -913,19 +952,35 @@ impl Tcaches {
     /// frees the heap while another thread may still hold the `&mut Heap`
     /// this returns. Every `MALLOCX_TCACHE(t)` path (`mallocx`, `rallocx`,
     /// `dallocx`, `sdallocx`) inherits that rule. The reference borrows
-    /// the caller's token `u` ([`HeapUse`]) for as long as it lives, and
-    /// `u` keeps the record of the entry read ([`HeapUse::read`]): the
-    /// load, inside the table's invariant ([`TablePred`]), reads the
-    /// entry's permission's value, with the entry's generation, and a
-    /// cache is returned only for a non-null entry. When `u` carries a
-    /// lower bound for this table's entry `id` ([`HeapUse::watch`]), the
-    /// read checks it against the invariant: the record's `floor` is that
-    /// bound, at most the generation read.
+    /// the caller's token `u` ([`HeapUse`]) and its loan `loan` for as long
+    /// as it lives, and `u` keeps the record of the entry read
+    /// ([`HeapUse::read`]): the load, inside the table's invariant
+    /// ([`TablePred`]), reads the entry's permission's value, with the
+    /// entry's generation, and a cache is returned only for a non-null
+    /// entry. When `u` carries a lower bound for this table's entry `id`
+    /// ([`HeapUse::watch`]), the read checks it against the invariant: the
+    /// record's `floor` is that bound, at most the generation read.
+    ///
+    /// The heap comes out of the table's registry ([`TableVal`]): inside
+    /// the same opening, the permission to the entry's heap moves into
+    /// `loan`, which lends it out as the reference (`slot_heap_ref`), and
+    /// `u` records the heap as the permission described it
+    /// ([`HeapUse::lent`]). So the heap is the one [`Tcaches::create`]
+    /// made, well formed, as the last caller left it: the caller hands the
+    /// permission back with [`Tcaches::put_back`] when the reference ends.
+    /// That the registry holds it at the load is [`axiom_entry_heap`]'s
+    /// premise.
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub fn get<'a>(&'a self, id: u16, Tracked(u): Tracked<&'a mut HeapUse>) -> (r: Option<&'a mut Heap>)
+    pub fn get<'a>(&'a self, id: u16, Tracked(u): Tracked<&'a mut HeapUse>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
+        requires
+            old(loan).heap() is None,
         ensures
             r matches Some(h) ==> h.wf(),
+            r matches Some(h) ==> !h.spec_rehome(),
+            r matches Some(h) ==> (final(u).lent() matches Some((q, l)) && l == *h && q@.addr == final(u).read()->Some_0.addr
+                && (final(loan).heap() matches Some(hp) && hp.addr() == q@.addr && hp.value() == *final(h))),
+            r is None ==> *final(loan) == *old(loan),
             // An id no `tcache.create` hands out names no cache.
             id as usize >= MAX_TCACHES ==> r is None,
             id as usize >= MAX_TCACHES ==> *final(u) == *old(u),
@@ -948,6 +1003,7 @@ impl Tcaches {
             && u.watch->Some_0@.0 == i as int;
         let p: *mut u8;
         let ghost mut g: nat = 0;
+        let ghost mut lent: Option<(*mut u8, Heap)> = None;
         vstd::open_atomic_invariant!(self.inv.borrow() => v => {
             proof {
                 assert(entry_ok(self.inv@.constant(), v, i as int));
@@ -959,6 +1015,23 @@ impl Tcaches {
             p = crate::vspec::entry::load(&self.table[i], Tracked(v.entries.tracked_borrow(i as int)));
             proof {
                 g = v.gens[i as int];
+                if p@.addr != 0 {
+                    // The registry's permission to the heap, lent out.
+                    axiom_entry_heap(self.inv@.constant(), &v, i as int);
+                    let ghost v0 = v;
+                    let tracked hp = v.heaps.tracked_remove(i as int);
+                    lent = Some((p, hp.value()));
+                    loan.put(hp);
+                    assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
+                        assert(entry_ok(self.inv@.constant(), v0, j));
+                    }
+                    assert forall|j: int| 0 <= j < MAX_TCACHES && j != -1 implies #[trigger] has_bound(v, j) by {
+                        assert(has_bound(v0, j));
+                    }
+                    assert forall|q: (int, nat)| #[trigger] v.bounds@.contains(q) implies bound_ok(self.inv@.constant(), v, q) by {
+                        assert(bound_ok(self.inv@.constant(), v0, q));
+                    }
+                }
             }
         });
         proof {
@@ -968,17 +1041,73 @@ impl Tcaches {
                 unit: (),
                 read: Some(EntrySeen { atomic: self.inv@.constant().entries[i as int], index: i as int, generation: g, addr: p@.addr, floor }),
                 watch,
+                lent,
             };
         }
         let p = p as *mut Heap;
         if p.is_null() {
             None
         } else {
+            proof {
+                Heap::lemma_unbound_no_rehome(loan.heap()->Some_0.value());
+            }
             // SAFETY: published after `Heap::create_detached`; only `destroy`
-            // frees it, and using a destroyed id is the caller's bug. `u`
+            // frees it, and using a destroyed id is the caller's bug. The
+            // loan holds the heap's permission, from the registry, and `u`
             // keeps other users off the heap while the reference lives.
-            Some(unsafe { heap_at(p, Tracked(u)) })
+            Some(unsafe { slot_heap_ref(p, Tracked(loan)) })
         }
+    }
+
+    /// Hand the permission [`Tcaches::get`] lent through `loan` back to
+    /// the table's registry ([`TableVal`]), once the reference has ended:
+    /// the heap is well formed and keeps the one `u` recorded
+    /// ([`HeapUse::lent`], [`Heap::keeps`]: still not counted, its home
+    /// headers and block where they were). The registry takes it when the
+    /// entry still holds the cache `u` read, at the generation read, and
+    /// holds no permission for it; otherwise (a `tcache.destroy` and a
+    /// `tcache.create` of the id in between, the caller's bug) the
+    /// permission is dropped. No code: the body is ghost.
+    #[inline(always)]
+    // The index (`i`) is read by the ghost code only.
+    #[allow(unused_variables)]
+    pub fn put_back(&self, id: u16, Tracked(u): Tracked<&HeapUse>, Tracked(loan): Tracked<&mut HeapLoan>)
+        requires
+            (id as usize) < MAX_TCACHES,
+            u.read() matches Some(s) && s.index == id as int && s.atomic == self.spec_entry(id as int),
+            u.lent() matches Some((p, l)) && (old(loan).heap() matches Some(hp) && hp.addr() == p@.addr
+                && hp.value().keeps(l)),
+        ensures
+            final(loan).heap() is None,
+    {
+        proof {
+            use_type_invariant(&*self);
+            use_type_invariant(u);
+        }
+        let i = id as usize;
+        vstd::open_atomic_invariant!(self.inv.borrow() => v => {
+            proof {
+                let tracked hp = loan.take().tracked_unwrap();
+                let (p, l) = u.lent()->Some_0;
+                let s = u.read()->Some_0;
+                assert(entry_ok(self.inv@.constant(), v, i as int));
+                if v.gens[i as int] == s.generation && v.entries[i as int].value() == p && !v.heaps.contains_key(i as int) {
+                    let ghost v0 = v;
+                    Heap::lemma_keeps_home(l, hp.value());
+                    Heap::lemma_home_kept_at(l, hp.value(), p as *mut Heap);
+                    v.heaps.tracked_insert(i as int, hp);
+                    assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
+                        assert(entry_ok(self.inv@.constant(), v0, j));
+                    }
+                    assert forall|j: int| 0 <= j < MAX_TCACHES && j != -1 implies #[trigger] has_bound(v, j) by {
+                        assert(has_bound(v0, j));
+                    }
+                    assert forall|q: (int, nat)| #[trigger] v.bounds@.contains(q) implies bound_ok(self.inv@.constant(), v, q) by {
+                        assert(bound_ok(self.inv@.constant(), v0, q));
+                    }
+                }
+            }
+        });
     }
 
     /// `tcache.flush`: return every cached slot of `id` to its slabs.
@@ -999,12 +1128,14 @@ impl Tcaches {
         // Premise (`axiom_heap_use`): `tcache.flush`'s caller uses the
         // cache on no other thread, and this call holds no other reference.
         let tracked mut u = axiom_heap_use();
-        match self.get(id, Tracked(&mut u)) {
+        let tracked mut loan = HeapLoan::empty();
+        match self.get(id, Tracked(&mut u), Tracked(&mut loan)) {
             Some(h) => {
                 h.flush_all(shared, Tracked(ord));
                 proof {
                     assert(h.drained());
                 }
+                self.put_back(id, Tracked(&u), Tracked(&mut loan));
                 true
             }
             None => false,
@@ -1092,9 +1223,14 @@ impl Tcaches {
         let p: *mut u8;
         let ghost mut g: nat = 0;
         let tracked mut bound: Option<Bound> = None;
+        let tracked mut loan = HeapLoan::empty();
         vstd::open_atomic_invariant!(self.inv.borrow() => v => {
             proof {
                 assert(entry_ok(self.inv@.constant(), v, i as int));
+                if v.entries[i as int].value()@.addr != 0 {
+                    // Premise: the registry holds the heap's permission.
+                    axiom_entry_heap(self.inv@.constant(), &v, i as int);
+                }
             }
             let ghost v0 = v;
             let ghost was = v.gens[i as int];
@@ -1102,6 +1238,12 @@ impl Tcaches {
             proof {
                 g = if p@.addr == 0 { was } else { was + 1 };
                 v.gens = v.gens.insert(i as int, g);
+                // The entry is null: its heap's permission leaves the
+                // registry, for `Heap::destroy` below.
+                if v.heaps.contains_key(i as int) {
+                    let tracked hp = v.heaps.tracked_remove(i as int);
+                    loan.put(hp);
+                }
                 assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
                     assert(entry_ok(self.inv@.constant(), v0, j));
                     if j != i as int {
@@ -1128,13 +1270,11 @@ impl Tcaches {
             guard.unlock();
             return false;
         }
-        // Premise (`axiom_heap_use`): `p` is now unreachable through the
-        // table, and `tcache.destroy`'s caller uses the cache on no other
-        // thread.
-        let tracked u = axiom_heap_use();
         // SAFETY: `p` came from `create_detached` and is now unreachable
-        // through the table.
-        unsafe { Heap::destroy(p, shared, Tracked(u), Tracked(&mut under)) };
+        // through the table; the loan holds its permission, from the
+        // registry, and `tcache.destroy`'s caller uses the cache on no
+        // other thread.
+        unsafe { Heap::destroy(p, shared, Tracked(loan), Tracked(&mut under)) };
         guard.unlock();
         true
     }
@@ -1215,7 +1355,17 @@ impl Tcaches {
         proof {
             u.watch_from(&w);
         }
-        let found = self.get(id, Tracked(&mut *u)).is_some();
+        let tracked mut loan = HeapLoan::empty();
+        let found = match self.get(id, Tracked(&mut *u), Tracked(&mut loan)) {
+            Some(h) => {
+                proof {
+                    Heap::lemma_keeps_refl(*h);
+                }
+                self.put_back(id, Tracked(&*u), Tracked(&mut loan));
+                true
+            },
+            None => false,
+        };
         proof {
             theorem_tcache_destroyed_none(id, &w, &*u, found);
         }
@@ -1260,7 +1410,7 @@ proof fn lemma_unit_lock_frame_reflexive(v: ())
 #[cfg(test)]
 impl Tcaches {
     /// The pointer entry `id` holds (null for no cache), as
-    /// [`Tcaches::get`] loads it and hands it to [`heap_at`].
+    /// [`Tcaches::get`] loads it.
     pub(crate) fn entry(&self, id: u16) -> *mut Heap {
         self.load_entry(id as usize) as *mut Heap
     }
@@ -1268,7 +1418,7 @@ impl Tcaches {
 
 #[cfg(test)]
 mod tests {
-    /// `axiom_heap_use` is called once in each of the 8 functions its doc
+    /// `axiom_heap_use` is called once in each of the 5 functions its doc
     /// lists, and nowhere else: each call rests on that doc's premise for
     /// its own caller, so a new call needs a premise of its own.
     #[test]
@@ -1281,13 +1431,56 @@ mod tests {
                 ("heap/mallocx.rs:", "pub fn free(", 1),
                 ("api/jemalloc.rs:", "fn sdallocx_routed(", 1),
                 ("heap/tcaches.rs:", "pub fn flush(", 1),
+            ],
+        );
+    }
+
+    /// `axiom_entry_heap` is called only in `Tcaches::get`, inside the
+    /// opening where it loads a non-null entry, and in `Tcaches::destroy`,
+    /// inside the opening where it swaps a non-null entry out: its premise
+    /// is about those two.
+    #[test]
+    fn entry_heap_axiom_only_in_get_and_destroy() {
+        crate::testutil::assert_only_at(
+            concat!("axiom_", "entry_heap("),
+            &[
+                ("heap/tcaches.rs:", "pub fn get<", 1),
                 ("heap/tcaches.rs:", "pub fn destroy(", 1),
-                (
-                    "heap/thread.rs:",
-                    "pub unsafe extern \"C\" fn heap_destructor(",
-                    1,
-                ),
-                ("heap/thread.rs:", "fn create_heap_for_thread<", 1),
+            ],
+        );
+    }
+
+    /// Each caller of `Tcaches::get` hands the registry's permission back
+    /// with `Tcaches::put_back` on every path that returns after a
+    /// cache was found (`axiom_entry_heap`'s premise): one `get` and as
+    /// many `put_back`s as such paths in each function, and no other
+    /// caller of either.
+    #[test]
+    fn every_get_puts_back() {
+        crate::testutil::assert_only_at(
+            concat!("tcaches.", "get("),
+            &[
+                ("heap/mallocx.rs:", "pub fn alloc(", 1),
+                ("heap/mallocx.rs:", "pub fn alloc_huge(", 1),
+                ("heap/mallocx.rs:", "pub fn free(", 1),
+                ("api/jemalloc.rs:", "fn sdallocx_routed(", 1),
+            ],
+        );
+        crate::testutil::assert_only_at(
+            concat!("tcaches.", "put_back("),
+            &[
+                // The `no_arena` return and the two allocation arms.
+                ("heap/mallocx.rs:", "pub fn alloc(", 3),
+                ("heap/mallocx.rs:", "pub fn alloc_huge(", 1),
+                ("heap/mallocx.rs:", "pub fn free(", 1),
+                ("api/jemalloc.rs:", "fn sdallocx_routed(", 1),
+            ],
+        );
+        crate::testutil::assert_only_at(
+            concat!("self.", "put_back("),
+            &[
+                ("heap/tcaches.rs:", "pub fn flush(", 1),
+                ("heap/tcaches.rs:", "fn destroy_then_get(", 1),
             ],
         );
     }

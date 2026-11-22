@@ -397,6 +397,30 @@ fn heap_destructor_ignores_null() {
     .unwrap();
 }
 
+/// A non-null value reaching the destructor while the thread's slot holds
+/// no heap (the C library never does this: it passes the value the slot
+/// was given) marks the slot exited and frees nothing: the destructor
+/// destroys the slot's heap, not the value it is passed.
+#[test]
+fn heap_destructor_with_no_heap_in_the_slot_frees_nothing() {
+    let s = shared();
+    std::thread::spawn(move || {
+        assert!(tls::get(Tracked::assume_new()).is_null());
+        let meta_before = s.meta.stats(Tracked::assume_new()).allocated;
+        // A dummy value: the destructor must not read through it, since
+        // the slot holds no heap (the property under test).
+        let dummy = 0x1000usize as *mut c_void;
+        // SAFETY: with no heap in the slot, the destructor stores the
+        // sentinel and returns before it uses `p`.
+        unsafe { heap_destructor(dummy) };
+        assert_eq!(tls::get(Tracked::assume_new()) as usize, TLS_EXITED);
+        assert!(existing_heap(s).is_none());
+        assert_eq!(s.meta.stats(Tracked::assume_new()).allocated, meta_before);
+    })
+    .join()
+    .unwrap();
+}
+
 /// A thread whose heap the thread-exit key cannot take
 /// (`pthread_setspecific` fails: past its first 32 keys glibc allocates
 /// a second-level block, and that allocation can fail) is served

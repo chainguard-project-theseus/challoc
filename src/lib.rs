@@ -286,9 +286,9 @@ mod tests {
     /// (`verus/README.md`, "Guard tests"): `axiom_tcaches_assemble` is
     /// pinned to the `init` whose writes its harness runs, and
     /// `HeapPerm::assemble`'s token writers to the heap creation its
-    /// harness runs (and to the harness's own calls), with
-    /// `tcaches::heap_new` to the one caller whose token comes from
-    /// `Heap::create`. `trusted_mint_sites_are_pinned` pins
+    /// harnesses run (and to the harnesses' own calls), with
+    /// `tcaches::heap_new` to the two callers whose tokens come from
+    /// `Heap::create` and `Heap::create_detached`. `trusted_mint_sites_are_pinned` pins
     /// `HeapPerm::assemble` itself to `tcaches::heap_new`.
     #[test]
     fn assembled_writes_only_at_checked_sites() {
@@ -301,10 +301,18 @@ mod tests {
             ),
             // `heap::fresh::kani_assemble::writers_store_the_assembled_fields`,
             // which runs the writers in `Heap::create`'s order: the token
-            // `HeapPerm::assemble` gets in `heap_new` comes from there.
+            // `HeapPerm::assemble` gets in `heap_new` comes from there (on
+            // both of `create_heap_for_thread`'s paths: the published heap
+            // and the one the thread key could not take).
+            // And `detached_writers_store_the_assembled_fields`, which runs
+            // `Heap::create_detached`'s writer alone: the token
+            // `Tcaches::create` hands `heap_new` comes from there.
             (
                 concat!("heap_", "new("),
-                &[("heap/thread.rs:", "fn create_heap_for_thread<", 1)],
+                &[
+                    ("heap/thread.rs:", "fn create_heap_for_thread<", 2),
+                    ("heap/tcaches.rs:", "pub fn create(", 1),
+                ],
             ),
             (
                 concat!("init_", "fields("),
@@ -313,6 +321,11 @@ mod tests {
                     (
                         "heap/fresh.rs:",
                         "fn writers_store_the_assembled_fields(",
+                        1,
+                    ),
+                    (
+                        "heap/fresh.rs:",
+                        "fn detached_writers_store_the_assembled_fields(",
                         1,
                     ),
                 ],

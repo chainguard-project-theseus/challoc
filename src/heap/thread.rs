@@ -24,10 +24,10 @@ use crate::vspec::addr::addr_to_ptr;
 
 use super::PUSH_PAC;
 use super::paths::shared_of;
-#[cfg(verus_keep_ghost)]
-use super::tcaches::axiom_heap_use;
-use super::tcaches::{heap_at, heap_new};
+use super::tcaches::heap_new;
 use super::{Heap, Shared};
+#[cfg(verus_keep_ghost)]
+use crate::arena::homed_on;
 use vstd::prelude::Tracked;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
@@ -148,8 +148,8 @@ impl HeapPerm {
     /// Both are borrowed: the caller installs them as the heap's ghost
     /// state (`perms` as its cache permissions, and the permission `s`
     /// holds, with the block's claim, as `Heap::head`). The heap's
-    /// `others` is null and its `shared`, `arena` and `bound` are what `s`
-    /// records; nothing is claimed about its other fields or its ghost
+    /// `others` is null and its `shared`, `arena`, `bound` and `rehome` are
+    /// what `s` records; nothing is claimed about its other fields or its ghost
     /// fields. Trusted: `init_fields`, `mark_bound` and `mark_rehome` store
     /// the fields before the home headers through the raw permission `s`
     /// holds, which forgets the values, and the whole-`Heap` permission is
@@ -171,6 +171,7 @@ impl HeapPerm {
             r.value().others@.addr == 0,
             r.value().arena as int == s.arena(),
             r.value().bound == s.bound(),
+            r.value().rehome == s.rehome(),
             r.value().shared == s.shared(),
     ;
 }
@@ -189,7 +190,10 @@ pub open spec fn slot_heap(v: usize, tp: usize) -> usize {
 /// What a thread's slot token holds, as its cell `cell` and heap loan
 /// `loan`: above the sentinels, the loan holds the permission to the heap
 /// the cell's value names ([`slot_heap`]), which is not null and
-/// is well formed (so the allocator is published, [`crate::api::ready`]);
+/// is well formed (so the allocator is published, [`crate::api::ready`]),
+/// with its home headers and the rest of its block at the cast pointer
+/// to that address ([`Heap::home_at`] of [`cast_heap`](super::cast_heap),
+/// the pointer `heap_destructor` destroys the heap through);
 /// at or below them (null, [`TLS_CREATING`], [`TLS_EXITED`]), no heap
 /// permission; and the thread pointer is as `get_tp` returns it
 /// ([`tp_ok`](crate::sys::tls::tp_ok)). [`create_heap_for_thread`]
@@ -197,7 +201,7 @@ pub open spec fn slot_heap(v: usize, tp: usize) -> usize {
 /// assumes this of the token it makes.
 pub open spec fn slot_ok(cell: TlsCell, loan: HeapLoan) -> bool {
     &&& cell.value() > TLS_EXITED ==> (loan.heap() matches Some(hp) && hp.addr() == slot_heap(cell.value(), cell.tp())
-        && hp.addr() != 0 && hp.value().wf())
+        && hp.addr() != 0 && hp.value().wf() && hp.value().home_at(super::cast_heap(hp.addr())))
     &&& cell.value() <= TLS_EXITED ==> loan.heap() is None
     &&& crate::sys::tls::tp_ok(cell.tp())
 }
@@ -236,6 +240,16 @@ pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(loan): Tracked<&'a 
 /// out no heap and create none (`theorem_exit_no_rebuild`); that later
 /// entries see `Exited` is `TlsSlot::entry`'s slot premise.
 ///
+/// The heap freed is the one the TLS slot names, read before the
+/// sentinel is stored and authenticated as [`heap_from_slot`] does, with
+/// the permission the slot's loan holds ([`slot_ok`]); `p` is tested for
+/// null and not otherwise used. The C library hands the destructor the
+/// value `create_heap_for_thread` registered with the key, which is that
+/// heap, but nothing verified says so: reading the slot instead needs no
+/// premise about `p`. A slot that holds no heap (the C library calling the
+/// destructor on a thread whose slot never held one, which it does not)
+/// gets the sentinel and frees nothing.
+///
 /// # Safety
 /// `p` is the heap pointer registered with `pthread_setspecific` by
 /// `create_heap_for_thread`, called on the thread that owns it; after this
@@ -247,18 +261,20 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
-    let h = p as *mut Heap;
-    if h.is_null() {
+    if p.is_null() {
         // POSIX runs a key's destructor only for a non-null value.
         return;
     }
     let tracked tls = TlsSlot::entry();
+    let slot = tls_heap_slot(Tracked(&*tls));
+    let tracked mut loan = HeapLoan::empty();
     proof {
         // The heap is about to be freed: its permission leaves the token
-        // (`Heap::destroy` gives the heap's block back from the heap's own
-        // ghost state, `Heap::head` and its home headers' permissions, not
-        // from it).
-        let tracked _heap = tls.loan.take();
+        // for `Heap::destroy`.
+        let tracked hp = tls.loan.take();
+        if hp is Some {
+            loan.put(hp.tracked_unwrap());
+        }
     }
     crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void, Tracked(&mut tls.cell));
     proof {
@@ -266,20 +282,46 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
         // `Heap::destroy` below takes neither part of it.
         assert(tls.value() == TLS_EXITED && tls.loan.heap() is None && slot_ok(tls.cell, tls.loan));
     }
-    // Premise (`axiom_heap_use`): a thread's heap reaches its key
-    // destructor once, at thread exit, and nothing else uses it then.
-    let tracked mut u = axiom_heap_use();
+    let Some((t, tp)) = slot else { return };
+    // The slot's heap, named as `heap_from_slot` names it; a slot value
+    // above the sentinels proves the allocator published
+    // (`tls_heap_slot`).
+    let a = if exit_pac(p) { pac::auth(t, tp) } else { t };
+    let h = addr_to_ptr(a) as *mut Heap;
+    proof {
+        assert(h == super::cast_heap(a));
+    }
     #[cfg(challoc_tls_check)]
     super::tlscheck::on_exit(h);
-    // SAFETY: the pointer was registered by `create_heap_for_thread` for
-    // this thread.
+    // SAFETY: `h` is this thread's heap, whose permission `loan` holds,
+    // and the sentinel keeps every later user on this thread off it.
     unsafe {
-        let shared = shared_of(heap_at(h, Tracked(&mut u)).shared);
+        let shared = shared_of(slot_heap_ref(h, Tracked(&mut loan)).shared);
         // Premise (lock order, `lock::axiom_thread_entry`): a TLS
         // destructor runs at thread exit, outside any allocator call, so
         // this thread holds no lock.
-        Heap::destroy(h, shared, Tracked(u), Tracked(&mut axiom_thread_entry()));
+        Heap::destroy(h, shared, Tracked(loan), Tracked(&mut axiom_thread_entry()));
     }
+}
+
+/// Whether the thread's slot value is signed ([`PUSH_PAC`]), for
+/// [`heap_destructor`]: the process's push flags, which a slot holding a
+/// heap shows were written ([`fast_flags`]). `_p` is unused here; the
+/// unit tests' variant reads the flag from the `Shared` the heap at `p`
+/// was created on, since their heaps are built over `Shared`s of their
+/// own (`testutil`).
+#[cfg(not(test))]
+#[inline(always)]
+fn exit_pac(_p: *mut c_void) -> (r: bool)
+    requires
+        crate::api::ready(),
+    ensures
+        r == super::pac_mode(),
+        r ==> crate::sys::pac::pac_available(),
+{
+    // SAFETY: the precondition.
+    let flags = unsafe { fast_flags(crate::api::shared_ptr()) };
+    flags & PUSH_PAC != 0
 }
 
 /// The calling thread's heap, created on first use. `None` when the thread
@@ -415,17 +457,21 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
         // Thread exit could not free the heap, so it goes now and this
         // call is served without one; the next call tries again, as
         // after a failed `Heap::create`.
-        // What creation returned is dropped here, never installed:
-        // `Heap::destroy` gets the heap back through `tcaches::heap_at`,
-        // whose premise is the ghost state creation left, and frees it.
+        // What creation returned is installed in the heap, as below, but
+        // in a loan of this call's own, which `Heap::destroy` takes.
+        let tracked (homed, stored) = fresh.tracked_unwrap();
+        let tracked mut own = HeapLoan::empty();
+        // SAFETY: freshly created, never published, owned by this thread.
+        // The reference is read by the ghost code only.
+        #[allow(unused_variables)]
+        let heap = unsafe { heap_new(h, Tracked(stored), Tracked(&perms), Tracked(&mut own)) };
         proof {
-            let tracked _created = (perms, fresh);
+            shared.lemma_wf();
+            shared.lemma_wf_ready();
+            install_fresh(heap, h, perms, homed);
         }
-        // Premise (`axiom_heap_use`): created above and never published,
-        // so nothing else holds a reference to it.
-        let tracked u = axiom_heap_use();
         // SAFETY: created above and never published.
-        unsafe { Heap::destroy(h, shared, Tracked(u), Tracked(&mut *ord)) };
+        unsafe { Heap::destroy(h, shared, Tracked(own), Tracked(&mut *ord)) };
         crate::sys::tls::set(ptr::null_mut(), Tracked(&mut *cell));
         return None;
     }
@@ -440,14 +486,39 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
     proof {
         shared.lemma_wf();
         shared.lemma_wf_ready();
-        heap.perms = Tracked(perms);
-        heap.homed = Tracked(Some(homed));
-        heap.list = Ghost(Seq::empty());
-        heap.keys = Ghost(Seq::empty());
-        heap.home_hdrs = Ghost(Seq::new(crate::layout::NCLASSES as nat, |c: int| super::home_hdr(h, c)));
-        heap.lemma_fresh_wf(h);
+        install_fresh(heap, h, perms, homed);
     }
     Some(heap)
+}
+
+/// Install what [`Heap::create`] returned in the heap [`heap_new`] has
+/// just lent from it: its caches' permissions, its ticket, an empty
+/// `others` list and the record of its home headers. The heap is then
+/// well formed with its home headers and the rest of its block at `h`
+/// ([`Heap::home_at`]).
+proof fn install_fresh(tracked heap: &mut Heap, h: *mut Heap, tracked perms: super::CachePerms, tracked homed: crate::arena::Homed)
+    requires
+        perms.fresh(h),
+        old(heap).others@.addr == 0,
+        old(heap).shared == Shared::storage() as *const Shared,
+        old(heap).bound,
+        homed_on(homed, old(heap).arena as int),
+        super::heap_head(h, old(heap).head@.0),
+        super::heap_claim(h, old(heap).head@.1),
+        h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
+        super::regions_ok(),
+        crate::api::ready(),
+    ensures
+        final(heap).wf(),
+        final(heap).home_at(h),
+        final(heap).head == old(heap).head,
+{
+    heap.perms = Tracked(perms);
+    heap.homed = Tracked(Some(homed));
+    heap.list = Ghost(Seq::empty());
+    heap.keys = Ghost(Seq::empty());
+    heap.home_hdrs = Ghost(Seq::new(crate::layout::NCLASSES as nat, |c: int| super::home_hdr(h, c)));
+    heap.lemma_fresh_wf(h);
 }
 
 /// The calling thread's heap if it already exists, with no attempt to
@@ -639,3 +710,14 @@ pub unsafe fn heap_from_slot<'a>(t: usize, tp: usize, pac: bool, Tracked(cell): 
 }
 
 } // verus!
+
+/// [`exit_pac`] for the unit tests: the flag of the `Shared` the heap at
+/// `p` was created on (the heap's `shared`), which is a test's own.
+///
+/// # Safety
+/// `p` is a live heap, as `heap_destructor`'s caller guarantees.
+#[cfg(test)]
+fn exit_pac(p: *mut c_void) -> bool {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*(*(p as *mut Heap)).shared).pac() }
+}

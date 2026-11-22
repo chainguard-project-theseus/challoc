@@ -197,8 +197,9 @@ a compiler barrier.
   `ready()` fact reaches a thread only after it loaded `READY` (or
   published it), or after a thread that did (the background thread,
   through `pthread_create`): the same happens-before. Besides
-  `load_state`, the trusted `TlsSlot::entry`, `heap_at` and `shared_arg`
-  assert it, and `mallctl::shared` requires it, from `mallctl::ctl`'s
+  `load_state`, the trusted `TlsSlot::entry` and `shared_arg`
+  assert it, an explicit cache's heap carries it in the table's
+  registry (`heap_ok`, from `Tcaches::create`), and `mallctl::shared` requires it, from `mallctl::ctl`'s
   well-formed `&Shared`.
 - Property: every `READY` reader sees the built value, including the
   page geometry, which is a plain write.

@@ -1,8 +1,9 @@
 //! The `MALLOCX_TCACHE` paths of the C API, on the process's allocator,
 //! with `heap::heap_at_tests`'s checker on the explicit cache's heap after
-//! every call: each of these calls reaches `heap::tcaches::heap_at`
-//! through `Tcaches::get` (`mallocx` small and huge, `dallocx`,
-//! `sdallocx`, `rallocx`), `tcache.flush` and `tcache.destroy`.
+//! every call: each of these calls is lent the heap from the table's
+//! registry by `Tcaches::get` (`mallocx` small and huge, `dallocx`,
+//! `sdallocx`, `rallocx`, `tcache.flush`), or takes it out of the
+//! registry for `Heap::destroy` (`tcache.destroy`).
 
 use super::jemalloc::{dallocx, mallocx, rallocx, sdallocx};
 use super::shared;
@@ -113,7 +114,10 @@ fn mallocx_tcache_paths_pass_the_heap_checker() {
         );
         assert_tcache_ok(s, t, "sdallocx with MALLOCX_ARENA");
     }
-    let h = s.tcaches.get(t, Tracked::assume_new()).unwrap();
+    let h = s
+        .tcaches
+        .get(t, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     for a in [lua, FOREIGN] {
         assert!(
             (0..crate::layout::NCLASSES).any(|c| h.cache_in(a, c).is_some_and(|k| k.len() > 0)),
@@ -122,7 +126,10 @@ fn mallocx_tcache_paths_pass_the_heap_checker() {
     }
     assert!(s.tcaches.flush(s, t, Tracked::assume_new()));
     assert_tcache_ok(s, t, "tcache.flush");
-    let h = s.tcaches.get(t, Tracked::assume_new()).unwrap();
+    let h = s
+        .tcaches
+        .get(t, Tracked::assume_new(), Tracked::assume_new())
+        .unwrap();
     for a in [0, lua, FOREIGN] {
         assert!(
             (0..crate::layout::NCLASSES).all(|c| h.cache_in(a, c).is_none_or(|k| k.len() == 0))
@@ -196,7 +203,11 @@ fn fork_child_uses_the_parents_explicit_cache_through_mallocx() {
             s.tcaches
                 .destroy(s, t, Tracked::assume_new(), Tracked::assume_new())
         );
-        assert!(s.tcaches.get(t, Tracked::assume_new()).is_none());
+        assert!(
+            s.tcaches
+                .get(t, Tracked::assume_new(), Tracked::assume_new())
+                .is_none()
+        );
     });
     assert_tcache_ok(s, t, "the child's exit");
     for &p in &kept {

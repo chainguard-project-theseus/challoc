@@ -9,13 +9,15 @@ axiom_tcaches_layout	core library	Kani	discharged (const assert: `axiom_tcaches_
 # that its writes leave every field byte of the `Tcaches` as the axiom's
 # `ensures` state.
 axiom_tcaches_assemble	raw pointer (internal)	Kani	trusted (partly checked, Kani: heap::tcaches::kani_assemble::init_writes_every_field; not checked: the join itself, that the field permissions and `pad` may be exchanged for one `PointsTo<Tcaches>` at `p`, with its provenance, a premise of Verus's own model that no tool checks; the ghost identities the `ensures` carries over, each table entry's atomic identity (`vspec::entry::entry_id`, which the `inv`'s key records) and the lock's cell identity, which Kani does not observe; and the ghost fields (`inv`, the lock's rank and initial value), which have no bytes)	contract 2226354314, body none
-# The C caller uses an explicit cache on one thread at a time, and a
-# heap's key destructor runs once: each call that reaches an existing
-# heap through `heap_at` makes one token, before any reference it lends.
+# The C caller uses an explicit cache on one thread at a time: each
+# `MALLOCX_TCACHE` call and `tcache.flush` makes one token, before any
+# reference `Tcaches::get` lends.
 axiom_heap_use	C-program contract	none (assumption)
-# A raw-pointer dereference: a live heap from creation is well formed,
-# has its home headers at `p` and keeps the rest of its block with the
-# block's claim (`Heap::head`). The reference borrows the caller's
-# `HeapUse` token, so one token gives one reference at a time; two
-# tokens rest on `axiom_heap_use`'s premise.
-heap_at	allocator invariant	none (assumption)
+# The same contract, about the table's registry: when `Tcaches::get`
+# loads a non-null entry, or `Tcaches::destroy` swaps one out, the
+# permission to its heap is in the registry, because no other caller
+# holds it out (one thread at a time, each `get` followed by `put_back`,
+# pinned by `every_get_puts_back`). Called only in `get` and `destroy`
+# (pinned by `entry_heap_axiom_only_in_get_and_destroy`). It states
+# nothing of the heap: the registry's invariant does.
+axiom_entry_heap	C-program contract	none (assumption)
