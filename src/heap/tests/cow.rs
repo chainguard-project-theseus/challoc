@@ -396,10 +396,34 @@ fn a_pair_stops_draining_when_its_blocks_above_the_floor_fit_in_one_slab() {
     });
 }
 
+/// A query of a block below the floor (refused, no move): what a
+/// defragmenter that passes over the heap asks without finding anything
+/// to move, recorded as the queries of the drain (`cow::DRAIN_ASKS`).
+fn ask_below(s: &Shared, c: usize, f: usize) {
+    assert!(!crate::cow::drain_move(s.arena0.class(c), f - 1, Tracked::assume_new()).0);
+}
+
+/// A pair whose blocks above the floor fill exactly two slabs still
+/// drains (`DRAIN_MIN_SLABS` is two: moving them gives back a slab).
+#[test]
+fn a_pair_with_blocks_in_two_slabs_above_the_floor_drains() {
+    in_fork_child("cow drain two slabs", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, new) = drain_setup(s, &t, c, 2);
+        let slabs: std::collections::BTreeSet<usize> =
+            new.iter().map(|&p| slab_of(s, c, p)).collect();
+        assert_eq!(slabs.len(), 2, "the epoch's blocks fill two slabs");
+        assert_eq!(draining(s), 1, "two slabs above the floor, holes below");
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+    });
+}
+
 /// A pair keeps draining while a defragmenter is asking for moves, and
-/// all drains end once none has been asked for in `DRAIN_STALL_S` (the
-/// defragmenter found nothing more to move), well before the window
-/// closes.
+/// all drains end once its queries have gone on for `DRAIN_STALL_S`
+/// without asking for one (the defragmenter found nothing more to move),
+/// well before the window closes.
 #[test]
 fn the_drain_ends_when_no_move_is_asked_for_in_a_stall() {
     in_fork_child("cow drain stall", 30_000, || {
@@ -410,7 +434,9 @@ fn the_drain_ends_when_no_move_is_asked_for_in_a_stall() {
         let cs = s.arena0.class(c);
         assert_eq!(draining(s), 1);
         // A query asks for a move: progress, so a stall's age is no stall.
+        ask_below(s, c, f);
         crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
         let slab = slab_of(s, c, new[0]);
         assert!(
             crate::cow::drain_move(cs, slab, Tracked::assume_new()).0,
@@ -418,13 +444,21 @@ fn the_drain_ends_when_no_move_is_asked_for_in_a_stall() {
         );
         assert_eq!(draining(s), 1, "a move was asked for: still draining");
         assert_eq!(cs.drain_floor(), f);
-        // Just short of a stall: still draining.
-        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S / 2);
-        assert_eq!(draining(s), 1, "half a stall without a move");
-        // A stall without a move ends it, three slabs above or not.
-        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S / 2);
-        assert_eq!(draining(s), 0, "a stall without a move ends the drain");
+        // Queries over half a stall, none for a move: still draining.
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S / 2, 0);
+        assert_eq!(draining(s), 1, "half a stall of queries without a move");
+        // Queries over a stall without a move end it, three slabs above
+        // or not, and close the window.
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S / 2, 0);
+        assert_eq!(
+            draining(s),
+            0,
+            "a stall of queries without a move ends the drain"
+        );
         assert_eq!(cs.drain_floor(), 0);
+        assert!(!crate::cow::draining(), "and closes the window");
         assert!(
             !crate::cow::drain_move(cs, slab, Tracked::assume_new()).0,
             "and the queries stop asking for moves"
@@ -444,11 +478,69 @@ fn the_stall_clock_starts_at_the_first_read() {
         let t = TestHeap::new(s);
         let c = class_with(64);
         let (f, _new) = drain_setup(s, &t, c, 3);
-        // However long before the first read: no progress to age yet.
+        // However long before the first read: no progress to age yet, and
+        // queries before it do not count.
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_asks(10 * crate::cow::DRAIN_STALL_S, 0);
         crate::cow::test_age_drain_progress(10 * crate::cow::DRAIN_STALL_S);
         assert_eq!(draining(s), 1, "the first read, late, finds the drain");
         assert_eq!(s.arena0.class(c).drain_floor(), f);
+        ask_below(s, c, f);
         crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
-        assert_eq!(draining(s), 0, "a stall after the first read ends it");
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        assert_eq!(
+            draining(s),
+            0,
+            "a stall of queries after the first read ends it"
+        );
+    });
+}
+
+/// Reads of figure 8 alone end no drain: a reader that runs no
+/// defragmenter (`challoc_cow_stats`, polled a stall apart), and a
+/// defragmenter held up between two reads (its queries stopped a stall
+/// before the read), have made no pass over the heap.
+#[test]
+fn a_reader_without_queries_ends_no_drain() {
+    in_fork_child("cow drain reads only", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, _new) = drain_setup(s, &t, c, 3);
+        assert_eq!(draining(s), 1);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        assert_eq!(draining(s), 1, "two reads a stall apart, no query between");
+        crate::cow::test_age_drain_progress(10 * crate::cow::DRAIN_STALL_S);
+        assert_eq!(draining(s), 1, "nor ten stalls apart");
+        // Queries that stopped a stall ago: the defragmenter was held.
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, crate::cow::DRAIN_STALL_S);
+        assert_eq!(draining(s), 1, "queries a stall ago, none since");
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+    });
+}
+
+/// A stall ends no drain while an epoch is open or an outermost begin or
+/// end is under way (`BUSY`): an end may be setting the next epoch's
+/// drain floors, which a stall of the last epoch's drain must not clear.
+/// The first read after the transition ends them.
+#[test]
+fn a_stall_waits_out_an_epoch_transition() {
+    in_fork_child("cow drain stall busy", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, _new) = drain_setup(s, &t, c, 3);
+        assert_eq!(draining(s), 1);
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        crate::cow::test_set_busy();
+        assert_eq!(draining(s), 1, "a stall during a transition ends nothing");
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+        // The transition is over (the fork child's reset clears BUSY).
+        crate::cow::fork_child(s);
+        assert_eq!(draining(s), 0, "the stall ends the drain after it");
+        assert_eq!(s.arena0.class(c).drain_floor(), 0);
     });
 }

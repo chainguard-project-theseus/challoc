@@ -512,16 +512,22 @@ pages the child never had:
   left that is worth that effort (`cow::draining_pairs`): holes below
   the floor, live blocks above it in at least two slabs
   (`slabs_live_at_or_above`, from the descriptors; blocks in one slab
-  give back at most that slab), and a drain move asked for by the
-  queries within the last 10 s between reads of the figure
-  (`DRAIN_STALL_S`, counted from the first read after `cow::end`, so a
-  program that turns its defragmenter on late still gets its drain; a
-  defragmenter that runs flat out and asks for none has passed over the
-  heap and found nothing it can move). A pair that fails one of these ends its drain
-  for good (its drain floor goes), so the figure only falls and the
-  forced cycle ends when the work does. On Redis and Valkey the figure
-  reaches 0 within seconds of the last drain move, 10 to 65 s after the
-  save in bench/cow's runs, rather than at the window's 300 s: what
+  give back at most that slab), and no stall: the queries going on for
+  10 s between reads of the figure without asking for a drain move
+  (`DRAIN_STALL_S`: `cow::stalled` needs the queries made since the last
+  drain move to span 10 s, `cow::DRAIN_ASKS`, counted from the first
+  read after `cow::end`, so a program that turns its defragmenter on late
+  still gets its drain; a defragmenter that runs flat out and asks for
+  none in that long has passed over the heap and found nothing it can
+  move, while reads with no queries between them, from a stats poller or
+  a defragmenter held up, end nothing). A pair that fails one of the
+  first two ends its drain for good (its drain floor goes), and a stall
+  ends every pair's and closes the window (`cow::end_all_drains`, which
+  holds the epoch transition's busy bit while it clears, so an `end` in
+  another thread cannot set the next epoch's floors under it), so the
+  figure only falls and the forced cycle ends when the work does. On
+  Redis and Valkey the figure reaches 0 within seconds of the last
+  drain move, 10 to 65 s after the save in bench/cow's runs, rather than at the window's 300 s: what
   kept the figure up before were pairs with one slab above the floor
   holding a few blocks no defragmenter moves (bench/cow/RESULTS.md,
   "Ending the drain with its work"). The window stays as the bound for

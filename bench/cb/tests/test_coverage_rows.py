@@ -124,18 +124,33 @@ class MaxrssMetric(unittest.TestCase):
 
 
 class ZeroMetric(unittest.TestCase):
-    def test_a_zero_metric_keeps_its_zeros(self):
+    def test_a_zero_is_broken_metric_breaks_its_row(self):
         # valkey-cow.sh's drain_ended is 100 for a run whose cycles stopped
-        # and 0 for one that hit DRAIN_WAIT: both are samples. A metric
-        # without `zero` still drops a 0 (not reported).
+        # and 0 for one that hit DRAIN_WAIT. The 0 is a broken sample: the
+        # comparison of a mix of ended and capped runs reports the row
+        # broken, naming the capped runs, in both placements, and never
+        # takes the log of 0. A metric without `zero_is_broken` still
+        # drops a 0 (not reported).
         r = spec.load_rows()
-        runs = [{"row": "valkey-cow-drain", "score": 800000.0, "error": "",
-                 "extra": {"drain_ended": e, "drain_moves_s": 30.0, "drain_hits_s": 0}} for e in (100, 0, 0)]
+        runs = []
+        for vm, lab, e in (("a", "base", 100), ("b", "base", 100), ("c", "base", 100),
+                           ("d", "head", 100), ("e", "head", 0), ("f", "head", 0)):
+            for blk, var in ((1, "base"), (2, "head")):
+                runs.append({"run": "r", "vm": {"name": vm}, "block": blk, "row": "valkey-cow-drain", "variant": var,
+                             "score": 800000.0, "error": "", "better": "higher", "unit": "req/s",
+                             "extra": {"drain_ended": e if var == lab else 100, "drain_moves_s": 30.0, "drain_hits_s": 0}})
         out = report.expand_metrics(runs, r)
-        ended = [x["score"] for x in out if x["row"] == "valkey-cow-drain.drain_ended"]
-        self.assertEqual(sorted(ended), [0.0, 0.0, 100.0])
+        ended = [x for x in out if x["row"] == "valkey-cow-drain.drain_ended"]
+        self.assertEqual(len(ended), 12)
+        capped = [x for x in ended if x["error"]]
+        self.assertEqual(len(capped), 2)
+        self.assertTrue(all(x["score"] is None and x["error"] == "drain_ended 0" for x in capped))
         self.assertFalse([x for x in out if x["row"] == "valkey-cow-drain.drain_hits_s"])
-        self.assertTrue(all(not x["error"] for x in out))
+        for placement in ("paired", "one-variant-per-vm"):
+            c = report.compare_row(out, "valkey-cow-drain.drain_ended", "head", "base", delta_pct=2.0, alpha=0.05,
+                                   flagged=set(), excluded={}, fixed_work=False, placement=placement)
+            self.assertEqual(c["verdict"], "broken", placement)
+            self.assertIn("head block 2: drain_ended 0", c["broken"])
 
 
 if __name__ == "__main__":
