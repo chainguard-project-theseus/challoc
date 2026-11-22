@@ -499,7 +499,9 @@ fn the_stall_clock_starts_at_the_first_read() {
 /// Reads of figure 8 alone end no drain: a reader that runs no
 /// defragmenter (`challoc_cow_stats`, polled a stall apart), and a
 /// defragmenter held up between two reads (its queries stopped a stall
-/// before the read), have made no pass over the heap.
+/// before the read) or between two queries (one before the hold and one
+/// after it), have made no pass over the heap. Queries across a whole
+/// stall after the hold end the drain.
 #[test]
 fn a_reader_without_queries_ends_no_drain() {
     in_fork_child("cow drain reads only", 30_000, || {
@@ -517,6 +519,50 @@ fn a_reader_without_queries_ends_no_drain() {
         crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, crate::cow::DRAIN_STALL_S);
         assert_eq!(draining(s), 1, "queries a stall ago, none since");
         assert_eq!(s.arena0.class(c).drain_floor(), f);
+        // The held defragmenter resumes: its first query starts the span
+        // again, so the hold does not count as looking.
+        ask_below(s, c, f);
+        assert_eq!(draining(s), 1, "a query before the hold and one after it");
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+        // Queries across the whole stall after that end it.
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        assert_eq!(draining(s), 0, "a stall of queries after the hold");
+        assert_eq!(s.arena0.class(c).drain_floor(), 0);
+    });
+}
+
+/// A stall judged before a whole begin and end in another thread, and
+/// acted on after it, ends nothing: the end reset the progress mark the
+/// stall was judged by (`DRAIN_SEEN`), and the drains are the new
+/// epoch's. A stall with no end between ends them.
+#[test]
+fn a_stall_judged_before_an_epoch_end_ends_nothing_after_it() {
+    in_fork_child("cow drain stall across end", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, _new) = drain_setup(s, &t, c, 3);
+        assert_eq!(draining(s), 1);
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        assert_eq!(
+            crate::cow::test_stall_across_end(s, true),
+            (true, false),
+            "an end between the verdict and the clear"
+        );
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+        assert_eq!(draining(s), 1, "the next read starts the stall clock again");
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        assert_eq!(
+            crate::cow::test_stall_across_end(s, false),
+            (true, true),
+            "no end between"
+        );
+        assert_eq!(s.arena0.class(c).drain_floor(), 0);
+        assert_eq!(draining(s), 0);
     });
 }
 

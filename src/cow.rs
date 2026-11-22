@@ -105,7 +105,8 @@ const SEEN_SPLIT: u64 = 0x1_0000_0000;
 /// ([`stalled`]), so only a defragmenter that kept looking for that long
 /// and found nothing to move ends a drain: a reader of figure 8 that runs
 /// no defragmenter (`challoc_cow_stats`), or a defragmenter held up
-/// between two reads, ends none.
+/// between two reads or between two queries ([`DRAIN_ASK_GAP_S`]), ends
+/// none.
 exec static DRAIN_ASKS: AtomicU64 = AtomicU64::new(0);
 
 /// How long after an epoch its drain may run: a block above the floor
@@ -117,16 +118,28 @@ pub const DRAIN_WINDOW_NS: u64 = 300_000_000_000;
 
 /// How long a defragmenter's queries may go on without asking for a
 /// drain move, while a program reads figure 8, before every pair's drain
-/// ends ([`draining_pairs`]): the defragmenter, which runs flat out while
-/// a pair drains, has passed over the heap and found nothing left that it
-/// can move. On Redis and Valkey the moves come continuously until the
-/// work is done (bench/cow/RESULTS.md, "Ending the drain with its work"),
-/// so this only ends a drain left with blocks, in more than one slab,
-/// that no defragmenter moves (Redis's allocations of other threads'
-/// arenas in tests/unit/fork-drain.tcl). Seconds of the coarse
-/// monotonic clock that the queries span ([`DRAIN_ASKS`]), counted from
-/// the first read after [`end`].
+/// ends ([`draining_pairs`]). A heuristic for "the defragmenter, which
+/// runs flat out while a pair drains, has passed over the heap and found
+/// nothing left that it can move": challoc sees no pass end. On Redis
+/// and Valkey the moves come continuously until the work is done
+/// (bench/cow/RESULTS.md, "Ending the drain with its work"), so this
+/// only ends a drain left with blocks, in more than one slab, that no
+/// defragmenter moves (Redis's allocations of other threads' arenas in
+/// tests/unit/fork-drain.tcl). A pass that spends more than this long
+/// on keys outside the epoch's writes before it reaches them (writes
+/// confined to db 1 behind a large untouched db 0) ends the drain early
+/// too, and the blocks left above the floor stay until overwritten or
+/// deleted (design 5, "Fork epochs"; a cycle-end signal from the server
+/// is the fix if that shows up). Seconds of the coarse monotonic clock
+/// that the queries span ([`DRAIN_ASKS`]), counted from the first read
+/// after [`end`].
 pub const DRAIN_STALL_S: u64 = 10;
+
+/// The longest gap between two utilisation queries that still counts as
+/// one defragmenter looking ([`asked`]): a later query starts the span
+/// of [`DRAIN_ASKS`] again. A defragmenter that runs flat out queries
+/// many times a second; whole seconds without a query mean it was held.
+pub const DRAIN_ASK_GAP_S: u64 = 2;
 
 /// A pair whose live blocks above its drain floor sit in fewer slabs
 /// than this has nothing worth moving: moving them would give back at
@@ -474,6 +487,20 @@ pub fn test_age_drain_progress(secs: u64) {
     }
 }
 
+/// Test only: a stall judged ([`stalled`]), then, with `end_between`,
+/// [`DRAIN_SEEN`] left as a whole [`begin`] and [`end`] in another
+/// thread would leave it (0), then the stall acted on
+/// ([`end_all_drains`]). Whether the drain was stalled, and whether its
+/// drains ended.
+#[cfg(test)]
+pub fn test_stall_across_end(shared: &Shared, end_between: bool) -> (bool, bool) {
+    let (stall, judged) = stalled();
+    if end_between {
+        DRAIN_SEEN.store(0, Ordering::Relaxed);
+    }
+    (stall, stall && end_all_drains(shared, judged))
+}
+
 /// Test only: the first query since the drain's last progress
 /// ([`DRAIN_ASKS`]) `first` seconds earlier and the last `last` seconds
 /// earlier, as if a defragmenter had been asking over that span; nothing
@@ -490,16 +517,20 @@ pub fn test_age_drain_asks(first: u64, last: u64) {
 
 /// Record a utilisation query made while the drain window is open
 /// ([`DRAIN_ASKS`]): the first since the last progress sets the first
-/// second, and each sets the last. Stores only when the second changed,
-/// and one compare-and-exchange try (a query that loses it was in the
-/// same second as the one that won, or the progress just reset it).
+/// second, and each sets the last. A query more than [`DRAIN_ASK_GAP_S`]
+/// after the last one starts the span again, so a defragmenter held up
+/// between two queries (stopped, frozen, or busy with something else on
+/// its thread) does not count the hold as time spent looking. Stores
+/// only when the second changed, and one compare-and-exchange try (a
+/// query that loses it was in the same second as the one that won, or
+/// the progress just reset it).
 fn asked()
     requires
         crate::sys::may_syscall(),
 {
     let s = (crate::sys::now_coarse_ns() / 1_000_000_000) % 0x8000_0000 + 1;
     let w = DRAIN_ASKS.load(Ordering::Relaxed);
-    let first = if w == 0 { s } else { w / SEEN_SPLIT };
+    let first = if w == 0 || s > w % SEEN_SPLIT + DRAIN_ASK_GAP_S { s } else { w / SEEN_SPLIT };
     if w != 0 && w % SEEN_SPLIT == s {
         return;
     }
@@ -647,8 +678,9 @@ fn seen_word(now_ns: u64, moves: u64) -> (r: u64)
 /// reader that loses it saw progress too) and answers no. The clear comes
 /// first and the record publishes it (Release; a reader loads the record
 /// with Acquire), so a reader that sees the record judges by the queries
-/// made since.
-fn stalled() -> bool
+/// made since. Also returns the record it judged by, for
+/// [`end_all_drains`] to check that no [`end`] came between.
+fn stalled() -> (bool, u64)
     requires
         crate::sys::may_syscall(),
 {
@@ -661,12 +693,12 @@ fn stalled() -> bool
     if w == 0 || w % SEEN_SPLIT != moves % SEEN_SPLIT || now < at {
         DRAIN_ASKS.store(0, Ordering::Relaxed);
         let _ = DRAIN_SEEN.compare_exchange(w, fresh, Ordering::Release, Ordering::Relaxed);
-        return false;
+        return (false, w);
     }
     let a = DRAIN_ASKS.load(Ordering::Relaxed);
     let first = a / SEEN_SPLIT;
     let last = a % SEEN_SPLIT;
-    now - at >= DRAIN_STALL_S && a != 0 && last >= first && last - first >= DRAIN_STALL_S
+    (now - at >= DRAIN_STALL_S && a != 0 && last >= first && last - first >= DRAIN_STALL_S, w)
 }
 
 /// End every pair's drain and close the window, after a stall
@@ -675,10 +707,20 @@ fn stalled() -> bool
 /// this clears them (a reader that judged by the last epoch's progress
 /// would otherwise end the new drain before it starts). False, ending
 /// nothing, when an epoch is open or a transition is under way: the next
-/// read judges again. A [`begin`] in another thread meanwhile is refused
+/// read judges again. Also false, ending nothing and releasing the bit,
+/// when [`DRAIN_SEEN`] is no longer `judged`, the record the stall was
+/// judged by ([`stalled`]): a whole [`begin`] and [`end`] in another
+/// thread may have come between the verdict and the bit, and [`end`]
+/// stores 0 there before it releases [`DEPTH`] (which the Acquire here
+/// pairs with), while any later record carries a time at least a stall
+/// past `judged`'s. A [`begin`] in another thread meanwhile is refused
 /// (`EBUSY`), as during another thread's transition.
-fn end_all_drains(shared: &Shared) -> bool {
+fn end_all_drains(shared: &Shared, judged: u64) -> bool {
     if DEPTH.compare_exchange(0, BUSY, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        return false;
+    }
+    if DRAIN_SEEN.load(Ordering::Relaxed) != judged {
+        DEPTH.store(0, Ordering::Release);
         return false;
     }
     let n = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
@@ -717,7 +759,8 @@ fn end_all_drains(shared: &Shared) -> bool {
 /// stall ends every pair's and closes the window ([`end_all_drains`]),
 /// so the figure never rises again before the next epoch: blocks in one
 /// slab are at most that slab to give back, and a defragmenter that has
-/// gone a stall without a move has found nothing left it can move. 0
+/// gone a stall without a move is taken to have found nothing left it
+/// can move (a heuristic: [`DRAIN_STALL_S`] says when it is wrong). 0
 /// once the window closed.
 fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     requires
@@ -729,7 +772,8 @@ fn draining_pairs(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> u64
     if !draining() {
         return 0;
     }
-    if stalled() && end_all_drains(shared) {
+    let (stall, judged) = stalled();
+    if stall && end_all_drains(shared, judged) {
         return 0;
     }
     let n = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
