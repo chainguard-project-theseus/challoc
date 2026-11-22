@@ -2432,7 +2432,9 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         return (p, s);
     }
     // As `realloc_block`: a run that needs more pages grows in place when
-    // it can, and reports its new usable size.
+    // it can, and reports its new usable size. Nested `if`s, as verus
+    // takes no let chains.
+    #[allow(clippy::collapsible_if)]
     if old > MEDIUM_MAX && size > old {
         if let Some(n) = grow_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)) {
             let s = store_usable(usable, n, Tracked(uout));

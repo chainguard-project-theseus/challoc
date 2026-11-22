@@ -497,6 +497,8 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>
 /// `p` ([`Live::claims`]), and `out` gets the result's: a new block's, or
 /// `blk` itself when `p` is kept or the move fails (`p` is then still the
 /// caller's).
+// The in-place grow's alignment test keeps `%`, the form its proof reads.
+#[allow(clippy::manual_is_multiple_of)]
 pub fn rallocx_zeroed(
     p: *mut u8,
     size: usize,

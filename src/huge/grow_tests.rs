@@ -51,11 +51,8 @@ fn fill(p: *mut u8, n: usize, seed: u8) {
 fn check(p: *mut u8, n: usize, seed: u8) {
     for i in (0..n).step_by(509) {
         // SAFETY: as `fill`.
-        assert_eq!(
-            unsafe { p.add(i).read() },
-            seed.wrapping_add(i as u8),
-            "byte {i}"
-        );
+        let b = unsafe { p.add(i).read() };
+        assert_eq!(b, seed.wrapping_add(i as u8), "byte {i}");
     }
 }
 
