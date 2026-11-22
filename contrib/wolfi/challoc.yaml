@@ -34,8 +34,16 @@
 #
 #   melange build contrib/wolfi/challoc.yaml --arch aarch64 \
 #     --source-dir . --build-option local-source \
-#     --pipeline-dir /path/to/wolfi-dev/os/pipelines \
+#     --pipeline-dirs /path/to/wolfi-dev/os/pipelines,contrib/wolfi/pipelines \
+#     --repository-append https://apk.cgr.dev/chainguard \
 #     --signing-key melange.rsa --out-dir packages
+#
+# The build runs `make verify` (theseus/verify, contrib/wolfi/pipelines/),
+# the Verus proofs and every Kani harness on the build's architecture,
+# as the downstream package build does. Its verus, kani and
+# theseus-proved-port packages come from apk.cgr.dev/chainguard, not
+# packages.wolfi.dev, and bring the rust stream the build compiles with,
+# so the definition names no rust of its own.
 package:
   name: challoc
   version: "0.1.0"
@@ -43,12 +51,14 @@ package:
   description: A memory-safe, jemalloc-compatible malloc replacement for Wolfi and Chainguard OS
   copyright:
     - license: Apache-2.0
+  # theseus/verify runs challoc's Kani harnesses in 8 shards at once (its
+  # Makefile's kani-regular-sharded, KANI_REGULAR_SHARDS), which peaked
+  # at 47.4 GiB in use.
   resources:
-    cpu: "2"
-    memory: 4Gi
+    cpu: "16"
+    memory: 64Gi
 
 vars:
-  rust-version: "1.98"
   # The ABI major in the soname (build.rs: libchalloc.so.0). Bump with it.
   soversion: "0"
   # The version mallctl("version") reports and jemalloc.pc carries
@@ -71,7 +81,6 @@ environment:
       - busybox
       - ca-certificates-bundle
       - glibc-2.44-dev
-      - rust-${{vars.rust-version}}
       - wolfi-base
 
 pipeline:
@@ -94,6 +103,8 @@ pipeline:
       [ "$jv" = "${{vars.jemalloc-version}}" ] || {
         echo "VERSION_STR $jv != vars.jemalloc-version ${{vars.jemalloc-version}}"; exit 1; }
       rustc --version; cargo --version
+
+  - uses: theseus/verify
 
   - name: Build the system library (quantum16, soname libchalloc.so.0)
     runs: |
