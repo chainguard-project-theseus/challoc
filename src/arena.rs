@@ -180,7 +180,11 @@ verus! {
 /// (keyed by its address: the process has one, the tests build many);
 /// what [`Arenas::create`] keeps free per automatic arena not built yet.
 /// A key that finds no slot (more than `BUILD_COSTS` allocators, tests
-/// only) records nothing and reads 0: no headroom.
+/// only) records nothing and reads 0: no headroom. A sample `t`, clamped
+/// to `1..=usize::MAX - 1`, is stored as `!t`, so 0 still means none and
+/// the least sample is the greatest word, which one `fetch_max` keeps.
+/// The clamp changes no reading: [`build_cost`] saturates both
+/// `usize::MAX - 1` and `usize::MAX` to `usize::MAX`.
 const BUILD_COSTS: usize = 64;
 /// Most slack [`build_cost`] adds for metadata other threads reserve
 /// while a build runs (a huge descriptor-table growth step is the
@@ -243,27 +247,19 @@ const AUTO_HEADROOM: u32 = 8;
 /// Record a build over `meta` whose tables took `tables` bytes of
 /// metadata ([`BUILD_COST`]). The delta is read without the metadata
 /// lock, so another thread's reservation in between can only inflate a
-/// sample: the smallest sample is kept. Trusted (termination): the weak
-/// compare-and-exchange retries while other threads lower the sample but
-/// leave it above `tables`, or spuriously, so the loop has no bound Verus
-/// can check.
-#[verifier::exec_allows_no_decreases_clause]
+/// sample: the smallest sample is kept, as the greatest stored word
+/// `!tables` (one `fetch_max`, no retry loop). `usize::MAX` is clamped
+/// to `usize::MAX - 1`, whose complement is not the "none" word 0.
 fn note_build_cost(meta: &Meta, tables: usize) {
     let key = meta_key(meta);
-    let tables = tables.max(1);
+    let tables = tables.clamp(1, usize::MAX - 1);
     for (k, c) in BUILD_COST.iter() {
         let found = match k.compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => true,
             Err(cur) => cur == key,
         };
         if found {
-            let mut cur = c.load(Ordering::Relaxed);
-            while cur == 0 || tables < cur {
-                match c.compare_exchange_weak(cur, tables, Ordering::Relaxed, Ordering::Relaxed) {
-                    Ok(_) => break,
-                    Err(now) => cur = now,
-                }
-            }
+            c.fetch_max(!tables, Ordering::Relaxed);
             return;
         }
     }
@@ -280,10 +276,11 @@ fn build_cost(meta: &Meta) -> usize {
     let key = meta_key(meta);
     for (k, c) in BUILD_COST.iter() {
         if k.load(Ordering::Relaxed) == key {
-            let tables = c.load(Ordering::Relaxed);
-            if tables == 0 {
+            let stored = c.load(Ordering::Relaxed);
+            if stored == 0 {
                 return 0;
             }
+            let tables = !stored;
             return tables.saturating_add(ARENA_STORAGE).saturating_add((tables / 8).min(BUILD_SLACK));
         }
     }
@@ -4330,6 +4327,115 @@ mod key_less_tests {
                 assert_eq!(key_less(a, b), a < b, "key_less({a:?}, {b:?})");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod build_cost_tests {
+    use super::*;
+    use std::boxed::Box;
+    use std::vec::Vec;
+
+    /// The first sample [`fresh_meta`] records: more than any other here.
+    const FIRST: usize = 1 << 20;
+
+    /// What `build_cost` reads for a recorded smallest sample `t`.
+    fn cost_of(t: usize) -> usize {
+        t.saturating_add(ARENA_STORAGE)
+            .saturating_add((t / 8).min(BUILD_SLACK))
+    }
+
+    /// A metadata allocator of its own (only its address is the key; it
+    /// is never used to allocate), with a [`BUILD_COST`] slot keyed to it
+    /// but no sample yet, as `note_build_cost`'s first step leaves it;
+    /// checks that such a slot (another thread's `note_build_cost`
+    /// between its two steps) reads 0.
+    ///
+    /// Fails when no slot is left: slots are never released, and every
+    /// allocator a test builds an arena over keys one. A full `cargo
+    /// test` run keys about 33 of the `BUILD_COSTS` (64) slots (30 by
+    /// builds in the group without `api::`, 3 here), so failing, not
+    /// skipping, is what keeps these tests from passing unchecked; a
+    /// failure here means `BUILD_COSTS` needs raising for the tests.
+    fn keyed_meta() -> &'static Meta {
+        let meta: &'static Meta = Box::leak(Box::new(Meta::new(0x1000, 0x1000, 0x1000)));
+        assert_eq!(build_cost(meta), 0);
+        let key = meta_key(meta);
+        let claimed = BUILD_COST.iter().any(|(k, _)| {
+            k.compare_exchange(0, key, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        });
+        assert!(
+            claimed,
+            "every BUILD_COST slot is keyed: raise BUILD_COSTS for the tests"
+        );
+        assert_eq!(build_cost(meta), 0);
+        meta
+    }
+
+    /// [`keyed_meta`] with a first sample of `FIRST`.
+    fn fresh_meta() -> &'static Meta {
+        let meta = keyed_meta();
+        note_build_cost(meta, FIRST);
+        assert_eq!(build_cost(meta), cost_of(FIRST));
+        meta
+    }
+
+    /// A first sample of `usize::MAX` on an empty slot is recorded and
+    /// reads a saturated `usize::MAX`, the reading for the least sample
+    /// `usize::MAX` (it is clamped to `usize::MAX - 1`, not complemented
+    /// to the "none" word 0), and a smaller one replaces it.
+    #[test]
+    fn max_sample_on_an_empty_slot() {
+        let meta = keyed_meta();
+        note_build_cost(meta, usize::MAX);
+        assert_eq!(build_cost(meta), usize::MAX);
+        assert_eq!(build_cost(meta), cost_of(usize::MAX));
+        note_build_cost(meta, usize::MAX - 1);
+        assert_eq!(build_cost(meta), usize::MAX);
+        note_build_cost(meta, 5);
+        assert_eq!(build_cost(meta), cost_of(5));
+    }
+
+    /// `note_build_cost` keeps the smallest sample (0 counts as 1, and a
+    /// larger one leaves it), through the `!t` encoding and `fetch_max`,
+    /// and `build_cost` reads what that sample gives.
+    #[test]
+    fn keeps_the_least_sample() {
+        let meta = fresh_meta();
+        note_build_cost(meta, 500);
+        assert_eq!(build_cost(meta), cost_of(500));
+        note_build_cost(meta, 900);
+        assert_eq!(build_cost(meta), cost_of(500));
+        note_build_cost(meta, 300);
+        assert_eq!(build_cost(meta), cost_of(300));
+        note_build_cost(meta, usize::MAX);
+        assert_eq!(build_cost(meta), cost_of(300));
+        note_build_cost(meta, 0);
+        assert_eq!(build_cost(meta), cost_of(1));
+    }
+
+    /// Samples from racing threads leave the least of them.
+    #[test]
+    fn racing_samples_leave_the_least() {
+        let meta = fresh_meta();
+        let threads: Vec<_> = (0..8usize)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    for j in 0..1000usize {
+                        note_build_cost(meta, 10_000 + (i * 7919 + j * 104_729) % 50_000);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let least = (0..8usize)
+            .flat_map(|i| (0..1000usize).map(move |j| 10_000 + (i * 7919 + j * 104_729) % 50_000))
+            .min()
+            .unwrap();
+        assert_eq!(build_cost(meta), cost_of(least));
     }
 }
 
