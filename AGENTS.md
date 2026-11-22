@@ -23,5 +23,5 @@ behind design decisions (consult it before re-researching anything).
   and a reason.
 
   ```
-  grep -rnE 'assume\(|admit\(|assume_new|assume_specification|assume_unsupported_attributes|external_body|external_(fn|type|trait)_specification|verifier::external\]|axiom fn' --include=*.rs
+  grep -rnE 'assume\(|admit\(|assume_new|assume_specification|assume_unsupported_attributes|external_body|external_(fn|type|trait)_specification|verifier::external\]|axiom fn|exec_allows_no_decreases_clause' --include=*.rs
   ```
