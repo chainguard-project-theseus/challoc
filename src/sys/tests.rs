@@ -537,9 +537,8 @@ fn no_use_of_the_narrow_aborts() {
 /// own after `requires` or a `,`); a header line that names an abort
 /// capability in any other form fails, unless it is listed here as
 /// that function's compound clause, by its exact text
-/// (`assert_flushed`, `assert_refill_empty` and `assert_rekey_flushed`'s
-/// `may_abort() || *len == 0`, and `vspec::check::check`'s
-/// `may_abort_corrupt() || c`). Every listed function must still be one. Not
+/// (`vspec::check::check`'s `may_abort_corrupt() || c`). Every listed
+/// function must still be one. Not
 /// seen: a panic of an index or a slice (`layout::regions`' `word`
 /// indexes under its `requires`), and an
 /// abort only through a function the body calls (Verus checks a call
@@ -550,17 +549,11 @@ fn trusted_aborts_require_a_capability() {
     let valid = format!("{}{}", "valid_", "aborts");
     // The compound clauses, each `(file, fn item line start, clause)`:
     // the abort is needed only when the asserted fact fails.
-    let len_zero = concat!("crate::sys::may_", "abort() || *len == 0,");
-    let compound = [
-        ("heap/mod.rs", "fn assert_flushed(", len_zero),
-        ("heap/mod.rs", "fn assert_refill_empty(", len_zero),
-        ("heap/mod.rs", "fn assert_rekey_flushed(", len_zero),
-        (
-            "vspec/check.rs",
-            "pub fn check(",
-            concat!("crate::sys::may_", "abort_corrupt() || c,"),
-        ),
-    ];
+    let compound = [(
+        "vspec/check.rs",
+        "pub fn check(",
+        concat!("crate::sys::may_", "abort_corrupt() || c,"),
+    )];
     let aborts = [
         concat!("abo", "rt("),
         concat!("abo", "rt!("),
@@ -687,8 +680,11 @@ fn trusted_aborts_require_a_capability() {
             "{e:?}: listed, but no trusted body that can abort"
         );
     }
+    // A floor on the scan, so that a parser change that finds nothing
+    // fails: the tree has 3 (`check`, `background::spawn`,
+    // `call_throw_bad_alloc`).
     assert!(
-        trusted > 5,
+        trusted >= 3,
         "got = {trusted} trusted bodies that abort, want = the tree's"
     );
 }

@@ -6547,16 +6547,19 @@ bounds, and `Sink::write_str` (verified) keeps it.
   `RunState::from_u8` and `HugeDesc::state` (`huge/mod.rs`)
   require `v <= 2` (`spec_state() <= 2`) with no abort capability, which
   the huge lock invariant (`desc_ok`) gives `Huge::lookup`;
-  `assert_flushed` and `assert_refill_empty` (`heap/mod.rs`) require
-  `may_abort() || *len == 0`; `huge_usable_pages` requires
+  `assert_flushed`, `assert_refill_empty` and `assert_rekey_flushed`
+  (`heap/mod.rs`, verified) require `may_abort() || *len == 0`; `huge_usable_pages` requires
   `may_abort_corrupt()` or its condition, and `arena_at` its condition
   alone.
 - Every trusted body that can abort requires a capability: those that
   call an abort or a function that requires it (`background::spawn`,
   `call_throw_bad_alloc`) and those that `assert!` or
-  `panic!` (`check`, `assert_flushed`, `assert_refill_empty`).
+  `panic!` (`check`).
   `assert_not_home`'s `assert_ne!` is verified: its `requires` makes
-  vstd's `assert_failed` (`requires false`) unreachable.
+  vstd's `assert_failed` (`requires false`) unreachable. `assert_flushed`,
+  `assert_refill_empty` and `assert_rekey_flushed` are verified: each
+  calls `sys::abort` only when `*len != 0`, where its `requires` gives
+  `may_abort()`.
   `sys::tests::trusted_aborts_require_a_capability` checks the
   `external_body` functions whose text shows an abort, a panic macro or
   an `unwrap` (not an index panic) for the capability.
@@ -9080,7 +9083,7 @@ allow, these cannot fire:
   below) the hint names `p`'s class and `size` rounds to the run's
   pages.
 - **Re-keying a cache that still holds slots** (`CacheHeader::rekey`,
-  `heap/cache.rs`, the trusted `assert_rekey_flushed`,
+  `heap/cache.rs`, the verified `assert_rekey_flushed`,
   `heap/mod.rs`): `try_rehome` (`heap/mod.rs`) re-keys the
   home headers after the home flush emptied them and the `FOREIGN`
   flush kept them.
