@@ -693,9 +693,8 @@ another thread's build of the feature line), `api::init_gate_enter` and
 `sys::cgroup::Deferred::discover` (a waiting discovery's wait for
 another thread's), `api/cxx.rs` `oom`, `purge/background.rs` `main`,
 `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`),
-`sys::cgroup::scan_lines`, `arena::note_build_cost` (`arena.rs`, a
-compare-and-exchange retry loop), and `config.rs` `env_var` (its walk ends at
-the null pointer that ends `environ`, a fact about the C program). The theorems are
+`sys::cgroup::scan_lines`, and `arena::note_build_cost` (`arena.rs`, a
+compare-and-exchange retry loop). The theorems are
 partial correctness: they say what holds if the call returns. None of
 these is on the thread-cache fast paths, which terminate and take no
 lock (theorem 9).
@@ -2202,9 +2201,9 @@ no mask.
   `line_ready`, `wait_line`, `init_gate_enter` and `fork_gate_enter`
   (`api/mod.rs`), the OOM handler loop `api::cxx::oom`, the purge
   thread's `main` (`purge/background.rs`), `sys::cgroup::scan_lines` and
-  `Deferred::discover` (`sys/cgroup.rs`), the kernel retry loops
-  `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`), and
-  `config::linux::env_var` (`config.rs`). They need a liveness model.
+  `Deferred::discover` (`sys/cgroup.rs`), and the kernel retry loops
+  `getrandom_exact`, `read_full` and `write_all` (`sys/mod.rs`). They
+  need a liveness model.
   Theorem 45 checks the compiled fast paths for back-edges (none).
 
 **Where the statement is weaker than the code.**

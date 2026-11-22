@@ -16,7 +16,6 @@ file.
 | `byte_at` | external_body | raw pointer from C caller | none (assumption) | trusted |
 | `bytes_at` | external_body | raw pointer from C caller | none (assumption) | trusted |
 | `environ_array` | external_body | raw pointer from C caller | none (assumption) | trusted |
-| `env_var` | no_decreases | C-program contract | none (assumption) | trusted |
 
 ## `THP_NAMES`
 
@@ -138,22 +137,4 @@ Hashes: contract 1363833998, body 613346698.
 
 ```rust
 fn environ_array() -> *const *const c_char
-```
-
-## `env_var`
-
-src/config.rs:1958. Kind: no_decreases. Category: C-program contract.
-Tool: none (assumption). Status: trusted.
-
-> The value of environment variable `name` (no `=` in it), read from `environ` without `getenv`, and whether it was cut, as [`cstr`] returns it for the value alone.
-
-Hashes: contract 3768520112, body 1492388976.
-
-```rust
-pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
-    requires
-        !crate::sys::auxv::secure_exec(),
-    ensures
-        !crate::sys::auxv::secure_exec(),
-        r matches Some((s, cut)) ==> 0 < s@.len() <= MAX_TEXT && (cut ==> s@.len() == MAX_TEXT),
 ```

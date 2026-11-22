@@ -1937,14 +1937,23 @@ mod linux {
         unsafe { environ }
     }
 
+    /// Most `environ` entries, its null included, that [`env_var`] reads:
+    /// the array is one object of 8-byte pointers (challoc builds for
+    /// 64-bit targets only), and no object is larger than `isize::MAX`
+    /// bytes, so a well-formed `environ` ends before this many entries.
+    /// The bound only gives the walk a measure; a const assertion after
+    /// this `verus!` block holds it at or above that object bound.
+    const ENVIRON_MAX: usize = isize::MAX as usize / 8;
+
     /// The value of environment variable `name` (no `=` in it), read from
     /// `environ` without `getenv`, and whether it was cut, as [`cstr`]
     /// returns it for the value alone. `None` when unset or empty.
     ///
     /// Each entry is read through `cstr`, and when it sets `name`
     /// ([`env_sets`]) its value is read through `cstr` again, which stops at
-    /// [`MAX_TEXT`] bytes. Termination is assumed: the walk ends at the null
-    /// pointer that ends `environ`, a fact about the C program.
+    /// [`MAX_TEXT`] bytes. The walk ends at the null pointer that ends
+    /// `environ`, and in any case after [`ENVIRON_MAX`] entries, a bound
+    /// no `environ` reaches; Verus checks that it terminates.
     ///
     /// Requires a process that is not a secure-execution one
     /// (`sys::auxv::secure_exec`), whose environment is untrusted, so Verus
@@ -1954,7 +1963,6 @@ mod linux {
     /// postcondition, but not its `call_requires` its precondition.
     // Verus has no let-chains, so the `env_sets` test stays nested.
     #[allow(clippy::collapsible_if)]
-    #[verifier::exec_allows_no_decreases_clause]
     pub fn env_var(name: &[u8]) -> (r: Option<(&'static [u8], bool)>)
         requires
             !crate::sys::auxv::secure_exec(),
@@ -1968,10 +1976,18 @@ mod linux {
         if e.is_null() {
             return None;
         }
+        let mut read: usize = 0;
         loop
             invariant
                 !crate::sys::auxv::secure_exec(),
+                read <= ENVIRON_MAX,
+            decreases ENVIRON_MAX - read,
         {
+            if read == ENVIRON_MAX {
+                // No `environ` gets here: see `ENVIRON_MAX`.
+                return None;
+            }
+            read += 1;
             // SAFETY: `e` walks the array up to its terminating null.
             let entry = unsafe { read_slot(e) };
             if entry.is_null() {
@@ -2075,6 +2091,12 @@ mod linux {
     }
 
     } // verus!
+
+    // `ENVIRON_MAX` is at least the most pointers one object can hold, so
+    // no well-formed `environ` reaches `env_var`'s cap: a smaller value
+    // would verify and pass the tests, yet cut long environments short.
+    const _: () =
+        assert!(ENVIRON_MAX >= isize::MAX as usize / core::mem::size_of::<*const c_char>());
 
     /// The Kani harness of [`conf_ptr`], next to the private function and
     /// its static.
