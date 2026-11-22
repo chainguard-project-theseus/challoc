@@ -1191,7 +1191,7 @@ impl Huge {
     /// start checks), so `free_run` compiles as with the checks written
     /// in its body.
     #[inline(always)]
-    fn live_run_lookup(&self, Ghost(g): Ghost<Inner>, page: usize, d: *mut HugeDesc)
+    pub(super) fn live_run_lookup(&self, Ghost(g): Ghost<Inner>, page: usize, d: *mut HugeDesc)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && exists|n: int| g.runs@@.contains((page as int, n))),
             g.wf(),
@@ -1223,7 +1223,7 @@ impl Huge {
     /// page), or of a live run's interior page or guard, does not get
     /// past it with [`Huge::live_run_lookup`].
     #[inline(always)]
-    fn live_run_checks(&self, Ghost(g): Ghost<Inner>, page: usize, Ghost(d): Ghost<*mut HugeDesc>, state: RunState, start: usize)
+    pub(super) fn live_run_checks(&self, Ghost(g): Ghost<Inner>, page: usize, Ghost(d): Ghost<*mut HugeDesc>, state: RunState, start: usize)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && exists|n: int| g.runs@@.contains((page as int, n))),
             g.wf(),

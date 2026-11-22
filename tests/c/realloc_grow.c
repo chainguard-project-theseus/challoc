@@ -20,7 +20,9 @@
  *   - while a fork epoch is open (challoc_cow_begin) a run does not grow
  *     into a free extent left by a free during the epoch (its pages may be
  *     the child's), but does grow past the high-water mark; after
- *     challoc_cow_end it grows into such an extent again;
+ *     challoc_cow_end it grows into such an extent again; in an epoch it
+ *     grows into a `Purged` extent while no MADV_FREE batch has gone out,
+ *     and moves after one (a note line where lazy purges are off);
  *   - stats.allocated returns to where it started.
  */
 #include "common.h"
@@ -185,6 +187,30 @@ int main(int argc, char **argv)
         CHECK(h == f1, "did not grow into the free extent after the epoch");
         free(h);
         free(f3);
+        /* A `Purged` extent behind a run: an extent freed before the
+         * epoch, which challoc_cow_begin's purge leaves `Purged`. With no
+         * MADV_FREE batch so far (stats.cgroup.lazy_purges 0) its pages
+         * are gone from both sides of a fork, so the run grows into it;
+         * after one, it moves. */
+        char *q1 = malloc(big), *q2 = malloc(big), *q3 = malloc(big);
+        REQUIRE(q1 && q2 && q3, "malloc before the second epoch");
+        CHECK(q2 == q1 + nallocx(big, 0) + page, "runs not adjacent before the second epoch");
+        free(q2);
+        REQUIRE(challoc_cow_begin(0) == 0, "challoc_cow_begin again");
+        size_t lazy = ctl_size("stats.cgroup.lazy_purges");
+        char *k = realloc(q1, big + page);
+        REQUIRE(k, "realloc into a purged extent");
+        if (lazy == 0) {
+            CHECK(k == q1, "did not grow into a purged extent in the epoch");
+            /* Not a SKIP line: the lazy half needs lazy_band and a cgroup
+             * limit's headroom band, which no host here runs this under. */
+            printf("realloc_grow epoch: eager purges, the lazy half not reached\n");
+        } else {
+            CHECK(k != q1, "grew into a lazily purged extent in the epoch");
+        }
+        REQUIRE(challoc_cow_end() == 0, "challoc_cow_end again");
+        free(k);
+        free(q3);
     } else {
         printf("SKIP realloc_grow epoch: challoc_cow_begin unavailable\n");
     }

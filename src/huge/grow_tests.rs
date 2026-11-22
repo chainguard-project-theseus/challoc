@@ -311,3 +311,34 @@ fn take_run_and_put_run_only_in_grow_huge() {
     }
     assert_eq!(calls, [1, 1], "take_run and put_run calls in grow_huge");
 }
+
+/// A grow of a run a racing free already freed aborts, as the free its
+/// move would end in does (`free_run`'s checks): the run's descriptor is
+/// a free extent now.
+#[test]
+#[should_panic(expected = "huge allocation already freed")]
+fn a_grow_of_a_freed_run_aborts() {
+    let env = Env::new();
+    let h = env.huge_with(false, false);
+    let ps = page_size();
+    let (a, _) = env.alloc(&h, 2 * ps, 1);
+    let (_b, _) = env.alloc(&h, ps, 1);
+    env.free(&h, a);
+    grow(&env, &h, a, 3 * ps);
+}
+
+/// The same, when the freed run merged into the free extent before it:
+/// the table maps nothing to its first page.
+#[test]
+#[should_panic(expected = "not the start of a huge allocation")]
+fn a_grow_of_a_run_merged_into_a_free_extent_aborts() {
+    let env = Env::new();
+    let h = env.huge_with(false, false);
+    let ps = page_size();
+    let (a, _) = env.alloc(&h, 2 * ps, 1);
+    let (b, _) = env.alloc(&h, 2 * ps, 1);
+    let (_c, _) = env.alloc(&h, ps, 1);
+    env.free(&h, a);
+    env.free(&h, b);
+    grow(&env, &h, b, 3 * ps);
+}

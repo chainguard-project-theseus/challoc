@@ -634,8 +634,12 @@ proof fn lemma_grew_coalesced(g0: Inner, g1: Inner, t: Grow)
         assert(marked(f0, t.ve));
     }
     if t.used {
+        // The tail's descriptor is the extent's, not the run's: one is
+        // free and the other `Active`.
+        assert(t.has_ext && t.x != t.d);
         assert(t.model(d0, t.x) == Some(t.vt));
-        assert(d1.contains_key(t.x) && same_but_links(t.vt, d1[t.x].value()));
+        assert(d1.contains_key(t.x));
+        assert(same_but_links(t.vt, d1[t.x].value()));
     }
     // Which descriptors are old.
     assert forall|y: *mut HugeDesc| #[trigger] d1.contains_key(y) && y != t.d && !(t.has_ext && y == t.x) implies d0.contains_key(y)
@@ -899,6 +903,13 @@ impl Huge {
             super::free::lemma_live_keyed(g0, page);
         }
         let d = g.table.get(page);
+        // `free_run`'s checks: the token is the C caller's claim, which a
+        // racing free can make stale, so the run is checked live at the
+        // lock before anything is read from or done to its descriptor; a
+        // freed run aborts here as its move's free would.
+        self.live_run_lookup(Ghost(g@), page, d);
+        let (state, start) = (g.desc(d).state(), g.desc(d).start());
+        self.live_run_checks(Ghost(g@), page, Ghost(d), state, start);
         proof {
             let x = choose|x: *mut HugeDesc|
                 #![trigger g0.descs@.contains_key(x)]
