@@ -8,7 +8,8 @@ C caller, made during [#138](https://github.com/chainguard-project-theseus/chall
 *This file lists the 51 of those seams that the ledger at `26f535a9`
 still lists. The others are verified at `26f535a9` or no longer exist
 (among them `api::print::emit` and `mallctl`'s `store` and `load`, now
-verified), so their rows are left out; seams of this scope that the
+verified), so their rows are left out, as is `env_var`'s, verified
+since its walk of `environ` is bounded; seams of this scope that the
 audit did not cover are not listed. Each row names the seam by its item
 and its ledger file, `verus/ledger/src/<file>.md`, which gives the
 seam's contract, category, tool and status.*
@@ -29,7 +30,7 @@ false or unsound and corrected it; the reason gives the corrected
 contract. Remaining seam work is tracked in
 [chainguard-project-theseus/challoc#397](https://github.com/chainguard-project-theseus/challoc/issues/397).
 
-Totals for the 52 seams listed: 50 sound, 2 fixed.
+Totals for the 51 seams listed: 49 sound, 2 fixed.
 
 ## Verdicts
 
@@ -44,7 +45,6 @@ Totals for the 52 seams listed: 50 sound, 2 fixed.
 | `single_threaded_addr` | `purge/background.rs` | sound | As `je_malloc_conf_addr`, for glibc's weak `__libc_single_threaded`. |
 | `byte_at` | `config.rs` | sound | Claims nothing (also the read of `__libc_single_threaded`). |
 | `bytes_at` | `config.rs` | sound | `r@.len() == n` is what `from_raw_parts` returns. |
-| `env_var` | `config.rs` | sound | The value is a non-empty suffix of an `environ` entry, cut by `cstr` at `MAX_TEXT`; requires and keeps `!secure_exec()`. |
 | `axiom_c_claim` | `heap/live.rs` | sound | The C contract of `free`, once per entry point (and per branch of the verification-only fast-path theorem); a double free makes the proof vacuous, as documented. |
 | `pthread_setspecific` | `heap/shared.rs` | sound | The re-entry premise is named; `requires reentry_benign` is checked, and the TLS cell is unchanged. |
 | `Reserved` | `layout/regions.rs` | sound | Opaque, non-`Copy`; minted only by `try_reserve`. |
