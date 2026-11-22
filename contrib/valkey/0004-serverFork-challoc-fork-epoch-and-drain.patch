@@ -7,13 +7,15 @@ on top of 0001 (MALLOC=challoc) and 0002, and, for embedded strings, 0003
 (no write to an overwritten value's refcount when no module observes the
 key event).
 
-serverFork opens challoc's fork epoch (challoc_cow_begin, <challoc/challoc.h>)
-just before forking a mutually exclusive child (RDB, AOF rewrite, full
-sync, module fork) and resetChildState closes it (challoc_cow_end) once
-the child is reaped, as does the fork's failure path. While the epoch is
+serverFork opens challoc's fork epoch (challoc_cow_begin,
+<challoc/challoc.h>) just before forking a mutually exclusive child
+(RDB, AOF rewrite, full sync, module fork) and resetChildState closes it
+(challoc_cow_end) once the child is reaped, as does that fork's failure
+path. A failed fork of any other child (the Lua debugger's, which may
+run beside a save) leaves the save's epoch open. While the epoch is
 open, challoc serves the parent's allocations from pages the child does
-not share and hands out no block freed during it that the child may still
-share, so the values written while the child runs copy no page.
+not share and hands out no block freed during it that the child may
+still share, so the values written while the child runs copy no page.
 
 The blocks written during the epoch then sit above the holes it left.
 updateDefragCpuPercent runs a defrag cycle while challoc reports a size
@@ -120,7 +122,7 @@ index a14693c..8953a3b 100644
          if (childpid == -1) {
              int fork_errno = errno;
 +#ifdef CHALLOC_COW
-+            if (cow_epoch_open) {
++            if (cow_epoch_open && isMutuallyExclusiveChildType(purpose)) {
 +                challoc_cow_end();
 +                cow_epoch_open = 0;
 +            }

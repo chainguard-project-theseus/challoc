@@ -8,13 +8,15 @@ on top of 1/6 (MALLOC=challoc) and 2/6, and of 5/6 (no write to an
 overwritten or deleted value), without which the epoch saves half as much.
 The Redis counterpart of contrib/valkey/0004.
 
-redisFork opens challoc's fork epoch (challoc_cow_begin, <challoc/challoc.h>)
-just before forking a mutually exclusive child (RDB, AOF rewrite, full
-sync, module fork) and resetChildState closes it (challoc_cow_end) once
-the child is reaped, as does the fork's failure path. While the epoch is
+redisFork opens challoc's fork epoch (challoc_cow_begin,
+<challoc/challoc.h>) just before forking a mutually exclusive child
+(RDB, AOF rewrite, full sync, module fork) and resetChildState closes it
+(challoc_cow_end) once the child is reaped, as does that fork's failure
+path. A failed fork of any other child (the Lua debugger's, which may
+run beside a save) leaves the save's epoch open. While the epoch is
 open, challoc serves the parent's allocations from pages the child does
-not share and hands out no block freed during it that the child may still
-share.
+not share and hands out no block freed during it that the child may
+still share.
 
 Redis needs one change Valkey does not: dbSetValue keeps the old kvobj in
 the keyspace and swaps the new value's ptr, type and encoding into it when
@@ -33,6 +35,15 @@ decay: challoc's utilisation query tells the defragmenter to move those
 blocks back. With activedefrag off nothing moves them, and they return as
 the keys are overwritten or deleted.
 
+tests/unit/fork-overwrite.tcl overwrites raw strings, integers,
+hashes (some with field TTLs), sets, sorted sets and lists while a BGSAVE
+child runs (SET, SUNIONSTORE, SINTERSTORE, ZUNIONSTORE, ZRANGESTORE, SORT
+STORE, GEOSEARCHSTORE, and COPY, RENAME and RESTORE REPLACE), and checks
+that the dataset's digest equals the same overwrites done with no child
+and that the snapshot reloads to the digest from before them. Under
+MALLOC=challoc the epoch is open throughout, so a collection written
+over a collection takes dbSetValue's new-object path.
+
 All of it is compiled only under challoc (CHALLOC_COW, which
 <challoc/challoc.h> defines), and the three entry points are weak
 references: on a libchalloc.so.0 without fork epochs they are null and
@@ -47,11 +58,12 @@ MiB, challoc with 1/6 to 4/6 against 1/6 to 6/6:
   2M x 1 KiB SET       891 ->  30
 
 ---
- src/db.c     |   11 ++++++++++-
- src/defrag.c |   21 ++++++++++++++++++++-
- src/server.c |   24 ++++++++++++++++++++++++
- src/server.h |    4 ++++
- 4 files changed, 58 insertions(+), 2 deletions(-)
+ src/db.c                       |   11 ++++++++++-
+ src/defrag.c                   |   21 ++++++++++++++++++++-
+ src/server.c                   |   24 ++++++++++++++++++++++++
+ src/server.h                   |    4 ++++
+ tests/unit/fork-overwrite.tcl  |   81 +++++++++++++++++++++++++++++++++++
+ 5 files changed, 139 insertions(+), 2 deletions(-)
 
 diff --git a/src/db.c b/src/db.c
 index 9f802ad..77f57e9 100644
@@ -164,7 +176,7 @@ index e8cd65f..31d6257 100644
          if (childpid == -1) {
              int fork_errno = errno;
 +#ifdef CHALLOC_COW
-+            if (cow_epoch_open) {
++            if (cow_epoch_open && isMutuallyExclusiveChildType(purpose)) {
 +                challoc_cow_end();
 +                cow_epoch_open = 0;
 +            }
@@ -187,6 +199,93 @@ index 6a615e1..775eac5 100644
  
  /* acl.c -- Authentication related prototypes. */
  extern rax *Users;
+diff --git a/tests/unit/fork-overwrite.tcl b/tests/unit/fork-overwrite.tcl
+new file mode 100644
+index 0000000..8e5c115
+--- /dev/null
++++ b/tests/unit/fork-overwrite.tcl
+@@ -0,0 +1,81 @@
++# Overwrites of every value type while a BGSAVE child runs (contrib/redis
++# 0006 of chainguard-project-theseus/challoc). Under MALLOC=challoc the fork
++# epoch is open while the child runs, and dbSetValue replaces the key's
++# object instead of swapping the new value into it, for collections too.
++# The dataset after the overwrites must equal the same overwrites done with
++# no child, and the snapshot must equal the dataset before them.
++
++proc fork_overwrite_populate {} {
++    r flushall
++    for {set i 0} {$i < 200} {incr i} {
++        r set raw:$i [string repeat [format %02d [expr {$i % 100}]] 32]
++        r set int:$i [expr {$i * 1000003}]
++        r hset h:$i a $i b [string repeat x 64] c [expr {$i * 7}]
++        r sadd s:$i m$i n$i [string repeat y 64]
++        r zadd z:$i $i m$i [expr {$i + 1}] n$i
++        r rpush l:$i [expr {$i % 17}] [expr {$i % 5}] [expr {$i % 11}]
++    }
++    # Hashes with field TTLs far in the future, so none expires in the test.
++    for {set i 0} {$i < 50} {incr i} {
++        r hset hfe:$i f1 v1 f2 [string repeat z 64] f3 v3
++        r hexpire hfe:$i 100000 FIELDS 2 f1 f2
++    }
++    r geoadd geo 13.361389 38.115556 palermo 15.087269 37.502669 catania
++    # Pad the dataset so that the save, at rdb-key-save-delay, outlasts the
++    # overwrites.
++    r debug populate 2000 pad 16
++}
++
++proc fork_overwrite_run {} {
++    for {set i 0} {$i < 50} {incr i} {
++        set j [expr {$i + 50}]
++        # Raw over raw, raw over int, and strings over collections.
++        r set raw:$i [string repeat q 64]
++        r set int:$i [string repeat w 64]
++        r set h:$j [string repeat e 64]
++        # A collection over a collection of the same and of another type.
++        r sunionstore s:$i s:$i s:$j
++        r sinterstore s:$j s:$i s:$j
++        r zunionstore z:$i 2 z:$i z:$j
++        r zrangestore z:$j z:$i 0 -1
++        r sort l:$i store l:$j
++        r sunionstore h:$i s:$j s:$i
++        r sunionstore hfe:$i s:$i
++        r geosearchstore l:$i geo fromlonlat 15 37 byradius 200 km
++        # The paths that do not go through dbSetValue, for completeness.
++        r copy s:$i z:[expr {$i + 100}] replace
++        r rename h:[expr {$i + 100}] l:[expr {$i + 100}]
++        r restore int:[expr {$i + 100}] 0 [r dump h:[expr {$i + 150}]] replace
++    }
++}
++
++start_server {tags {"other external:skip needs:debug"}} {
++    test {Overwrites of every value type while a BGSAVE child runs} {
++        r config set save ""
++        r config set appendonly no
++
++        fork_overwrite_populate
++        fork_overwrite_run
++        set expected [debug_digest]
++
++        fork_overwrite_populate
++        set before [debug_digest]
++        r config set rdb-key-save-delay 1000
++        r bgsave
++        wait_for_condition 50 100 {
++            [s rdb_bgsave_in_progress] == 1
++        } else {
++            fail "bgsave did not start"
++        }
++        fork_overwrite_run
++        # The child was alive for every overwrite above.
++        assert_equal 1 [s rdb_bgsave_in_progress]
++        assert_equal $expected [debug_digest]
++        r config set rdb-key-save-delay 0
++        waitForBgsave r
++        assert_equal $expected [debug_digest]
++        # The snapshot is the dataset from before the overwrites.
++        r debug reload nosave
++        assert_equal $before [debug_digest]
++    }
++}
 -- 
 2.56.1
 
