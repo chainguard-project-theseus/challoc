@@ -535,9 +535,11 @@ pages the child never had:
   ends every pair's and closes the window (`cow::end_all_drains`, which
   holds the epoch transition's busy bit while it clears, so an `end` in
   another thread cannot set the next epoch's floors under it, and under
-  the bit clears nothing if the progress mark is no longer the one the
-  stall was judged by, so a whole `begin` and `end` between the verdict
-  and the clear cannot lose the next epoch's drain), so the
+  the bit clears nothing if an `end` came after the reader loaded the
+  count of ends it judged with, so a whole `begin` and `end` between the
+  verdict and the clear cannot lose the next epoch's drain, even when a
+  reader held across that `end` stores the last epoch's progress mark
+  again), so the
   figure only falls and the forced cycle ends when the work does. On
   Redis and Valkey the figure reaches 0 within seconds of the last
   drain move, 10 to 65 s after the save in bench/cow's runs, rather than at the window's 300 s: what

@@ -532,9 +532,11 @@ fn a_reader_without_queries_ends_no_drain() {
 }
 
 /// A stall judged before a whole begin and end in another thread, and
-/// acted on after it, ends nothing: the end reset the progress mark the
-/// stall was judged by (`DRAIN_SEEN`), and the drains are the new
-/// epoch's. A stall with no end between ends them.
+/// acted on after it, ends nothing: the end counted itself
+/// (`DRAIN_ENDS`), and the drains are the new epoch's. That holds too
+/// when a reader held across the end stores the progress mark the stall
+/// was judged by (`DRAIN_SEEN`) again. A stall with no end between ends
+/// them.
 #[test]
 fn a_stall_judged_before_an_epoch_end_ends_nothing_after_it() {
     in_fork_child("cow drain stall across end", 30_000, || {
@@ -547,7 +549,7 @@ fn a_stall_judged_before_an_epoch_end_ends_nothing_after_it() {
         crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
         crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
         assert_eq!(
-            crate::cow::test_stall_across_end(s, true),
+            crate::cow::test_stall_across_end(s, true, false),
             (true, false),
             "an end between the verdict and the clear"
         );
@@ -557,7 +559,17 @@ fn a_stall_judged_before_an_epoch_end_ends_nothing_after_it() {
         crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
         crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
         assert_eq!(
-            crate::cow::test_stall_across_end(s, false),
+            crate::cow::test_stall_across_end(s, true, true),
+            (true, false),
+            "an end between, and the judged mark stored again after it"
+        );
+        assert_eq!(s.arena0.class(c).drain_floor(), f);
+        assert_eq!(draining(s), 1, "the end's count, not the mark, decides");
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        assert_eq!(
+            crate::cow::test_stall_across_end(s, false, false),
             (true, true),
             "no end between"
         );
