@@ -389,6 +389,7 @@ fn arena_decay_uses_the_periods_of_the_decay_driver() {
                 16,
                 0,
                 false,
+                false,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
             )

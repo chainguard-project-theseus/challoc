@@ -67,6 +67,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
             16,
             0,
             false,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
         )
@@ -120,6 +121,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
             size,
             16,
             0,
+            false,
             false,
             Tracked::assume_new(),
             Tracked::assume_new(),
@@ -175,6 +177,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
             16,
             0,
             false,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
         )
@@ -215,6 +218,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
             size,
             16,
             0,
+            false,
             false,
             Tracked::assume_new(),
             Tracked::assume_new(),

@@ -1406,6 +1406,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
         300 * 1024,
         16,
         false,
+        false,
         Tracked::assume_new(),
         Tracked::assume_new(),
     );
@@ -1460,6 +1461,7 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
         300 * 1024,
         16,
         false,
+        false,
         Tracked::assume_new(),
         Tracked::assume_new(),
     );
@@ -1484,6 +1486,7 @@ fn an_unbuildable_home_arena_falls_back_to_arena_0_then_recovers() {
         s,
         300 * 1024,
         16,
+        false,
         false,
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -1554,6 +1557,7 @@ fn a_huge_allocation_in_an_arena_that_does_not_exist_goes_to_arena_0() {
         300 * 1024,
         16,
         77,
+        false,
         false,
         Tracked::assume_new(),
         Tracked::assume_new(),

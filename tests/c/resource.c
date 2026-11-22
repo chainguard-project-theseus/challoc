@@ -58,6 +58,12 @@
  *               fwrite reaches write(2), a cancellation point: the call
  *               returns 0 with the whole report written, and the thread
  *               is cancelled only at its own pthread_testcancel after it
+ *   data_grow   RLIMIT_DATA cut to VmData plus room for a moved run but
+ *               not for the gap a growth move leaves behind it (design 7):
+ *               realloc, rallocx and challoc_realloc_usable of a 64 MiB
+ *               buffer that cannot grow in place each return the moved
+ *               block, its bytes kept (a refused gap placement falls back
+ *               to the lowest fit)
  */
 #include "common.h"
 
@@ -446,6 +452,56 @@ static void parent_data_thread(void)
     run_threads(8);
 }
 
+/* A growth move under a data limit with room for the moved run but not
+ * for its gap: at the top the gap placement commits the pages it skips
+ * (every page below the mark is read-write), which the limit refuses, so
+ * the move must fall back to the lowest fit. Every block stays live, so
+ * no free extent below the mark holds the run and its gap, and each move
+ * lands at the top. */
+static void parent_data_grow(void)
+{
+    const size_t n = 64 * MIB, m = n + n / 8;
+    struct rlimit r;
+    REQUIRE(getrlimit(RLIMIT_DATA, &r) == 0, "getrlimit");
+    void *keep[6];
+    int kept = 0;
+    for (int how = 0; how < 3; how++) {
+        if (how == 1 && !rallocx) {
+            printf("SKIP resource data_grow: rallocx unavailable\n");
+            continue;
+        }
+        if (how == 2 && !challoc_realloc_usable) {
+            printf("SKIP resource data_grow: challoc_realloc_usable unavailable\n");
+            continue;
+        }
+        char *a = malloc(n), *b = malloc(n);
+        REQUIRE(a && b, "malloc(64 MiB): %s", strerror(errno));
+        fill(a, n, (uint32_t)how);
+        /* Room for the moved run and its metadata, well under its gap
+         * (as many pages again). */
+        set_soft(RLIMIT_DATA, vm_data() + m + 16 * MIB);
+        errno = 0;
+        size_t usable = 0;
+        char *q = how == 0 ? realloc(a, m) : how == 1 ? rallocx(a, m, 0) : challoc_realloc_usable(a, m, &usable);
+        int e = errno;
+        set_soft(RLIMIT_DATA, r.rlim_max);
+        static const char *const names[] = {"realloc", "rallocx", "challoc_realloc_usable"};
+        CHECK(q != NULL, "%s(64 MiB -> 72 MiB) under the limit = NULL errno %d", names[how], e);
+        if (!q) {
+            free(a);
+            free(b);
+            continue;
+        }
+        CHECK(q != a, "%s grew in place: the test's premise (b behind a) failed", names[how]);
+        CHECK(check_fill(q, n, (uint32_t)how), "%s lost bytes", names[how]);
+        CHECK(how != 2 || usable >= m, "challoc_realloc_usable reported %zu", usable);
+        keep[kept++] = q;
+        keep[kept++] = b;
+    }
+    for (int i = 0; i < kept; i++)
+        free(keep[i]);
+}
+
 __attribute__((weak)) const char *challoc_features(void);
 
 /* Whether classes have guard slabs: the kernel installs guard markers
@@ -748,6 +804,8 @@ int main(int argc, char **argv)
         parent_narenas();
     else if (!strcmp(mode, "data_thread"))
         parent_data_thread();
+    else if (!strcmp(mode, "data_grow"))
+        parent_data_grow();
     else if (!strcmp(mode, "mlock_huge"))
         parent_mlock_huge();
     else if (!strcmp(mode, "mlockall"))

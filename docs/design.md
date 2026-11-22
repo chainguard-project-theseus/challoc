@@ -536,7 +536,9 @@ pages the child never had:
   the only copy), or past the mark, and otherwise moves. A run shrinking
   in place frees the pages it releases as any huge free does, retained
   and shared with the child like a run freed in the epoch, which a
-  growth under the floors then declines to take back.
+  growth under the floors then declines to take back. The run a growth
+  moves to is placed as any huge allocation is, unsteered; the gap it
+  leaves is taken under the floors by the same rule.
 
 The protocol model (`model/`, scenarios `cow_epoch`, `cow_epoch_lazy` and
 `cow_epoch_exhausted`) checks that no refill under a floor takes a slot of
@@ -1012,7 +1014,8 @@ with page granularity (`huge/`).
 
 - A page-granular `class::Set` tracks free pages; allocation is
   lowest-address first fit of `ceil(n / page) + GUARD_PAGES` contiguous
-  pages, under the huge lock.
+  pages, under the huge lock, except for the new run of a growth that
+  moves (below).
 - An open-addressing hash table keyed by page number (`huge/table.rs`)
   holds `HugeDesc { start, pages, usable, arena, state, dirty_at, prev,
   next }`: a run is keyed by its start page, a free extent by its first
@@ -1071,6 +1074,55 @@ with page granularity (`huge/`).
   `PROT_NONE` pages (the fallback mode, or `mixed_guards`): the grown
   run's guard would have to be split off again, which the move's
   placement already does.
+- A growth that cannot happen in place moves the run to one placed for
+  its next growth (`Huge::find_gap`, the `grow` argument of
+  `Huge::alloc_run`; `realloc`, `rallocx` without `MALLOCX_ZERO` and
+  `challoc_realloc_usable`). Under first fit the new run went right
+  behind the other live runs, so buffers grown in turn (four CPython
+  bytearrays, Ruby strings) blocked each other and nearly every other
+  growth copied. Instead the placement asks for the run's pages and as
+  many again after it (the gap, at most `GROW_GAP_MAX`, 1 GiB): the
+  lowest free extent that holds both, else the extent that touches the
+  high-water mark, or the mark. Where the pages after the run are the
+  ones the next such search reaches first (at the top, or in an extent
+  with room for a gap on both sides), the run starts a gap in, so the
+  next move does not land behind its guard: the run before it keeps
+  those pages, and this one the pages after it, or the mark. Only when
+  nothing that large fits is it first fit. The run itself keeps the page
+  count a new run of the size has (no slack: `nallocx` and `sallocx`
+  agree, and a sized free with another page count still aborts); the
+  gap is free pages, not a reservation. Below the mark it is a `Purged`
+  or `Empty` extent like any, decayed and purged as any, and any
+  allocation, first fit included, may take it. A gap the run starts at
+  the top becomes a `Purged` extent of pages never written (read-write
+  like every page below the mark, `prepare`, but not faulted in), and
+  one past the mark is address space only. Outside `mlockall` neither
+  costs resident memory, only room in the region and a higher mark (the
+  free-page set's storage follows the mark), but the pages a run skips at
+  the top are committed: they are writable private pages, so they count
+  in VmData, against `RLIMIT_DATA` (2) and against a strict overcommit
+  limit (`vm.overcommit_memory=2`), as every page below the mark does
+  (python-grow4: VmData 562 to 634 MiB, while peak RSS falls from 446 to
+  423 MiB, as fewer moves copy). The exception is
+  `mlockall(MCL_FUTURE)` with `guards:false`: the kernel populates and
+  locks a locked range when it is made writable, so the skipped pages
+  become resident and locked, as every page below the mark already is
+  in that mode (four buffers grown in turn to 64 MiB: +29 MiB, +6.5% of
+  locked RSS). A move skips at most `GROW_GAP_MAX` (1 GiB), which is
+  then the bound on the locked memory one move adds. With guards on,
+  nothing is added: the kernel refuses a guard marker in a locked range,
+  the first refusal (at the latest, the run a growth move starts from)
+  sets `mixed_guards`, and from then on every move is first fit for the
+  rest of the process, so the gap placement is off. The committed gap
+  is kept by decision rather than leaving the skipped pages uncommitted,
+  which would break the rule that every page below the mark is
+  committed. Where that charge is refused (the commit or the free-page
+  set's growth fails), the move is placed again at the lowest fit for
+  the run alone, so a gap never turns a move that fits into `ENOMEM`
+  (`tests/c/resource.c`, `data_grow`); `RLIMIT_DATA` and a strict
+  overcommit limit get placement without a gap that way. Where
+  `grow_run` declines (the `PROT_NONE` guard modes) the move is first
+  fit, as a gap would buy nothing.
 - A live run shrinks in place for `realloc` and `rallocx` to a size
   above `MEDIUM_MAX` (6.3, `Huge::shrink_run`, `huge/shrink.rs`). Under
   the huge lock, after `free_run`'s live-run checks, it takes a

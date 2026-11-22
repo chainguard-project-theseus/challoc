@@ -759,6 +759,7 @@ fn huge_runs_go_through_the_heap_without_caches() {
             1,
             0,
             false,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new()
         )
@@ -808,6 +809,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
             1,
             0,
             false,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
         )
@@ -843,6 +845,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
                 usize::MAX,
                 1,
                 0,
+                false,
                 false,
                 Tracked::assume_new(),
                 Tracked::assume_new()

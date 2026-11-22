@@ -1053,7 +1053,10 @@ ctests! {
     /// served once the limit is raised. `data_threads`: 16 threads
     /// under a 3 to 128 MiB `RLIMIT_DATA` from the start make large
     /// requests on every route and never abort; at least one limit must
-    /// start two threads.
+    /// start two threads. `data_grow`: under an `RLIMIT_DATA` with room
+    /// for a moved run but not its gap, `realloc`, `rallocx` and
+    /// `challoc_realloc_usable` growth moves still return the block (the
+    /// gap placement falls back to the lowest fit).
     /// `mlock_huge`: huge runs placed
     /// over a freed, still `mlock`ed extent arrive (the guard is a
     /// `PROT_NONE` page where the kernel refuses the marker).
@@ -1074,6 +1077,7 @@ ctests! {
         CTest { prog: "resource", args: &["arenas_create"], conf: Some("narenas:1000"), ..BASE },
         CTest { prog: "resource", args: &["narenas"], conf: Some("narenas:1000"), ..BASE },
         CTest { prog: "resource", args: &["data_thread"], ..BASE },
+        CTest { prog: "resource", args: &["data_grow"], ..BASE },
         CTest { prog: "resource", args: &["data_threads"], ..BASE },
         CTest { prog: "resource", args: &["mlock_huge"], ..BASE },
         CTest { prog: "resource", args: &["mlockall"], ..BASE },

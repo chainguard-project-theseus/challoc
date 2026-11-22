@@ -4874,7 +4874,13 @@ A huge run goes at the lowest-address page where it fits: `Huge::find`
 returns the lowest aligned start whose pages are all free, or `None` when
 none exists. This is `Huge::find`'s contract, under the huge lock
 invariant: no entry point exports it ("Where the statement is weaker"
-below). Built on theorem 17.
+below). Built on theorem 17. The new run of a `realloc` growth that
+moves is placed by `Huge::find_gap` instead (design 7): `find` for its
+pages plus a gap, the start moved a gap in at the top, else `find` for
+its pages alone. Its contract is `find`'s without the lowest-address
+clause: the start fits (a fit for more pages is one for fewer, and the
+moved start's pages are among them), and `None` only when nothing
+fits.
 
 **Statement** (`huge/mod.rs`):
 

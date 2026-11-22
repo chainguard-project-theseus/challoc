@@ -337,10 +337,12 @@ impl Heap {
     }
 
     /// Huge allocation on this thread in its home arena: no cache, one
-    /// lock, counted in the thread's statistics. `blk` gets the run's token.
+    /// lock, counted in the thread's statistics. `grow`: the run is a
+    /// growth move's ([`Shared::alloc_huge`]). `blk` gets the run's token.
     #[cold]
     #[inline(never)]
-    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, zero: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    #[allow(clippy::too_many_arguments)]
+    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize, zero: bool, grow: bool, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, bool, Tracked<Zeroed>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -359,7 +361,7 @@ impl Heap {
             r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
         let arena = self.arena;
-        self.alloc_huge_in(shared, size, align, arena, zero, Tracked(blk), Tracked(ord))
+        self.alloc_huge_in(shared, size, align, arena, zero, grow, Tracked(blk), Tracked(ord))
     }
 
     /// Allocation of `class` from `arena` through this heap's cache for
@@ -419,6 +421,7 @@ impl Heap {
     }
 
     /// Huge allocation on this thread in `arena` (which must exist).
+    /// `grow`: the run is a growth move's ([`Shared::alloc_huge`]).
     // The ghost tokens are part of the signature.
     #[allow(clippy::too_many_arguments)]
     pub fn alloc_huge_in(
@@ -428,6 +431,7 @@ impl Heap {
         align: usize,
         arena: u16,
         zero: bool,
+        grow: bool,
         Tracked(blk): Tracked<&mut Live>,
         Tracked(ord): Tracked<&mut crate::lock::LockOrder>,
     ) -> (r: (*mut u8, bool, Tracked<Zeroed>))
@@ -449,7 +453,7 @@ impl Heap {
             r.0@.addr != 0 ==> final(blk).block(r.0) && final(blk).len() == shared.huge_usable(size),
             r.0@.addr != 0 ==> crate::vspec::zero::huge_placeable(size, align),
     {
-        let (p, zero, z) = shared.alloc_huge(size, align, arena, zero, Tracked(blk), Tracked(ord));
+        let (p, zero, z) = shared.alloc_huge(size, align, arena, zero, grow, Tracked(blk), Tracked(ord));
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }

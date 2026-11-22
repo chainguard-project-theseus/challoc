@@ -2293,6 +2293,7 @@ fn background_thread_starts_purges_and_is_absent_after_fork() {
         4096,
         0,
         false,
+        false,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -2493,6 +2494,7 @@ fn lazy_start_waits_for_dirty_memory() {
         4096,
         0,
         false,
+        false,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
@@ -2644,6 +2646,7 @@ fn background_thread_purges_an_empty_from_its_startup() {
         8 << 20,
         4096,
         0,
+        false,
         false,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
