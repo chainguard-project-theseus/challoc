@@ -4555,12 +4555,22 @@ impl Huge {
             r.0.ptr@.addr != 0 ==> self.spec_placeable(size, align),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        self.alloc_aligned(meta, size, align, arena, zero, grow, Tracked(tok), Tracked(ord))
+        let r = self.alloc_aligned(meta, size, align, arena, zero, grow, Tracked(&mut *tok), Tracked(&mut *ord));
+        if grow && r.0.ptr.is_null() {
+            // The gap placement was refused: at the top, `prepare` commits
+            // the skipped pages too (every page below the mark is
+            // read-write), which RLIMIT_DATA or a strict overcommit limit
+            // may refuse where the run alone fits. The move then takes the
+            // lowest fit, as any other allocation does.
+            return self.alloc_aligned(meta, size, align, arena, zero, false, Tracked(tok), Tracked(ord));
+        }
+        r
     }
 
     /// [`Huge::alloc_run`] for an `align` already known to be a power of
-    /// two.
-    #[inline(always)]
+    /// two. Out of line: `alloc_run` calls it a second time, without the
+    /// gap, when a growth move's placement is refused.
+    #[inline(never)]
     #[allow(clippy::too_many_arguments)]
     fn alloc_aligned(&self, meta: &Meta, size: usize, align: usize, arena: u16, zero: bool, grow: bool, Tracked(tok): Tracked<&mut Map<int, RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Placed, Tracked<Zeroed>))
         requires

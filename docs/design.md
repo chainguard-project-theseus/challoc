@@ -1096,9 +1096,15 @@ with page granularity (`huge/`).
   allocation, first fit included, may take it. A gap the run starts at
   the top becomes a `Purged` extent of pages never written (read-write
   like every page below the mark, `prepare`, but never faulted in), and
-  one past the mark is address space only: neither costs memory, only
-  room in the region and a higher mark (the free-page set's storage
-  follows the mark). Where `grow_run` declines (the `PROT_NONE` guard
+  one past the mark is address space only. Neither costs resident
+  memory, only room in the region and a higher mark (the free-page set's
+  storage follows the mark), but the pages a run skips at the top are
+  writable private pages, so they count in VmData, against `RLIMIT_DATA`
+  (2) and against a strict overcommit limit (`vm.overcommit_memory=2`),
+  as every page below the mark does. Where that charge is refused (the
+  commit or the free-page set's growth fails), the move is placed again
+  at the lowest fit for the run alone, so a gap never turns a move that
+  fits into `ENOMEM` (`tests/c/resource.c`, `data_grow`). Where `grow_run` declines (the `PROT_NONE` guard
   modes) the move is first fit, as a gap would buy nothing.
 - A live run shrinks in place for `realloc` and `rallocx` to a size
   above `MEDIUM_MAX` (6.3, `Huge::shrink_run`, `huge/shrink.rs`). Under

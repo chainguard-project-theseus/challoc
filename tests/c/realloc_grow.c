@@ -11,9 +11,11 @@
  *   - two buffers grown in turn, which cannot both be the last run, move
  *     only now and then;
  *   - four buffers grown in turn by an eighth (as CPython grows a
- *     bytearray or a list) move at most one step in four: a growth that
- *     moves places its new run with free pages after it, so the next few
- *     growths stay in place;
+ *     bytearray or a list) move at most one step in four, through
+ *     realloc, rallocx(p, m, 0), challoc_realloc_usable and rallocx with a
+ *     2 MiB alignment (each block keeps it) alike: a growth
+ *     that moves places its new run with free pages after it, so the next
+ *     few growths stay in place;
  *   - a grown run has the usable size a new run of its size has
  *     (nallocx), so free_sized and sdallocx with that size accept it;
  *   - rallocx grows in place too, and under MALLOCX_ZERO the bytes past the
@@ -73,6 +75,53 @@ static int all_zero(const char *p, size_t n)
         if (p[i])
             return 0;
     return 1;
+}
+
+/* Four buffers grown in turn by an eighth, to 16 MiB each, through
+ * realloc (`how` 0), rallocx(p, m, 0) (1), challoc_realloc_usable (2) or
+ * rallocx(p, m, MALLOCX_LG_ALIGN(21)) (3, an alignment above a page,
+ * where the move keeps the aligned start and asks only for the gap; each
+ * block must keep the alignment):
+ * none is the last run for long. First fit put each new run right behind
+ * the others, so nearly every other step moved; a move that leaves a gap
+ * moves at most one step in four. */
+static void four_buffers(int how)
+{
+    static const char *const names[] = {"realloc", "rallocx", "challoc_realloc_usable", "rallocx aligned"};
+    const size_t align = (size_t)1 << 21;
+    char *bufs[4];
+    size_t lens[4], steps4 = 0, moves4 = 0;
+    for (int k = 0; k < 4; k++) {
+        lens[k] = START;
+        bufs[k] = how == 3 ? mallocx(lens[k], MALLOCX_LG_ALIGN(21)) : malloc(lens[k]);
+        REQUIRE(bufs[k], "malloc");
+        memset(bufs[k], 0x30 + k, lens[k]);
+    }
+    while (lens[0] < END / 3) {
+        for (int k = 0; k < 4; k++) {
+            size_t m = lens[k] + (lens[k] >> 3), usable = 0;
+            char *q = how == 0 ? realloc(bufs[k], m)
+                      : how == 1 ? rallocx(bufs[k], m, 0)
+                      : how == 2 ? challoc_realloc_usable(bufs[k], m, &usable)
+                                 : rallocx(bufs[k], m, MALLOCX_LG_ALIGN(21));
+            REQUIRE(q, "%s %d", names[how], k);
+            CHECK(how != 3 || (uintptr_t)q % align == 0, "rallocx aligned: %p not 2 MiB aligned", (void *)q);
+            CHECK(how != 2 || usable >= m, "challoc_realloc_usable reported %zu for %zu", usable, m);
+            moves4 += q != bufs[k];
+            steps4++;
+            memset(q + lens[k], 0x30 + k, m - lens[k]);
+            bufs[k] = q;
+            lens[k] = m;
+        }
+    }
+    for (int k = 0; k < 4; k++) {
+        for (size_t i = 0; i < lens[k]; i += 4093)
+            CHECK((unsigned char)bufs[k][i] == 0x30 + k, "%s buffer %d: byte %zu", names[how], k, i);
+        free(bufs[k]);
+    }
+    CHECK(moves4 * 4 <= steps4, "four buffers (%s): %zu moves over %zu reallocs, want at most a quarter", names[how], moves4,
+          steps4);
+    printf("four buffers (%s): %zu moves over %zu reallocs\n", names[how], moves4, steps4);
 }
 
 int main(int argc, char **argv)
@@ -255,36 +304,19 @@ int main(int argc, char **argv)
         printf("SKIP realloc_grow epoch: challoc_cow_begin unavailable\n");
     }
 
-    /* Four buffers grown in turn by an eighth, to 16 MiB each: none is
-     * the last run for long. First fit put each new run right behind the
-     * others, so nearly every other step moved. */
-    char *bufs[4];
-    size_t lens[4], steps4 = 0, moves4 = 0;
-    for (int k = 0; k < 4; k++) {
-        lens[k] = START;
-        bufs[k] = malloc(lens[k]);
-        REQUIRE(bufs[k], "malloc");
-        memset(bufs[k], 0x30 + k, lens[k]);
-    }
-    while (lens[0] < END / 3) {
-        for (int k = 0; k < 4; k++) {
-            size_t m = lens[k] + (lens[k] >> 3);
-            char *q = realloc(bufs[k], m);
-            REQUIRE(q, "realloc %d", k);
-            moves4 += q != bufs[k];
-            steps4++;
-            memset(q + lens[k], 0x30 + k, m - lens[k]);
-            bufs[k] = q;
-            lens[k] = m;
-        }
-    }
-    for (int k = 0; k < 4; k++) {
-        for (size_t i = 0; i < lens[k]; i += 4093)
-            CHECK((unsigned char)bufs[k][i] == 0x30 + k, "buffer %d: byte %zu", k, i);
-        free(bufs[k]);
-    }
-    CHECK(moves4 * 4 <= steps4, "four buffers: %zu moves over %zu reallocs, want at most a quarter", moves4, steps4);
-    printf("four buffers: %zu moves over %zu reallocs\n", moves4, steps4);
+    /* Four buffers grown in turn by an eighth, through each route whose
+     * move leaves a gap. */
+    four_buffers(0);
+    if (rallocx)
+        four_buffers(1);
+    else
+        printf("SKIP realloc_grow four buffers: rallocx unavailable\n");
+    if (challoc_realloc_usable)
+        four_buffers(2);
+    else
+        printf("SKIP realloc_grow four buffers: challoc_realloc_usable unavailable\n");
+    if (rallocx && mallocx)
+        four_buffers(3);
 
     size_t after = allocated();
     CHECK(after <= base + (64u << 10), "stats.allocated %zu after, %zu before", after, base);

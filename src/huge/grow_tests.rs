@@ -525,6 +525,49 @@ fn growth_moves_at_the_top_leave_a_gap_behind_each_run() {
     assert_eq!((st.runs, st.empty + st.purged), (0, 1));
 }
 
+/// A free extent that runs into the mark is the top too (`find_gap`'s
+/// `e_end == g.next_page` arm): the run starts a gap in, past the
+/// extent's end, the skipped pages stay free (folded into that extent),
+/// and the next move does not land behind the run's guard.
+#[test]
+fn growth_moves_from_an_extent_at_the_mark_start_a_gap_in() {
+    let env = Env::new();
+    let Some(h) = huge(
+        &env,
+        "huge::grow_tests::growth_moves_from_an_extent_at_the_mark_start_a_gap_in",
+    ) else {
+        return;
+    };
+    let ps = page_size();
+    let (a, _) = env.alloc(&h, ps, 1); // pages [0, 2)
+    let (b, _) = env.alloc(&h, 3 * ps, 1); // pages [2, 6)
+    // [2, 6) is free and touches the mark: the fit for 5 pages and 5 of
+    // gap starts at 2, and the run 5 pages in, at 7.
+    env.free(&h, b);
+    let g1 = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g1), 7);
+    let st = h.stats(Tracked::assume_new());
+    assert_eq!(
+        (st.runs, st.next_page, st.empty_pages + st.purged_pages),
+        (2, 12, 5)
+    );
+    // The next move: [2, 7) is too short, so from the mark at 12, 5 in.
+    let g2 = env.alloc_grown(&h, 4 * ps);
+    assert_eq!(env.page_of(g2), 17);
+    fill(g1, 4 * ps, 2);
+    // `g1` grows into [12, 17), where it is.
+    assert_eq!(grow(&env, &h, g1, 8 * ps), Some((0, 4)));
+    check(g1, 4 * ps, 2);
+    // The pages before it stay free for the lowest fit.
+    let (c, _) = env.alloc(&h, 2 * ps, 1);
+    assert_eq!(env.page_of(c), 2);
+    for p in [a, c, g1, g2] {
+        env.free(&h, p);
+    }
+    let st = h.stats(Tracked::assume_new());
+    assert_eq!((st.runs, st.empty + st.purged), (0, 1));
+}
+
 /// Inside the region a growth that moves takes the lowest free extent
 /// with room for its gap: from the extent's start when the extent holds
 /// the run and its gap alone, and its gap's length in when it holds a gap
