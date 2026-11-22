@@ -342,3 +342,44 @@ fn a_grow_of_a_run_merged_into_a_free_extent_aborts() {
     env.free(&h, b);
     grow(&env, &h, b, 3 * ps);
 }
+
+/// The kernel refuses the new guard's marker (`EINVAL` on `mlock`ed
+/// pages, as `take` meets them): the growth declines before any
+/// bookkeeping, and the run keeps its size, its bytes and its guard.
+#[test]
+fn a_marker_the_kernel_refuses_declines() {
+    let env = Env::new();
+    let test = "huge::grow_tests::a_marker_the_kernel_refuses_declines";
+    let Some(h) = huge(&env, test) else {
+        return;
+    };
+    let ps = page_size();
+    let (a, _) = env.alloc(&h, ps, 1); // pages [0, 2)
+    let (b, _) = env.alloc(&h, 4 * ps, 1); // pages [2, 7)
+    let (c, _) = env.alloc(&h, ps, 1); // pages [7, 9)
+    fill(a, ps, 7);
+    if !crate::testutil::mlock_or_skip(test, b as usize, 4 * ps) {
+        return;
+    }
+    env.free(&h, b);
+    // The new guard would be page 4, inside the locked extent.
+    assert_eq!(grow(&env, &h, a, 4 * ps), None);
+    assert_eq!(info(&env, &h, a), (ps, 2));
+    check(a, ps, 7);
+    let st = h.stats(Tracked::assume_new());
+    assert_eq!(
+        (
+            st.runs,
+            st.empty + st.purged,
+            st.empty_pages + st.purged_pages
+        ),
+        (2, 1, 5)
+    );
+    // SAFETY: unlocking the test's own freed extent; no memory is touched.
+    unsafe { libc::munlock(b as *const _, 4 * ps) };
+    // Unlocked, the same growth goes through.
+    assert_eq!(grow(&env, &h, a, 4 * ps), Some((0, 3)));
+    check(a, ps, 7);
+    env.free(&h, a);
+    env.free(&h, c);
+}
