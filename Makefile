@@ -332,12 +332,12 @@ KANI_JOBS = 4
 # target still runs; point PROVED_PORT_HOME at a root laid out as
 # /usr/share/proved-port (make/, templates/ and KIT) and VERUS_COUNT at a
 # counter built from the kit at that tag to run them.
-PROVED_PORT_VERSION = 0.4.4
+PROVED_PORT_VERSION = 0.4.8
 PROVED_PORT_HOME ?= /usr/share/proved-port
 ifneq ($(wildcard $(PROVED_PORT_HOME)/make/proved-port.mk),)
 include $(PROVED_PORT_HOME)/make/proved-port.mk
 else
-PROVED_PORT_TARGETS = verus verus-proofs verus-count verus-count-test verus-headers kani kani-list kani-regular verify
+PROVED_PORT_TARGETS = verus verus-proofs verus-count verus-count-test verus-headers kani kani-list kani-regular verify lint-unsafe
 .PHONY: $(PROVED_PORT_TARGETS)
 $(PROVED_PORT_TARGETS):
 	@echo "$@: no proved-port kit at $(PROVED_PORT_HOME): install theseus-proved-port~$(PROVED_PORT_VERSION), or set PROVED_PORT_HOME to a kit install root (make/, templates/ and KIT, as the package lays out /usr/share/proved-port)" >&2; exit 1

@@ -25,7 +25,7 @@ make verus VERUS_BASE=origin/main   # the same, and FLOOR against main's
 ```
 
 `make verus` is the kit's target (`proved-port.mk`, from the
-theseus-proved-port package, pinned as `theseus-proved-port~0.4.4` in the
+theseus-proved-port package, pinned as `theseus-proved-port~0.4.8` in the
 checks and as the Makefile's `PROVED_PORT_VERSION`; the installed `KIT`
 names the release). It runs `sh verus/seams.sh --check` (Seams, below),
 then `cargo verus verify` (the default `quantum16` feature) with Verus's
@@ -63,8 +63,14 @@ Ordinary builds and tests are unchanged (`make build`, `make test`).
 ## What counts as verified
 
 A function counts when it sits inside `verus!`, is not
-`#[verifier::external_body]` or `#[verifier::external]`, and its body has no
-`assume(...)`, `admit()` or `Tracked::assume_new()`. Everything a verified
+`#[verifier::external_body]` or `#[verifier::external]`, is not covered by
+`#[verifier::exec_allows_no_decreases_clause]` (on the function, or on an
+`impl`, trait, module or file around it: Verus then checks its loops and
+recursion without a `decreases`, so nothing proves it terminates), and its
+body has no `assume(...)`, `admit()` or `Tracked::assume_new()`. Such a
+function is trusted for termination only; Verus still checks the rest of
+its body and contract, and verus/ledger/ lists it as a `no_decreases`
+seam. Everything a verified
 function relies on without proof is a seam: vstd's specifications of
 `core`, the `assume_specification` contracts for `core` functions vstd
 does not specify (in `src/vspec/`), and `external_body` functions. The
@@ -86,8 +92,9 @@ and governs where this section is shorter.
 
 `verus-count` parses every file under `src/`, `verus!` blocks included,
 with `verus_syn`, and counts executable functions and their lines as
-verified, trusted (inside `verus!` but `external_body`, `external`, or
-calling `assume`, `admit` or `Tracked::assume_new`) or outside `verus!`.
+verified, trusted (inside `verus!` but `external_body`, `external`,
+covered by `exec_allows_no_decreases_clause` (since kit 0.4.5), or calling
+`assume`, `admit` or `Tracked::assume_new`) or outside `verus!`.
 Ghost functions (`spec`, `proof`) are counted apart, except a proof taken
 on trust (an `axiom fn`, or a `proof fn` that is `external_body` or calls
 `assume`, `admit` or `Tracked::assume_new`), which counts as trusted. Code
