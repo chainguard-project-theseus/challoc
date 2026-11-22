@@ -159,6 +159,15 @@ code on or near the hot paths is justified with evidence.
   real workload goes back to the maintainer before it lands: the pull
   request links a maintainer's comment accepting it.
   Accepted means not blocked on the cost, not exempt from measuring it.
+  One exemption (Matt Moore, 2026-11-22, recorded in
+  https://github.com/chainguard-project-theseus/challoc/issues/882): a
+  proof change on a path that runs a bounded number of times per
+  process or per arena build (init, cgroup discovery, arena build) may
+  land on its codegen verdict alone, without a bench, provided the
+  verdict names every changed function and its cause. Every other proof
+  change, on any path that runs per call (malloc, free, `calloc`,
+  `realloc`, refill, purge, thread exit and the rest), follows the rule
+  above.
   The rule decides only whether a measured cost blocks. The exec change
   is one the proof needs, named in the pull request with why; it behaves
   as the base does in every profile, keeping every `debug_assert!` and
