@@ -1779,8 +1779,6 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
 /// quantum ([`kept`]) whose usable size is a new run's for `size`
 /// ([`usable_is`]). `None`, `blk` as it was, when it did not.
 #[inline(always)]
-// `old_len` is read only by the proof.
-#[allow(unused_variables)]
 pub(super) fn grow_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Option<usize>)
     requires
         crate::sys::may_abort(),
@@ -1803,7 +1801,7 @@ pub(super) fn grow_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usize
             &&& forall|q: *mut u8| #[trigger] old(blk).claims(q) ==> final(blk).claims(q)
         },
 {
-    let r = shared.grow_huge(p, size, Tracked(&mut *blk), Tracked(ord));
+    let r = shared.grow_huge(p, size, old_len, Tracked(&mut *blk), Tracked(ord));
     proof {
         if r is Some {
             shared.lemma_regions_ok();

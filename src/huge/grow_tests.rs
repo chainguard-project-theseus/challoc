@@ -383,3 +383,62 @@ fn a_marker_the_kernel_refuses_declines() {
     env.free(&h, a);
     env.free(&h, c);
 }
+
+/// Fork epochs (design 5): while the floors hold (`cow::in_force`), a run
+/// grows into the `Purged` extent behind it only while every purge so far
+/// was `MADV_DONTNEED` (`purge::purged_is_zero`); after a `MADV_FREE`
+/// batch the extent's pages may still be the child's, and it declines.
+/// An `Empty` extent declines either way. Each half in a fork child: the
+/// floors and the lazy flag are process-wide, and the flag is sticky, as
+/// in `purge::linux_tests::a_locked_range_is_reported_and_left_alone`.
+#[test]
+fn under_the_floors_a_run_grows_into_a_purged_extent_only_while_purges_are_eager() {
+    for lazy in [false, true] {
+        crate::testutil::in_fork_child("grow under the floors", 30_000, move || {
+            crate::purge::tests::forget_other_threads_explicit_purges();
+            let env = Env::new();
+            let Some(h) = huge(
+                &env,
+                "huge::grow_tests::under_the_floors_a_run_grows_into_a_purged_extent_only_while_purges_are_eager",
+            ) else {
+                return;
+            };
+            let ps = page_size();
+            let (a, _) = env.alloc(&h, 2 * ps, 1); // pages [0, 3)
+            let (b, _) = env.alloc(&h, 7 * ps, 1); // pages [3, 11)
+            let (c, _) = env.alloc(&h, ps, 1); // pages [11, 13)
+            fill(a, 2 * ps, 3);
+            env.free(&h, b);
+            crate::cow::test_set_in_force(true);
+            // `Empty`: its pages may be the child's.
+            assert_eq!(grow(&env, &h, a, 5 * ps), None);
+            // The purge, `MADV_FREE` under the headroom band's opt-in.
+            crate::purge::configure_advice(true);
+            crate::purge::set_headroom(lazy, false);
+            assert_eq!(crate::purge::advice() == crate::purge::Advice::Lazy, lazy);
+            assert_eq!(
+                h.purge_empty(u64::MAX, Tracked::assume_new(), Tracked::assume_new()),
+                1
+            );
+            crate::purge::set_headroom(false, false);
+            assert_eq!(
+                h.lookup(3, Tracked::assume_new(), Tracked::assume_new())
+                    .unwrap()
+                    .state,
+                RunState::Purged
+            );
+            assert_eq!(crate::purge::purged_is_zero(), !lazy);
+            if lazy {
+                assert_eq!(grow(&env, &h, a, 5 * ps), None);
+                assert_eq!(info(&env, &h, a), (2 * ps, 3));
+            } else {
+                assert_eq!(grow(&env, &h, a, 5 * ps), Some((0, 3)));
+                assert_eq!(info(&env, &h, a), (5 * ps, 6));
+            }
+            check(a, 2 * ps, 3);
+            crate::cow::test_set_in_force(false);
+            env.free(&h, a);
+            env.free(&h, c);
+        });
+    }
+}

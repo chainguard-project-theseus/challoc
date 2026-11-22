@@ -788,6 +788,292 @@ proof fn lemma_wf_store(g0: Inner, g1: Inner)
 }
 
 impl Huge {
+    /// `free_run`'s checks at the lock (`live_run_lookup`,
+    /// `live_run_checks`) for [`Huge::grow_run`]: abort unless
+    /// `page` starts a live `Active` run, keyed at `d`. It ensures
+    /// nothing: `grow_run` has those facts from the run's token, and
+    /// leaving the checks' facts (a quantifier over the run authorities
+    /// among them) out of its context keeps its proof within its rlimit.
+    #[inline(always)]
+    fn grow_live_checks(&self, g: &Inner, page: usize, d: *mut HugeDesc)
+        requires
+            crate::sys::may_abort(),
+            g.wf(),
+            page <= self.npages,
+            g.table.lookup(page) matches Some(p) ==> d == p,
+            g.table.lookup(page) is None ==> d@.addr == 0,
+    {
+        hide(Inner::wf);
+        proof {
+            g.lemma_wf_for_take();
+        }
+        self.live_run_lookup(Ghost(*g), page, d);
+        let (state, start) = (g.desc(d).state(), g.desc(d).start());
+        self.live_run_checks(Ghost(*g), page, Ghost(d), state, start);
+    }
+
+    /// [`Huge::grow_run`]'s bookkeeping, once the kernel's side is done
+    /// and the run's token has left the run authorities: the extent `x`
+    /// behind the run (none when `x` is null and the run ends at the mark)
+    /// loses the pages the run takes, keeping the rest or retiring, the
+    /// mark moves past the run when it reaches past it, and the run's
+    /// descriptor `d` gets its new page count. Infallible. A function of
+    /// its own so that each proof stays within its rlimit.
+    #[verifier::spinoff_prover]
+    #[allow(clippy::too_many_arguments)]
+    fn grow_books(
+        &self,
+        g: &mut Inner,
+        meta: &Meta,
+        page: usize,
+        n: usize,
+        need: usize,
+        usable: usize,
+        mark: usize,
+        d: *mut HugeDesc,
+        x: *mut HugeDesc,
+        Ghost(gb): Ghost<Inner>,
+        Tracked(under): Tracked<&mut LockOrder>,
+    ) -> (r: Ghost<Grow>)
+        requires
+            crate::sys::may_abort(),
+            crate::sys::may_syscall(),
+            old(under).allows(rank_meta()),
+            gb.wf(),
+            *old(g) == (Inner { runs: old(g).runs, pgs: old(g).pgs, ..gb }),
+            meta.live_id() == gb.mid@,
+            gb.lg@ == self.lg_page,
+            gb.np@ == self.npages,
+            usable < self.npages,
+            need == usable + GUARD_PAGES,
+            mark == gb.next_page,
+            gb.descs@.contains_key(d),
+            gb.descs@[d].value().start == page,
+            gb.descs@[d].value().pages == n,
+            gb.descs@[d].value().state == RunState::Active as u8,
+            keyed(gb.table, gb.descs@[d].value(), d),
+            n < need,
+            page + n <= mark,
+            page + need <= self.npages,
+            x@.addr == 0 ==> page + n == mark,
+            x@.addr != 0 ==> {
+                let ve = gb.descs@[x].value();
+                &&& gb.descs@.contains_key(x)
+                &&& ve.start == page + n
+                &&& ve.state != RunState::Active as u8
+                &&& (page + need <= ve.start + ve.pages || ve.start + ve.pages == mark)
+                &&& keyed(gb.table, ve, x)
+                &&& apart(gb.descs@[d].value(), ve)
+            },
+        ensures
+            final(g).grew(gb, r@),
+            *final(under) == *old(under),
+            final(g).runs == old(g).runs,
+            final(g).pgs == old(g).pgs,
+            final(g).base == gb.base,
+            final(g).mid == gb.mid,
+            r@.d == d,
+            r@.vg.pages == need,
+    {
+        hide(Inner::wf);
+        hide(Seq::no_duplicates);
+        hide(Seq::index_of);
+        proof {
+            use_type_invariant(self);
+            self.lemma_page();
+            gb.lemma_wf_for_take();
+        }
+        let ghost d0 = gb.descs@;
+        let ghost vd = d0[d].value();
+        let ghost ve = d0[x].value();
+        let ghost has_ext = x@.addr != 0;
+        let e = page + n;
+        let end = page + need;
+        let ghost t0 = gb.table;
+        let ghost st0 = gb.stats;
+        let ghost mut vt = ve;
+        let ghost mut used = false;
+        proof {
+            lemma_can_sub(gb, d);
+            if has_ext {
+                lemma_can_sub(gb, x);
+                assert(keyed(t0, ve, x));
+                assert(apart(vd, ve));
+            }
+            lemma_tally_nonneg(gb.all@, d0, 6);
+            assert(keyed(t0, vd, d));
+        }
+        proof {
+            assert(st0.run_pages + st0.empty_pages + st0.purged_pages == mark);
+            assert(st0.runs + st0.empty + st0.purged <= mark);
+            assert(mark <= gb.np@ <= u32::MAX);
+        }
+        if !x.is_null() {
+            let xe = g.desc(x).end();
+            g.drop_extent(x, Ghost(Seq::empty()));
+            proof {
+                assert(ve.state == RunState::Empty as u8 || ve.state == RunState::Purged as u8);
+                assert(stat(g.stats, 1) == stat(st0, 1) - weight(ve, 1));
+                assert(stat(g.stats, 2) == stat(st0, 2) - weight(ve, 2));
+                assert(stat(g.stats, 4) == stat(st0, 4) - weight(ve, 4));
+                assert(stat(g.stats, 5) == stat(st0, 5) - weight(ve, 5));
+            }
+            let hi = if end < xe { end } else { xe };
+            g.free.map.clear_range(e, hi - e);
+            if xe > end {
+                // What is left keeps the descriptor, its state, its age
+                // and its place in the `Empty` list.
+                let ghost dm = g.descs@;
+                {
+                    let xd = g.desc_mut(x);
+                    xd.start = end as u32;
+                    xd.pages = (xe - end) as u32;
+                }
+                proof {
+                    used = true;
+                    vt = HugeDesc { start: end as u32, pages: (xe - end) as u32, ..ve };
+                    assert(same_but_links(vt, g.descs@[x].value()));
+                    assert(forall|i: int| 0 <= i < g.elist@.len() ==> #[trigger] enode(g.elist@, g.descs@, i) == enode(g.elist@, dm, i));
+                    // Nothing is keyed inside the old extent now.
+                    assert(g.table.lookup(end) is None) by {
+                        if t0.lookup(end) is Some {
+                            let y = t0.lookup(end).unwrap();
+                            assert(is_key(d0[y].value(), end as int));
+                            assert(desc_ok(d0[y].value(), gb.next_page));
+                            if y != x {
+                                assert(apart(d0[y].value(), ve));
+                            }
+                        }
+                    }
+                    assert(g.table.lookup((xe - 1) as usize) is None) by {
+                        if t0.lookup((xe - 1) as usize) is Some {
+                            let y = t0.lookup((xe - 1) as usize).unwrap();
+                            assert(is_key(d0[y].value(), xe - 1));
+                            assert(desc_ok(d0[y].value(), gb.next_page));
+                            if y != x {
+                                assert(apart(d0[y].value(), ve));
+                            }
+                        }
+                    }
+                    assert(weight(vt, 6) <= weight(ve, 6));
+                    assert(g.stats.can_add(state_of(vt.state), vt.pages as usize));
+                    assert(perms_ok(g.descs@));
+                }
+                g.add_extent(x);
+            } else {
+                proof {
+                    assert(gb.all@.contains(x));
+                    if ve.state == RunState::Empty as u8 {
+                        assert(gb.elist@.contains(x));
+                    }
+                }
+                g.retire(meta, x, Tracked(under));
+            }
+        }
+        if end > mark {
+            g.next_page = end;
+        }
+        let ghost dr = g.descs@;
+        let ghost s1 = g.stats;
+        let ghost tx = g.table;
+        proof {
+            assert(dr.contains_key(d) && same_but_links(vd, dr[d].value()));
+            assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(s1, k) == stat(st0, k) - (if has_ext { weight(ve, k) } else { 0 }) + (if used {
+                weight(vt, k)
+            } else {
+                0
+            }) by {}
+            assert(tx.spec_count() == t0.spec_count() - (if has_ext { weight(ve, 6) } else { 0 }) + (if used { weight(vt, 6) } else { 0 }));
+            assert forall|k: usize| #[trigger] tx.lookup(k) == (if used && is_key(vt, k as int) {
+                Some(x)
+            } else if has_ext && is_key(ve, k as int) {
+                None
+            } else {
+                t0.lookup(k)
+            }) by {}
+            assert(tx.lookup(page) == Some(d));
+            assert(stat(s1, 0) == stat(st0, 0) && stat(s1, 3) == stat(st0, 3));
+            assert(s1.runs == st0.runs && s1.run_pages == st0.run_pages);
+        }
+        g.drop_extent(d, Ghost(Seq::empty()));
+        let ghost s2 = g.stats;
+        proof {
+            assert(stat(s2, 0) == stat(s1, 0) - weight(dr[d].value(), 0));
+            assert(stat(s2, 3) == stat(s1, 3) - weight(dr[d].value(), 3));
+            assert(s2.runs == st0.runs - 1 && s2.run_pages == st0.run_pages - n);
+        }
+        proof {
+            self.lemma_pages(usable);
+        }
+        {
+            let dd = g.desc_mut(d);
+            dd.pages = need as u32;
+            dd.usable = usable << self.lg_page;
+        }
+        let ghost vg = g.descs@[d].value();
+        proof {
+            assert(same_but_links(HugeDesc { pages: need as u32, usable: (usable * pow2(self.lg_page as nat)) as usize, ..vd }, vg));
+            assert(run_ok(vg, gb.lg@));
+            assert(forall|i: int| 0 <= i < g.elist@.len() ==> #[trigger] enode(g.elist@, g.descs@, i) == enode(g.elist@, dr, i));
+            assert(g.table.lookup(page) is None);
+            assert(g.stats.can_add(RunState::Active, need));
+        }
+        g.add_extent(d);
+        let ghost s3 = g.stats;
+        proof {
+            assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(s3, k) == stat(s2, k) + weight(vg, k) by {}
+        }
+        g.stats.next_page = g.next_page;
+        let ghost g1 = *g;
+        let ghost t = Grow { d, vd, vg, x, has_ext, ve, used, vt, mark, nm: g1.next_page };
+        proof {
+            assert(g1.stats == (HugeStats { next_page: g1.stats.next_page, ..s3 }));
+            assert(forall|k: int| 0 <= k < 6 ==> #[trigger] stat(g1.stats, k) == stat(s3, k));
+            assert(t.shape_ok(gb));
+            assert(g1.grew(gb, t)) by {
+                assert(weight(dr[d].value(), 6) == weight(vd, 6));
+                assert forall|k: usize| #[trigger] g1.table.lookup(k) == t.lookup(t0, k) by {
+                    assert(tx.lookup(k) == (if used && is_key(vt, k as int) {
+                        Some(x)
+                    } else if has_ext && is_key(ve, k as int) {
+                        None
+                    } else {
+                        t0.lookup(k)
+                    }));
+                    if k == page {
+                        assert(has_ext ==> !is_key(ve, k as int));
+                        assert(used ==> !is_key(vt, k as int));
+                    }
+                }
+                assert(g1.table.spec_count() == t0.spec_count() + t.delta(6));
+                assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(g1.stats, k) == stat(st0, k) + t.delta(k) by {
+                    assert(stat(s2, k) == stat(s1, k) - weight(dr[d].value(), k));
+                    assert(weight(dr[d].value(), k) == weight(vd, k));
+                    assert(stat(g1.stats, k) == stat(s2, k) + weight(vg, k));
+                    assert(stat(s1, k) == stat(st0, k) - (if has_ext { weight(ve, k) } else { 0 }) + (if used { weight(vt, k) } else { 0 }));
+                }
+                assert forall|y: *mut HugeDesc| #[trigger] g1.descs@.contains_key(y) <==> t.model(d0, y) is Some by {}
+                assert forall|y: *mut HugeDesc| #[trigger] g1.descs@.contains_key(y) implies same_but_links(
+                    t.model(d0, y).unwrap(),
+                    g1.descs@[y].value(),
+                ) by {}
+                assert(g1.all@ == t.all_after(gb.all@));
+                assert(g1.elist@ == t.elist_after(gb.elist@));
+                assert forall|q: nat| #[trigger] g1.free.map@.contains(q) <==> gb.free.map@.contains(q) && !(t.e() <= q < t.end()) by {
+                    if has_ext && t.e() <= q < t.end() && !(q < ve.start + ve.pages) {
+                        // Past the extent, which then ends at the mark: no
+                        // free page is there.
+                        gb.lemma_free_below();
+                    }
+                    if !has_ext && t.e() <= q < t.end() {
+                        gb.lemma_free_below();
+                    }
+                }
+            }
+        }
+        Ghost(t)
+    }
+
     /// Grow the live run that starts at `page`, whose token is `tok`, in
     /// place to hold `size` bytes: [`Huge::usable_for`]`(size)` usable
     /// bytes, what a new run of that size has, followed by the guard.
@@ -833,7 +1119,6 @@ impl Huge {
     /// token it returns is the grown run's: its extent and pages replace
     /// the old token's in the run authorities.
     #[verifier::spinoff_prover]
-    #[verifier::rlimit(20)]
     #[allow(clippy::type_complexity)]
     pub fn grow_run(
         &self,
@@ -907,9 +1192,7 @@ impl Huge {
         // racing free can make stale, so the run is checked live at the
         // lock before anything is read from or done to its descriptor; a
         // freed run aborts here as its move's free would.
-        self.live_run_lookup(Ghost(g@), page, d);
-        let (state, start) = (g.desc(d).state(), g.desc(d).start());
-        self.live_run_checks(Ghost(g@), page, Ghost(d), state, start);
+        self.grow_live_checks(_gi, page, d);
         proof {
             let x = choose|x: *mut HugeDesc|
                 #![trigger g0.descs@.contains_key(x)]
@@ -1065,187 +1348,18 @@ impl Huge {
             }
         }
         // The bookkeeping.
-        let ghost t0 = gb.table;
-        let ghost st0 = gb.stats;
-        let ghost mut vt = ve;
-        let ghost mut used = false;
         proof {
-            lemma_can_sub(gb, d);
             if has_ext {
-                lemma_can_sub(gb, x);
-                assert(keyed(t0, ve, x));
+                assert(keyed(gb.table, ve, x));
                 assert(apart(vd, ve));
             }
-            lemma_tally_nonneg(gb.all@, d0, 6);
-            assert(keyed(t0, vd, d));
+            assert(keyed(gb.table, vd, d));
         }
-        proof {
-            assert(st0.run_pages + st0.empty_pages + st0.purged_pages == mark);
-            assert(st0.runs + st0.empty + st0.purged <= mark);
-            assert(mark <= gb.np@ <= u32::MAX);
-        }
-        if !x.is_null() {
-            let xe = g.desc(x).end();
-            g.drop_extent(x, Ghost(Seq::empty()));
-            proof {
-                assert(ve.state == RunState::Empty as u8 || ve.state == RunState::Purged as u8);
-                assert(stat(g@.stats, 1) == stat(st0, 1) - weight(ve, 1));
-                assert(stat(g@.stats, 2) == stat(st0, 2) - weight(ve, 2));
-                assert(stat(g@.stats, 4) == stat(st0, 4) - weight(ve, 4));
-                assert(stat(g@.stats, 5) == stat(st0, 5) - weight(ve, 5));
-            }
-            let hi = if end < xe { end } else { xe };
-            g.free.map.clear_range(e, hi - e);
-            if xe > end {
-                // What is left keeps the descriptor, its state, its age
-                // and its place in the `Empty` list.
-                let ghost dm = g@.descs@;
-                {
-                    let xd = g.desc_mut(x);
-                    xd.start = end as u32;
-                    xd.pages = (xe - end) as u32;
-                }
-                proof {
-                    used = true;
-                    vt = HugeDesc { start: end as u32, pages: (xe - end) as u32, ..ve };
-                    assert(same_but_links(vt, g@.descs@[x].value()));
-                    assert(forall|i: int| 0 <= i < g@.elist@.len() ==> #[trigger] enode(g@.elist@, g@.descs@, i) == enode(g@.elist@, dm, i));
-                    // Nothing is keyed inside the old extent now.
-                    assert(g@.table.lookup(end) is None) by {
-                        if t0.lookup(end) is Some {
-                            let y = t0.lookup(end).unwrap();
-                            assert(is_key(d0[y].value(), end as int));
-                            assert(desc_ok(d0[y].value(), g0.next_page));
-                            if y != x {
-                                assert(apart(d0[y].value(), ve));
-                            }
-                        }
-                    }
-                    assert(g@.table.lookup((xe - 1) as usize) is None) by {
-                        if t0.lookup((xe - 1) as usize) is Some {
-                            let y = t0.lookup((xe - 1) as usize).unwrap();
-                            assert(is_key(d0[y].value(), xe - 1));
-                            assert(desc_ok(d0[y].value(), g0.next_page));
-                            if y != x {
-                                assert(apart(d0[y].value(), ve));
-                            }
-                        }
-                    }
-                    assert(weight(vt, 6) <= weight(ve, 6));
-                    assert(g@.stats.can_add(state_of(vt.state), vt.pages as usize));
-                    assert(perms_ok(g@.descs@));
-                }
-                g.add_extent(x);
-            } else {
-                proof {
-                    assert(gb.all@.contains(x));
-                    if ve.state == RunState::Empty as u8 {
-                        assert(gb.elist@.contains(x));
-                    }
-                }
-                g.retire(meta, x, Tracked(&mut under));
-            }
-        }
-        if end > mark {
-            g.next_page = end;
-        }
-        let ghost dr = g@.descs@;
-        let ghost s1 = g@.stats;
-        let ghost tx = g@.table;
-        proof {
-            assert(dr.contains_key(d) && same_but_links(vd, dr[d].value()));
-            assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(s1, k) == stat(st0, k) - (if has_ext { weight(ve, k) } else { 0 }) + (if used {
-                weight(vt, k)
-            } else {
-                0
-            }) by {}
-            assert(tx.spec_count() == t0.spec_count() - (if has_ext { weight(ve, 6) } else { 0 }) + (if used { weight(vt, 6) } else { 0 }));
-            assert forall|k: usize| #[trigger] tx.lookup(k) == (if used && is_key(vt, k as int) {
-                Some(x)
-            } else if has_ext && is_key(ve, k as int) {
-                None
-            } else {
-                t0.lookup(k)
-            }) by {}
-            assert(tx.lookup(page) == Some(d));
-            assert(stat(s1, 0) == stat(st0, 0) && stat(s1, 3) == stat(st0, 3));
-            assert(s1.runs == st0.runs && s1.run_pages == st0.run_pages);
-        }
-        g.drop_extent(d, Ghost(Seq::empty()));
-        let ghost s2 = g@.stats;
-        proof {
-            assert(stat(s2, 0) == stat(s1, 0) - weight(dr[d].value(), 0));
-            assert(stat(s2, 3) == stat(s1, 3) - weight(dr[d].value(), 3));
-            assert(s2.runs == st0.runs - 1 && s2.run_pages == st0.run_pages - n);
-        }
-        proof {
-            self.lemma_pages(usable);
-        }
-        {
-            let dd = g.desc_mut(d);
-            dd.pages = need as u32;
-            dd.usable = usable << self.lg_page;
-        }
-        let ghost vg = g@.descs@[d].value();
-        proof {
-            assert(same_but_links(HugeDesc { pages: need as u32, usable: (usable * pow2(self.lg_page as nat)) as usize, ..vd }, vg));
-            assert(run_ok(vg, gb.lg@));
-            assert(forall|i: int| 0 <= i < g@.elist@.len() ==> #[trigger] enode(g@.elist@, g@.descs@, i) == enode(g@.elist@, dr, i));
-            assert(g@.table.lookup(page) is None);
-            assert(g@.stats.can_add(RunState::Active, need));
-        }
-        g.add_extent(d);
-        let ghost s3 = g@.stats;
-        proof {
-            assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(s3, k) == stat(s2, k) + weight(vg, k) by {}
-        }
-        g.stats.next_page = g.next_page;
+        let _gm: &mut Inner = &mut g;
+        let _tg = self.grow_books(_gm, meta, page, n, need, usable, mark, d, x, Ghost(gb), Tracked(&mut under));
+        let ghost t = _tg@;
         let ghost g1 = g@;
         proof {
-            assert(g1.stats == (HugeStats { next_page: g1.stats.next_page, ..s3 }));
-            assert(forall|k: int| 0 <= k < 6 ==> #[trigger] stat(g1.stats, k) == stat(s3, k));
-            let t = Grow { d, vd, vg, x, has_ext, ve, used, vt, mark, nm: g1.next_page };
-            assert(t.shape_ok(gb));
-            assert(g1.grew(gb, t)) by {
-                assert(weight(dr[d].value(), 6) == weight(vd, 6));
-                assert forall|k: usize| #[trigger] g1.table.lookup(k) == t.lookup(t0, k) by {
-                    assert(tx.lookup(k) == (if used && is_key(vt, k as int) {
-                        Some(x)
-                    } else if has_ext && is_key(ve, k as int) {
-                        None
-                    } else {
-                        t0.lookup(k)
-                    }));
-                    if k == page {
-                        assert(has_ext ==> !is_key(ve, k as int));
-                        assert(used ==> !is_key(vt, k as int));
-                    }
-                }
-                assert(g1.table.spec_count() == t0.spec_count() + t.delta(6));
-                assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(g1.stats, k) == stat(st0, k) + t.delta(k) by {
-                    assert(stat(s2, k) == stat(s1, k) - weight(dr[d].value(), k));
-                    assert(weight(dr[d].value(), k) == weight(vd, k));
-                    assert(stat(g1.stats, k) == stat(s2, k) + weight(vg, k));
-                    assert(stat(s1, k) == stat(st0, k) - (if has_ext { weight(ve, k) } else { 0 }) + (if used { weight(vt, k) } else { 0 }));
-                }
-                assert forall|y: *mut HugeDesc| #[trigger] g1.descs@.contains_key(y) <==> t.model(d0, y) is Some by {}
-                assert forall|y: *mut HugeDesc| #[trigger] g1.descs@.contains_key(y) implies same_but_links(
-                    t.model(d0, y).unwrap(),
-                    g1.descs@[y].value(),
-                ) by {}
-                assert(g1.all@ == t.all_after(gb.all@));
-                assert(g1.elist@ == t.elist_after(gb.elist@));
-                assert forall|q: nat| #[trigger] g1.free.map@.contains(q) <==> gb.free.map@.contains(q) && !(t.e() <= q < t.end()) by {
-                    if has_ext && t.e() <= q < t.end() && !(q < ve.start + ve.pages) {
-                        // Past the extent, which then ends at the mark: no
-                        // free page is there.
-                        gb.lemma_free_below();
-                    }
-                    if !has_ext && t.e() <= q < t.end() {
-                        gb.lemma_free_below();
-                    }
-                }
-            }
             lemma_grew_active(gb, g1, t);
         }
         // The grown run's token: its extent and pages enter the run
@@ -1256,7 +1370,6 @@ impl Huge {
         let tracked grown = RunToken { ext, pages };
         proof {
             assert(g@ == (Inner { runs: g@.runs, pgs: g@.pgs, ..g1 }));
-            let t = Grow { d, vd, vg, x, has_ext, ve, used, vt, mark, nm: g1.next_page };
             assert(g@.grew(gb, t));
             assert(g@.base == gb.base && g@.lg == gb.lg && g@.next_page == t.nm);
             assert(g@.mark_committed());

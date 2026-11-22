@@ -3504,11 +3504,15 @@ impl Shared {
     /// frees' rule holds), whose bytes before the growth read as they did;
     /// `None`, nothing changed, when `p` is no page start of the huge
     /// region or the run cannot grow where it is, and the caller moves the
-    /// block. The run's arena counts the pages it gained. Out of line: the
-    /// move is the caller's other path.
+    /// block. The run's arena counts the pages it gained, and the calling
+    /// thread's heap, when it has one, counts the growth as the move would
+    /// have: the grown run's usable bytes in `thread.allocated` and the
+    /// old run's, `old_len`, in `thread.deallocated`, so the two still
+    /// balance once the grown run is freed. Out of line: the move is the
+    /// caller's other path.
     #[cold]
     #[inline(never)]
-    pub(crate) fn grow_huge(&self, p: *mut u8, size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+    pub(crate) fn grow_huge(&self, p: *mut u8, size: usize, old_len: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -3566,7 +3570,11 @@ impl Shared {
         match r {
             Some((arena, k)) => {
                 self.owner(arena).0.note_huge_grow(k);
-                self.huge.usable_for(size)
+                let n = self.huge.usable_for(size);
+                if let Some(h) = super::existing_heap(super::shared_ptr(self)) {
+                    h.count_uncached_move(n.unwrap_or(0), old_len);
+                }
+                n
             },
             None => None,
         }

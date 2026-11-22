@@ -23,6 +23,10 @@
  *     challoc_cow_end it grows into such an extent again; in an epoch it
  *     grows into a `Purged` extent while no MADV_FREE batch has gone out,
  *     and moves after one (a note line where lazy purges are off);
+ *   - a run grown in place by realloc, rallocx and challoc_realloc_usable
+ *     counts as the move it replaces in thread.allocated and
+ *     thread.deallocated, so the two grow by the same amount once it is
+ *     freed;
  *   - stats.allocated returns to where it started.
  */
 #include "common.h"
@@ -42,6 +46,14 @@ static size_t allocated(void)
     size_t n = sizeof e;
     mallctl("epoch", &e, &n, &e, sizeof e);
     return ctl_size("stats.allocated");
+}
+
+static uint64_t thread_u64(const char *name)
+{
+    uint64_t v = 0;
+    size_t n = sizeof v;
+    REQUIRE(mallctl(name, &v, &n, NULL, 0) == 0, "%s", name);
+    return v;
 }
 
 static void touch_guard(void *arg)
@@ -153,6 +165,30 @@ int main(int argc, char **argv)
     REQUIRE(c, "calloc");
     CHECK(all_zero(c, u), "calloc over a grown run's pages not zero");
     free(c);
+
+    /* thread.allocated and thread.deallocated: each growth counts the
+     * grown run's usable bytes allocated and the old run's deallocated, as
+     * a move does, so once the run is freed the two have grown alike. */
+    {
+        uint64_t a0 = thread_u64("thread.allocated"), d0 = thread_u64("thread.deallocated");
+        size_t s = 1u << 20, kept = 0, tu = 0;
+        char *t = malloc(s);
+        REQUIRE(t, "malloc for the thread counters");
+        char *t2 = realloc(t, s + page);
+        REQUIRE(t2, "realloc for the thread counters");
+        kept += t2 == t;
+        char *t3 = rallocx(t2, s + 2 * page, 0);
+        REQUIRE(t3, "rallocx for the thread counters");
+        kept += t3 == t2;
+        char *t4 = challoc_realloc_usable(t3, s + 3 * page, &tu);
+        REQUIRE(t4, "challoc_realloc_usable for the thread counters");
+        kept += t4 == t3;
+        free(t4);
+        uint64_t a1 = thread_u64("thread.allocated"), d1 = thread_u64("thread.deallocated");
+        CHECK(a1 - a0 == d1 - d0, "thread.allocated +%llu, thread.deallocated +%llu (%zu of 3 grew in place)",
+              (unsigned long long)(a1 - a0), (unsigned long long)(d1 - d0), kept);
+        CHECK(kept > 0, "no growth in place for the thread counters");
+    }
 
     /* Fork epochs. */
     if (challoc_cow_begin && challoc_cow_begin(0) == 0) {
