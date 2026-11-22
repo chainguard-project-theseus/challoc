@@ -1181,6 +1181,20 @@ ctests! {
         CTest { prog: "realloc_grow", gate: Gate::GuardInstall, ..BASE },
         CTest { prog: "realloc_grow", conf: Some("abort_conf:true,guards:false"), ..BASE },
     ];
+    /// `tests/c/realloc_shrink.c` (`huge/shrink.rs`): a huge run trimmed
+    /// to fewer pages, still a run's size, stays where it is with its
+    /// bytes; the pages it released are the next run's, zeroed by
+    /// `calloc`; a shrunk run's usable size is `nallocx`'s, the sized frees
+    /// take it, and the page past it faults; a read buffer trimmed to its
+    /// length is not copied; `rallocx` (with `MALLOCX_ZERO` too) and
+    /// `challoc_realloc_usable` shrink too; a shrink to a class size moves;
+    /// the thread counters balance; in a fork epoch a run shrinks but
+    /// does not grow back into what it released. With
+    /// `MADV_GUARD_INSTALL` markers, and under `guards:false`.
+    c_realloc_shrink => [
+        CTest { prog: "realloc_shrink", gate: Gate::GuardInstall, ..BASE },
+        CTest { prog: "realloc_shrink", conf: Some("abort_conf:true,guards:false"), ..BASE },
+    ];
     /// `tests/c/features.c`: `challoc_features()` is a
     /// NUL-terminated `key=value` line equal to the `Kernel and CPU features:`
     /// line of `malloc_stats_print`, with every CPU key of this architecture.

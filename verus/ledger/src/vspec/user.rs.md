@@ -13,7 +13,7 @@ file.
 
 ## `axiom_zeroed_bytes`
 
-src/vspec/user.rs:222. Kind: external_body proof. Category: allocator invariant.
+src/vspec/user.rs:243. Kind: external_body proof. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The bytes a [`Zeroed`] token covers read as zero, so a permission's byte state for them is zero.
@@ -31,7 +31,7 @@ pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
 
 ## `axiom_cast`
 
-src/vspec/user.rs:247. Kind: external_body proof. Category: platform/kernel fact.
+src/vspec/user.rs:268. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The permission to bytes of challoc's memory, of any provenance, as the permission to them through an integer-to-pointer cast ([`addr_to_ptr`](crate::vspec::addr::addr_to_ptr), of [`cast_provenance`](crate::vspec::addr::cast_provenance)), the bytes and their values unchanged.
@@ -49,7 +49,7 @@ pub proof fn axiom_cast(tracked m: &mut UserMem)
 
 ## `copy_raw`
 
-src/vspec/user.rs:301. Kind: external_body. Category: raw pointer (internal).
+src/vspec/user.rs:322. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: vspec::user::kani_copy::copy_raw_copies, vspec::user::kani_copy::copy_raw_copies_within).
 
 > `copy_nonoverlapping(src, dst, n)` for `u8` with the permissions to both ranges, and its effect on `d`'s byte state: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.

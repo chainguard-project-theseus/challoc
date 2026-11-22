@@ -785,7 +785,11 @@ bytes, `spec_usable(size) >= size`, lie in the region (`Live::put_run`'s
 `is_huge_block`), and `realloc_block`, `realloc_usable_stored` and
 `rallocx_zeroed` keep `p` exactly when `keeps` holds or it grew
 (`grew_in_place`: the grown token, at `p`, of `huge_usable(size)` bytes
-that read as the old ones).
+that read as the old ones) or shrank (`shrink_kept`,
+`Shared::shrink_huge`; `shrank_in_place`: the shrunk token, at `p`, of
+`huge_usable(size)` bytes, fewer than it had, that read as the first
+old ones; `Live::put_shrunk_run`'s `is_huge_block` for fewer bytes than
+the run had).
 
 **Premises beyond the common ones.**
 - Slab results: `CachePerms::tracks` (`heap/perms.rs`), part of the
@@ -5100,7 +5104,9 @@ verified (`lemma_class_table_wf`).
 `realloc` and `rallocx` keep a block in place exactly when the new size
 and alignment pick the block's own class, or, for a huge run, round up
 to the run's own page count, or when a huge run grows in place into
-the pages after it (`grew_in_place`); otherwise they move it.
+the pages after it (`grew_in_place`), or shrinks in place to a smaller
+run, releasing the pages after its new end (`shrank_in_place`);
+otherwise they move it.
 
 **Statement** (`api/libc.rs`; `api/jemalloc.rs`):
 
@@ -5128,6 +5134,18 @@ pub open spec fn grew_in_place(p: *mut u8, size: usize, blk: Live, out: Live) ->
     &&& out.copied_from(blk, blk.len())
 }
 
+// The third: the live run shrank in place (`shrink_kept`,
+// `Shared::shrink_huge`) to the usable bytes of a run of `size`, fewer
+// than it had, and `out` is the shrunk run's token, the bytes it keeps
+// reading as they did.
+pub open spec fn shrank_in_place(p: *mut u8, size: usize, blk: Live, out: Live) -> bool {
+    &&& process_regions().is_huge_block(p@.addr, 1)
+    &&& huge_usable(size as int) < blk.len()
+    &&& out.len() == huge_usable(size as int)
+    &&& out.block(p)
+    &&& out.copied_from(blk, out.len())
+}
+
 fn old_size_or_keep(shared, what, p, size, align, blk: &Live) -> (r: Option<usize>)
     ensures r is None <==> keeps(p, size, align, blk.len()), ...
 fn realloc_old(shared, p, size, blk: &Live) -> (r: (bool, usize))
@@ -5135,19 +5153,22 @@ fn realloc_old(shared, p, size, blk: &Live) -> (r: (bool, usize))
 fn realloc_block(p, size, blk: Live, out, errno) -> (r: *mut u8)
     ensures p@.addr != 0 && size != 0
         ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())
-                || grew_in_place(p, size, blk, *final(out))), ...
+                || grew_in_place(p, size, blk, *final(out))
+                || shrank_in_place(p, size, blk, *final(out))), ...
 fn realloc_usable_stored(p, size, usable, blk: Live, out, errno) -> (r: (*mut u8, _))
     ensures p@.addr != 0 && size != 0
         ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())
-                || grew_in_place(p, size, blk, *final(out))), ...
+                || grew_in_place(p, size, blk, *final(out))
+                || shrank_in_place(p, size, blk, *final(out))), ...
 fn rallocx_zeroed(p, size, flags, blk: Live, out) -> (r: (*mut u8, _, _))
     ensures p@.addr != 0
         ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1usize << (flags & 0x3f), blk.len())
-                || grew_in_place(p, size, blk, *final(out))), ...
+                || grew_in_place(p, size, blk, *final(out))
+                || shrank_in_place(p, size, blk, *final(out))), ...
 
 // The corollary: for `p`'s usable size `n` (`usable_of`), the rule keeps
 // exactly a slot, or a run of more than MEDIUM_MAX usable bytes, and a
-// run's usable size rounds to itself, so `n` never grows it.
+// run's usable size rounds to itself, so `n` never grows or shrinks it.
 pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
     requires regions_ok(), free_target(p), usable_of(p, n as int),
     ensures
@@ -5172,13 +5193,23 @@ start, `size > MEDIUM_MAX` and `size` rounded up to whole pages is the
 run's usable size, or when `p` is a huge run start, `size` rounded up to
 whole pages is more than the run's usable size, and the run grew in
 place to that (`grew_in_place`: the grown token, at `p`, of
-`huge_usable(size)` bytes, its old bytes kept); otherwise it moves (or
+`huge_usable(size)` bytes, its old bytes kept), or when `p` is a huge
+run start, `size > MEDIUM_MAX` and `size` rounded up to whole pages is
+less than the run's usable size, and the run shrank in place to that
+(`shrank_in_place`: the shrunk token, at `p`, of `huge_usable(size)`
+bytes, the ones it keeps reading as they did); otherwise it moves (or
 fails, returning null). Growing the last 1 MiB run by 3 pages returns
-`p` with `keeps` false and `grew_in_place` true. Whether a run grows is
-not pinned down: `grow_run` may decline (no room, a fork epoch, the
-`PROT_NONE` guard mode), and then the call moves.
+`p` with `keeps` false and `grew_in_place` true; trimming a 64 MiB run
+to 1 MiB returns `p` with `keeps` false and `shrank_in_place` true.
+Whether a run grows or shrinks is not pinned down: `grow_run` may
+decline (no room, a fork epoch, the `PROT_NONE` guard mode), and so may
+`shrink_run` (a release of one page, a descriptor or table room that
+cannot be had, a refused marker, the `PROT_NONE` guard mode), and then
+the call moves. A shrink to `MEDIUM_MAX` or less always moves: a class
+serves the size, and a run kept for it would break the sized frees'
+rule.
 `kept` (`api/libc.rs`) is the forward half: a kept block fits, and a
-grown run ensures `kept` too.
+grown or shrunk run ensures `kept` too.
 `rallocx` adds the alignment: a slot of the class `class_for(size, align)`
 picks, or a run start that is a multiple of `align`. The move case is
 `r != p` because the new block's token and `p`'s are apart
@@ -5228,22 +5259,34 @@ The growth case is `grow_kept`'s postcondition, from `Shared::grow_huge`
 are `spec_usable(size)`, put back by `Live::put_run`), and
 `lemma_usable_for_run` for `huge_usable(size)`; the call then returns
 `p`, and `grew_in_place` and `keeps` exclude each other
-(`blk.len() < huge_usable(size)`). The corollary keeps `slot_start(p) ||
-n > MEDIUM_MAX` exactly, since a run's `huge_usable(n) == n`, so
-`grew_in_place` is false at `n` (`lemma_keeps_usable`'s second
-`ensures`).
+(`blk.len() < huge_usable(size)`). The shrink case is `shrink_kept`'s
+postcondition, from `Shared::shrink_huge` (`Huge::shrink_run`'s token of
+`tok.npages() - k` pages whose usable bytes are `spec_usable(size)`, put
+back by `Live::put_shrunk_run`, which keeps the permission to those
+bytes and gives up the rest), and `lemma_usable_for_run` again;
+`shrank_in_place` excludes `keeps` and `grew_in_place`
+(`huge_usable(size) < blk.len()`). `Huge::shrink_run` is proved to keep
+`Inner::wf` across the split of the run into the shrunk run and a run
+of the released pages (`Split`, `lemma_split_wf`, `huge/shrink.rs`), and
+the released run is then freed by the verified `free_run`. The
+corollary keeps `slot_start(p) || n > MEDIUM_MAX` exactly, since a
+run's `huge_usable(n) == n`, so `grew_in_place` and `shrank_in_place`
+are false at `n` (`lemma_keeps_usable`'s second `ensures`).
 
 **Premises beyond the common ones.**
 - The C contract `heap::live::axiom_c_claim` (`heap/live.rs`): the
   token `realloc` takes for `p` is the live block's, so `blk.len()` is the
-  usable size `malloc_usable_size` reads. `grow_run` does not rely on it
-  at run time: under the huge lock it checks the run live, as
-  `free_run` does, and aborts otherwise.
+  usable size `malloc_usable_size` reads. `grow_run` and `shrink_run` do
+  not rely on it at run time: under the huge lock they check the run
+  live, as `free_run` does, and abort otherwise.
 - `heap::live::axiom_hand_out` for the bytes a grown run gains
-  (`Live::put_run`), as for a new block's.
+  (`Live::put_run`), as for a new block's. A shrink mints nothing.
+- vstd's `PointsToRaw::split` (`UserMem::restrict`), for the
+  permission a shrunk run keeps.
 - Nothing else: `class_of`, `class_for`, `Huge::usable_for`,
-  `Huge::usable_size`, `Huge::grow_run` and that the class table holds
-  `spec_class_size` (`vspec::class::lemma_class_table_wf`) are verified.
+  `Huge::usable_size`, `Huge::grow_run`, `Huge::shrink_run` and that the
+  class table holds `spec_class_size`
+  (`vspec::class::lemma_class_table_wf`) are verified.
 
 **Scope.** `realloc`, `reallocarray` and `challoc_realloc_usable` (through
 `realloc_block` and `realloc_usable_stored`), and `rallocx` (through

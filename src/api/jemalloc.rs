@@ -50,9 +50,9 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
-use super::libc::{class_for, grow_kept, old_size_or_keep, usable_size};
+use super::libc::{class_for, grow_kept, old_size_or_keep, shrink_kept, usable_size};
 #[cfg(verus_keep_ghost)]
-use super::libc::{grew_in_place, keeps, lemma_class_aligned, spec_class_for};
+use super::libc::{grew_in_place, keeps, lemma_class_aligned, shrank_in_place, spec_class_for};
 use super::print::{cancel_disable, cancel_restore};
 #[cfg(verus_keep_ghost)]
 use crate::heap::mallocx::MALLOCX_ZERO;
@@ -543,7 +543,7 @@ pub fn rallocx_zeroed(
             size,
             blk,
             *final(out),
-        )),
+        ) || shrank_in_place(p, size, blk, *final(out))),
 {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
@@ -572,6 +572,22 @@ pub fn rallocx_zeroed(
     // can, at `p` if `p` meets the alignment. Not under `MALLOCX_ZERO`,
     // whose bytes past the old size the move zeroes.
     if !f.zero && old > crate::layout::MEDIUM_MAX && size > old && (p as usize) % align == 0 && grow_kept(
+        shared,
+        p,
+        size,
+        old,
+        Tracked(&mut blk),
+        Tracked(&mut *ord),
+    ).is_some() {
+        proof {
+            out.set(blk);
+        }
+        return (p, Ghost(0), Tracked(Zeroed::empty(0)));
+    }
+    // As `realloc`: a run trimmed to fewer pages, still a run's size,
+    // shrinks in place when it can, at `p` if `p` meets the alignment.
+    // `MALLOCX_ZERO` asks nothing of a shrink: no byte is added.
+    if size > crate::layout::MEDIUM_MAX && size < old && (p as usize) % align == 0 && shrink_kept(
         shared,
         p,
         size,

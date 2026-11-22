@@ -610,6 +610,73 @@ impl Live {
         }
     }
 
+    /// Put back the run token [`Live::take_run`] took from `orig`, a live
+    /// run's, as the same run shrunk in place (`Huge::shrink_run`: the
+    /// same start, fewer pages). The permission keeps the bytes the shrunk
+    /// run still has, reading as they did ([`Live::copied_from`]); the
+    /// permission to the bytes it released is given up
+    /// ([`UserMem::restrict`]), so nothing is minted.
+    pub proof fn put_shrunk_run(tracked &mut self, tracked t: RunToken, orig: Live)
+        requires
+            crate::heap::regions_ok(),
+            *old(self) == orig.without_run(),
+            orig.wf(),
+            orig.run_opt() is Some,
+            t.wf(),
+            t.start() == orig.run_opt().unwrap().start(),
+            t.npages() < orig.run_opt().unwrap().npages(),
+        ensures
+            final(self).run_opt() == Some(t),
+            final(self).wf(),
+            final(self).addr() == orig.addr(),
+            final(self).prov() == orig.prov(),
+            final(self).len() == run_usable(t.npages()),
+            final(self).len() < orig.len(),
+            final(self).copied_from(orig, final(self).len()),
+            forall|p: *mut u8| #[trigger] orig.block(p) ==> final(self).block(p),
+            forall|p: *mut u8| #[trigger] orig.claims(p) ==> final(self).claims(p),
+    {
+        let t0 = orig.run_opt().unwrap();
+        let len0 = orig.len();
+        let len1 = run_usable(t.npages());
+        let a = orig.addr() as int;
+        t0.lemma_wf();
+        t.lemma_wf();
+        let lg = process_regions().lg_page as usize;
+        let pg = page_size();
+        assert(12 <= lg <= crate::layout::LG_MAX_SLAB);
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        vstd::arithmetic::power2::lemma_pow2_pos(lg as nat);
+        assert(pg > 0);
+        assert(len0 == run_usable(t0.npages()));
+        assert(0 < len1 < len0) by (nonlinear_arith)
+            requires
+                len1 == (t.npages() - GUARD_PAGES) * pg,
+                len0 == (t0.npages() - GUARD_PAGES) * pg,
+                GUARD_PAGES < t.npages() < t0.npages(),
+                pg > 0,
+        ;
+        let keep = vstd::set_lib::set_int_range(a, a + len1);
+        let tracked m = self.mem.tracked_take();
+        assert(keep.subset_of(m.dom())) by {
+            assert forall|i: int| #[trigger] keep.contains(i) implies m.dom().contains(i) by {}
+        }
+        let tracked kept = m.restrict(keep);
+        self.mem = Some(kept);
+        assert(self.mem().covers(a, len1));
+        assert forall|x: int| a <= x < a + len1 implies #[trigger] self.mem().bytes()[x] == orig.mem().bytes()[a + (x - a)] by {
+            assert(keep.contains(x));
+        }
+        self.run = Some(t);
+        assert(self.run_of());
+        assert forall|p: *mut u8| #[trigger] orig.claims(p) implies self.claims(p) by {
+            if crate::heap::slot_start(p) {
+                assert(orig.run is None);
+            }
+        }
+    }
+
     /// The run token the token holds, if any.
     pub closed spec fn run_opt(self) -> Option<RunToken> {
         self.run
@@ -792,8 +859,11 @@ impl Live {
 /// run held, `Huge::grow_run`'s authorities show it). Its run token comes
 /// out without dropping the permission, through [`Live::take_run`], only
 /// in `Shared::grow_huge`, which hands it to `Huge::grow_run` and puts back
-/// what comes back (`huge::grow_tests::take_run_and_put_run_only_in_grow_huge`
-/// pins both calls there), so it reaches no [`Live::from_run`]. The one
+/// what comes back, and in `Shared::shrink_huge`, which hands it to
+/// `Huge::shrink_run` and puts back the shrunk run's with
+/// [`Live::put_shrunk_run`], which mints nothing
+/// (`huge::grow_tests::take_run_and_put_run_only_in_grow_huge_and_shrink_huge`
+/// pins the calls there), so it reaches no [`Live::from_run`]. The one
 /// permission made elsewhere,
 /// `class::axiom_fresh_slab_mem`'s, covers a `Fresh` slab's slots, which no
 /// claim has taken (their tokens are in the bitmap), so this axiom mints

@@ -12,7 +12,7 @@ rows = [
   "valkey1", "sidecar-fluentbit",
   "ruby-binary-trees", "ruby-hash-aref-str", "ruby-array-sample", "ruby-sort-block", "ruby-gc-churn",
   "node-json-churn", "node-server",
-  "python1", "python1-malloc", "python-dict-list-malloc", "python-object-graph-malloc", "python-grow",
+  "python1", "python1-malloc", "python-dict-list-malloc", "python-object-graph-malloc", "python-grow", "python-trim",
   "pg-select100", "pg-tpcb100", "pg-select500", "pg-connect20",
 ]
 replicas = 3
