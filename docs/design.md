@@ -1985,12 +1985,16 @@ unsigned long long challoc_cow_stat(unsigned which);  /* CHALLOC_COW_* */
 `<challoc/challoc.h>` also defines `challoc_cow_stats()`, an inline that
 reads every figure into a struct. `begin` flushes the caller's caches,
 purges, and sets the floors; epochs nest; `cow_epoch:false` makes `begin`
-return `ENOTSUP`. `bench/cow/` measures it on Valkey. Outside an epoch, the plain `free` fast path of
+return `ENOTSUP`. `bench/cow/` measures it on Valkey and Redis. Outside an epoch, the plain `free` fast path of
 the default configurations is unchanged; the sized fast path reads
 `free_flags` in place of `push_flags` and tests `FREE_EPOCH`, two
 instructions and one predicted branch (`verus/perf-budget.txt`).
 Valkey's hook is `contrib/valkey/0004-serverFork-challoc-fork-epoch-and-drain.patch`:
-the epoch around `serverFork` and the drain in its defrag cron.
+the epoch around `serverFork` and the drain in its defrag cron. Redis's
+is `contrib/redis/0006-redisFork-challoc-fork-epoch-and-drain.patch`, the
+same around `redisFork`, plus a new object instead of `dbSetValue`'s
+in-place value swap while the epoch is open (the swap writes the old
+object, and Redis's 64-byte values are raw strings that take it).
 
 ### 13.8 Stack use
 

@@ -1,0 +1,192 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH 6/6] redisFork: challoc's fork epoch around a snapshot child,
+ a new object instead of the value swap while it is open, and the drain
+ after it
+
+Redis 8.10.3 (tag 8.10.3, commit 1a2574ce1551d3de6e0b4a56756c0fdbc6659e4f),
+on top of 1/6 (MALLOC=challoc) and 2/6, and of 5/6 (no write to an
+overwritten or deleted value), without which the epoch saves half as much.
+The Redis counterpart of contrib/valkey/0004.
+
+redisFork opens challoc's fork epoch (challoc_cow_begin, <challoc/challoc.h>)
+just before forking a mutually exclusive child (RDB, AOF rewrite, full
+sync, module fork) and resetChildState closes it (challoc_cow_end) once
+the child is reaped, as does the fork's failure path. While the epoch is
+open, challoc serves the parent's allocations from pages the child does
+not share and hands out no block freed during it that the child may still
+share.
+
+Redis needs one change Valkey does not: dbSetValue keeps the old kvobj in
+the keyspace and swaps the new value's ptr, type and encoding into it when
+neither is an embedded string, which writes the old object's page. Every
+64-byte value is such a raw string in Redis (its embstr limit is 44
+bytes). While the epoch is open (cow_epoch_open, declared in server.h)
+dbSetValue takes its other path, the one embedded strings always take: a
+new kvobj with the key, which the epoch places on an unshared page, and
+the old one freed.
+
+The blocks written during the epoch then sit above the holes it left.
+computeDefragCycles starts a defrag cycle while challoc reports a size
+class still draining (challoc_cow_stat(CHALLOC_COW_DRAINING)), at
+active-defrag-cycle-max, whatever the fragmentation thresholds and the
+decay: challoc's utilisation query tells the defragmenter to move those
+blocks back. With activedefrag off nothing moves them, and they return as
+the keys are overwritten or deleted.
+
+All of it is compiled only under challoc (CHALLOC_COW, which
+<challoc/challoc.h> defines), and the three entry points are weak
+references: on a libchalloc.so.0 without fork epochs they are null and
+the server runs as without this patch.
+
+Measured in a develop session (8 vCPU, 31 GiB, amd64), 1M (64 B) or 200k
+(1 KiB) random keys changed during a 60 s BGSAVE, rdb_last_cow_size in
+MiB, challoc with 1/6 to 4/6 against 1/6 to 6/6:
+
+  10M x 64 B SET      1175 -> 235
+  10M x 64 B DEL       651 -> 237
+  2M x 1 KiB SET       891 ->  30
+
+---
+ src/db.c     |   11 ++++++++++-
+ src/defrag.c |   21 ++++++++++++++++++++-
+ src/server.c |   24 ++++++++++++++++++++++++
+ src/server.h |    4 ++++
+ 4 files changed, 58 insertions(+), 2 deletions(-)
+
+diff --git a/src/db.c b/src/db.c
+index 9f802ad..77f57e9 100644
+--- a/src/db.c
++++ b/src/db.c
+@@ -635,7 +635,16 @@ static void dbSetValue(redisDb *db, robj *key, robj **valref, dictEntryLink link
+     if (server.memory_tracking_enabled)
+         oldsize = kvobjAllocSize(old);
+ 
+-    if ((old->refcount == 1 && old->encoding != OBJ_ENCODING_EMBSTR) &&
++    /* While challoc's fork epoch is open, the new value goes in a new
++     * object instead: the swap below writes the old object, which copies
++     * its page while the fork child shares it, and the epoch places the new
++     * object on a page the child does not share. */
++    int keep_old = 1;
++#ifdef CHALLOC_COW
++    if (cow_epoch_open) keep_old = 0;
++#endif
++    if (keep_old &&
++        (old->refcount == 1 && old->encoding != OBJ_ENCODING_EMBSTR) &&
+         (val->refcount == 1 && val->encoding != OBJ_ENCODING_EMBSTR) && (!freeModuleMeta))
+     {
+         /* Keep old object in the database. Just swap it's ptr, type and
+diff --git a/src/defrag.c b/src/defrag.c
+index aee7557..8ee893b 100644
+--- a/src/defrag.c
++++ b/src/defrag.c
+@@ -1449,6 +1449,11 @@ int defragFragCacheTake(float *out_frag_pct, size_t *out_frag_bytes) {
+     return 1;
+ }
+ 
++#ifdef CHALLOC_COW
++/* Weak, as in server.c: a libchalloc.so.0 without fork epochs leaves it null. */
++#pragma weak challoc_cow_stat
++#endif
++
+ /* decide if defrag is needed, and at what CPU effort to invest in it */
+ void computeDefragCycles(void) {
+     /* Try the tick-local cache first.  On hit, (frag_pct, frag_bytes)
+@@ -1462,8 +1467,18 @@ void computeDefragCycles(void) {
+     if (!defragFragCacheTake(&frag_pct, &frag_bytes)) {
+         frag_pct = getAllocatorFragmentation(&frag_bytes);
+     }
++#ifdef CHALLOC_COW
++    /* challoc's fork epoch drain: the values written while a fork child ran
++     * sit above the holes the epoch left. While challoc reports a size class
++     * still draining, a defrag cycle runs whatever the fragmentation
++     * thresholds, and challoc's utilization query has it move those values
++     * back. */
++    int cow_drain = challoc_cow_stat && challoc_cow_stat(CHALLOC_COW_DRAINING) > 0;
++#else
++    int cow_drain = 0;
++#endif
+     /* If we're not already running, and below the threshold, exit. */
+-    if (!server.active_defrag_running) {
++    if (!server.active_defrag_running && !cow_drain) {
+         if(frag_pct < server.active_defrag_threshold_lower || frag_bytes < server.active_defrag_ignore_bytes)
+             return;
+     }
+@@ -1488,6 +1503,10 @@ void computeDefragCycles(void) {
+     cpu_pct = LIMIT(cpu_pct,
+             server.active_defrag_cycle_min,
+             server.active_defrag_cycle_max);
++    /* The drain is the fork epoch's memory coming back: run it at the most
++     * effort configured, whatever the decay, so that it is over within a
++     * snapshot or two. */
++    if (cow_drain) cpu_pct = server.active_defrag_cycle_max;
+ 
+     /* Normally we allow increasing the aggressiveness during a scan, but don't
+      * reduce it, since we should not lower the aggressiveness when fragmentation
+diff --git a/src/server.c b/src/server.c
+index e8cd65f..31d6257 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -848,7 +848,22 @@ int hasActiveChildProcess(void) {
+     return server.child_pid != -1;
+ }
+ 
++#ifdef CHALLOC_COW
++/* challoc's fork epoch (contrib/redis 0006): open from just before the
++ * fork of a mutually exclusive child until resetChildState. Weak, so that
++ * the server also runs on a libchalloc.so.0 without fork epochs. */
++#pragma weak challoc_cow_begin
++#pragma weak challoc_cow_end
++int cow_epoch_open = 0;
++#endif
++
+ void resetChildState(void) {
++#ifdef CHALLOC_COW
++    if (cow_epoch_open) {
++        challoc_cow_end();
++        cow_epoch_open = 0;
++    }
++#endif
+     server.child_type = CHILD_TYPE_NONE;
+     server.child_pid = -1;
+     server.stat_current_cow_peak = 0;
+@@ -7506,6 +7521,9 @@ int redisFork(int purpose) {
+ 
+     int childpid;
+     long long start = ustime();
++#ifdef CHALLOC_COW
++    if (challoc_cow_begin && isMutuallyExclusiveChildType(purpose) && challoc_cow_begin(0) == 0) cow_epoch_open = 1;
++#endif
+     if ((childpid = fork()) == 0) {
+         /* Child.
+          *
+@@ -7530,6 +7548,12 @@ int redisFork(int purpose) {
+         /* Parent */
+         if (childpid == -1) {
+             int fork_errno = errno;
++#ifdef CHALLOC_COW
++            if (cow_epoch_open) {
++                challoc_cow_end();
++                cow_epoch_open = 0;
++            }
++#endif
+             if (isMutuallyExclusiveChildType(purpose)) closeChildInfoPipe();
+             errno = fork_errno;
+             return -1;
+diff --git a/src/server.h b/src/server.h
+index 6a615e1..775eac5 100644
+--- a/src/server.h
++++ b/src/server.h
+@@ -3673,6 +3673,10 @@ int redisFork(int purpose);
+ int hasActiveChildProcess(void);
+ void resetChildState(void);
+ int isMutuallyExclusiveChildType(int type);
++#ifdef CHALLOC_COW
++/* 1 while challoc's fork epoch is open (server.c, contrib/redis 0006). */
++extern int cow_epoch_open;
++#endif
+ 
+ /* acl.c -- Authentication related prototypes. */
+ extern rax *Users;
+-- 
+2.56.1
+

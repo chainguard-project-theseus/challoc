@@ -1,27 +1,30 @@
 #!/bin/sh
-# bench/drivers/valkey-cow.sh: Valkey's fork copy-on-write under a BGSAVE
-# (the valkey-cow* rows, bench/rows.toml; docs/design.md section 5, "Fork
-# epochs"). One run is one fresh server from bench/drivers/kv.sh under the
-# variant's allocator (challoc: the runpath build with contrib/valkey
-# 0001 to 0004, so a head with fork epochs runs the epoch around the save;
-# jemalloc: the bundled jemalloc 5.3.0 build), driven by
+# bench/drivers/valkey-cow.sh: Valkey's (or Redis's, SERVER=redis) fork
+# copy-on-write under a BGSAVE (the valkey-cow* and redis-cow* rows,
+# bench/rows.toml; docs/design.md section 5, "Fork epochs"). One run is one
+# fresh server from bench/drivers/kv.sh under the variant's allocator
+# (challoc: the runpath build with the server's contrib series, Valkey's
+# 0001 to 0004 or Redis's 0001 to 0006, so a library with fork epochs runs
+# the epoch around the save unless its MALLOC_CONF has cow_epoch:false;
+# jemalloc: the bundled jemalloc 5.3.0 build, unpatched), driven by
 # bench/cow/cowbench.py: a fill of KEYS keys of SIZE bytes, a BGSAVE
 # stretched by rdb-key-save-delay, WRITES random keys overwritten at a
 # constant rate while the child runs, the child's Private_Dirty sampled.
 #
 #   MODE=cow   the copy: cow_mib (rdb_last_cow_size, the score), peak_mib
 #              (parent RSS plus child dirty at their peak), rss_after_mib
-#   MODE=tput  SET throughput (valkey-benchmark, 50 clients, pipeline 16)
+#   MODE=tput  SET throughput (valkey-benchmark or redis-benchmark, 50
+#              clients, pipeline 16)
 #              with no child (set_outside_rps, the score) and during the
 #              save (set_inside_rps)
 #   MODE=rec   the overwrite, then RECOVER seconds with activedefrag on:
 #              rss_end_rel_pct (RSS at the end as a percentage of the RSS
 #              before the save, the score), recover_s (seconds until RSS is
 #              within 5% of it, at least 1; RECOVER when never)
-#   KEYS=10000000 SIZE=64 WRITES=1000000 DELAY=-10 RECOVER=120
+#   SERVER=valkey KEYS=10000000 SIZE=64 WRITES=1000000 DELAY=-10 RECOVER=120
 . "$(dirname "$0")/cb.sh"
 ROOT=${CB_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
-KV_SERVER=valkey
+KV_SERVER=${SERVER:-valkey}
 . "$ROOT/bench/drivers/kv.sh"
 MODE=${MODE:-cow}
 KEYS=${KEYS:-10000000}

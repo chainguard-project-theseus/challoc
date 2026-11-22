@@ -421,7 +421,7 @@ metrics = [
 est_s = 1800
 
 # The same soak on Redis (SERVER=redis): challoc is the runpath build of
-# Redis with contrib/redis/000{1,2,3} (quantum8, the bundled jemalloc's
+# Redis with contrib/redis/0001 to 0006 (quantum8, the bundled jemalloc's
 # lg_quantum=3 geometry), or preloaded on the MALLOC=libc build for a
 # `*preload*` variant; jemalloc is Redis's bundled jemalloc 5.3.0. Active
 # defrag is on wherever the build has it.
@@ -1354,5 +1354,75 @@ features = "quantum8"
 allocs = ["challoc", "jemalloc"]
 placement = "one-variant-per-vm"
 env = { MODE = "rec", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", RECOVER = "120" }
+metrics = [{ name = "recover_s", unit = "s", better = "lower", class = "soak-rss" }]
+est_s = 270
+
+# The same four on Redis 8.10 (SERVER=redis): challoc is the runpath build
+# with contrib/redis 0001 to 0006 (0005: no write to an overwritten or
+# deleted value; 0006: the epoch around redisFork, a new object instead of
+# the in-place value swap while it is open, and the drain), jemalloc
+# Redis's bundled 5.3.0, unpatched. Redis's 64-byte values are raw strings
+# (its embstr limit is 44 bytes), unlike Valkey's. Pair a variant with
+# MALLOC_CONF cow_epoch:false against one without it for the epoch's
+# effect: base and head both open it once the library has fork epochs.
+[row.redis-cow]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "cow_mib"
+unit = "MiB"
+better = "lower"
+class = "soak-rss"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { SERVER = "redis", MODE = "cow", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10" }
+metrics = [
+  { name = "peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_after_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 150
+
+[row.redis-cow-d1k]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "cow_mib"
+unit = "MiB"
+better = "lower"
+class = "soak-rss"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { SERVER = "redis", MODE = "cow", SIZE = "1024", KEYS = "{cow_keys_d1k}", WRITES = "{cow_writes_d1k}", DELAY = "-2" }
+metrics = [
+  { name = "peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_after_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 150
+
+[row.redis-cow-tput]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "set_outside_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { SERVER = "redis", MODE = "tput", SIZE = "64", KEYS = "{cow_keys}", DELAY = "-10" }
+metrics = [{ name = "set_inside_rps", unit = "req/s", better = "higher", class = "server" }]
+est_s = 150
+
+[row.redis-cow-rec]
+kind = "driver"
+driver = "drivers/valkey-cow.sh"
+metric = "rss_end_rel_pct"
+unit = "%"
+better = "lower"
+class = "soak-rss"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { SERVER = "redis", MODE = "rec", SIZE = "64", KEYS = "{cow_keys}", WRITES = "{cow_writes}", DELAY = "-10", RECOVER = "120" }
 metrics = [{ name = "recover_s", unit = "s", better = "lower", class = "soak-rss" }]
 est_s = 270
