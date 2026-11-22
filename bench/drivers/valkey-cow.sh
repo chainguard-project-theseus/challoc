@@ -22,7 +22,7 @@
 #              before the save, the score), recover_s (seconds until RSS is
 #              within 5% of it, at least 1; RECOVER when never)
 #   MODE=drain the overwrite with activedefrag on throughout, and the
-#              benchmark's SET and GET (50 clients, pipeline 16) right after
+#              benchmark's GET then SET (50 clients, pipeline 16) right after
 #              the child exits, while the fork epoch's drain runs its defrag
 #              cycle: set_drain_rps (the score), set_drain_p99_ms,
 #              get_drain_rps, get_drain_p99_ms; the same with no child

@@ -16,7 +16,7 @@ child dirty, and, with `--bench`, `valkey-benchmark` SET throughput
 outside and inside the save, or, with `--recover S --defrag`, the parent's
 RSS every few seconds for S seconds after the save with `activedefrag
 yes` (and the defragmenter's hits), or, with `--bench --drain-bench`,
-the benchmark's SET and GET throughput and p99 with activedefrag on, with
+the benchmark's GET and SET throughput and p99 with activedefrag on, with
 no child before the save and right after the child exits, while the fork
 epoch's drain holds a defrag cycle at active-defrag-cycle-max (and how
 long the drain ran). `run.sh` is the matrix (64 B embedded

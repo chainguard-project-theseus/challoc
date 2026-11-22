@@ -1374,8 +1374,8 @@ metrics = [{ name = "recover_s", unit = "s", better = "lower", class = "soak-rss
 est_s = 270
 
 # Client throughput while the fork epoch's drain runs (Valkey): activedefrag
-# on throughout, the overwrite during the save, then the benchmark's SET and
-# GET (50 clients, pipeline 16) right after the child exits, while the drain
+# on throughout, the overwrite during the save, then the benchmark's GET and
+# SET (50 clients, pipeline 16) right after the child exits, while the drain
 # holds a defrag cycle at active-defrag-cycle-max. Pair head with
 # noepoch=head@cow_epoch:false (no drain) for what the drain costs clients.
 [row.valkey-cow-drain]
@@ -1491,8 +1491,8 @@ metrics = [{ name = "recover_s", unit = "s", better = "lower", class = "soak-rss
 est_s = 270
 
 # Client throughput while the fork epoch's drain runs (Redis): activedefrag
-# on throughout, the overwrite during the save, then the benchmark's SET and
-# GET (50 clients, pipeline 16) right after the child exits, while the drain
+# on throughout, the overwrite during the save, then the benchmark's GET and
+# SET (50 clients, pipeline 16) right after the child exits, while the drain
 # holds a defrag cycle at active-defrag-cycle-max. Pair head with
 # noepoch=head@cow_epoch:false (no drain) for what the drain costs clients.
 [row.redis-cow-drain]

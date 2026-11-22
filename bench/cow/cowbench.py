@@ -9,7 +9,7 @@ the save, sample the child's smaps
 the parent's RSS recover with activedefrag on. Prints one JSON line.
 
 With --drain-bench (and --bench), activedefrag is on from before the
-save, and the benchmark's SET and GET throughput and p99 are measured with
+save, and the benchmark's GET and then SET throughput and p99 are measured with
 no child before the save (quiet) and right after the child exits (drain:
 challoc's fork-epoch drain, contrib/redis 0006 and contrib/valkey 0004,
 runs a defrag cycle at active-defrag-cycle-max then), followed by how long
@@ -233,7 +233,9 @@ def main():
             # it the drain's defrag cycle, if the build runs one.
             c.cmd("CONFIG", "SET", "activedefrag", "yes")
             r["cow_before"] = cow_stats(c)
-            r["quiet"] = {"set": drain_pass("set"), "get": drain_pass("get")}
+            # GET first: SETs refill the holes the drain moves values into,
+            # which ends it sooner.
+            r["quiet"] = {"get": drain_pass("get"), "set": drain_pass("set")}
             r["rss_before"] = int(info(c, "memory")["used_memory_rss"])
         elif a.bench:
             tput["outside"] = run_bench(a, 300000)
@@ -296,7 +298,7 @@ def main():
         if a.drain_bench:
             # Right after the child is reaped: the drain (when there is one)
             # starts on the next cron tick.
-            r["drain"] = {"set": drain_pass("set"), "get": drain_pass("get")}
+            r["drain"] = {"get": drain_pass("get"), "set": drain_pass("set")}
         stop.set(); th.join()
         ip = info(c, "persistence")
         r.update({"save_s": round(time.time() - t0, 1), "rdb_last_cow_size": int(ip["rdb_last_cow_size"]),
