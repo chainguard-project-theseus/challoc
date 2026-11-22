@@ -24,6 +24,8 @@
  *   - in a fork epoch (challoc_cow_begin) a run shrinks in place, and
  *     does not grow back into the pages it released (they may be the
  *     child's);
+ *   - under zero_on_free (argument `zero_on_free`) a trim moves, so the
+ *     freed bytes are cleared before the next run is placed on them;
  *   - stats.allocated returns to where it started.
  */
 #include "common.h"
@@ -70,10 +72,30 @@ static int all_zero(const char *p, size_t n)
 int main(int argc, char **argv)
 {
     require_challoc();
-    (void)argc;
-    (void)argv;
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     size_t base = allocated();
+
+    /* Under zero_on_free (run with MALLOC_CONF=zero_on_free:true and the
+     * argument `zero_on_free`) a freed run's bytes are cleared, so a trim
+     * that would leave the released pages holding them moves instead:
+     * the next run placed on those pages reads zero without calloc. */
+    if (argc > 1 && strcmp(argv[1], "zero_on_free") == 0) {
+        size_t big = 8u << 20, small = 1u << 20;
+        char *p = malloc(big);
+        REQUIRE(p, "malloc");
+        memset(p, 0xa5, big);
+        char *q = realloc(p, small);
+        REQUIRE(q, "realloc down");
+        CHECK(q != p, "shrank in place under zero_on_free");
+        for (size_t i = 0; i < small; i += 4093)
+            CHECK((unsigned char)q[i] == 0xa5, "byte %zu lost", i);
+        char *r = malloc(big - small - 2 * page);
+        REQUIRE(r, "malloc over the old run");
+        CHECK(all_zero(r, big - small - 2 * page), "freed bytes reached the next owner under zero_on_free");
+        free(r);
+        free(q);
+        return finish("realloc_shrink");
+    }
 
     /* First, while the huge region is empty: the released pages are the
      * only free extent, so the next run that fits lands on them, and

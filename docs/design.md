@@ -838,7 +838,8 @@ of that size would be a slot: a run kept for it would break the sized
 frees' rule (`nallocx` names the class, `sallocx` the run). `rallocx`
 shrinks the same way when the run's address meets the alignment, with
 or without `MALLOCX_ZERO` (a shrink adds no byte), and
-`challoc_realloc_usable` reports the shrunk size.
+`challoc_realloc_usable` reports the shrunk size. Under `zero_on_free`
+a trim moves, so the freed bytes are cleared as at any free.
 `xallocx` never resizes in place and reports `sallocx(p)`, so a caller
 that needs more falls back to `rallocx`, as jemalloc's contract allows.
 
@@ -1084,7 +1085,9 @@ with page granularity (`huge/`).
   purged at once above `huge_retain_max` or under
   `huge_dirty_decay_ms:0`, else left `Empty` for decay, so `calloc`
   clears it when it is handed out again. Nothing is reported zero. It
-  declines, and the caller moves the block, when it would release a
+  declines, and the caller moves the block, under `zero_on_free` (the
+  move's free clears the old run's bytes, which the released pages would
+  otherwise keep for their next owner); when it would release a
   single page (the old guard alone, which is no run of its own); when
   the descriptor, the table's room or the marker cannot be had; and
   where the guards are `PROT_NONE` pages (the fallback mode of kernels

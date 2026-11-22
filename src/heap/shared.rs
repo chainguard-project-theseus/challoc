@@ -3588,7 +3588,9 @@ impl Shared {
     /// ([`Shared::huge_usable`], so the sized frees' rule holds), whose
     /// bytes read as they did; `None`, nothing changed, when `p` is no
     /// page start of the huge region or the run does not shrink where it
-    /// is, and the caller moves the block. The run's arena counts the
+    /// is, or `zero_on_free` is set (the move clears the old run, the
+    /// released pages would keep its bytes), and the caller moves the
+    /// block. The run's arena counts the
     /// pages it released, and the calling thread's heap, when it has one,
     /// counts the shrink as the move would have: the shrunk run's usable
     /// bytes in `thread.allocated` and the old run's, `old_len`, in
@@ -3624,6 +3626,12 @@ impl Shared {
             self.lemma_wf_slow();
             self.lemma_huge_process();
             self.lemma_regions_ok();
+        }
+        // Under `zero_on_free` the released pages would have to be cleared
+        // as a freed run's are (`Heap::free_huge`, `zero_huge`): the move,
+        // whose free of the old run clears it, does that.
+        if self.zero_on_free() {
+            return None;
         }
         let page = match self.regions.classify(p as usize) {
             Kind::Huge { page } => page,
