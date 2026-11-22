@@ -517,14 +517,27 @@ pages the child never had:
   (`DRAIN_STALL_S`: `cow::stalled` needs the queries made since the last
   drain move to span 10 s, `cow::DRAIN_ASKS`, counted from the first
   read after `cow::end`, so a program that turns its defragmenter on late
-  still gets its drain; a defragmenter that runs flat out and asks for
-  none in that long has passed over the heap and found nothing it can
-  move, while reads with no queries between them, from a stats poller or
-  a defragmenter held up, end nothing). A pair that fails one of the
+  still gets its drain; a query more than 2 s after the last one,
+  `DRAIN_ASK_GAP_S`, starts the span again, so reads with no queries
+  between them, from a stats poller, and a defragmenter held up between
+  two reads or two queries, end nothing). A defragmenter that runs flat
+  out and asks for no move in that long is taken to have passed over
+  the heap and found nothing it can move. That is a heuristic: challoc
+  sees no pass end. A pass that spends more than 10 s scanning keys
+  outside the epoch's writes before it reaches them (for example, writes
+  confined to db 1 behind a large untouched db 0, since Redis and Valkey
+  scan the databases in order) ends the drain early, and the blocks left
+  above the floor stay there until they are overwritten or deleted. RSS
+  recovery is slower in that layout, with no correctness impact. A
+  defrag-cycle-end signal from the server, in place of the 10 s, is the
+  fix if it shows up in practice. A pair that fails one of the
   first two ends its drain for good (its drain floor goes), and a stall
   ends every pair's and closes the window (`cow::end_all_drains`, which
   holds the epoch transition's busy bit while it clears, so an `end` in
-  another thread cannot set the next epoch's floors under it), so the
+  another thread cannot set the next epoch's floors under it, and under
+  the bit clears nothing if the progress mark is no longer the one the
+  stall was judged by, so a whole `begin` and `end` between the verdict
+  and the clear cannot lose the next epoch's drain), so the
   figure only falls and the forced cycle ends when the work does. On
   Redis and Valkey the figure reaches 0 within seconds of the last
   drain move, 10 to 65 s after the save in bench/cow's runs, rather than at the window's 300 s: what
