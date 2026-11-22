@@ -3645,7 +3645,7 @@ impl Shared {
         }
         let ghost orig = *blk;
         let tracked t = blk.take_run();
-        let (r, Tracked(t2)) = self.huge.shrink_run(&self.meta, page, size, Tracked(t), Tracked(ord));
+        let (r, Tracked(t2), Tracked(tail)) = self.huge.shrink_run(&self.meta, page, size, Tracked(t), Tracked(ord));
         proof {
             if r is Some {
                 self.lemma_run_token(t2, p);
@@ -3655,7 +3655,14 @@ impl Shared {
             }
         }
         match r {
-            Some((arena, k)) => {
+            Some((arena, k, tp)) => {
+                // The permission to the tail's bytes was given up above
+                // (`put_shrunk_run`), so the free that makes its pages
+                // allocatable again comes after it, as the plain free's
+                // `into_run` comes before `Shared::free_huge`: no thread
+                // can be handed those pages while `blk` still covers them.
+                let tracked tail = tail.tracked_unwrap();
+                let _ = self.huge.free_run(&self.meta, tp, Tracked(tail), Tracked(ord));
                 self.owner(arena).0.note_huge_shrink(k);
                 let n = self.huge.usable_for(size);
                 if let Some(h) = super::existing_heap(super::shared_ptr(self)) {

@@ -5268,7 +5268,11 @@ bytes and gives up the rest), and `lemma_usable_for_run` again;
 (`huge_usable(size) < blk.len()`). `Huge::shrink_run` is proved to keep
 `Inner::wf` across the split of the run into the shrunk run and a run
 of the released pages (`Split`, `lemma_split_wf`, `huge/shrink.rs`), and
-the released run is then freed by the verified `free_run`. The
+returns the released run's token unfreed: `Shared::shrink_huge` frees it
+with the verified `free_run` only after `Live::put_shrunk_run` has given
+up the permission to its bytes, so no thread is handed those pages while
+a permission to them is held (`axiom_hand_out`'s premise; the order is
+pinned by `take_run_and_put_run_only_in_grow_huge_and_shrink_huge`). The
 corollary keeps `slot_start(p) || n > MEDIUM_MAX` exactly, since a
 run's `huge_usable(n) == n`, so `grew_in_place` and `shrank_in_place`
 are false at `n` (`lemma_keeps_usable`'s second `ensures`).

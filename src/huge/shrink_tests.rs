@@ -22,19 +22,33 @@ fn state_at(h: &Huge, page: usize) -> RunState {
         .state
 }
 
-/// Shrink the run at `p` to `size` bytes and audit.
+/// Shrink the run at `p` to `size` bytes and audit; then, as
+/// `Shared::shrink_huge` does once it has given up the permission to the
+/// tail's bytes, free the tail `shrink_run` returns (a live run until
+/// then), and audit again.
 fn shrink(env: &Env, h: &Huge, p: *mut u8, size: usize) -> Option<(u16, usize)> {
-    let r = h
-        .shrink_run(
-            &env.meta,
-            env.page_of(p),
-            size,
-            Tracked::assume_new(),
-            Tracked::assume_new(),
-        )
-        .0;
+    let (r, _, _) = h.shrink_run(
+        &env.meta,
+        env.page_of(p),
+        size,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     h.audit();
-    r
+    let (arena, k, tail) = r?;
+    assert_eq!(
+        state_at(h, tail),
+        RunState::Active,
+        "the tail before its free"
+    );
+    h.free_run(
+        &env.meta,
+        tail,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
+    h.audit();
+    Some((arena, k))
 }
 
 /// A huge allocator in the mode `shrink_run` supports, or a `SKIP` line.

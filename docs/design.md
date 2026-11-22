@@ -1080,7 +1080,11 @@ with page granularity (`huge/`).
   run keeps its descriptor, start and arena with the page count a new
   run of the requested size has, and the pages after it become a run of
   their own, which still ends with the old guard. Once the lock is
-  released that tail is freed by `free_run`, as any run is: its guard's
+  released, `shrink_run` returns the tail's token unfreed, and
+  `Shared::shrink_huge` frees it only after it has given up the
+  permission to the tail's bytes (`Live::put_shrunk_run`), so no other
+  thread can be handed those pages while a permission to them is still
+  held. That free is `free_run`'s, as any run's is: its guard's
   marker is removed, it coalesces with a free extent after it, and it is
   purged at once above `huge_retain_max` or under
   `huge_dirty_decay_ms:0`, else left `Empty` for decay, so `calloc`

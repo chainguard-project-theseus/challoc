@@ -861,9 +861,14 @@ impl Live {
 /// in `Shared::grow_huge`, which hands it to `Huge::grow_run` and puts back
 /// what comes back, and in `Shared::shrink_huge`, which hands it to
 /// `Huge::shrink_run` and puts back the shrunk run's with
-/// [`Live::put_shrunk_run`], which mints nothing
+/// [`Live::put_shrunk_run`], which mints nothing and gives up the
+/// permission to the released tail's bytes before `Shared::shrink_huge`
+/// frees the tail (`Huge::shrink_run` returns its token unfreed), so no
+/// [`Live::from_run`] for the tail's pages can run while that permission
+/// is held
 /// (`huge::grow_tests::take_run_and_put_run_only_in_grow_huge_and_shrink_huge`
-/// pins the calls there), so it reaches no [`Live::from_run`]. The one
+/// pins the calls there and that order), and the lent token reaches no
+/// [`Live::from_run`]. The one
 /// permission made elsewhere,
 /// `class::axiom_fresh_slab_mem`'s, covers a `Fresh` slab's slots, which no
 /// claim has taken (their tokens are in the bitmap), so this axiom mints

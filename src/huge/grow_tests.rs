@@ -291,12 +291,33 @@ fn take_run_and_put_run_only_in_grow_huge_and_shrink_huge() {
         [".put", "_run("].concat(),
         [".put", "_shrunk_run("].concat(),
     ];
+    let free = [".free", "_run("].concat();
     // Per function: grow_huge, shrink_huge.
     let mut calls = [[0, 0, 0], [0, 0, 0]];
+    // In shrink_huge, the lines of its put_shrunk_run and of the tail's
+    // free_run: the permission to the tail's bytes is given up before
+    // the tail's pages can be handed out again.
+    let (mut put_at, mut free_at) = (std::vec::Vec::new(), std::vec::Vec::new());
     for (rel, text) in &files {
         let mut within = None;
-        for line in text.lines() {
+        for (ln, line) in text.lines().enumerate() {
             let t = line.trim();
+            if !t.starts_with("//") && t.contains(free.as_str()) {
+                assert!(
+                    rel != "huge/shrink.rs",
+                    "{rel}: got = {t}, want = no free_run in huge/shrink.rs: Shared::shrink_huge frees the tail"
+                );
+                if rel == "heap/shared.rs" && within == Some(1) {
+                    free_at.push(ln);
+                }
+            }
+            if rel == "heap/shared.rs"
+                && within == Some(1)
+                && !t.starts_with("//")
+                && t.contains(needles[2].as_str())
+            {
+                put_at.push(ln);
+            }
             if t.starts_with("pub(crate) fn grow_huge(") {
                 within = Some(0);
             } else if t.starts_with("pub(crate) fn shrink_huge(") {
@@ -322,6 +343,17 @@ fn take_run_and_put_run_only_in_grow_huge_and_shrink_huge() {
         calls,
         [[1, 1, 0], [1, 1, 1]],
         "take_run, put_run and put_shrunk_run calls in grow_huge and shrink_huge"
+    );
+    assert_eq!(
+        (put_at.len(), free_at.len()),
+        (1, 1),
+        "put_shrunk_run and free_run calls in shrink_huge"
+    );
+    assert!(
+        put_at[0] < free_at[0],
+        "shrink_huge: got = free_run at line {} before put_shrunk_run at line {}, want = put_shrunk_run first",
+        free_at[0] + 1,
+        put_at[0] + 1
     );
 }
 

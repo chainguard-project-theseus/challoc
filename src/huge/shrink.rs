@@ -11,7 +11,9 @@
 //! requested size has (so the sized frees' rule holds), its new guard
 //! goes on its new last page, and the pages after it become a second run
 //! with a descriptor of its own, which still ends with the old guard.
-//! Then that tail is freed by [`Huge::free_run`], as any run is: its
+//! Then, once the caller (`Shared::shrink_huge`) has given up the
+//! permission to its bytes, that tail is freed by [`Huge::free_run`], as
+//! any run is: its
 //! guard marker removed, coalesced with a free extent after it, purged at
 //! once above `huge_retain_max` or under `huge_dirty_decay_ms:0`, else
 //! `Empty` and aging in the decay list.
@@ -779,17 +781,21 @@ impl Huge {
     /// new last page), then the run's token leaves the run authorities,
     /// [`Huge::shrink_books`] splits the run in two, and the two runs'
     /// tokens enter them. The lock is released, and the tail, a live run
-    /// whose token only this call holds, is freed by [`Huge::free_run`]:
-    /// its guard (the run's old one) loses its marker, it coalesces with a
-    /// free extent after it, and it is purged or left `Empty` for decay as
-    /// any freed run is. Nothing is reported zero.
+    /// whose token only this call holds, is returned with its first page,
+    /// `Some((arena, k, tail))`, not freed: the caller gives up the
+    /// permission to the tail's bytes first (`Live::put_shrunk_run`) and
+    /// then frees it with [`Huge::free_run`], so no other thread can be
+    /// handed those pages while a permission to them is still held. That
+    /// free is any run's: its guard (the run's old one) loses its marker,
+    /// it coalesces with a free extent after it, and it is purged or left
+    /// `Empty` for decay as any freed run is. Nothing is reported zero.
     ///
     /// Fork epochs (design 5): the tail's free is a huge free during the
     /// epoch, which the floors do not steer either; the child keeps its
     /// copy of the pages, as it does of any run freed in the epoch.
     ///
-    /// Proved to keep `Inner::wf` ([`Split`], `lemma_split_wf`), and the
-    /// token it returns is the shrunk run's.
+    /// Proved to keep `Inner::wf` ([`Split`], `lemma_split_wf`); the
+    /// tokens it returns are the shrunk run's and the tail's.
     #[verifier::spinoff_prover]
     #[allow(clippy::type_complexity)]
     pub fn shrink_run(
@@ -799,7 +805,7 @@ impl Huge {
         size: usize,
         Tracked(tok): Tracked<RunToken>,
         Tracked(ord): Tracked<&mut LockOrder>,
-    ) -> (r: (Option<(u16, usize)>, Tracked<RunToken>))
+    ) -> (r: (Option<(u16, usize, usize)>, Tracked<RunToken>, Tracked<Option<RunToken>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -814,8 +820,12 @@ impl Huge {
             r.1@.wf(),
             r.1@.start() == page,
             r.0 is None ==> r.1@ == tok,
-            r.0 matches Some((_, k)) ==> {
+            r.0 matches Some((_, k, tp)) ==> {
                 &&& 2 <= k < 0x1_0000_0000
+                &&& r.2@ is Some
+                &&& r.2@.unwrap().wf()
+                &&& r.2@.unwrap().start() == tp
+                &&& tp == r.1@.start() + r.1@.npages()
                 &&& r.1@.npages() + k == tok.npages()
                 &&& r.1@.start() + r.1@.npages() <= self.spec_npages()
                 &&& (r.1@.npages() - GUARD_PAGES) * self.spec_page() == self.spec_usable(size)
@@ -832,11 +842,11 @@ impl Huge {
         // A `PROT_NONE` guard would split the run's VMA: the move's
         // placement does that.
         if self.guards && !self.guard_install {
-            return (None, Tracked(tok));
+            return (None, Tracked(tok), Tracked(None));
         }
-        let Some(usable) = self.usable_pages(size) else { return (None, Tracked(tok)) };
+        let Some(usable) = self.usable_pages(size) else { return (None, Tracked(tok), Tracked(None)) };
         if usable >= self.npages {
-            return (None, Tracked(tok));
+            return (None, Tracked(tok), Tracked(None));
         }
         let need = usable + GUARD_PAGES;
         let ps = self.page_size();
@@ -881,7 +891,7 @@ impl Huge {
                 assert(lock_frame(lock_init(self.inner), g@));
             }
             g.unlock();
-            return (None, Tracked(tok));
+            return (None, Tracked(tok), Tracked(None));
         }
         let ghost vd = d0[d].value();
         proof {
@@ -898,7 +908,7 @@ impl Huge {
                 assert(lock_frame(lock_init(self.inner), g@));
             }
             g.unlock();
-            return (None, Tracked(tok));
+            return (None, Tracked(tok), Tracked(None));
         }
         let ydesc = Tracked(_y_opt.get().tracked_unwrap());
         proof {
@@ -923,7 +933,7 @@ impl Huge {
                 assert(lock_frame(lock_init(self.inner), g@));
             }
             g.unlock();
-            return (None, Tracked(tok));
+            return (None, Tracked(tok), Tracked(None));
         }
         let ghost gb = g@;
         proof {
@@ -940,7 +950,7 @@ impl Huge {
                     assert(lock_frame(lock_init(self.inner), g@));
                 }
                 g.unlock();
-                return (None, Tracked(tok));
+                return (None, Tracked(tok), Tracked(None));
             }
         }
         // The run's token leaves the run authorities, its pages split
@@ -978,10 +988,11 @@ impl Huge {
             self.lemma_run_ids(g@);
         }
         g.unlock();
-        // The tail is a live run whose token only this call holds: its free
-        // is any run's.
-        let _ = self.free_run(meta, page + need, Tracked(tail), Tracked(ord));
-        (Some((arena, n - need)), Tracked(kept))
+        // The tail is a live run whose token only this call holds. The
+        // caller frees it, after it has given up the permission to the
+        // tail's bytes: freed here, its pages could be another thread's
+        // run while the caller's permission still covers them.
+        (Some((arena, n - need, page + need)), Tracked(kept), Tracked(Some(tail)))
     }
 }
 
