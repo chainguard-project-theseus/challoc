@@ -609,18 +609,18 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     let tracked mut u = super::axiom_heap_use();
     let tracked mut loan = crate::sys::tls::HeapLoan::empty();
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p, Tracked(blk), Tracked(errno), Tracked(ord)),
+        Tcache::Default => crate::heap::free(shared, p, Tracked(super::Claim::held(blk)), Tracked(errno), Tracked(ord)),
         Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u), Tracked(&mut loan)) {
             Some(h) => {
                 // The calling thread's slot cell, for the explicit cache's
                 // tick (`purge::on_tick`).
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
-                h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
+                h.free(shared, p, Tracked(super::Claim::held(blk)), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
                 shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
             },
             None => invalid_tcache(t),
         },
-        Tcache::None => crate::heap::free_direct(shared, p, Tracked(blk), Tracked(ord)),
+        Tcache::None => crate::heap::free_direct(shared, p, Tracked(super::Claim::held(blk)), Tracked(ord)),
     }
 }
 

@@ -523,6 +523,18 @@ pub open spec fn free_target(p: *mut u8) -> bool {
     ||| process_regions().is_huge_block(p@.addr, 1)
 }
 
+/// A free's bit test passed for the slot start `p` (`VULN-CLASSES.md`
+/// E), by its record `l`: a load of the process's bitmap of `p`'s class
+/// found the slot's bit set in a value its word held
+/// ([`bit_seen_at`](crate::class::bit_seen_at)). `l`'s witness is one
+/// only a word invariant makes, so this holds only past a real load.
+/// The plain frees need it to claim C's token for a slot
+/// ([`Claim::settle`](crate::heap::Claim::settle)): a pointer to a slot no
+/// refill ever claimed aborts before the C contract is used.
+pub open spec fn slot_checked(p: *mut u8, l: crate::class::BitLoad) -> bool {
+    exists|t: crate::class::SlabTable| t.is_process() && #[trigger] crate::class::bit_seen_at(t, p@.addr as int, l)
+}
+
 /// A sized free's size hint names `p`'s class: if `p` is a slot start of
 /// class `c`, `hint` is `Some(c)`.
 /// `hint` is the class the size (and alignment) the program passed name,

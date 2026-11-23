@@ -178,7 +178,7 @@ fn oom(
 
 ## `axiom_c_call`
 
-src/api/cxx.rs:705. Kind: axiom. Category: C-program contract.
+src/api/cxx.rs:706. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C++ call that hands over the block at `p` to an `operator delete` ([`CCall`], [`CEntry::Frees`]).
@@ -196,7 +196,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ## `new`
 
-src/api/cxx.rs:715. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:716. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -211,7 +211,7 @@ pub extern "C" fn new(size: usize) -> (r: *mut c_void)
 
 ## `new_array`
 
-src/api/cxx.rs:732. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:733. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -226,7 +226,7 @@ pub extern "C" fn new_array(size: usize) -> (r: *mut c_void)
 
 ## `new_nothrow`
 
-src/api/cxx.rs:749. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:750. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -241,7 +241,7 @@ pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> (r: *mut c_vo
 
 ## `new_array_nothrow`
 
-src/api/cxx.rs:765. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:766. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -256,7 +256,7 @@ pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> (r: *mu
 
 ## `new_aligned`
 
-src/api/cxx.rs:781. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:782. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -271,7 +271,7 @@ pub extern "C" fn new_aligned(size: usize, align: usize) -> (r: *mut c_void)
 
 ## `new_array_aligned`
 
-src/api/cxx.rs:799. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:800. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -286,7 +286,7 @@ pub extern "C" fn new_array_aligned(size: usize, align: usize) -> (r: *mut c_voi
 
 ## `new_aligned_nothrow`
 
-src/api/cxx.rs:817. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:818. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -301,7 +301,7 @@ pub extern "C" fn new_aligned_nothrow(
 
 ## `new_array_aligned_nothrow`
 
-src/api/cxx.rs:838. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:839. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -316,7 +316,7 @@ pub extern "C" fn new_array_aligned_nothrow(
 
 ## `delete`
 
-src/api/cxx.rs:859. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:860. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -331,7 +331,7 @@ pub extern "C" fn delete(p: *mut c_void)
 
 ## `delete_array`
 
-src/api/cxx.rs:875. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:876. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -346,7 +346,7 @@ pub extern "C" fn delete_array(p: *mut c_void)
 
 ## `delete_nothrow`
 
-src/api/cxx.rs:891. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:892. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -361,7 +361,7 @@ pub extern "C" fn delete_nothrow(p: *mut c_void, _tag: *const c_void)
 
 ## `delete_array_nothrow`
 
-src/api/cxx.rs:907. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:908. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -376,7 +376,7 @@ pub extern "C" fn delete_array_nothrow(p: *mut c_void, _tag: *const c_void)
 
 ## `delete_sized`
 
-src/api/cxx.rs:923. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:924. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -391,7 +391,7 @@ pub extern "C" fn delete_sized(p: *mut c_void, size: usize)
 
 ## `delete_array_sized`
 
-src/api/cxx.rs:940. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:941. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -406,7 +406,7 @@ pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize)
 
 ## `delete_aligned`
 
-src/api/cxx.rs:957. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:958. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -421,7 +421,7 @@ pub extern "C" fn delete_aligned(p: *mut c_void, _align: usize)
 
 ## `delete_array_aligned`
 
-src/api/cxx.rs:973. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:974. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -436,7 +436,7 @@ pub extern "C" fn delete_array_aligned(p: *mut c_void, _align: usize)
 
 ## `delete_aligned_nothrow`
 
-src/api/cxx.rs:989. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:990. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -451,7 +451,7 @@ pub extern "C" fn delete_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *c
 
 ## `delete_array_aligned_nothrow`
 
-src/api/cxx.rs:1005. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:1006. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -466,7 +466,7 @@ pub extern "C" fn delete_array_aligned_nothrow(
 
 ## `delete_sized_aligned`
 
-src/api/cxx.rs:1025. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:1026. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -481,7 +481,7 @@ pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize
 
 ## `delete_array_sized_aligned`
 
-src/api/cxx.rs:1049. Kind: unsupported-attribute. Category: C ABI export.
+src/api/cxx.rs:1050. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.

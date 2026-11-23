@@ -49,7 +49,7 @@ use crate::vspec::unbacked::Unbacked;
 use vstd::prelude::{Ghost, int};
 
 use super::heap_destructor;
-use super::live::Live;
+use super::live::{Claim, Live};
 use super::tcaches::Tcaches;
 #[cfg(verus_keep_ghost)]
 use super::thread::reentry_benign;
@@ -212,6 +212,23 @@ proof fn lemma_process_shared()
 {
     reveal(crate::layout::process_regions);
     reveal(super::pac_mode);
+}
+
+/// The class authorities of the `Shared` in its storage are its tables':
+/// the definitions of [`slot_loc`](crate::class::slot_loc),
+/// [`mark_loc`](crate::class::mark_loc) and
+/// [`seen_loc`](crate::class::seen_loc), revealed here rather than in
+/// [`Shared::init`]'s body, whose context is near its rlimit.
+proof fn lemma_class_locs()
+    ensures
+        forall|d: int| #![trigger crate::class::slot_loc(d)] #![trigger crate::class::mark_loc(d)] #![trigger crate::class::seen_loc(d)]
+            crate::class::slot_loc(d) == shared_at(shared_storage()).tables[d].spec_slots().loc
+                && crate::class::mark_loc(d) == shared_at(shared_storage()).tables[d].spec_slots().mloc
+                && crate::class::seen_loc(d) == shared_at(shared_storage()).tables[d].spec_slots().hloc,
+{
+    reveal(crate::class::slot_loc);
+    reveal(crate::class::mark_loc);
+    reveal(crate::class::seen_loc);
 }
 
 /// Once the allocator is published, the process's regions are the
@@ -923,7 +940,7 @@ impl ClassLine {
     #[inline(always)]
     // The `let ... else` stands for `?`, as the proofs spell it.
     #[allow(clippy::question_mark)]
-    fn set_slab(&self, p: usize, table: &SlabTable) -> (r: Option<usize>)
+    fn set_slab(&self, p: usize, table: &SlabTable, Tracked(obs): Tracked<&mut crate::class::BitLoad>) -> (r: Option<usize>)
         requires
             table.is_process(),
             table.spec_class() < NCLASSES,
@@ -934,6 +951,7 @@ impl ClassLine {
                 && crate::layout::process_regions().is_slot(table.spec_class() as int, p),
             r matches Some(slab) ==> slab == p.wrapping_sub(crate::layout::process_regions().class_base[table.spec_class() as int])
                 >> class_table()[table.spec_class() as int].lg_slab,
+            r is Some ==> crate::class::bit_seen_at(*table, p as int, *final(obs)),
         opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
     {
         let ghost c = table.spec_class() as int;
@@ -976,7 +994,7 @@ impl ClassLine {
         let index = crate::class::word_index(bit / 64);
         // SAFETY: `slab` is below a value the watermark held and `slot`
         // below `nslots`, so the word is in the committed bitmap.
-        let word = unsafe { table.bit_word(bits_base, index, Ghost(slab), Ghost(slot as usize), Ghost(bit)) };
+        let word = unsafe { table.bit_word(bits_base, index, Ghost(slab), Ghost(slot as usize), Ghost(bit), Tracked(obs)) };
         if (word >> (bit % 64)) & 1 == 0 {
             return None;
         }
@@ -999,6 +1017,9 @@ impl ClassLine {
             ;
             regions.lemma_slot_of(c, p, slot as usize);
             regions.lemma_is_slot(c, slab as int, slot as int, p);
+            // The load's record, at the slab and slot of `p`.
+            assert(table.load_seen(slab as int, slot as int, *obs));
+            assert(crate::class::bit_seen_at(*table, p as int, *obs));
         }
         Some(slab)
     }
@@ -2546,8 +2567,7 @@ impl Shared {
                 assert(shared_at(this).regions == regions0);
                 // The class authorities and guard geometry are the stored
                 // `Shared`'s tables': their definitions.
-                reveal(crate::class::slot_loc);
-                reveal(crate::class::mark_loc);
+                lemma_class_locs();
                 reveal(crate::layout::guard_geom);
                 // The class lines and tables are the ones written above.
                 assert forall|d: int| 0 <= d < NCLASSES implies #[trigger] shared_at(this).tables[d].spec_class() == d
@@ -3247,19 +3267,30 @@ impl Shared {
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
     /// slot (the bitmap check happens here), `Err(page)` for a page-aligned
     /// pointer into the huge region (the huge allocator checks it). Aborts
-    /// on anything else. `blk` is the caller's token for `p`: with the
-    /// token of the live block there, neither `invalid_free` nor
-    /// `check_located`'s bit test can fire, and the arena is the slot's
-    /// owner; its watermark compare is not yet proved not to fire.
+    /// on anything else. `claim` is the caller's token for `p`, held or
+    /// still the call's ([`Claim`]): it is claimed ([`Claim::settle`]) only
+    /// past the bit test of a slot, which runs with no token unless the
+    /// caller holds it already, so a slot whose bit was clear at the load
+    /// aborts before the C contract is used: the claim takes the test's
+    /// record ([`slot_checked`](crate::heap::slot_checked)). The owner is
+    /// read after the claim, with the slot's token as its witness, so the
+    /// arena is the slot's owner. A huge page start takes the claim as it
+    /// is classified; `Huge::free_run` checks it. With the live block's
+    /// token, neither `invalid_free` nor the bit test can fire; the
+    /// watermark compare is not yet proved not to fire.
     #[inline(always)]
-    pub fn classify_free(&self, p: *mut u8, Tracked(blk): Tracked<&Live>) -> (r: Result<(usize, u16), usize>)
+    pub fn classify_free(&self, p: *mut u8, Tracked(claim): Tracked<&mut Claim>) -> (r: Result<(usize, u16), usize>)
         requires
-            crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && old(claim).held_block(p)),
+            old(claim).claims(p),
             self.wf(),
         ensures
+            final(claim).held is Some,
+            final(claim).claims(p),
+            old(claim).held is Some ==> *final(claim) == *old(claim),
             r matches Ok((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
-            // With the live block's token, the arena it names owns the slot.
-            blk.block(p) ==> (r matches Ok((c, a)) ==> a == crate::class::slot_owner(c as int, p@.addr)),
+            // The claimed block's token names the arena that owns the slot.
+            r matches Ok((c, a)) ==> a == crate::class::slot_owner(c as int, p@.addr),
             r matches Err(page) ==> page <= self.huge_pages(),
             // Exact: a page start of the huge region, `page` its index.
             r matches Err(page) ==> crate::layout::process_regions().is_huge_block(p@.addr, 1)
@@ -3277,36 +3308,71 @@ impl Shared {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
+                let table = self.table(class);
+                // The bit test, with the token only if the caller holds
+                // it already (a pending claim stays the call's).
+                let tracked none: Option<vstd::resource::set::GhostSingleton<int>> = None;
                 proof {
-                    if blk.block(p) {
+                    if claim.held_block(p) {
                         // A live block at a slot address is the live slot,
-                        // whose token `blk` holds.
-                        blk.lemma_block_slot_addr(p, class as int);
+                        // whose token the claim holds.
+                        claim.held->0.lemma_block_slot_addr(p, class as int);
                     }
                 }
+                let tracked held = if claim.held is Some {
+                    claim.held.tracked_borrow().slot_ref()
+                } else {
+                    &none
+                };
                 let tracked mut obs = crate::class::BitLoad::new();
-                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
+                table.check_live(slab as usize, slot as usize, p as usize, Tracked(held), Tracked(&mut obs));
                 proof {
-                    // `check_located` returned: not a guard slab.
+                    // `check_live` returned: not a guard slab.
                     self.regions.lemma_is_slot(class as int, slab as int, slot as int, p as usize);
                     // Its slab is the one `slot_owner` names.
                     self.regions.lemma_slab_index(class as int, slab as int, slot as int, p as usize);
+                    // The load's record, at the slab and slot of `p`: the
+                    // bit was set in a value its word held.
+                    assert(table.load_seen(slab as int, slot as int, obs));
+                    assert(crate::class::bit_seen_at(*table, p@.addr as int, obs));
+                    // The bit test passed: claim the block.
+                    claim.settle(p, &obs);
+                    let live = claim.held->0;
+                    live.lemma_claimed_block(p);
+                    live.lemma_claims_slot(p, class as int);
                 }
+                // SAFETY: `check_live` returned.
+                let arena = unsafe { table.located_owner(slab as usize, slot as usize, Tracked(claim.held.tracked_borrow().slot_ref())) };
                 Ok((class, arena))
             }
-            Kind::Huge { page } => Err(page),
+            Kind::Huge { page } => {
+                proof {
+                    // A page start of the huge region is no slot start, so
+                    // the claim takes no bit test's record (#835 step 2
+                    // moves it past `Huge::free_run`'s checks).
+                    if crate::heap::slot_start(p) {
+                        let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+                        assert(self.regions.is_slot_addr(c, p@.addr));
+                        crate::vspec::zero::lemma_slot_not_huge(c, p as usize);
+                    }
+                    let tracked none = crate::class::BitLoad::new();
+                    claim.settle(p, &none);
+                }
+                Err(page)
+            },
             Kind::Invalid => {
                 proof {
-                    if blk.block(p) {
+                    if claim.held_block(p) {
                         // A slot start or a page start of the huge region,
                         // which `classify` never calls `Invalid`.
+                        let blk = claim.held->0;
                         blk.lemma_block_target(p);
                         if crate::heap::slot_start(p) {
                             let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
                             assert(self.regions.is_slot_addr(c, p@.addr));
                         }
                     }
-                    assert(!blk.block(p));
+                    assert(!claim.held_block(p));
                 }
                 invalid_free(p as usize)
             },
@@ -4212,7 +4278,7 @@ impl Shared {
     #[inline(always)]
     // The `let ... else` stands for `?`, as the proofs spell it.
     #[allow(clippy::question_mark)]
-    pub(super) fn set_slot(&self, p: *mut u8) -> (r: Option<(usize, usize)>)
+    pub(super) fn set_slot(&self, p: *mut u8, Tracked(obs): Tracked<&mut crate::class::BitLoad>) -> (r: Option<(usize, usize)>)
         requires
             self.wf(),
         ensures
@@ -4220,8 +4286,10 @@ impl Shared {
             r matches Some((c, s)) ==> s < self.tables[c as int].spec_nslabs(),
             r matches Some((c, s)) ==> s == p@.addr.wrapping_sub(crate::layout::process_regions().class_base[c as int])
                 >> class_table()[c as int].lg_slab,
+            r is Some ==> crate::heap::slot_checked(p, *final(obs)),
         opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns()]
     {
+        let ghost pp = p;
         let p = p as usize;
         let class = p.wrapping_sub(self.regions.superblock) >> self.regions.lg_stride;
         if class >= NCLASSES {
@@ -4235,9 +4303,13 @@ impl Shared {
             assert(self.lines[class as int].wf(self.tables[class as int], self.regions, class as int));
             assert(self.tables[class as int].spec_class() == class);
         }
-        let Some(slab) = line.set_slab(p, table) else {
+        let Some(slab) = line.set_slab(p, table, Tracked(obs)) else {
             return None;
         };
+        proof {
+            assert(pp@.addr as int == p as int);
+            assert(table.is_process() && crate::class::bit_seen_at(*table, pp@.addr as int, *obs));
+        }
         Some((class, slab))
     }
 }
@@ -4299,7 +4371,7 @@ impl Shared {
     /// [`home_owns`]: Shared::home_owns
     #[cfg(test)]
     pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
-        let (class, slab) = self.set_slot(p)?;
+        let (class, slab) = self.set_slot(p, Tracked::assume_new())?;
         if self.multi_arena() && !self.home_owns(class, slab, h) {
             return None;
         }
@@ -4318,7 +4390,8 @@ impl Shared {
     /// [`checked_slot`]: Shared::checked_slot
     #[cfg(test)]
     pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
-        self.set_slot(p).map(|(class, _)| class)
+        self.set_slot(p, Tracked::assume_new())
+            .map(|(class, _)| class)
     }
 }
 
