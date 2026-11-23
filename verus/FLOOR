@@ -6,7 +6,7 @@
 #
 # The four figure names are the ones the kit's counter reads.
 # `functions` and `lines` are the verified share: Verus checks them.
-# `checked-functions` and `checked-lines` add the trusted functions Kani
+# `checked-functions` and `checked-lines` add the functions Kani
 # discharges (with the generated-ledger back end, the seams the ledger
 # marks discharged, verus/SEAMS.md, "Status"), which hold on the bounded
 # inputs their records under verus/seams/ name.

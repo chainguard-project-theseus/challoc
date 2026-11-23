@@ -85,7 +85,7 @@
 version: 1
 
 environment:
-  packages: [verus~0.2026.11.02, theseus-proved-port~0.4.8, build-base, busybox, make, git]
+  packages: [verus~0.2026.11.02, theseus-proved-port~0.4.12, build-base, busybox, make, git]
 
 checks:
   verus:
