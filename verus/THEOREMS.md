@@ -311,7 +311,10 @@ slot start, the token of the run that starts there if it is a huge page
 start, nothing otherwise. The allocations hand C the token of every
 block they return (`Live::gives`), so C, which holds the block,
 holds the token. The plain frees (`libc::free` and `cxx::delete`, through
-`libc::free_block`) pass C's token down unclaimed (`heap::live::Claim`,
+`libc::free_block`), `libc::free_usable`, `jemalloc::dallocx` and the
+reallocations (`libc::realloc`, `realloc_usable`, `jemalloc::rallocx`,
+whose check is `libc::old_size_or_keep` or `realloc_old`, or the free of
+a zero-size request) pass C's token down unclaimed (`heap::live::Claim`,
 [#835](https://github.com/chainguard-project-theseus/challoc/issues/835))
 and call it only through `Claim::settle`, past their check: for a
 pending claim of a slot start, `settle` requires `heap::slot_checked(p,
@@ -320,35 +323,39 @@ value its bitmap word held (`class::bit_seen_at`, over `load_seen`,
 whose witness only a word invariant makes). The fast path settles
 after `Shared::set_slot`'s bit test (`heap::free_fast_slot`), the slow
 path after `SlabTable::check_live` (`Shared::classify_free`, which then
-reads the owner with the slot's token, `SlabTable::located_owner`). A
+reads the owner with the slot's token, `SlabTable::located_owner`; the
+reallocations' size queries settle after both their checks, `check_live`
+and `Shared::check_not_cached`, which with `double_free_scan` aborts on
+a slot still in a thread cache). A
 huge page start goes on unclaimed past `classify_free`, and is claimed
 by `Claim::settle_run` past the huge lock's checks: `Huge::free_run`
 settles between `live_run_checks` and taking the run's token out (in
 the helper `claim_run`), and `Huge::usable_size` settles past its own
-checks when a `zero_on_free` clear (`Shared::zero_huge`) runs first. For
+checks when a `zero_on_free` clear (`Shared::zero_huge`) runs first, or
+for the size `free_usable` returns and the reallocations read. For
 a pending claim, `settle_run` requires `heap::run_checked(page, runs)`:
 `runs` is the process's authority of the live runs' extents
 (`huge::run_loc`), which only the huge lock's value holds, with an
 extent starting at `page`. `settle` requires a slot start for a
 pending claim, so a huge page start has no other way to its token. So a
 plain free of a slot no refill ever claimed, or of a page start where
-no live run starts, aborts before the C contract is used. That the
-plain frees reach `axiom_c_claim` only through `settle` and
+no live run starts, aborts before the C contract is used; so does a
+`free_usable`, `dallocx` or reallocation of one. That these entry
+points reach `axiom_c_claim` only through `settle` and
 `settle_run` is not a Verus fact (`axiom_c_claim` is `pub`, and
 `Claim::held` takes any `Live`): it is these bodies, pinned by
 `trusted_mint_sites_are_pinned` (`lib.rs`), which lists every caller
 of `axiom_c_claim` (in `heap::live`, only `Claim::claim_call`, which
 only `settle` and `settle_run` call) and of `Claim::pending`
-(`libc::free` and the two verification-only restatements of its
-paths). Every other caller calls it once per C call, by the
-Rust entry point the export calls, before anything else: `free_sized_hint`
-(`free_aligned_sized` and the aligned sized `delete`s; `free_sized`, and
-so `operator delete(void*, size_t)` and its array form, claim in
-`free_sized` itself, which hands the token to `free_sized_with`, as
-`sdallocx` does),
-`realloc`, `realloc_usable`, `free_usable`, and `jemalloc::rallocx`,
-`dallocx`, `sdallocx`; every verified core below them takes the token as
-a parameter. Verified code cannot call it otherwise: it uses up the
+(`libc::free`, `free_usable`, `realloc`, `realloc_usable`,
+`jemalloc::dallocx` and `rallocx`, and the two verification-only
+restatements of their paths). Every other caller, a sized free, calls it once per C call, by
+the Rust entry point the export calls, before anything else:
+`free_sized_hint` (`free_aligned_sized` and the aligned sized
+`delete`s; `free_sized`, and so `operator delete(void*, size_t)` and
+its array form, claim in `free_sized` itself, which hands the token to
+`free_sized_with`, as `sdallocx` does) and `jemalloc::sdallocx`; every
+verified core below them takes the token as a parameter. Verified code cannot call it otherwise: it uses up the
 linear token of one C call (`vspec::cbuf::CCall`, the type of the
 C-boundary buffer tokens), of a free or a realloc of the pointer
 (`CEntry::Frees`, `CCall::block`), which no verified code builds
@@ -1855,8 +1862,9 @@ entry points call them:
 `theorem_no_syscall_on_fast_paths`, a verification-only function
 (`cfg(verus_keep_ghost)`; the build has none), makes these calls where
 `may_syscall()` does not hold, only `integrity_aborts()`, and verifies. It takes the block tokens
-as the entry points do (`Live::empty()` for a pop, `axiom_c_claim` for
-a free), which are ghost. So none of these functions
+as the entry points do (`Live::empty()` for a pop, C's token unclaimed,
+`Claim::pending`, for a plain free or `free_usable`, `axiom_c_claim`
+for a sized free), which are ghost. So none of these functions
 requires it, and neither does anything they call. `malloc_fast` is a
 second witness: it makes the same calls and does not require it either.
 Paths 0, 2, 3 and the last restate the fast-path code of `malloc_class`,
@@ -3883,6 +3891,31 @@ verifies (4392 verified, 0 errors): `trusted_mint_sites_are_pinned`
 rejects it (a call of `axiom_c_claim(` in `pub fn free`, not a listed
 site).
 
+The other entry points' claims (#835 step 3; `cargo verus focus`,
+modules `api::libc` and `api::jemalloc`, each one error):
+`old_size_or_keep` settling before its bit test, with a fresh
+`BitLoad` (R1), fails `Claim::settle`'s precondition; its huge branch
+handing the size query `Claim::none()` in place of the pending claim
+(R2) fails its `final(claim).held is Some` postcondition; `realloc_old`
+without its `settle` (R3), and `free_usable_slow`'s huge branch handing
+the query `Claim::none()` (R4), fail the claimed token's uses after the
+check. `old_size_or_keep` settling with the record of another slab's
+real `check_live` (the slab index with its low bit flipped, R6) fails
+`settle`'s precondition (`bit_seen_at`'s bounds); the extra `check_live`
+also fails its own precondition under `valid_aborts`, the route
+`theorem_valid_lookups_never_abort` takes. `realloc_old` settling
+before its bit test (R7) fails `settle`'s precondition.
+`realloc_block` handing the token back on a failed move only when the
+claim came in held (R8) fails its `*final(out) == blk` postcondition,
+`blk` being the ghost result. The unmutated control run: 175 verified,
+0 errors. Claiming up front (`Claim::held(axiom_c_claim(c))` for
+`Claim::pending(c)`) in `libc::realloc` (R5), `free_usable` (R9),
+`realloc_usable` (R10), `jemalloc::dallocx` (R11) or `rallocx` (R12)
+still verifies (R9 and R12 together: 175 verified, 0 errors), and
+`trusted_mint_sites_are_pinned` rejects each, naming the site ("a call
+of `axiom_c_claim(` in `pub fn rallocx(...)`, which is not one of its
+listed sites"), as H7.
+
 *(ghost token)*: `api::libc::usable_size` takes a `Tracked<&Live>` that
 its executable code never reads, and is verified for every value of it.
 Its `ensures` `blk.run_opt() is Some ==> !vspec::usable::run_interior(
@@ -5303,21 +5336,27 @@ pub open spec fn shrank_in_place(p: *mut u8, size: usize, blk: Live, out: Live) 
     &&& out.copied_from(blk, out.len())
 }
 
-fn old_size_or_keep(shared, what, p, size, align, blk: &Live) -> (r: Option<usize>)
+// The check claims the token (`claim`, held or C's still pending,
+// settled past the check: #835) and ensures the claim then holds it;
+// `blk` below is that token, `final(claim).held->0`.
+fn old_size_or_keep(shared, what, p, size, align, claim: &mut Claim) -> (r: Option<usize>)
     ensures r is None <==> keeps(p, size, align, blk.len()), ...
-fn realloc_old(shared, p, size, blk: &Live) -> (r: (bool, usize))
+fn realloc_old(shared, p, size, claim: &mut Claim) -> (r: (bool, usize))
     ensures r.0 <==> keeps(p, size, 1, blk.len()), ...
-fn realloc_block(p, size, blk: Live, out, errno) -> (r: *mut u8)
-    ensures p@.addr != 0 && size != 0
-        ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len())
-                || grew_in_place(p, size, blk, *final(out))
-                || shrank_in_place(p, size, blk, *final(out))), ...
-fn realloc_usable_stored(p, size, usable, blk: Live, out, errno) -> (r: (*mut u8, _))
+// The cores return the claimed token as a ghost result, and `blk` below
+// is it (`r.1@`, `r.2@`, `r.3@`); for a claim that came in held, it is
+// the held token itself.
+fn realloc_block(p, size, claim: Claim, out, errno) -> (r: (*mut u8, Ghost<Live>))
     ensures p@.addr != 0 && size != 0
         ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())
                 || grew_in_place(p, size, blk, *final(out))
                 || shrank_in_place(p, size, blk, *final(out))), ...
-fn rallocx_zeroed(p, size, flags, blk: Live, out) -> (r: (*mut u8, _, _))
+fn realloc_usable_stored(p, size, usable, claim: Claim, out, errno) -> (r: (*mut u8, _, Ghost<Live>))
+    ensures p@.addr != 0 && size != 0
+        ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len())
+                || grew_in_place(p, size, blk, *final(out))
+                || shrank_in_place(p, size, blk, *final(out))), ...
+fn rallocx_zeroed(p, size, flags, claim: Claim, out) -> (r: (*mut u8, _, _, Ghost<Live>))
     ensures p@.addr != 0
         ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1usize << (flags & 0x3f), blk.len())
                 || grew_in_place(p, size, blk, *final(out))
@@ -9108,7 +9147,7 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
 // body: shared.check_size_hint, then free_direct
 
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>,
+fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<Live>,
     Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
@@ -10764,17 +10803,21 @@ the same block. Likewise the U cells of rows 12 and 14 rest on the
 `_stored` twins' `ensures` (`malloc_usable_stored`,
 `realloc_usable_stored`) and row 13's on `calloc_usable_zeroed`'s third
 result: `malloc_usable` and `realloc_usable` themselves state nothing
-about `*usable`. The D cells, the *(live)* B cells, row 15's U, row
+about `*usable`. The D cells, the *(live)* B cells, row
 17's Z and the F cells of rows 3, 4 and 14 (the old block's token
 given back on a failed move; row 4 reaches `realloc_block` through
 `realloc`) rest on a
 `_block` core (`malloc_block`, `free_block`, ...; for rows 12 to 14 the
 `_stored` twins and `calloc_usable_zeroed`, which take the token too)
 that the Rust entry point calls with a fresh `Live` token (allocations:
-the token goes to C with the block) or with the one `axiom_c_claim`
-gives for C's pointer (frees); the token is ghost, so the core is the
-entry point's code, and its `ensures` is the symbol's contract for those
-cells.
+the token goes to C with the block), with C's token for its pointer
+still unclaimed (`Claim::pending`: the plain frees, `free_usable`,
+`dallocx` and the reallocations, whose cores claim it through
+`axiom_c_claim` only past their check, and the realloc cores return the
+claimed token as a ghost result their `ensures` name), or with the one
+`axiom_c_claim` gives up front (the sized frees). The tokens are ghost,
+so the core is the entry point's code, and its `ensures` is the
+symbol's contract for those cells.
 
 Properties:
 
@@ -10839,7 +10882,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 12 | `challoc_malloc_usable`                     | P | P | . | . | P | . | P |
 | 13 | `challoc_calloc_usable`                     | P | P | P | . | P | . | P |
 | 14 | `challoc_realloc_usable`                    | P | P | . | p | P | p | P |
-| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | P |
+| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | p |
 | 16 | `mallocx`                                   | P | P | P | . | p | p | . |
 | 17 | `rallocx`                                   | P | P | P | p | p | p | . |
 | 18 | `xallocx`                                   | . | . | . | . | . | p | p |
@@ -10985,8 +11028,11 @@ Notes that recur below:
   block's usable bytes, a run token's usable pages included). The
   queries (`malloc_usable_size`, `sallocx`, `xallocx`) take no token, so
   their huge half is not tied to the request: `p` for rows 9, 18 and 19.
-  `challoc_free_usable` takes the freed block's token and states `r ==
-  blk.len()` too (row 15). The allocating `_usable` entry points are
+  `challoc_free_usable`'s core states `r == blk.len()` for a token the
+  caller holds, but the export passes C's token down unclaimed and the
+  core does not hand the claimed token back, so its huge half is not
+  tied to a token either: `p` for row 15 too
+  ([#892](https://github.com/chainguard-project-theseus/challoc/issues/892)). The allocating `_usable` entry points are
   `.0` of `_stored` twins (`malloc_usable_stored`,
   `realloc_usable_stored`; `calloc_usable_zeroed`'s third result) that
   return the `Stored` token of `store_usable` (verified: it writes through
@@ -11018,7 +11064,10 @@ alone):
 3. `realloc` (`api/libc.rs`). R: `fits(r, size, QUANTUM)`, a kept
    block included (`kept` bounds a kept run by
    `size`, and unfolds to `fits`). D: *(D)*
-   (`realloc_block`); a kept `p` comes back with the caller's own token.
+   (`realloc_block`); a kept `p` comes back with the token the check
+   claimed for it (the core's ghost result `blk`; at the export, the
+   token `Claim::settle` or `Claim::settle_run` claims for C's `p` past
+   `old_size_or_keep`'s checks, #835).
    The move's disjointness from `p` is proved (`Live::theorem_apart` on
    the two blocks' tokens). The copy takes both blocks' permissions
    (`libc::copy_moved`, `vspec::user::copy_user`), which also makes the
@@ -11035,9 +11084,9 @@ alone):
    verified. F:
    `p != 0 && size == 0 ==> r@.addr == 0` with `errno` unchanged (the
    frame across `free`, *(errno)*), every other NULL with
-   `ENOMEM`, and the core (`realloc_block`) gives the caller back its own
-   token for `p` on a NULL from the move (`p` is still live; the code
-   returns before `heap::free`). B: `p != 0 ==> free_target(p)`, *(live)*.
+   `ENOMEM`, and the core (`realloc_block`) gives the caller back the
+   claimed token for `p` on a NULL from the move (`*final(out) == blk`;
+   `p` is still live; the code returns before `heap::free`). B: `p != 0 ==> free_target(p)`, *(live)*.
 4. `reallocarray` (`api/libc.rs`). As `realloc` for `n * m`. F also
    proves `n * m > usize::MAX ==> r@.addr == 0 && final(errno).val() ==
    ENOMEM`. B: `free_target(p)` only when `n * m` does not overflow (an
@@ -11145,9 +11194,15 @@ alone):
     the class size from `heap::free_fast_slot` (`heap/paths.rs`),
     which ensures `is_slot(c, p)`, or from `free_usable_slow`'s classification
     (`api/libc.rs`), or `Huge::usable_size` there. The `r == blk.len()` half
-    is the core's; at the export `blk` is the token `axiom_c_claim` gives
-    for C's `p`, so for a huge run it holds under the `free` contract
-    (the `usable_of` half needs no token).
+    is the core's for a token the caller holds (`free_usable_block`'s
+    `claim.held matches Some(l) ==> r == l.len()`). At the export C's
+    token goes down unclaimed and is claimed only past the check (#835),
+    and the core does not hand the claimed token back, so this half is
+    not stated there: for a slot `usable_of(p, r)` still fixes `r` as the
+    class size, and for a huge run it states only the shape (whole pages
+    inside the region), not that `r` is the run token's usable pages
+    ([#892](https://github.com/chainguard-project-theseus/challoc/issues/892)
+    tracks returning it). The `usable_of` half needs no token.
     `errno` is preserved as by `free`: `free_usable` and
     `free_usable_block` ensure `final(errno).val() == old(errno).val()`
     (over `free_usable_slow` and `heap::free`).
@@ -11182,7 +11237,9 @@ alone):
     `k == min(blk.len(), size)`, the usable bytes of `p`'s token
     (`old_size_or_keep` ensures `old == blk.len()`), which is the
     old run's usable size. So Z is `P` under the `free` contract, as D:
-    at the export, `blk` is the token `axiom_c_claim` gives for C's `p`.
+    at the export, `blk` is `rallocx_zeroed`'s ghost result, the token
+    `Claim::settle` or `Claim::settle_run` claims for C's `p` past
+    `old_size_or_keep`'s checks (through `axiom_c_claim`, #835).
     A kept block gets no `Zeroed` token; jemalloc zeroes only past the old real
     size, which a kept block keeps. C, F, B: as `realloc`, except that
     `errno` untouched is not stated (the token is passed on, as row 16);
@@ -11430,7 +11487,9 @@ What each partial or missing cell leaves out, and what it rests on:
   `realloc_usable_stored`, `rallocx_zeroed`) ensure that a moved block's
   first `min(blk.len(), size)` bytes read as `p`'s did
   (`final(out).copied_from(blk, ..)`, `Live::copied_from`, over the byte
-  states). That rests on `copy_raw`'s trusted effect on the byte states,
+  states), with `blk` the token their check claimed for `p`, which each
+  returns as a ghost result (C's token at the export, claimed past the
+  check, #835). That rests on `copy_raw`'s trusted effect on the byte states,
   which Kani checks (row 3). Not stated: that a block kept in place keeps
   its bytes, and anything beyond the first `min(blk.len(), size)` bytes.
 - **F**: rows 16 and 17 take the `errno` token but state nothing about
@@ -11440,7 +11499,8 @@ What each partial or missing cell leaves out, and what it rests on:
   `P` cells (rows 10, 11, 15, 26-28) and the unchanged `errno` of rows
   20 and 21 rest on the premise that no libc call in trusted code on
   their paths leaves `errno` changed (*(errno)*).
-- **U** (rows 9, 18, 19): the huge half of a query. `usable_size` with
+- **U** (rows 9, 15, 18, 19): the huge half of a query, and of
+  `challoc_free_usable`'s result at the export (row 15, #892). `usable_size` with
   the block's run token gives exactly its usable bytes, but the queries
   take no token (giving them one would add an `axiom_c_claim` site for a
   call that frees nothing), so for a huge run their own `ensures` state

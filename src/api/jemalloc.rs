@@ -467,7 +467,10 @@ pub fn mallocx_zeroed(
 /// the flags' cache. `MALLOCX_ZERO` zeroes the bytes beyond the copied
 /// prefix of a moved block. On failure `p` is intact and null comes back.
 /// C holds the token of the block it passes
-/// ([`crate::heap::live::axiom_c_claim`]), and gets the result's.
+/// ([`crate::heap::live::axiom_c_claim`]), and gets the result's; as
+/// `free` does, the call passes it down unclaimed
+/// ([`crate::heap::Claim::pending`]), to be claimed only past the bit
+/// test of a slot or the huge lock's checks of a run.
 pub fn rallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>, errno: Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: *mut u8)
     requires
         c.block() == Some(p),
@@ -480,9 +483,8 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 && r@.addr != 0 && r != p ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
 {
-    let tracked blk = crate::heap::live::axiom_c_claim(c);
     let tracked mut out = Live::empty();
-    rallocx_zeroed(p, size, flags, Tracked(blk), Tracked(&mut out), errno, Tracked(ord)).0
+    rallocx_zeroed(p, size, flags, Tracked(crate::heap::Claim::pending(c)), Tracked(&mut out), errno, Tracked(ord)).0
 }
 
 /// [`rallocx`] with the token that `MALLOCX_ZERO` memory past the copy
@@ -495,25 +497,29 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>
 /// `old` is what `Huge::usable_size` reads from the run's descriptor, of which
 /// `usable_of` states only the shape (whole pages, at least one, inside
 /// the region), not the value; the value is the usable size of `p`'s
-/// token (`k == min(blk.len(), size)`). `blk` is the caller's token for
-/// `p` ([`Live::claims`]), and `out` gets the result's: a new block's, or
-/// `blk` itself when `p` is kept or the move fails (`p` is then still the
-/// caller's).
+/// token (`k == min(blk.len(), size)`). `claim` is the caller's token for
+/// `p` ([`Claim::claims`](crate::heap::Claim::claims)), held or still the
+/// call's, claimed only past the check (`libc::old_size_or_keep`); `out`
+/// gets the result's: a new block's, or the claimed token itself when `p`
+/// is kept or the move fails (`p` is then still the caller's). The ghost
+/// fourth result `blk` is the token the check claimed (the held one
+/// itself, if the claim came in held), and the result is stated against
+/// it.
 // The in-place grow's alignment test keeps `%`, the form its proof reads.
 #[allow(clippy::manual_is_multiple_of)]
 pub fn rallocx_zeroed(
     p: *mut u8,
     size: usize,
     flags: c_int,
-    Tracked(blk): Tracked<Live>,
+    Tracked(claim): Tracked<crate::heap::Claim>,
     Tracked(out): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> (r: (*mut u8, Ghost<int>, Tracked<Zeroed>))
+) -> (r: (*mut u8, Ghost<int>, Tracked<Zeroed>, Ghost<Live>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        blk.claims(p),
+        claim.claims(p),
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
@@ -528,29 +534,33 @@ pub fn rallocx_zeroed(
             &&& p@.addr != 0 ==> exists|o: int| #[trigger] usable_of(p, o) && r.1@ == (if o < size { o } else { size as int })
             // The same `o` is the usable size of `p`'s token: exact for a
             // huge `p` too.
-            &&& p@.addr != 0 ==> r.1@ == (if blk.len() < size { blk.len() } else { size as int })
+            &&& p@.addr != 0 ==> r.1@ == (if r.3@.len() < size { r.3@.len() } else { size as int })
             // The slot case of the `usable_of` line, spelled out for callers.
             &&& p@.addr != 0 ==> forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
                 ==> r.1@ == (if class_table()[c].size < size { class_table()[c].size as int } else { size as int })
         },
         final(out).gives(r.0, size as int),
         r.0@.addr != 0 && r.0 != p && (flags as u32) & MALLOCX_ZERO != 0 ==> final(out).reads_zero(r.1@, final(out).len() - r.1@),
-        p@.addr != 0 && r.0@.addr != 0 && r.0 != p ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
         // A move frees `p` through the flags' cache, which exists.
         p@.addr != 0 && r.0@.addr != 0 && r.0 != p ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
-        p@.addr != 0 ==> blk.block(p),
-        p@.addr != 0 && r.0@.addr == 0 ==> *final(out) == blk,
-        p@.addr != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, (1usize << ((flags as u32) & 0x3f)), blk.len()) || grew_in_place(
-            p,
-            size,
-            blk,
-            *final(out),
-        ) || shrank_in_place(p, size, blk, *final(out))),
+        p@.addr != 0 ==> {
+            let blk = r.3@;
+            &&& claim.held matches Some(b) ==> blk == b
+            &&& r.0@.addr != 0 && r.0 != p ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
+            &&& blk.block(p)
+            &&& r.0@.addr == 0 ==> *final(out) == blk
+            &&& r.0@.addr == p@.addr <==> keeps(p, size, (1usize << ((flags as u32) & 0x3f)), blk.len()) || grew_in_place(
+                p,
+                size,
+                blk,
+                *final(out),
+            ) || shrank_in_place(p, size, blk, *final(out))
+        },
 {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
         let (q, z) = alloc_with(super::shared(), size, &f, false, Tracked(out), Tracked(errno), Tracked(ord));
-        return (q, Ghost(0), z);
+        return (q, Ghost(0), z, Ghost(vstd::pervasive::arbitrary()));
     }
     let Some(shared) = super::shared_if_ready() else {
         not_an_allocation("rallocx", p)
@@ -562,14 +572,17 @@ pub fn rallocx_zeroed(
             requires lg < 64;
         crate::meta::lemma_is_pow2_shl(lg as usize);
     }
-    let tracked mut blk = blk;
-    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, align, Tracked(&blk), Tracked(&mut *ord))
+    let tracked mut claim = claim;
+    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, align, Tracked(&mut claim), Tracked(&mut *ord))
     else {
+        let ghost b = claim.held->0;
         proof {
-            out.set(blk);
+            out.set(claim.held.tracked_unwrap());
         }
-        return (p, Ghost(0), Tracked(Zeroed::empty(0)));
+        return (p, Ghost(0), Tracked(Zeroed::empty(0)), Ghost(b));
     };
+    let tracked mut blk = claim.held.tracked_unwrap();
+    let ghost b = blk;
     // As `realloc`: a run that needs more pages grows in place when it
     // can, at `p` if `p` meets the alignment, and else moves to a run
     // placed with free pages after it. Not under `MALLOCX_ZERO`, whose
@@ -586,7 +599,7 @@ pub fn rallocx_zeroed(
         proof {
             out.set(blk);
         }
-        return (p, Ghost(0), Tracked(Zeroed::empty(0)));
+        return (p, Ghost(0), Tracked(Zeroed::empty(0)), Ghost(b));
     }
     // As `realloc`: a run trimmed to fewer pages, still a run's size,
     // shrinks in place when it can, at `p` if `p` meets the alignment.
@@ -602,7 +615,7 @@ pub fn rallocx_zeroed(
         proof {
             out.set(blk);
         }
-        return (p, Ghost(0), Tracked(Zeroed::empty(0)));
+        return (p, Ghost(0), Tracked(Zeroed::empty(0)), Ghost(b));
     }
     let (q, Tracked(z)) = alloc_with(shared, size, &f, grows, Tracked(out), Tracked(&mut *errno), Tracked(&mut *ord));
     if q.is_null() {
@@ -610,7 +623,7 @@ pub fn rallocx_zeroed(
         proof {
             out.set(blk);
         }
-        return (q, Ghost(0), Tracked(z));
+        return (q, Ghost(0), Tracked(z), Ghost(b));
     }
     proof {
         broadcast use vstd::layout::align_of_u8;
@@ -644,8 +657,8 @@ pub fn rallocx_zeroed(
             Tracked(out),
         )
     };
-    mallocx::free(shared, p, f.tcache, Tracked(blk), Tracked(errno), Tracked(ord));
-    (q, Ghost(k), Tracked(tail))
+    mallocx::free(shared, p, f.tcache, Tracked(crate::heap::Claim::held(blk)), Tracked(errno), Tracked(ord));
+    (q, Ghost(k), Tracked(tail), Ghost(b))
 }
 
 /// `xallocx(p, size, extra, flags)`: resize in place only. challoc never
@@ -693,7 +706,10 @@ pub fn sallocx(p: *mut u8, _flags: c_int, Tracked(ord): Tracked<&mut LockOrder>)
 /// `dallocx(p, flags)`: free through the flags' cache (`MALLOCX_TCACHE_NONE`
 /// releases the slot straight to its slab bitmap). Null is a no-op. C
 /// holds the token of the block it frees
-/// ([`crate::heap::live::axiom_c_claim`]).
+/// ([`crate::heap::live::axiom_c_claim`]); as `free` does, the call
+/// passes it down unclaimed ([`crate::heap::Claim::pending`]), to be
+/// claimed only past the bit test of a slot or the huge lock's checks of
+/// a run ([`crate::heap::Claim::settle`], [`crate::heap::Claim::settle_run`]).
 pub fn dallocx(p: *mut u8, flags: c_int, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         c.block() == Some(p),
@@ -706,13 +722,14 @@ pub fn dallocx(p: *mut u8, flags: c_int, Tracked(c): Tracked<CCall>, Tracked(err
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
         *final(ord) == *old(ord),
 {
-    let tracked blk = crate::heap::live::axiom_c_claim(c);
-    dallocx_block(p, flags, Tracked(blk), Tracked(errno), Tracked(ord))
+    dallocx_block(p, flags, Tracked(crate::heap::Claim::pending(c)), Tracked(errno), Tracked(ord))
 }
 
-/// [`dallocx`] with the caller's token for `p` ([`Live::claims`]), which
-/// the free takes back: the token of the live block `p`.
-pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
+/// [`dallocx`] with the caller's token for `p`
+/// ([`Claim::claims`](crate::heap::Claim::claims)), held or still the
+/// call's, which the free claims past its check and takes back: for a
+/// held token, the token of the live block `p`.
+pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<crate::heap::Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -723,7 +740,7 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<Live>, Trac
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
-        p@.addr != 0 ==> blk.block(p),
+        p@.addr != 0 ==> (blk.held matches Some(l) ==> l.block(p)),
 {
     if p.is_null() {
         return;
@@ -898,7 +915,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
         }
     }
     shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
-    mallocx::free(shared, p, f.tcache, Tracked(blk), Tracked(errno), Tracked(ord));
+    mallocx::free(shared, p, f.tcache, Tracked(crate::heap::Claim::held(blk)), Tracked(errno), Tracked(ord));
 }
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when

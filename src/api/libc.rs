@@ -759,8 +759,9 @@ pub fn free_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tr
 /// the entry points take them: an empty `Live` for a pop,
 /// [`heap::live::axiom_c_claim`] for a free, of the call's token for `p`
 /// (`claim`, [`CCall`], as an export mints it), except plain `free`
-/// (path 2), which passes it unclaimed ([`Claim::pending`]) as `free`
-/// does, to be claimed past the bit test ([`Claim::settle`]).
+/// (path 2) and `free_usable` (the last path), which pass it unclaimed
+/// ([`Claim::pending`]) as their entry points do, to be claimed past the
+/// bit test ([`Claim::settle`]).
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
@@ -820,7 +821,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
             if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
                 // SAFETY: as in `free_block`.
                 let s = unsafe { super::shared_deref(super::shared_base()) };
-                let tracked mut b = Claim::held(heap::live::axiom_c_claim(claim));
+                let tracked mut b = Claim::pending(claim);
                 // SAFETY: as in `free_block`.
                 if let Some(c) =unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) } {
                     let _ = class_size(c);
@@ -875,11 +876,11 @@ fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8
             free_sized_with(p, n, Tracked(b), Tracked(errno), Tracked(ord));
         },
         6 => {
-            let tracked b = heap::live::axiom_c_claim(claim);
+            let tracked b = Claim::pending(claim);
             let _ = free_usable_block(p, Tracked(b), Tracked(errno), Tracked(ord));
         },
         7 => {
-            let tracked b = heap::live::axiom_c_claim(claim);
+            let tracked b = Claim::pending(claim);
             super::jemalloc::dallocx_block(p, flags, Tracked(b), Tracked(errno), Tracked(ord));
         },
         8 => {
@@ -1590,27 +1591,33 @@ pub proof fn lemma_keeps_usable(p: *mut u8, n: usize)
 /// a move has to copy: the class's size for a slot, the run's usable bytes
 /// from its descriptor for a huge page start. Aborts, naming `what`, unless `p`
 /// is a live slab slot or huge run start; so it returns only for a free
-/// target, and `blk`, the caller's token for `p` ([`Live::claims`]), is
-/// then the live block's, with `old` usable bytes, or `size` or more when
-/// `p` is kept.
+/// target. `claim` is the caller's token for `p` ([`Claim::claims`]),
+/// held or still the call's: a pending claim is claimed past the checks,
+/// the slot's bit test and cached-copy test ([`Claim::settle`]) or the
+/// huge lock's checks ([`Claim::settle_run`], in the size query). On return the claim holds
+/// the live block's token, with `old` usable bytes, or `size` or more
+/// when `p` is kept.
 // realloc's path: left as written so its codegen does not move.
 #[allow(clippy::manual_is_multiple_of)]
-pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize, Tracked(blk): Tracked<&Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Option<usize>)
+pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize, Tracked(claim): Tracked<&mut Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Option<usize>)
     requires
-        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && old(claim).held_block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
         is_pow2(align),
-        blk.claims(p),
+        old(claim).claims(p),
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
         heap::free_target(p),
+        final(claim).held is Some,
+        final(claim).claims(p),
+        old(claim).held is Some ==> *final(claim) == *old(claim),
         r is None ==> kept(p, size as int, align as int),
-        r is None <==> keeps(p, size, align, blk.len()),
+        r is None <==> keeps(p, size, align, final(claim).held->0.len()),
         r matches Some(o) ==> usable_of(p, o as int),
-        r is None ==> blk.gives(p, size as int),
-        r matches Some(o) ==> blk.block(p) && o == blk.len(),
+        r is None ==> final(claim).held->0.gives(p, size as int),
+        r matches Some(o) ==> final(claim).held->0.block(p) && o == final(claim).held->0.len(),
 {
     proof {
         shared.lemma_wf();
@@ -1623,19 +1630,39 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
+            let table = shared.table(class);
+            // The bit test, with the token only if the caller holds it
+            // already (a pending claim stays the call's).
+            let tracked none: Option<vstd::resource::set::GhostSingleton<int>> = None;
             proof {
-                if blk.block(p) {
-                    // The live slot, whose token `blk` holds.
-                    blk.lemma_block_slot_addr(p, class as int);
+                if claim.held_block(p) {
+                    // The live slot, whose token the claim holds.
+                    claim.held->0.lemma_block_slot_addr(p, class as int);
                 }
             }
+            let tracked held = if claim.held is Some {
+                claim.held.tracked_borrow().slot_ref()
+            } else {
+                &none
+            };
             let tracked mut obs = crate::class::BitLoad::new();
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
-            shared.check_not_cached(class, p);
+            table.check_live(slab as usize, slot as usize, p as usize, Tracked(held), Tracked(&mut obs));
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
             }
+            shared.check_not_cached(class, p);
+            proof {
+                // The load's record, at the slab and slot of `p`: the bit
+                // was set in a value its word held.
+                assert(table.load_seen(slab as int, slot as int, obs));
+                assert(crate::class::bit_seen_at(*table, p@.addr as int, obs));
+                // Both checks passed (the bit test and, with
+                // `double_free_scan`, the cached-copy test): claim the
+                // block.
+                claim.settle(p, &obs);
+            }
+            let ghost blk = claim.held->0;
             proof {
                 blk.lemma_claims_slot(p, class as int);
                 blk.lemma_claimed_block(p);
@@ -1658,16 +1685,43 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
             Some(class_size(class))
         }
         Kind::Huge { page } => {
+            // The size, with the run's check: a held token lends its run
+            // token to the query (set aside meanwhile), a pending claim is
+            // claimed there, past the huge lock's checks
+            // (`Huge::usable_size`, `Claim::settle_run`).
             proof {
-                if blk.block(p) {
-                    // The live run at `page`, whose token `blk` holds.
-                    blk.lemma_claims(p);
-                    shared.lemma_run_page(p, page, *blk);
+                crate::heap::live::lemma_not_slot(p);
+                if claim.held_block(p) {
+                    // The live run at `page`, whose token the claim holds.
+                    claim.held->0.lemma_claims(p);
+                    shared.lemma_run_page(p, page, claim.held->0);
                 }
             }
-            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut Claim::none()), Tracked(ord));
+            let tracked mut aside = Claim::none();
             proof {
-                shared.lemma_run_page(p, page, *blk);
+                if claim.held is Some {
+                    vstd::modes::tracked_swap(&mut aside, claim);
+                }
+            }
+            let tracked none: Option<crate::huge::RunToken> = None;
+            let tracked tok = if aside.held is Some {
+                aside.held.tracked_borrow().run_ref()
+            } else {
+                &none
+            };
+            let old = shared.huge.usable_size(page, Tracked(tok), Tracked(&mut *claim), Tracked(ord));
+            proof {
+                if aside.held is Some {
+                    vstd::modes::tracked_swap(&mut aside, claim);
+                }
+            }
+            let ghost blk = claim.held->0;
+            proof {
+                if blk.block(p) {
+                    // A pending claim, claimed: the run's block at `p`.
+                    blk.lemma_claims(p);
+                }
+                shared.lemma_run_page(p, page, blk);
                 // What the descriptor reads is `p`'s usable size; a page
                 // start of the huge region is no slot.
                 shared.lemma_huge_run_usable(p as usize, old);
@@ -1690,16 +1744,17 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
         }
         Kind::Invalid => {
             proof {
-                if blk.block(p) {
+                if claim.held_block(p) {
                     // A slot start or a page start of the huge region,
                     // which `classify` never calls `Invalid`.
+                    let blk = claim.held->0;
                     blk.lemma_block_target(p);
                     if heap::slot_start(p) {
                         let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
                         assert(shared.regions.is_slot_addr(c, p@.addr));
                     }
                 }
-                assert(!blk.block(p));
+                assert(!claim.held_block(p));
             }
             crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
         },
@@ -1714,7 +1769,10 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
 /// and returns null without setting `errno` (a free never starts the
 /// background thread, and leaves `errno` as it was). C holds the
 /// token of the block it passes ([`heap::live::axiom_c_claim`]), and gets
-/// the result's.
+/// the result's; as `free` does, the call passes it down unclaimed
+/// ([`Claim::pending`]), to be claimed only past the bit test of a slot
+/// ([`Claim::settle`]) or the huge lock's checks of a run
+/// ([`Claim::settle_run`]).
 pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: *mut u8)
     requires
         c.block() == Some(p),
@@ -1729,9 +1787,8 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
-    let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut out = Live::empty();
-    realloc_block(p, size, Tracked(blk), Tracked(&mut out), Tracked(errno), Tracked(ord))
+    realloc_block(p, size, Tracked(Claim::pending(c)), Tracked(&mut out), Tracked(errno), Tracked(ord)).0
 }
 
 /// `realloc`'s copy: the first `n` bytes of the live block `p` into the
@@ -1776,50 +1833,62 @@ pub(super) unsafe fn copy_moved(p: *mut u8, q: *mut u8, n: usize, Tracked(blk): 
     }
 }
 
-/// [`realloc`] with the tokens: `blk` is the caller's for `p`
-/// ([`Live::claims`]), and `out` gets the result's: a new block's, or
-/// `blk` itself when `p` is kept or the move fails (`p` is then still the
-/// caller's). The new block is disjoint from `p`
-/// ([`Live::theorem_apart`]) for the copy.
+/// [`realloc`] with the tokens: `claim` is the caller's for `p`
+/// ([`Claim::claims`]), held or still the call's, claimed only past the
+/// check ([`old_size_or_keep`], or the free of `realloc(p, 0)`); `out`
+/// gets the result's: a new block's, or the claimed token itself when `p`
+/// is kept or the move fails (`p` is then still the caller's). The new
+/// block is disjoint from `p` ([`Live::theorem_apart`]) for the copy.
+/// The ghost second result is the token the check claimed (the held one
+/// itself, if the claim came in held), and the result is stated against
+/// it.
 #[inline(always)]
-pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: *mut u8)
+pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tracked(out): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, Ghost<Live>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        blk.claims(p),
+        claim.claims(p),
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
-        p@.addr != 0 && size == 0 ==> r@.addr == 0,
-        heap::fits(r, size as int, QUANTUM as int),
+        p@.addr != 0 && size == 0 ==> r.0@.addr == 0,
+        heap::fits(r.0, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
-        final(out).gives(r, size as int),
-        p@.addr != 0 ==> blk.block(p),
-        p@.addr != 0 && size != 0 && r@.addr == 0 ==> *final(out) == blk,
-        p@.addr != 0 && size != 0 && r@.addr != 0 && r@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
-        p@.addr != 0 && size != 0 ==> (r@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))
-            || shrank_in_place(p, size, blk, *final(out))),
-        r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
+        final(out).gives(r.0, size as int),
+        p@.addr != 0 && size == 0 ==> (claim.held matches Some(blk) ==> blk.block(p)),
+        p@.addr != 0 && size != 0 ==> {
+            let blk = r.1@;
+            &&& claim.held matches Some(b) ==> blk == b
+            &&& blk.block(p)
+            &&& r.0@.addr == 0 ==> *final(out) == blk
+            &&& r.0@.addr != 0 && r.0@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
+            &&& r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))
+                || shrank_in_place(p, size, blk, *final(out))
+        },
+        r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
-        return malloc_block(size, Tracked(out), Tracked(errno), Tracked(ord));
+        return (malloc_block(size, Tracked(out), Tracked(errno), Tracked(ord)), Ghost(vstd::pervasive::arbitrary()));
     }
     if size == 0 {
-        free_block(p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(ord));
-        return ptr::null_mut();
+        free_block(p, Tracked(claim), Tracked(&mut *errno),Tracked(ord));
+        return (ptr::null_mut(), Ghost(vstd::pervasive::arbitrary()));
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     proof {
         crate::meta::lemma_is_pow2_one();
     }
-    let tracked mut blk = blk;
-    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1, Tracked(&blk), Tracked(&mut *ord)) else {
+    let tracked mut claim = claim;
+    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1, Tracked(&mut claim), Tracked(&mut *ord)) else {
+        let ghost b = claim.held->0;
         proof {
-            out.set(blk);
+            out.set(claim.held.tracked_unwrap());
         }
-        return p;
+        return (p, Ghost(b));
     };
+    let tracked mut blk = claim.held.tracked_unwrap();
+    let ghost b = blk;
     // A run that needs more pages takes the free pages after it when it
     // can, and stays where it is; else it moves to a run placed with free
     // pages after it, for its next growth.
@@ -1828,7 +1897,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         proof {
             out.set(blk);
         }
-        return p;
+        return (p, Ghost(b));
     }
     // A run trimmed to fewer pages, still a run's size, gives the pages
     // after its new end back and stays where it is.
@@ -1836,7 +1905,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         proof {
             out.set(blk);
         }
-        return p;
+        return (p, Ghost(b));
     }
     let q = if grows {
         malloc_grown(shared, size, Tracked(out), Tracked(errno), Tracked(&mut *ord))
@@ -1848,7 +1917,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         proof {
             out.set(blk);
         }
-        return q;
+        return (q, Ghost(b));
     }
     proof {
         broadcast use vstd::layout::align_of_u8;
@@ -1864,7 +1933,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
     heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(ord));
-    q
+    (q, Ghost(b))
 }
 
 /// The in-place growth `realloc`, `rallocx` and `challoc_realloc_usable`
@@ -1996,7 +2065,7 @@ fn theorem_realloc_to_usable_size(p: *mut u8, Tracked(blk): Tracked<Live>, Track
     }
     let ghost b = blk;
     let tracked mut out = Live::empty();
-    let q = realloc_block(p, n, Tracked(blk), Tracked(&mut out), Tracked(errno), Tracked(ord));
+    let q = realloc_block(p, n, Tracked(Claim::held(blk)), Tracked(&mut out), Tracked(errno), Tracked(ord)).0;
     proof {
         // No growth: a slot is no page start of the huge region, and a
         // run's usable bytes already round `n` up to themselves.
@@ -2020,7 +2089,7 @@ fn theorem_realloc_to_usable_size(p: *mut u8, Tracked(blk): Tracked<Live>, Track
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
-fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
@@ -2034,9 +2103,10 @@ fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, T
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    let _ = usable_size(shared, p, Tracked(blk), Tracked(&mut *ord));
-    let _ = old_size_or_keep(shared, "realloc", p, size, 1, Tracked(blk), Tracked(&mut *ord));
-    let _ = realloc_old(shared, p, size, Tracked(blk), Tracked(ord));
+    let _ = usable_size(shared, p, Tracked(&blk), Tracked(&mut *ord));
+    let tracked mut claim = Claim::held(blk);
+    let _ = old_size_or_keep(shared, "realloc", p, size, 1, Tracked(&mut claim), Tracked(&mut *ord));
+    let _ = realloc_old(shared, p, size, Tracked(&mut claim), Tracked(ord));
 }
 
 /// `reallocarray`: `realloc(p, n * m)` with overflow reported as `ENOMEM`.
@@ -2503,8 +2573,10 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
 /// place reports its class size from the classification `realloc` does
 /// anyway; a moved block reports what the `malloc_usable` that made it
 /// reported. C holds the token of the block it passes
-/// ([`heap::live::axiom_c_claim`]), and gets the result's. `uout` is the
-/// call's token for `usable`, as in [`malloc_usable`].
+/// ([`heap::live::axiom_c_claim`]), and gets the result's; as in
+/// [`realloc`], it goes down unclaimed ([`Claim::pending`]) and is
+/// claimed only past the check. `uout` is the call's token for `usable`,
+/// as in [`malloc_usable`].
 pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(c): Tracked<CCall>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: *mut u8)
     requires
         c.block() == Some(p),
@@ -2522,9 +2594,8 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout)
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
-    let tracked blk = heap::live::axiom_c_claim(c);
     let tracked mut out = Live::empty();
-    realloc_usable_stored(p, size, usable, Tracked(uout), Tracked(blk), Tracked(&mut out), Tracked(errno), Tracked(ord)).0
+    realloc_usable_stored(p, size, usable, Tracked(uout), Tracked(Claim::pending(c)), Tracked(&mut out), Tracked(errno), Tracked(ord)).0
 }
 
 /// [`realloc_usable`] with the token for what it stored through `usable`:
@@ -2532,14 +2603,15 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout)
 /// ([`usable_is`]), whether the block was kept (the class's size, or a
 /// run's usable size equal to `size` rounded up to whole pages: [`kept`]'s
 /// test) or moved (what [`malloc_usable_stored`] stored). The block
-/// tokens are as in [`realloc_block`].
+/// tokens are as in [`realloc_block`], whose ghost result is this one's
+/// third.
 // The ghost tokens are part of the signature.
 #[allow(clippy::too_many_arguments)]
-pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(blk): Tracked<Live>, Tracked(out): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, Tracked<Stored>))
+pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout): Tracked<&mut COut<usize>>, Tracked(claim): Tracked<Claim>, Tracked(out): Tracked<&mut Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (*mut u8, Tracked<Stored>, Ghost<Live>))
     requires
         old(uout).of(usable),
         crate::sys::may_abort(),
-        blk.claims(p),
+        claim.claims(p),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
@@ -2552,32 +2624,40 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
         final(out).gives(r.0, size as int),
-        p@.addr != 0 ==> blk.block(p),
-        p@.addr != 0 && size != 0 && r.0@.addr == 0 ==> *final(out) == blk,
-        p@.addr != 0 && size != 0 && r.0@.addr != 0 && r.0@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int }),
-        p@.addr != 0 && size != 0 ==> (r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))
-            || shrank_in_place(p, size, blk, *final(out))),
+        p@.addr != 0 && size == 0 ==> (claim.held matches Some(blk) ==> blk.block(p)),
+        p@.addr != 0 && size != 0 ==> {
+            let blk = r.2@;
+            &&& claim.held matches Some(b) ==> blk == b
+            &&& blk.block(p)
+            &&& r.0@.addr == 0 ==> *final(out) == blk
+            &&& r.0@.addr != 0 && r.0@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
+            &&& r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))
+                || shrank_in_place(p, size, blk, *final(out))
+        },
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
 {
     if p.is_null() {
-        return malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno), Tracked(&mut *ord));
+        let (q, s) = malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno), Tracked(&mut *ord));
+        return (q, s, Ghost(vstd::pervasive::arbitrary()));
     }
     if size == 0 {
-        free_block(p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(&mut *ord));
+        free_block(p, Tracked(claim), Tracked(&mut *errno),Tracked(&mut *ord));
         let s = store_usable(usable, 0, Tracked(uout));
-        return (ptr::null_mut(), s);
+        return (ptr::null_mut(), s, Ghost(vstd::pervasive::arbitrary()));
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
-    let tracked mut blk = blk;
-    let (keep, old) = realloc_old(shared, p, size, Tracked(&blk), Tracked(&mut *ord));
+    let tracked mut claim = claim;
+    let (keep, old) = realloc_old(shared, p, size, Tracked(&mut claim), Tracked(&mut *ord));
+    let tracked mut blk = claim.held.tracked_unwrap();
+    let ghost b = blk;
     if keep {
         let s = store_usable(usable, old, Tracked(uout));
         proof {
             out.set(blk);
         }
-        return (p, s);
+        return (p, s, Ghost(b));
     }
     // As `realloc_block`: a run that needs more pages grows in place when
     // it can, and reports its new usable size. Nested `if`s, as verus
@@ -2590,7 +2670,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
             proof {
                 out.set(blk);
             }
-            return (p, s);
+            return (p, s, Ghost(b));
         }
     }
     // A run trimmed to fewer pages, still a run's size, shrinks in place
@@ -2602,7 +2682,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
             proof {
                 out.set(blk);
             }
-            return (p, s);
+            return (p, s, Ghost(b));
         }
     }
     // As `realloc_block`: a growth that moves places its run with free
@@ -2617,7 +2697,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         proof {
             out.set(blk);
         }
-        return (q, s);
+        return (q, s, Ghost(b));
     }
     proof {
         broadcast use vstd::layout::align_of_u8;
@@ -2633,7 +2713,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
     heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(&mut *ord));
-    (q, s)
+    (q, s, Ghost(b))
 }
 
 /// [`old_size_or_keep`]'s decision for `realloc` (alignment 1) with the
@@ -2644,25 +2724,29 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
 /// that `realloc` and `rallocx` keep their code.
 ///
 /// The usable size is `p`'s ([`usable_of`]) and, for a kept block, the
-/// usable size of a request of `size` bytes ([`usable_is`]). `blk` as for
-/// `old_size_or_keep`.
-fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (bool, usize))
+/// usable size of a request of `size` bytes ([`usable_is`]). `claim` as
+/// for `old_size_or_keep`: claimed past the check, and on return it holds
+/// the live block's token.
+fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(claim): Tracked<&mut Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (bool, usize))
     requires
-        crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
+        crate::sys::may_abort() || (crate::sys::valid_aborts() && old(claim).held_block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
-        blk.claims(p),
+        old(claim).claims(p),
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
         heap::free_target(p),
+        final(claim).held is Some,
+        final(claim).claims(p),
+        old(claim).held is Some ==> *final(claim) == *old(claim),
         r.0 ==> kept(p, size as int, 1),
-        r.0 <==> keeps(p, size, 1, blk.len()),
+        r.0 <==> keeps(p, size, 1, final(claim).held->0.len()),
         usable_of(p, r.1 as int),
         r.0 ==> usable_is(p, size as int, r.1 as int),
-        blk.block(p),
-        r.1 == blk.len(),
-        r.0 ==> size <= blk.len(),
+        final(claim).held->0.block(p),
+        r.1 == final(claim).held->0.len(),
+        r.0 ==> size <= final(claim).held->0.len(),
 {
     proof {
         shared.lemma_wf();
@@ -2674,19 +2758,39 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
+            let table = shared.table(class);
+            // The bit test, with the token only if the caller holds it
+            // already (a pending claim stays the call's).
+            let tracked none: Option<vstd::resource::set::GhostSingleton<int>> = None;
             proof {
-                if blk.block(p) {
-                    // The live slot, whose token `blk` holds.
-                    blk.lemma_block_slot_addr(p, class as int);
+                if claim.held_block(p) {
+                    // The live slot, whose token the claim holds.
+                    claim.held->0.lemma_block_slot_addr(p, class as int);
                 }
             }
+            let tracked held = if claim.held is Some {
+                claim.held.tracked_borrow().slot_ref()
+            } else {
+                &none
+            };
             let tracked mut obs = crate::class::BitLoad::new();
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
-            shared.check_not_cached(class, p);
+            table.check_live(slab as usize, slot as usize, p as usize, Tracked(held), Tracked(&mut obs));
             proof {
                 // `check_live` returned: not a guard slab.
                 crate::layout::process_regions().lemma_is_slot(class as int, slab as int, slot as int, p as usize);
             }
+            shared.check_not_cached(class, p);
+            proof {
+                // The load's record, at the slab and slot of `p`: the bit
+                // was set in a value its word held.
+                assert(table.load_seen(slab as int, slot as int, obs));
+                assert(crate::class::bit_seen_at(*table, p@.addr as int, obs));
+                // Both checks passed (the bit test and, with
+                // `double_free_scan`, the cached-copy test): claim the
+                // block.
+                claim.settle(p, &obs);
+            }
+            let ghost blk = claim.held->0;
             proof {
                 crate::vspec::class::lemma_class_table_wf(class as int);
                 if size <= class_table()[class as int].size {
@@ -2703,15 +2807,39 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
             (class_of(size) == Some(class), class_size(class))
         }
         Kind::Huge { page } => {
+            // The size, with the run's check, as in `old_size_or_keep`.
             proof {
-                if blk.block(p) {
-                    // The live run at `page`, whose token `blk` holds.
-                    blk.lemma_claims(p);
-                    shared.lemma_run_page(p, page, *blk);
+                crate::heap::live::lemma_not_slot(p);
+                if claim.held_block(p) {
+                    // The live run at `page`, whose token the claim holds.
+                    claim.held->0.lemma_claims(p);
+                    shared.lemma_run_page(p, page, claim.held->0);
                 }
             }
-            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut Claim::none()), Tracked(&mut *ord));
+            let tracked mut aside = Claim::none();
             proof {
+                if claim.held is Some {
+                    vstd::modes::tracked_swap(&mut aside, claim);
+                }
+            }
+            let tracked none: Option<crate::huge::RunToken> = None;
+            let tracked tok = if aside.held is Some {
+                aside.held.tracked_borrow().run_ref()
+            } else {
+                &none
+            };
+            let old = shared.huge.usable_size(page, Tracked(tok), Tracked(&mut *claim), Tracked(&mut *ord));
+            proof {
+                if aside.held is Some {
+                    vstd::modes::tracked_swap(&mut aside, claim);
+                }
+            }
+            let ghost blk = claim.held->0;
+            proof {
+                if blk.block(p) {
+                    // A pending claim, claimed: the run's block at `p`.
+                    blk.lemma_claims(p);
+                }
                 crate::meta::lemma_is_pow2_one();
                 heap::lemma_quantum_pow2();
                 heap::lemma_huge_fits(p, 0, 1, QUANTUM);
@@ -2719,7 +2847,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                 crate::vspec::usable::lemma_usable_run(shared, p, old);
                 shared.lemma_huge_usable(size);
                 crate::vspec::usable::lemma_usable_huge(p, size as int);
-                shared.lemma_run_page(p, page, *blk);
+                shared.lemma_run_page(p, page, blk);
                 // A kept run has `size <= old` (`usable_for`), and its
                 // usable bytes lie in the region.
                 if size <= old {
@@ -2734,16 +2862,17 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
         }
         Kind::Invalid => {
             proof {
-                if blk.block(p) {
+                if claim.held_block(p) {
                     // A slot start or a page start of the huge region,
                     // which `classify` never calls `Invalid`.
+                    let blk = claim.held->0;
                     blk.lemma_block_target(p);
                     if heap::slot_start(p) {
                         let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
                         assert(shared.regions.is_slot_addr(c, p@.addr));
                     }
                 }
-                assert(!blk.block(p));
+                assert(!claim.held_block(p));
             }
             crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize))
         },
@@ -2757,7 +2886,10 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
 /// outcome, the aborts included, goes through one cold call that takes the
 /// size from the same classification the exact `free` then repeats, so a
 /// bad pointer dies with `free`'s message. C holds the token of the block
-/// it frees ([`heap::live::axiom_c_claim`]).
+/// it frees ([`heap::live::axiom_c_claim`]); as `free` does, the call
+/// passes it down unclaimed ([`Claim::pending`]), to be claimed only past
+/// the bit test of a slot ([`Claim::settle`]) or the huge lock's checks
+/// of a run ([`Claim::settle_run`], in the size query).
 #[inline(always)]
 pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
     requires
@@ -2773,22 +2905,22 @@ pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Track
         p@.addr != 0 ==> usable_of(p, r as int),
         p@.addr != 0 ==> 0 < r,
 {
-    let tracked blk = heap::live::axiom_c_claim(c);
-    free_usable_block(p, Tracked(blk), Tracked(errno), Tracked(ord))
+    free_usable_block(p, Tracked(Claim::pending(c)), Tracked(errno), Tracked(ord))
 }
 
-/// [`free_usable`] with the caller's token for `p` ([`Live::claims`]),
-/// which the free takes back: the token of the live block `p`, whose
+/// [`free_usable`] with the caller's token for `p` ([`Claim::claims`]),
+/// held or still the call's, which the free claims past its check and
+/// takes back. For a held token, the token of the live block `p`, whose
 /// usable size is the result. `theorem_no_syscall_on_fast_paths`
 /// restates its fast path (its last path);
 /// `api::restated::fast_path_restatements_match_their_bodies` checks
 /// that the two make the same calls.
 #[inline(always)]
-pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
+pub fn free_usable_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        blk.claims(p),
+        claim.claims(p),
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
@@ -2797,10 +2929,10 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno)
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
         p@.addr != 0 ==> 0 < r,
-        p@.addr != 0 ==> blk.block(p) && r == blk.len(),
+        p@.addr != 0 ==> (claim.held matches Some(l) ==> l.block(p) && r == l.len()),
 {
-    let ghost b0 = blk;
-    let tracked mut blk = Claim::held(blk);
+    let ghost c0 = claim;
+    let tracked mut blk = claim;
     if p.is_null() {
         return 0;
     }
@@ -2813,13 +2945,14 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno)
             proof {
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
-                b0.lemma_slot_len(p, class as int);
+                if c0.held is Some {
+                    c0.held->0.lemma_slot_len(p, class as int);
+                }
                 crate::vspec::class::lemma_class_table_wf(class as int);
             }
             return class_size(class);
         }
     }
-    let tracked blk = blk.held.tracked_unwrap();
     free_usable_slow(p, Tracked(blk), Tracked(errno), Tracked(ord))
 }
 
@@ -2827,13 +2960,15 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno)
 /// the classification `free` makes (its aborts for an invalid, stale or
 /// double free, and the huge table's for a run that is not live), then the
 /// exact `free` (heap creation, a full cache, another arena, the huge
-/// release). The size is the usable size of the caller's token for `p`.
+/// release). For a token the caller holds, the size is its usable size;
+/// a pending claim is claimed past the check, and the size is then
+/// stated only as `p`'s usable size (`usable_of`; #892).
 #[cold]
 #[inline(never)]
-fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
+fn free_usable_slow(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort(),
-        blk.claims(p),
+        claim.claims(p),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
@@ -2841,8 +2976,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
         final(errno).val() == old(errno).val(),
         heap::free_target(p),
         usable_of(p, r as int),
-        r == blk.len(),
-        blk.block(p),
+        claim.held matches Some(l) ==> r == l.len() && l.block(p),
         0 < r,
 {
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
@@ -2852,12 +2986,13 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
         shared.lemma_wf_ready();
         shared.lemma_regions_ok();
     }
-    let tracked mut claim = Claim::held(blk);
+    let ghost c0 = claim;
+    let tracked mut claim = claim;
     let kind = shared.classify_free(p, Tracked(&mut claim));
-    let tracked blk = claim.held.tracked_unwrap();
     let usable = match kind {
         Ok((class, _)) => {
             proof {
+                let blk = claim.held->0;
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
                 blk.lemma_claims_slot(p, class as int);
                 blk.lemma_claimed_block(p);
@@ -2866,8 +3001,38 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
             class_size(class)
         },
         Err(page) => {
-            let u = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut Claim::none()), Tracked(&mut *ord));
+            // The size, with the run's check: a held token lends its run
+            // token to the query (set aside meanwhile), a pending claim is
+            // claimed there, past the huge lock's checks
+            // (`Huge::usable_size`, `Claim::settle_run`).
             proof {
+                crate::heap::live::lemma_not_slot(p);
+                if claim.held is Some {
+                    claim.held->0.lemma_run_block(p, page);
+                }
+            }
+            let tracked mut aside = Claim::none();
+            proof {
+                if claim.held is Some {
+                    vstd::modes::tracked_swap(&mut aside, &mut claim);
+                }
+            }
+            let tracked none: Option<crate::huge::RunToken> = None;
+            let tracked tok = if aside.held is Some {
+                aside.held.tracked_borrow().run_ref()
+            } else {
+                &none
+            };
+            let u = shared.huge.usable_size(page, Tracked(tok), Tracked(&mut claim), Tracked(&mut *ord));
+            proof {
+                if aside.held is Some {
+                    vstd::modes::tracked_swap(&mut aside, &mut claim);
+                }
+                let blk = claim.held->0;
+                if blk.block(p) {
+                    // A pending claim, claimed: the run's block at `p`.
+                    blk.lemma_claims(p);
+                }
                 shared.lemma_huge_run_usable(p@.addr, u);
                 crate::vspec::usable::lemma_usable_run(shared, p, u);
                 shared.lemma_run_page(p, page, blk);
@@ -2875,6 +3040,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
             u
         },
     };
+    let tracked blk = claim.held.tracked_unwrap();
     proof {
         blk.lemma_nonnull();
     }
