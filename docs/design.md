@@ -510,9 +510,47 @@ pages the child never had:
   in use, and `get_defrag_hint` (13.5) answers 1 for it, while the class
   has a partial slab below the floor (`cow::drain_move`): a
   defragmenter moves it into the lowest partial slab, below the floor.
-  `challoc_cow_stat(CHALLOC_COW_DRAINING)` counts the pairs with holes
-  below and live blocks above (`live_at_or_above`, from the
-  descriptors); a pair with neither ends its drain.
+  `challoc_cow_stat(CHALLOC_COW_DRAINING)`, which Redis and Valkey read
+  to hold a defrag cycle at its most effort, counts the pairs with work
+  left that is worth that effort (`cow::draining_pairs`): holes below
+  the floor, live blocks above it in at least two slabs
+  (`slabs_live_at_or_above`, from the descriptors; blocks in one slab
+  give back at most that slab), and no stall: the queries going on for
+  10 s between reads of the figure without asking for a drain move
+  (`DRAIN_STALL_S`: `cow::stalled` needs the queries made since the last
+  drain move to span 10 s, `cow::DRAIN_ASKS`, counted from the first
+  read after `cow::end`, so a program that turns its defragmenter on late
+  still gets its drain; a query more than 2 s after the last one,
+  `DRAIN_ASK_GAP_S`, starts the span again, so reads with no queries
+  between them, from a stats poller, and a defragmenter held up between
+  two reads or two queries, end nothing). A defragmenter that runs flat
+  out and asks for no move in that long is taken to have passed over
+  the heap and found nothing it can move. That is a heuristic: challoc
+  sees no pass end. A pass that spends more than 10 s scanning keys
+  outside the epoch's writes before it reaches them (for example, writes
+  confined to db 1 behind a large untouched db 0, since Redis and Valkey
+  scan the databases in order) ends the drain early, and the blocks left
+  above the floor stay there until they are overwritten or deleted. RSS
+  recovery is slower in that layout, with no correctness impact. A
+  defrag-cycle-end signal from the server, in place of the 10 s, is the
+  fix if it shows up in practice. A pair that fails one of the
+  first two ends its drain for good (its drain floor goes), and a stall
+  ends every pair's and closes the window (`cow::end_all_drains`, which
+  holds the epoch transition's busy bit while it clears, so an `end` in
+  another thread cannot set the next epoch's floors under it, and under
+  the bit clears nothing if an `end` came after the reader loaded the
+  count of ends it judged with, so a whole `begin` and `end` between the
+  verdict and the clear cannot lose the next epoch's drain, even when a
+  reader held across that `end` stores the last epoch's progress mark
+  again; `cow::end` clears the queries before it counts itself, so that
+  mark then meets only queries made after the `end`), so the
+  figure only falls and the forced cycle ends when the work does. On
+  Redis and Valkey the figure reaches 0 within seconds of the last
+  drain move, 10 to 65 s after the save in bench/cow's runs, rather than at the window's 300 s: what
+  kept the figure up before were pairs with one slab above the floor
+  holding a few blocks no defragmenter moves (bench/cow/RESULTS.md,
+  "Ending the drain with its work"). The window stays as the bound for
+  a program that reads the queries but never the figure.
 
 - **Begin and end** change the nesting depth only by compare-and-exchange,
   and the outermost transition holds a busy bit in the depth word until

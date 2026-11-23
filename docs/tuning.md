@@ -218,7 +218,15 @@ written during the epoch, held above the old data until the defragmenter
 moves them back: with `activedefrag yes` the patch runs a defrag cycle
 at `active-defrag-cycle-max` while challoc reports a drain, whatever the
 thresholds, and the memory returns within seconds of the child's exit;
-with it off, it returns as those keys are overwritten or deleted. An
+with it off, it returns as those keys are overwritten or deleted. challoc
+ends the drain once the defragmenter's queries have gone 10 s without a
+move, which it takes as a pass with nothing left to move. A pass that
+spends more than 10 s scanning keys outside the epoch's writes before it
+reaches them (for example, writes confined to db 1 behind a large
+untouched db 0) ends the drain early: the blocks left above the floor
+stay there until they are overwritten or deleted, as with `activedefrag`
+off. RSS recovery is slower in that layout, with no correctness impact.
+An
 epoch stops steering once it has allocated as much as the heap held when
 it began (`challoc_cow_stat(CHALLOC_COW_EXPIRED)`), and `cow_epoch:false`
 turns it off. `MEMORY MALLOC-STATS` prints the figures on its

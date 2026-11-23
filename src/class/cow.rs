@@ -22,7 +22,7 @@ use vstd::prelude::*;
 
 verus! {
 
-/// The most slabs [`ClassState::live_at_or_above`] reads.
+/// The most slabs [`ClassState::slabs_live_at_or_above`] reads.
 pub const MAX_DRAIN_WALK: usize = 65536;
 
 impl ClassState {
@@ -97,39 +97,50 @@ impl ClassState {
         self.drain_floor.load(Ordering::Relaxed) as usize
     }
 
-    /// Whether a committed slab of this pair's arena at or above `f`
-    /// holds a live slot, read without the lock from the descriptors (the
-    /// drain's check that blocks of the epoch are left to move). Walks at
-    /// most [`MAX_DRAIN_WALK`] slabs and answers true past them.
-    pub fn live_at_or_above(&self, f: usize) -> bool {
+    /// How many committed slabs of this pair's arena at or above `f` hold
+    /// a live slot, counted up to `most`, read without the lock from the
+    /// descriptors (the drain's check that blocks of the epoch are left to
+    /// move, and enough of them to be worth it: `cow::draining_pairs`).
+    /// Walks at most [`MAX_DRAIN_WALK`] slabs and answers `most` past them.
+    pub fn slabs_live_at_or_above(&self, f: usize, most: usize) -> (r: usize)
+        ensures
+            r <= most,
+    {
         let n = self.committed_slabs();
         let t = self.table();
         let mut s = f;
         let mut walked: usize = 0;
+        let mut k: usize = 0;
         while s < n
             invariant
                 n <= self.spec_nslabs(),
                 *t == self.spec_table(),
+                k < most || (k == 0 && most == 0),
             decreases n - s,
         {
-            if walked >= MAX_DRAIN_WALK {
-                return true;
+            if walked >= MAX_DRAIN_WALK || most == 0 {
+                return most;
             }
             walked += 1;
             // Two `if`s, not a let chain: Verus takes no let chain.
             #[allow(clippy::collapsible_if)]
             if let Some(d) = t.desc_if_committed(s) {
                 if d.live() > 0 && d.arena_unheld(self.desc_inv(s)) == self.arena {
-                    return true;
+                    k += 1;
+                    if k >= most {
+                        return most;
+                    }
                 }
             }
             s += 1;
         }
-        false
+        k
     }
 
     /// The drain of this pair is over: no slab below its drain floor has
-    /// a free slot left to move a block into, or no block above it.
+    /// a free slot left to move a block into, the blocks above it fit in
+    /// one slab, or a defragmenter stopped finding blocks to move
+    /// (`cow::draining_pairs`).
     pub fn drain_done(&self) {
         self.drain_floor.store(0, Ordering::Relaxed);
     }

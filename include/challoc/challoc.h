@@ -116,7 +116,13 @@ int challoc_cow_begin(unsigned flags);
 int challoc_cow_end(void);
 
 /* One figure of the fork epochs, by index; 0 for an unknown index or
- * before the allocator is initialised. challoc_cow_stats() reads them all. */
+ * before the allocator is initialised. challoc_cow_stats() reads them all.
+ * Reading CHALLOC_COW_DRAINING also ends what is no longer worth draining,
+ * for good until the next epoch: a pair with no hole below its drain
+ * floor or its blocks above it in one slab, and every pair once the
+ * utilisation queries (or the defrag hint) have gone on for 10 s, between
+ * two reads, without asking for a move. Reads alone, with no queries in
+ * between, end no drain that way, so any thread may read it. */
 enum {
     CHALLOC_COW_EPOCHS = 0,     /* epochs begun */
     CHALLOC_COW_OPEN = 1,       /* epochs open (nesting depth) */
@@ -126,7 +132,7 @@ enum {
     CHALLOC_COW_CAP = 5,        /* that epoch's cap, in bytes */
     CHALLOC_COW_DEFLECTED = 6,  /* frees kept from being handed out again */
     CHALLOC_COW_DRAIN_MOVES = 7, /* moves the utilisation queries asked for */
-    CHALLOC_COW_DRAINING = 8,   /* (arena, size class) pairs still draining */
+    CHALLOC_COW_DRAINING = 8,   /* (arena, size class) pairs with drain work left worth moving */
     CHALLOC_COW_NSTATS = 9
 };
 unsigned long long challoc_cow_stat(unsigned which);

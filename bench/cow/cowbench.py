@@ -190,6 +190,8 @@ def main():
                     help="with --bench: SET and GET throughput and p99 before the save and right after it, activedefrag on")
     ap.add_argument("--drain-n", type=int, default=1_000_000, help="requests per --drain-bench pass")
     ap.add_argument("--drain-wait", type=float, default=300, help="seconds to wait for the drain to end after --drain-bench")
+    ap.add_argument("--late-s", type=float, default=0,
+                    help="with --drain-bench: run the GET and SET passes again this many seconds after the child exits")
     a = ap.parse_args()
     if a.drain_bench and not a.bench:
         ap.error("--drain-bench needs --bench")
@@ -317,16 +319,31 @@ def main():
             # How long the drain ran: from the child's exit until no defrag
             # cycle runs on three samples a second apart (while challoc
             # reports a class draining, the server starts the next cycle
-            # within a cron tick of the last one ending); drain_wait when
-            # it never ends within it. moves_s: from the child's exit to the
-            # last sample on which the hits still rose (the drain's work;
-            # cycles after it move nothing).
-            done_at, idle = None, 0
-            last_hits, last_move = defrag_state()[0], time.time()
+            # within a cron tick of the last one ending); drain_wait, with
+            # ended false, when it never ends within it. moves_s: from the
+            # child's exit to the last sample on which challoc's drain_moves
+            # (the moves its utilisation queries asked for, the drain's
+            # work) still rose; hits_s: the same for the server's
+            # active_defrag_hits, which also count the moves its own
+            # fragmentation rule makes. Both are at least the two passes'
+            # length. With --late-s, the GET and SET passes run again that
+            # many seconds after the child's exit (late), drain or not.
+            def drain_moves():
+                return cow_stats(c).get("drain_moves", 0)
+            def late_pass():
+                return {"at_s": round(time.time() - t_end, 1), "get": drain_pass("get"), "set": drain_pass("set")}
+            done_at, idle, late = None, 0, None
+            last_hits, last_hit = defrag_state()[0], time.time()
+            last_moves, last_move = drain_moves(), time.time()
             while time.time() - t_end < a.drain_wait:
+                if a.late_s and late is None and time.time() - t_end >= a.late_s:
+                    late = late_pass()
                 hits, running = defrag_state()
+                moves = drain_moves()
                 if hits > last_hits:
-                    last_hits, last_move = hits, time.time()
+                    last_hits, last_hit = hits, time.time()
+                if moves > last_moves:
+                    last_moves, last_move = moves, time.time()
                 if running == 0:
                     if idle == 0:
                         done_at = time.time()
@@ -339,9 +356,14 @@ def main():
             if idle < 3:
                 done_at = None
             r["drain"].update({"s": round((done_at or time.time()) - t_end, 1), "ended": done_at is not None,
-                               "moves_s": round(last_move - t_end, 1),
+                               "moves_s": round(last_move - t_end, 1), "hits_s": round(last_hit - t_end, 1),
                                "defrag_hits": defrag_state()[0], "cow_after": cow_stats(c),
                                "rss_end": int(info(c, "memory")["used_memory_rss"])})
+            if a.late_s and late is None:
+                time.sleep(max(0.0, t_end + a.late_s - time.time()))
+                late = late_pass()
+            if late is not None:
+                r["late"] = late
         if a.recover:
             c.cmd("CONFIG", "SET", "rdb-key-save-delay", "0")
             if a.defrag:
