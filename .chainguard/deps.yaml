@@ -79,6 +79,7 @@ updates:
     - ".chainguard/ci/**"
     - "Makefile"
     - "verus/FLOOR"
+    - "README.md"
     - "verus/count.toml"
     - "verus/README.md"
     - ".chainguard/reviewers.yaml"
@@ -96,9 +97,14 @@ updates:
     verus/README.md names for the package; move them together,
     in this one pull request, to the newest theseus-proved-port release in
     Wolfi, with no waiting period: the kit is first-party. If the pin is
-    already that release, change nothing. Install the new package with
-    apk in the guest and commit the pin moves before you run anything;
-    fold later fixes in this run into that commit, and on a turn add a
+    already that release, change nothing. First, with the old package
+    still installed, save the old counter's view of the tree outside it,
+    whatever its exit status: `make verus-count VERUS_BASE=none
+    VERUS_RLIMIT= VERUS_COUNT_FLAGS=--list > /tmp/kit-old.list` and
+    `make verus-count VERUS_BASE=none VERUS_RLIMIT= > /tmp/kit-old.txt`
+    (its `shipped` row has the counts). Then install
+    the new package with apk in the guest and commit the pin moves before
+    you run anything else; fold later fixes in this run into that commit, and on a turn add a
     commit on top of the pull request's head. Then run `make
     verus-headers`: for each file it lists as drifted, take the kit's
     header text from the installed template of the same path under
@@ -114,7 +120,9 @@ updates:
     PORT-README.md and README.md or the targets list atop proved-port.mk
     ask that challoc does not yet follow. Make only the changes that fall
     in this entry's paths, and list anything else the release asks for in
-    the body, for a person. For example, when a release adds `make
+    the body, for a person. README.md is in the paths for one change
+    alone, the badge line of a `lowered` bump below: anything else a
+    release asks of README.md goes in the body. For example, when a release adds `make
     verify`, which runs VERIFY_TARGETS, that list names every target
     challoc's checks verify with Verus and Kani, their controls and extra
     quanta included, but not its other verifying checks (isla, GenMC,
@@ -128,10 +136,38 @@ updates:
     base) and `make kani-list`; the pull request's kani check runs the
     harnesses, since the Makefile changes. The body names the targets the
     guest ran, any it did not finish, and what the release asked of the
-    port. verus/FLOOR never goes down and
-    never gains a `lowered` line from this entry. When the new counter
-    fails a gate the old one passed (a lower share, a configuration it
-    refuses), fix nothing in challoc's code or ledgers: leave the bump for
+    port. verus/RLIMIT gains no `rlimit-raised`
+    line from this entry. verus/FLOOR goes down from this entry in one
+    case only: a release whose notes say that a share its counting
+    rule drops below FLOOR takes a `lowered` line (0.4.5's notes 3 and
+    7 say so). First compare the new counter's `--list` (the same
+    command as above) with /tmp/kit-old.list, saved before the install:
+    every function the new counter counts as trusted or outside, or
+    newly in the denominator, where the old one did not, must be one the
+    notes' rule describes; a drop with any other cause is a gate
+    failure as below, and so is a drop with no saved list to compare
+    (the old package is gone, as on a later turn): leave FLOOR as it is.
+    For a drop the rule alone explains, with nothing in the port's code
+    or ledgers changed, set the figure to the share the check reports
+    and add a `lowered FIGURE P REASON` line for it, as the FLOOR header
+    asks: the REASON names the kit release and change by the kit's full
+    name (`kit 0.4.5, chainguard-project-theseus/proved-port#74`, never
+    a bare `#74`, which names the port's own issue), what now counts as
+    trusted or outside, and the counts before (the `shipped` row of
+    /tmp/kit-old.txt) and after. Where
+    `functions` or `lines` moves, replace README.md's Verus badge line
+    with the one `verus-count --badge .` prints, and change nothing else
+    in README.md. Leave that bump a draft for a person: the FLOOR header
+    puts verifying more code before a `lowered` line, which this entry
+    does not do, so the person chooses between the line and more proofs.
+    Ledger rows the notes ask for (verus/SEAMS.md, a generated ledger)
+    are outside this entry's paths: list them in the body for that
+    person. When the new counter fails any other gate the old one passed
+    (a lower share the notes' rule does not explain, a new REACH or
+    MINTS row, rlimit headroom, a configuration it refuses), fix nothing
+    in the port's code or ledgers,
+    even where the release's notes ask for a change there (this rule
+    wins): leave the bump for
     a person, as a draft, and say in the body which gate fails and what it
     reports. Do not edit .chainguard/deps.yaml unless a person asks in a
     comment.
