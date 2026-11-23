@@ -2242,7 +2242,7 @@ proof fn lemma_took_extents(g0: Inner, g1: Inner, t: Take)
 }
 
 /// The tallies after a take gain `delta`; `all` stays a list of the live
-/// descriptors.
+/// descriptors. A retired `ext`'s removal from `all` is `lemma_drop`'s.
 ///
 /// The proof's solver cost moves with unrelated items elsewhere in the
 /// crate; its own solver instance (`spinoff_prover`) keeps them out of
@@ -2274,18 +2274,10 @@ proof fn lemma_took_tally(g0: Inner, g1: Inner, t: Take, k: int)
     }
     if t.has_ext && !t.head {
         let j = a0.index_of(t.ext);
+        free::lemma_drop(a0, t.ext);
         assert forall|i: int| 0 <= i < b.len() implies #[trigger] weight(d1[b[i]].value(), k) == weight(d0[b[i]].value(), k) by {
-            if i < j {
-                assert(b[i] == a0[i]);
-                assert(a0[i] != t.ext) by {
-                    assert(a0.no_duplicates());
-                }
-            } else {
-                assert(b[i] == a0[i + 1]);
-                assert(a0[i + 1] != t.ext) by {
-                    assert(a0.no_duplicates());
-                }
-            }
+            assert(b.contains(b[i]));
+            assert(a0[a0.index_of(b[i])] == b[i]);
         }
         lemma_tally_frame(b, d0, d1, k);
         lemma_tally_remove(a0, d0, j, k);
@@ -2303,36 +2295,9 @@ proof fn lemma_took_tally(g0: Inner, g1: Inner, t: Take, k: int)
     }
     lemma_tally_push(c, d1, t.run, k);
     assert(d1.contains_key(t.run));
-    // `all` afterwards.
-    assert forall|x: *mut HugeDesc| #[trigger] b.contains(x) <==> a0.contains(x) && !(t.has_ext && !t.head && x == t.ext) by {
-        if t.has_ext && !t.head {
-            let j = a0.index_of(t.ext);
-            if b.contains(x) {
-                let i = b.index_of(x);
-                let i0 = if i < j { i } else { i + 1 };
-                assert(a0[i0] == x);
-                assert(x != t.ext) by {
-                    assert(a0.no_duplicates());
-                }
-            }
-            if a0.contains(x) && x != t.ext {
-                let i0 = a0.index_of(x);
-                assert(i0 != j);
-                let i = if i0 < j { i0 } else { i0 - 1 };
-                assert(b[i] == x);
-            }
-        }
-    }
-    assert(b.no_duplicates()) by {
-        if t.has_ext && !t.head {
-            let j = a0.index_of(t.ext);
-            assert forall|i1: int, i2: int| 0 <= i1 < b.len() && 0 <= i2 < b.len() && i1 != i2 implies b[i1] != b[i2] by {
-                let j1 = if i1 < j { i1 } else { i1 + 1 };
-                let j2 = if i2 < j { i2 } else { i2 + 1 };
-                assert(b[i1] == a0[j1] && b[i2] == a0[j2]);
-            }
-        }
-    }
+    // `all` afterwards (from `lemma_drop` when `ext` retires).
+    assert(forall|x: *mut HugeDesc| #[trigger] b.contains(x) <==> a0.contains(x) && !(t.has_ext && !t.head && x == t.ext));
+    assert(b.no_duplicates());
     assert(c.no_duplicates());
     assert(g1.all@.no_duplicates());
     assert forall|d: *mut HugeDesc| #[trigger] d1.contains_key(d) <==> g1.all@.contains(d) by {
