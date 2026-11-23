@@ -74,7 +74,7 @@ checks:
         - "src/sys/mod.rs"
         - "Makefile"
         - ".chainguard/ci/kani.yaml"
-    foreach:
+    foreach: &kani-quanta
       - {name: q16, vars: {QUANTUM: "16"}}
       - {name: q8, vars: {QUANTUM: "8"}}
     resources: xlarge-amd64
@@ -83,7 +83,7 @@ checks:
     timeout: 60m
     network: &kani-net
       egress: [index.crates.io, static.crates.io]
-    steps:
+    steps: &kani-steps
       - name: harnesses
         # The Makefile's KANI_FLAGS (at QUANTUM's feature) and KANI_JOBS 4,
         # which implies terse output.
@@ -114,7 +114,7 @@ checks:
       each must verify, and CBMC must print no `warning: ignoring` line (an
       ordering comparison on bools it could not encode).
     trigger: [postsubmit]
-    foreach:
+    foreach: &kani-shards
       - {name: q16-1, vars: {QUANTUM: "16", SHARD: "1"}}
       - {name: q16-2, vars: {QUANTUM: "16", SHARD: "2"}}
       - {name: q16-3, vars: {QUANTUM: "16", SHARD: "3"}}
@@ -127,7 +127,7 @@ checks:
     resources: large-amd64
     timeout: 40m
     network: *kani-net
-    steps:
+    steps: &kani-regular-steps
       - name: harnesses, regular format
         cmd:
           - sh
@@ -135,3 +135,42 @@ checks:
           - >-
             make kani-regular QUANTUM="${QUANTUM:?}" KANI_SHARD="${SHARD:?}" KANI_SHARDS="${SHARDS:?}"
             KANI_WEIGHTS=ci/kani-weights.txt
+
+  # The two checks above on aarch64, natively, on request (label a pull
+  # request ci/run:kani-arm64 or ci/run:kani-ignoring-arm64, or `chainctl
+  # checks run . --check kani-arm64` on a pushed commit). The downstream
+  # package build runs `make verify`, whose VERIFY_TARGETS (Makefile)
+  # include kani, kani-q8, kani-regular and kani-regular-q8, on each
+  # architecture it builds for, so these are worth running on a change to
+  # a harness, to a Kani model of a target-specific item (src/sys/, src/rseq.rs, the TLS slot) and before
+  # a release. They are not per pull request, which would double the
+  # presubmit kani check's cost: the amd64 checks above already hold every
+  # harness, and at 7d10fca3 (2026-11-22) every harness verified on
+  # aarch64 as well, in both formats and both quanta.
+  # Measured then: `make kani` 25 min per quantum on xlarge-arm64 (CBMC's
+  # 12.4 GiB peak per harness, four at a time), and a regular-format
+  # shard 16 to 23 min with four shards sharing one xlarge-arm64.
+  kani-arm64:
+    when: {requested: true}
+    description: >-
+      make kani over every harness on aarch64, at quantum 16 and at
+      quantum 8: each must verify. On request.
+    foreach: *kani-quanta
+    resources: xlarge-arm64
+    timeout: 45m
+    network: *kani-net
+    steps: *kani-steps
+
+  kani-ignoring-arm64:
+    when: {requested: true}
+    description: >-
+      kani-ignoring on aarch64: every harness in regular format with CBMC's
+      verbose output, at quantum 16 and at quantum 8, in 4 shards each:
+      each must verify, and CBMC must print no `warning: ignoring` line.
+      On request.
+    foreach: *kani-shards
+    vars: {SHARDS: "4"}
+    resources: large-arm64
+    timeout: 40m
+    network: *kani-net
+    steps: *kani-regular-steps

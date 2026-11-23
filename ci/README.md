@@ -79,6 +79,11 @@ On request (`ci/run:<check>` on a pull request, or `chainctl checks run .
 - `weakmem.yaml`: `weakmem-stress`, the three weak-memory stress tests
   (`verus/WEAKMEM.md`, "Hardware stress tests"), 60 s each, on aarch64
   only.
+- `kani.yaml`: `kani-arm64` (`q16`, `q8`) and `kani-ignoring-arm64`
+  (`q16-1` to `q8-4`), the `kani` and `kani-ignoring` checks on aarch64,
+  natively: the downstream package build runs `make verify`, every
+  harness included, on each architecture it builds for, so run them on a
+  change to a harness and before a release.
 
 Scheduled (UTC), on main's head with no pull request, the same instances
 as the on-request keys: `fuzz-nightly` daily, and `oscillate-weekly`,
