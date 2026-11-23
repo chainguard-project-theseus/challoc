@@ -64,7 +64,7 @@
 # saying why, and its REASON is the one that names no new trust: the
 # deleted functions, that nothing became trusted or outside, and the
 # counts before and after.
-functions 88.9
+functions 89.0
 lines 94.7
 checked-functions 93.0
 checked-lines 96.5
