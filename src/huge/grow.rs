@@ -297,6 +297,32 @@ proof fn lemma_grew_extents(g0: Inner, g1: Inner, t: Grow)
     }
 }
 
+/// [`Huge::grow_books`]' tallies: `s1` lost the extent and gained the
+/// tail, `s2` lost the run `vdd`, `s3` gained the grown run, and `s4`
+/// reads as `s3`; so `s4` is `st0` plus `t.delta`. Out of that body so
+/// that its proof stays within its rlimit.
+proof fn lemma_grew_stats(t: Grow, st0: HugeStats, s1: HugeStats, s2: HugeStats, s3: HugeStats, s4: HugeStats, vdd: HugeDesc)
+    requires
+        forall|k: int| 0 <= k < 6 ==> #[trigger] stat(s1, k) == stat(st0, k) - (if t.has_ext { weight(t.ve, k) } else { 0 }) + (if t.used {
+            weight(t.vt, k)
+        } else {
+            0
+        }),
+        forall|k: int| 0 <= k < 6 ==> #[trigger] stat(s2, k) == stat(s1, k) - weight(vdd, k),
+        same_but_links(t.vd, vdd),
+        forall|k: int| 0 <= k < 6 ==> #[trigger] stat(s3, k) == stat(s2, k) + weight(t.vg, k),
+        forall|k: int| 0 <= k < 6 ==> #[trigger] stat(s4, k) == stat(s3, k),
+    ensures
+        forall|k: int| 0 <= k < 6 ==> #[trigger] stat(s4, k) == stat(st0, k) + t.delta(k),
+{
+    assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(s4, k) == stat(st0, k) + t.delta(k) by {
+        assert(stat(s2, k) == stat(s1, k) - weight(vdd, k));
+        assert(weight(vdd, k) == weight(t.vd, k));
+        assert(stat(s3, k) == stat(s2, k) + weight(t.vg, k));
+        assert(stat(s1, k) == stat(st0, k) - (if t.has_ext { weight(t.ve, k) } else { 0 }) + (if t.used { weight(t.vt, k) } else { 0 }));
+    }
+}
+
 /// The tallies after a growth gain `delta`; `all` stays a list of the
 /// live descriptors. The list facts of the extent's removal come from
 /// [`super::free::lemma_drop`], out of this body, which keeps its rlimit
@@ -1016,26 +1042,11 @@ impl Huge {
             assert(t.shape_ok(gb));
             assert(g1.grew(gb, t)) by {
                 assert(weight(dr[d].value(), 6) == weight(vd, 6));
-                assert forall|k: usize| #[trigger] g1.table.lookup(k) == t.lookup(t0, k) by {
-                    assert(tx.lookup(k) == (if used && is_key(vt, k as int) {
-                        Some(x)
-                    } else if has_ext && is_key(ve, k as int) {
-                        None
-                    } else {
-                        t0.lookup(k)
-                    }));
-                    if k == page {
-                        assert(has_ext ==> !is_key(ve, k as int));
-                        assert(used ==> !is_key(vt, k as int));
-                    }
-                }
+                // `tx` reads as `t.lookup`; the run's one key, its start
+                // page, is the same before and after, so the table does too.
+                assert forall|k: usize| #[trigger] tx.lookup(k) == t.lookup(t0, k) by {}
                 assert(g1.table.spec_count() == t0.spec_count() + t.delta(6));
-                assert forall|k: int| 0 <= k < 6 implies #[trigger] stat(g1.stats, k) == stat(st0, k) + t.delta(k) by {
-                    assert(stat(s2, k) == stat(s1, k) - weight(dr[d].value(), k));
-                    assert(weight(dr[d].value(), k) == weight(vd, k));
-                    assert(stat(g1.stats, k) == stat(s2, k) + weight(vg, k));
-                    assert(stat(s1, k) == stat(st0, k) - (if has_ext { weight(ve, k) } else { 0 }) + (if used { weight(vt, k) } else { 0 }));
-                }
+                lemma_grew_stats(t, st0, s1, s2, s3, g1.stats, dr[d].value());
                 assert forall|y: *mut HugeDesc| #[trigger] g1.descs@.contains_key(y) <==> t.model(d0, y) is Some by {}
                 assert forall|y: *mut HugeDesc| #[trigger] g1.descs@.contains_key(y) implies same_but_links(
                     t.model(d0, y).unwrap(),
