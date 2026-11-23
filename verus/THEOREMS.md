@@ -14,16 +14,18 @@ binary that a disassembly checker (`scripts/perf-budget.sh`, the
 `perf-budget` check) proves, not Verus. "Bad input" (the B column of the
 interface contract), the
 [theorems outside the numbered sections](#theorems-outside-the-numbered-sections),
-six of which have their own sections after section 46 (thread exit,
-explicit-cache destroy, the explicit-cache registry, exact sized frees,
-the double-free window and same-region overflow reach),
+nine of which have their own sections after section 46 (thread exit,
+explicit-cache destroy, the explicit-cache registry, the explicit-cache
+entry lent out, `Heap::destroy`'s permission, claims past the check,
+exact sized frees, the double-free window and same-region overflow
+reach),
 and the interface contract are not numbered. The sections fall into the
 groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 
 | Group | Sections |
 | --- | --- |
 | Returned blocks and allocator metadata | 1, 2, 4, 5, 7, 24, 41; overflow reach, same-region overflow reach and commits that avoid guards |
-| Free paths and bad input | 3, 25, 43, 44; Bad input; exact sized frees and the double-free window (opt-in keys) |
+| Free paths and bad input | 3, 25, 43, 44; Bad input; claims past the check; exact sized frees and the double-free window (opt-in keys) |
 | Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy and registry |
 | Purge and decay | 18, 19, 30, 31, 38, 40 |
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
@@ -114,6 +116,9 @@ leave out (theorem 33). Remaining work is tracked in
   `heap::paths::theorem_exact_sized_free`, `heap/paths.rs`.
 - **Opt-in double-free scan** ([Double-free window under `double_free_scan`](#double-free-window-under-double_free_scan-rests-on-the-slot-state-premise)):
   `heap::slotstate::theorem_double_free_window`, `heap/slotstate.rs`.
+- **Claims past the check** ([Frees claim C's token only past their check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)):
+  `heap::live::Claim::settle` and `settle_run`'s contracts,
+  `heap/live.rs`, with `trusted_mint_sites_are_pinned` (`lib.rs`).
 
 ## Configuration
 
@@ -3776,12 +3781,12 @@ and for an error-result row, that a returning call returns that result:
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
 | `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
-| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | a never-allocated slot: at the check, *(load)*: `check_live` and `check_located` return only if the slot's bit was set in some value its bitmap word held (`load_seen`, [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)), which a slot no refill claimed never had. A stale free: in part, *(load)* with *(C)*: a check ordered after the slot's release (`load_after` a `BitLoad::of_release` record) that passes read a later version in which a claim set the bit again (`lemma_claimed_again`, [#850](https://github.com/chainguard-project-theseus/challoc/issues/850)); that the second free's check is ordered after the release is C's, since the program carries no record between its frees ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)) |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | a never-allocated slot: at the check, *(load)*: `check_live` and `check_located` return only if the slot's bit was set in some value its bitmap word held (`load_seen`, [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)), which a slot no refill claimed never had. A stale free: in part, *(load)* with *(C)*: a check ordered after the slot's release (`load_after` a `BitLoad::of_release` record) that passes read a later version in which a claim set the bit again (`lemma_claimed_again`, [#850](https://github.com/chainguard-project-theseus/challoc/issues/850)); that the second free's check is ordered after the release is C's, since the program carries no record between its frees ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)). These entry points, and `challoc_free_usable`, `dallocx` and the reallocations, take C's token only past this check, with its record (`Claim::settle`, [claims past the check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)), so *(C)* is not used before it |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | as above: a never-allocated slot at the check, *(load)*; a stale one *(C)* |
 | The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`); with the opt-in `exact_sized_free` key, at the call (`check_live`) | no: excluded by the C contract, *(C)*; under the key, that the free reaches the test is `theorem_exact_sized_free` |
 | Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort at the call: the slot's state byte (`heap::slotstate`) is not `LIVE`; else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |
 | The same, through `realloc` and the queries | `realloc` family, `malloc_usable_size`, `sallocx`, `xallocx` | with `double_free_scan`, abort after the bit test (`Shared::check_not_cached`); without it no abort at the call: the slot bit is still set, so `check_live` passes. `realloc(p, 1000)` after `p = malloc(16); free(p)` copies from `p` and frees it again, which pushes a second copy; a kept block is returned as is | no: excluded by the C contract, *(C)*; the queries take no token |
-| Double free of a huge run | every free | abort (`Huge::free_run`: `already_free`, or `not_a_run` once the freed run has been merged or left the table) | at the check, *(lock)*: `Huge::live_run_lookup` returns only for a table entry, and `Huge::live_run_checks` only if the run authority holds a live extent starting at `page` at the lock; the rest is *(C)* |
+| Double free of a huge run | every free | abort (`Huge::free_run`: `already_free`, or `not_a_run` once the freed run has been merged or left the table) | at the check, *(lock)*: `Huge::live_run_lookup` returns only for a table entry, and `Huge::live_run_checks` only if the run authority holds a live extent starting at `page` at the lock; the rest is *(C)*. The unsized entry points (`free`, `delete`, `challoc_free_usable`, `dallocx`, the reallocations) use *(C)* only past these checks: they take C's token for a huge page start only with the lock's authority as the record (`Claim::settle_run`, [claims past the check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)). The sized frees (`free_sized`, `free_sized_hint`, `sdallocx`) claim first, so for them *(C)* is assumed before the check |
 | Free of a block that was freed and reallocated (ABA) | every free | frees the new block | undetectable by any allocator |
 
 *(C)*: a pointer that is a slot start or a huge page start but not a live
@@ -3790,20 +3795,27 @@ the `free` contract in the common premises): the free cores take C's
 `Live` token for the pointer and give it back to the allocator, and for
 such a pointer C holds no token, so the axiom's token makes the proof
 context inconsistent and nothing is proved for that call. A plain free
-of a slot start (`free`, `delete`) takes the token only past its bit
-test, with the test's record (`Claim::settle`, `slot_checked`,
+(`free`, `delete`), `challoc_free_usable`, `dallocx` or reallocation
+(`realloc`, `challoc_realloc_usable`, `rallocx`) of a slot start takes
+the token only past its bit test, with the test's record (`Claim::settle`, `slot_checked`,
 [#835](https://github.com/chainguard-project-theseus/challoc/issues/835)),
 so a slot no refill ever claimed aborts first, in a consistent
 context; a huge page start, only past the huge lock's checks, with the
 run authority as their record (`Claim::settle_run`, `run_checked`), so
-a page where no live run starts aborts first too. The run-time
+a page where no live run starts aborts first too. Only the sized frees
+still take it as their first step ([claims past the
+check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)). The run-time
 checks behind those rows are verified code (each abort helper ends in
 `sys::abort_fmt` and returns `!`), but no theorem says they fire for
 every non-live block: the bitmap word invariant (`bitmap::WordPred`)
 holds the slot tokens of exactly the clear bits, so a clear bit means
 the slot is back in its bitmap, but that fact holds only inside the
 atomic invariant at the instant of the load, and the free cores'
-`ensures` (`blk.block(p)`) come from the token, not from the test. Those
+`ensures` of a live block (`blk.block(p)`) come from the token, not
+from the test: the sized cores state it of the up-front token, the
+realloc cores and `free_usable_block` of the claimed token they return
+as a ghost result, and the plain free cores only of a token the caller
+holds (for C's pending claim they state `free_target(p)` alone). Those
 B cells stay `p`.
 
 *(lock)*: the huge free's checks are proved, with or without a token
@@ -10336,6 +10348,137 @@ the named modules):
 | N5 | `Tcaches::destroy` drops the registry's permission (`heap::tcaches`) | precondition (`Heap::destroy`) |
 | N6 | the unpublished path skips `install_fresh` (`heap::thread`) | precondition (`Heap::destroy`) |
 
+## Frees claim C's token only past their check (rests on the C-boundary assumption past the check)
+
+C hands a free or a realloc a block it holds, and the allocator's
+proofs need that block's `Live` token. The one trusted step that gives
+it is `heap::live::axiom_c_claim` (the `free` contract). Until
+[#835](https://github.com/chainguard-project-theseus/challoc/issues/835)
+every free entry point called it as its first step, so for a stale or
+forged pointer the call's proof context was inconsistent from its first
+line, before any run-time check. Now the plain frees, `challoc_free_usable`,
+`dallocx` and the reallocations hand C's token down unclaimed and claim
+it only past the check that rejects such a pointer, with that check's
+record. This is a statement about where the contract is used, not that
+a stale free aborts: past the check the contract is still assumed
+(the *(C)* rows of "Bad input",
+[#734](https://github.com/chainguard-project-theseus/challoc/issues/734)).
+
+**Statement.** A pending claim (`Claim::pending(c)`, C's call token
+`c` unclaimed) becomes a `Live` only through `Claim::claim_call`, the
+one use of `axiom_c_claim` in `heap::live`, which only these two proof
+fns call:
+
+```rust
+// heap/live.rs
+pub proof fn settle(tracked &mut self, p: *mut u8, tracked obs: &BitLoad)        // Claim
+    requires old(self).claims(p),
+        old(self).held is None ==> slot_start(p) && slot_checked(p, *obs),
+    ensures final(self).held is Some, final(self).claims(p),
+        old(self).held is Some ==> *final(self) == *old(self),
+pub proof fn settle_run(tracked &mut self, page: int, tracked runs: &GhostSetAuth<(int, int)>)  // Claim
+    requires regions_ok(), old(self).run_claim(page),
+        old(self).held is None ==> run_checked(page, *runs),
+    ensures final(self).held is Some, final(self).run_claim(page),
+        old(self).held is Some ==> *final(self) == *old(self),
+        old(self).held is None ==> final(self).held->0.run_block(page), ...
+
+// heap/theorems.rs
+pub open spec fn slot_checked(p: *mut u8, l: BitLoad) -> bool {
+    exists|t: SlabTable| t.is_process() && #[trigger] bit_seen_at(t, p@.addr as int, l)
+}
+pub open spec fn run_checked(page: int, runs: GhostSetAuth<(int, int)>) -> bool {
+    &&& runs.id() == run_loc()
+    &&& exists|n: int| #[trigger] runs@.contains((page, n))
+}
+```
+
+`slot_checked` holds only of a `BitLoad` that a load of the slot's
+bitmap word made inside the word invariant, finding the slot's bit set
+in a value the word held (`load_seen`, `bit_seen_at`; "Bad input",
+*(load)*). `run_checked` holds only of the process's run authority,
+which only the huge lock's value holds, knowing a live extent that
+starts at `page` (*(lock)*). Where each entry point settles:
+
+| Entry points | Slot start | Huge page start |
+|---|---|---|
+| `free`, `delete` (`free_block`) | `heap::free_fast_slot` past `Shared::set_slot`'s bit test; `Shared::classify_free` past `SlabTable::check_live` | `Huge::free_run` past `live_run_lookup` and `live_run_checks` (`claim_run`); `Huge::usable_size` first for a `zero_on_free` clear |
+| `challoc_free_usable` (`free_usable_block`) | as `free` | `Huge::usable_size`, for the size it returns, past its checks |
+| `dallocx` (`dallocx_block`, `mallocx::free`) | as `free` | as `free` |
+| `realloc`, `rallocx` (`old_size_or_keep`) | past `check_live` and `Shared::check_not_cached`; `realloc(p, 0)` as `free` | `Huge::usable_size`, for the old size |
+| `challoc_realloc_usable` (`realloc_old`) | as `realloc` | as `realloc` |
+
+What the cores state of the claimed token differs. The realloc cores
+(`realloc_block`, `realloc_usable_stored`, `rallocx_zeroed`) and
+`free_usable_block` return it as a ghost result and state their token
+results against it, so they keep, for a pending claim, the facts they
+stated of an up-front token (interface contract, rows 3, 4, 14, 15 and
+17). The plain free cores (`free_block`, `free_slow`, `dallocx_block`,
+`heap::free`, `Heap::free`, `free_direct`) and `realloc_block`'s
+size-0 arm state the live-block fact `l.block(p)` only under
+`claim.held matches Some(l)`: on C's route the claim is pending, so for
+a returning `free(p)`, `dallocx(p)` or `realloc(p, 0)` they state only
+`free_target(p)` (rows 10 and 20, whose B cells are `p` either way).
+The sized cores, which claim first, still state `blk.block(p)` of the
+up-front token (`free_sized_block`).
+
+**Covers.** The entry points in the table, and the verification-only
+`api::libc::theorem_no_syscall_on_fast_paths` and
+`theorem_no_user_reads`, which restate their paths with the same
+pending claims (and the sized frees' up-front ones). Not the sized
+frees (`free_sized`, `free_sized_hint`, `free_aligned_sized`,
+`sdallocx`, the sized `delete`s): they claim as their first step,
+because their bit test runs only at a cache flush unless
+`exact_sized_free` is set (VULN-CLASSES.md E). Not the queries
+(`malloc_usable_size`, `sallocx`, `xallocx`), which take no token.
+
+**Premises.**
+- The C-boundary assumption (`axiom_c_claim`), past the check: the
+  caller's token claims `p`. Seam `heap::live::axiom_c_claim`
+  (`verus/ledger/src/heap/live.rs.md`).
+- That these entry points reach `axiom_c_claim` only through `settle`
+  and `settle_run` is not a Verus fact: `axiom_c_claim` is `pub`, and
+  `Claim::held` takes any `Live`. It is the source test
+  `trusted_mint_sites_are_pinned` (`lib.rs`), which lists every caller
+  of `axiom_c_claim(` (in `heap::live`, only `Claim::claim_call`; the
+  sized frees; the two restatements), of `.claim_call(` (only `settle`
+  and `settle_run`) and of `Claim::pending(` (the six Rust entry points
+  and the two restatements).
+
+**Seams.** None added or removed: the seam is still `axiom_c_claim`,
+with no use before a check on these entry points.
+
+| Fact used | Where | Status |
+|---|---|---|
+| C's token claims the pointer it passes | `heap::live::axiom_c_claim` | existing trusted axiom (common premises), used past the check |
+| The entry points claim only through `settle` and `settle_run` | `trusted_mint_sites_are_pinned` (`lib.rs`) | source test |
+| A slot's `BitLoad` record comes only from a load inside the word invariant | `class::bit_seen_at`, `load_seen`, `SlabTable::is_process` (`seen_loc`) | proved (ghost set authority) |
+| The run authority is the huge lock's, one per process | `huge::run_loc`, `Inner::runs` | proved (ghost set authority) |
+
+**Not covered.** That a passing check rules out a stale pointer: a
+stale double free of a slot whose bit a later claim set again, or of a
+page where a later run starts, passes the check and is claimed (ABA,
+or the ordering
+[#843](https://github.com/chainguard-project-theseus/challoc/issues/843)
+leaves open; "Bad input"). The sized frees and the queries, above.
+
+**Mutations** (the #886 mutants are in the *(load)* note's mutation
+paragraph, unnumbered there; H, R and F in the paragraphs after the
+"Bad input" table):
+
+| id | change | rejected by |
+|---|---|---|
+| C1, C2 | `classify_free` or `free_fast_slot` settles with a fresh `BitLoad` | `Claim::settle` precondition |
+| C4 | `classify_free` settles with a record of a witness from its own authority | `Claim::settle` precondition (`is_process` names `seen_loc`) |
+| C5 | `classify_free` settles with another word's real `check_live` record | `Claim::settle` precondition |
+| H1, H5 | `free_run` settles before `live_run_lookup`, or between it and `live_run_checks` | `Claim::settle_run` precondition |
+| H3, H6 | `claim_run` settles with a fresh authority, or one knowing only an unrelated extent | `Claim::settle_run` precondition |
+| H4 | `usable_size` settles a pending claim before its checks | `Claim::settle_run` precondition |
+| H7, R5, R9-R12 | an entry point claims up front (`Claim::held(axiom_c_claim(c))`) | `trusted_mint_sites_are_pinned` |
+| R1, R7 | `old_size_or_keep` or `realloc_old` settles before its bit test | `Claim::settle` precondition |
+| R6 | `old_size_or_keep` settles with another slab's real `check_live` record | `Claim::settle` precondition (`bit_seen_at`'s bounds) |
+| F1, F2 | `free_usable_slow` or `free_fast_slot` returns an arbitrary token for the claimed one | their postconditions |
+
 ## Sized frees run plain `free`'s check under `exact_sized_free` (rests on the C-boundary assumption)
 
 `exact_sized_free` is an opt-in hardening key (`config.rs`;
@@ -10863,10 +11006,12 @@ Properties:
   which `axiom_c_claim` excludes. A free target is never in a guard
   slab (theorem 7), so a free into one does not return. The
   *(live)* cells (a stale or double free) stay `p`: the free cores
-  require the token of a live block and ensure that what they freed was
-  live, but C holds that token only by `axiom_c_claim` (the `free`
-  contract), so a non-live free is excluded by that C-boundary
-  assumption rather than proved to abort. The "Bad input" section above
+  claim the token of a live block (up front for the sized frees, past
+  the check for the others) and, given a held or up-front token, ensure
+  that what they freed was live (the plain free cores state nothing of
+  that kind for C's pending claim), but C holds that token only by
+  `axiom_c_claim` (the `free` contract), so a non-live free is excluded
+  by that C-boundary assumption rather than proved to abort. The "Bad input" section above
   lists every kind of bad input by entry point, with what is proved not
   to return (pointer shape, size hints, alignments, cache ids of
   `MAX_TCACHES` or more) and what rests on the C contract. For the
