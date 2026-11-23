@@ -171,7 +171,16 @@ get wrong.
   `make quick` verdict or a cb run, with its run id, on the workload the
   path serves), the cost is accepted, not a finding. A cost the body does
   not measure is a Question, and so is a hot-path cost above about 2%
-  with no real-workload number, since the 10% check below needs one. A
+  with no real-workload number, since the 10% check below needs one.
+  The one exception is CONTRIBUTING.md's exemption (Matt Moore,
+  2026-11-22, recorded in
+  https://github.com/chainguard-project-theseus/challoc/issues/882): a
+  proof change whose changed functions all run a bounded number of
+  times per process or per arena build (init, cgroup discovery, arena
+  build) needs no bench when its codegen verdict names every changed
+  function and its cause; there a missing bench is not a finding. One
+  changed function that runs per call (malloc, free, refill, purge,
+  thread exit and the like) puts the change back under the rule above. A
   cost above about 10% on a real workload is Blocking until
   the body links a maintainer's comment on the pull request accepting
   it; you cannot tell who wrote a comment, so that link is a Question
