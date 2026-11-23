@@ -712,6 +712,79 @@ proof fn lemma_retired(g0: Inner, gr: Inner, g1: Inner, m: Merge, i: int, x: *mu
     assert(m.gone_w(i + 1, 4) == m.gone_w(i, 4) + weight(v, 4));
 }
 
+/// Step `k` of the coalescing loop (counted from 1) takes out `v`, the
+/// `k`th neighbour: what is left of the counters (`s`, the counters at
+/// `gb` less the neighbours taken out before it) still holds it.
+proof fn lemma_nb_counted(g0: Inner, sb: HugeStats, s: HugeStats, m: Merge, k: int, v: HugeDesc)
+    requires
+        1 <= k <= 2,
+        k == 1 ==> m.has_pred && v == m.vp,
+        k == 2 ==> m.has_succ && v == m.vs,
+        m.parts_ok(g0),
+        desc_ok(v, g0.next_page),
+        forall|j: int| 0 <= j < 6 ==> #[trigger] stat(s, j) == stat(sb, j) - m.nb_w(k - 1, j),
+        forall|j: int| 0 <= j < 6 ==> #[trigger] stat(sb, j) >= m.nb_w(2, j) - m.nb_w(0, j),
+    ensures
+        s.can_sub(state_of(v.state), v.pages as usize),
+{
+    let sk = v.state as int;
+    assert(sk == 1 || sk == 2);
+    assert(weight(v, sk) == 1 && weight(v, sk + 3) == v.pages);
+    assert(stat(sb, sk) >= m.nb_w(2, sk) - m.nb_w(0, sk));
+    assert(stat(sb, sk + 3) >= m.nb_w(2, sk + 3) - m.nb_w(0, sk + 3));
+    assert(stat(s, sk) == stat(sb, sk) - m.nb_w(k - 1, sk));
+    assert(stat(s, sk + 3) == stat(sb, sk + 3) - m.nb_w(k - 1, sk + 3));
+    assert(stat(s, sk) >= 1 && stat(s, sk + 3) >= v.pages);
+}
+
+/// Step `i` of the retiring loop skips `x`, the `i`th of `[d, pred,
+/// succ]`, when it is absent or the survivor: nothing more is gone.
+proof fn lemma_retire_skip(g0: Inner, m: Merge, i: int, x: *mut HugeDesc)
+    requires
+        g0.wf(),
+        m.parts_ok(g0),
+        0 <= i < 3,
+        x == seq![m.d, m.pred, m.succ][i],
+        !(x@.addr != 0 && x != m.surv),
+    ensures
+        forall|y: *mut HugeDesc| #[trigger] m.gone(i + 1, y) <==> m.gone(i, y),
+        forall|j: int| #[trigger] m.gone_w(i + 1, j) == m.gone_w(i, j),
+{
+    lemma_parts_distinct(g0, m);
+    assert(seq![m.d, m.pred, m.succ][0] == m.d);
+    assert(seq![m.d, m.pred, m.succ][1] == m.pred);
+    assert(seq![m.d, m.pred, m.succ][2] == m.succ);
+    assert forall|y: *mut HugeDesc| #[trigger] m.gone(i + 1, y) <==> m.gone(i, y) by {}
+    assert forall|j: int| #[trigger] m.gone_w(i + 1, j) == m.gone_w(i, j) by {}
+}
+
+/// The `Empty` list's entries stay linked when one descriptor `x` is
+/// written, its links kept, and, if it is listed, its state left `Empty`
+/// or unchanged.
+proof fn lemma_enodes_kept(
+    l: Seq<*mut HugeDesc>,
+    ds1: Map<*mut HugeDesc, PointsTo<HugeDesc>>,
+    ds2: Map<*mut HugeDesc, PointsTo<HugeDesc>>,
+    x: *mut HugeDesc,
+)
+    requires
+        forall|i: int| 0 <= i < l.len() ==> #[trigger] enode(l, ds1, i),
+        ds1.contains_key(x),
+        ds2 == ds1.insert(x, ds2[x]),
+        ds2[x].value().prev == ds1[x].value().prev,
+        ds2[x].value().next == ds1[x].value().next,
+        l.contains(x) ==> ds2[x].value().state == RunState::Empty as u8 || ds2[x].value().state == ds1[x].value().state,
+    ensures
+        forall|i: int| 0 <= i < l.len() ==> #[trigger] enode(l, ds2, i),
+{
+    assert forall|i: int| 0 <= i < l.len() implies #[trigger] enode(l, ds2, i) by {
+        assert(enode(l, ds1, i));
+        if l[i] == x {
+            assert(l.contains(x));
+        }
+    }
+}
+
 /// No extent outside the merge has a key inside the merged extent.
 proof fn lemma_merged_room(g0: Inner, m: Merge, key: usize)
     requires
@@ -1311,10 +1384,13 @@ impl Huge {
     /// `Seq::no_duplicates` and `Seq::index_of`: the list lemmas
     /// (`lemma_retired`, `lemma_free_end`, `lemma_active_unlisted`) read
     /// them, and unfolded in this body their quantifiers fire on every
-    /// pair of list indices in sight. The body checks in its own solver
-    /// instance, with the free-bitmap proof at the lock release; the
-    /// rlimit leaves headroom for the cost moving with unrelated items
-    /// elsewhere in the crate.
+    /// pair of list indices in sight. So do the per-step facts of the
+    /// loops and of the survivor's writes (`lemma_nb_counted`,
+    /// `lemma_retire_skip`, `lemma_enodes_kept`): in this body the loop
+    /// invariants' quantifiers are in sight of them. The body checks in
+    /// its own solver instance, with the free-bitmap proof at the lock
+    /// release; the rlimit leaves headroom for the cost moving with
+    /// unrelated items elsewhere in the crate.
     #[verifier::rlimit(120)]
     #[verifier::spinoff_prover]
     #[verifier::loop_isolation(false)]
@@ -1605,17 +1681,9 @@ impl Huge {
                 assert(v.pages > 1 ==> g@.table.lookup((v.start + v.pages - 1) as usize) == Some(nb));
                 // The counters hold `nb`: what is left of them holds the
                 // neighbours not yet taken out.
-                let sk = v.state as int;
                 assert(v == if k == 1 { m.vp } else { m.vs });
                 assert(desc_ok(v, g0.next_page));
-                assert(sk == 1 || sk == 2);
-                assert(weight(v, sk) == 1 && weight(v, sk + 3) == v.pages);
-                assert(stat(gb.stats, sk) >= m.nb_w(2, sk) - m.nb_w(0, sk));
-                assert(stat(gb.stats, sk + 3) >= m.nb_w(2, sk + 3) - m.nb_w(0, sk + 3));
-                assert(stat(g@.stats, sk) == stat(gb.stats, sk) - m.nb_w(k - 1, sk));
-                assert(stat(g@.stats, sk + 3) == stat(gb.stats, sk + 3) - m.nb_w(k - 1, sk + 3));
-                assert(stat(g@.stats, sk) >= 1 && stat(g@.stats, sk + 3) >= v.pages);
-                assert(g@.stats.can_sub(state_of(v.state), v.pages as usize));
+                lemma_nb_counted(g0, gb.stats, g@.stats, m, k, v);
             }
             // Neighbours are live free extents.
             let (ns, ne, nst, ndirty) = (g.desc(nb).start(), g.desc(nb).end(), g.desc(nb).state(), g.desc(nb).dirty_at);
@@ -1694,12 +1762,7 @@ impl Huge {
             }
             proof {
                 if !(x@.addr != 0 && x != survivor) {
-                    lemma_parts_distinct(g0, m2);
-                    assert(seq![d, pred, succ][0] == d);
-                    assert(seq![d, pred, succ][1] == pred);
-                    assert(seq![d, pred, succ][2] == succ);
-                    assert forall|y: *mut HugeDesc| #[trigger] m2.gone(k2 + 1, y) <==> m2.gone(k2, y) by {}
-                    assert forall|j: int| #[trigger] m2.gone_w(k2 + 1, j) == m2.gone_w(k2, j) by {}
+                    lemma_retire_skip(g0, m2, k2, x);
                 }
             }
             proof {
@@ -1742,24 +1805,21 @@ impl Huge {
             assert(gw.descs@[survivor].value().prev == gr.descs@[survivor].value().prev);
             assert(gw.descs@[survivor].value().next == gr.descs@[survivor].value().next);
             assert(gw.descs@[survivor].value().dirty_at == gr.descs@[survivor].value().dirty_at);
-            assert forall|i: int| 0 <= i < gr.elist@.len() implies #[trigger] enode(gr.elist@, gw.descs@, i) by {
-                assert(enode(gr.elist@, gr.descs@, i));
-            }
+            assert(gr.elist@.contains(survivor) ==> merged == RunState::Empty);
+            lemma_enodes_kept(gr.elist@, gr.descs@, gw.descs@, survivor);
             assert(same_but_links(d0[survivor].value(), gr.descs@[survivor].value()));
         }
         if merged == RunState::Purged {
             g.desc_mut(survivor).dirty_at = 0;
             proof {
-                assert forall|i: int| 0 <= i < gr.elist@.len() implies #[trigger] enode(gr.elist@, g@.descs@, i) by {
-                    assert(enode(gr.elist@, gw.descs@, i));
-                }
+                assert(g@.descs@ =~= gw.descs@.insert(survivor, g@.descs@[survivor]));
+                lemma_enodes_kept(gr.elist@, gw.descs@, g@.descs@, survivor);
             }
         } else if survivor == d {
             g.desc_mut(survivor).dirty_at = now;
             proof {
-                assert forall|i: int| 0 <= i < gr.elist@.len() implies #[trigger] enode(gr.elist@, g@.descs@, i) by {
-                    assert(enode(gr.elist@, gw.descs@, i));
-                }
+                assert(g@.descs@ =~= gw.descs@.insert(survivor, g@.descs@[survivor]));
+                lemma_enodes_kept(gr.elist@, gw.descs@, g@.descs@, survivor);
             }
             g.link_tail(d);
         }
