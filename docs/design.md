@@ -542,7 +542,8 @@ pages the child never had:
   count of ends it judged with, so a whole `begin` and `end` between the
   verdict and the clear cannot lose the next epoch's drain, even when a
   reader held across that `end` stores the last epoch's progress mark
-  again), so the
+  again; `cow::end` clears the queries before it counts itself, so that
+  mark then meets only queries made after the `end`), so the
   figure only falls and the forced cycle ends when the work does. On
   Redis and Valkey the figure reaches 0 within seconds of the last
   drain move, 10 to 65 s after the save in bench/cow's runs, rather than at the window's 300 s: what

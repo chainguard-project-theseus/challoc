@@ -578,6 +578,55 @@ fn a_stall_judged_before_an_epoch_end_ends_nothing_after_it() {
     });
 }
 
+/// A reader held across an epoch's end that stores the last epoch's
+/// progress mark again (`DRAIN_SEEN`) ends no drain with the queries a
+/// defragmenter made before that end, while the epoch was open and the
+/// last window still was: the end cleared them (`DRAIN_ASKS`) before it
+/// counted itself, so a stall needs queries over a whole `DRAIN_STALL_S`
+/// after it. Queries that span one after the end, with no move, end the
+/// drain.
+#[test]
+fn a_mark_stored_again_after_an_end_meets_no_queries_from_before_it() {
+    in_fork_child("cow drain mark across end", 30_000, || {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let (f, _new) = drain_setup(s, &t, c, 3);
+        assert_eq!(draining(s), 1, "the first read records the mark");
+        let mark = crate::cow::test_drain_seen();
+        assert_ne!(mark, 0);
+        // The next epoch, with writes: the defragmenter goes on querying
+        // through it, with the last window open, and asks for no move.
+        assert_eq!(crate::cow::begin(s, Tracked::assume_new()), 0);
+        let more: Vec<*mut u8> = (0..3 * CLASSES[c].nslots()).map(|_| t.alloc(c)).collect();
+        ask_below(s, c, f);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        assert_eq!(crate::cow::end(s, Tracked::assume_new()), 0);
+        t.flush_all();
+        let g = s.arena0.class(c).drain_floor();
+        assert!(g != 0, "the end left a drain floor");
+        // The held reader's compare-and-exchange lands on the end's 0.
+        crate::cow::test_replay_drain_seen(mark);
+        crate::cow::test_age_drain_progress(crate::cow::DRAIN_STALL_S);
+        assert_eq!(
+            draining(s),
+            1,
+            "queries from before the end are not a stall after it"
+        );
+        assert_eq!(s.arena0.class(c).drain_floor(), g);
+        assert!(crate::cow::draining(), "the window stays open");
+        // Queries over a stall after the end, with no move, are one.
+        ask_below(s, c, g);
+        crate::cow::test_age_drain_asks(crate::cow::DRAIN_STALL_S, 0);
+        assert_eq!(draining(s), 0, "a stall of queries after the end");
+        assert_eq!(s.arena0.class(c).drain_floor(), 0);
+        assert!(!crate::cow::draining(), "and the window closed");
+        for p in more {
+            t.free(p);
+        }
+    });
+}
+
 /// A stall ends no drain while an epoch is open or an outermost begin or
 /// end is under way (`BUSY`): an end may be setting the next epoch's
 /// drain floors, which a stall of the last epoch's drain must not clear.

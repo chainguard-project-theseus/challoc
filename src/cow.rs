@@ -96,7 +96,8 @@ exec static DRAIN_UNTIL: AtomicU64 = AtomicU64::new(0);
 /// its drain.
 exec static DRAIN_SEEN: AtomicU64 = AtomicU64::new(0);
 /// Outermost [`end`]s so far: each adds one after it resets
-/// [`DRAIN_SEEN`] (Release), before it releases [`DEPTH`]. A reader of
+/// [`DRAIN_SEEN`] and clears [`DRAIN_ASKS`] (Release), before it
+/// releases [`DEPTH`]. A reader of
 /// figure 8 loads it (Acquire) before it judges a stall, and
 /// [`end_all_drains`] clears nothing unless it is unchanged under
 /// [`BUSY`], so a stall only ever ends the drain of the epoch whose
@@ -441,6 +442,10 @@ pub fn end_within(shared: &Shared, max_tries: u32, Tracked(ord): Tracked<&mut Lo
     each_class_settle(shared, Tracked(&mut *ord));
     // The stall clock starts at the first read of figure 8 ([`stalled`]).
     DRAIN_SEEN.store(0, Ordering::Relaxed);
+    // And counts only queries made after this end: a reader held across
+    // it can store the last epoch's record again ([`stalled`]), which
+    // must not meet the open epoch's queries.
+    DRAIN_ASKS.store(0, Ordering::Relaxed);
     // A stall judged before this end clears nothing after it
     // ([`end_all_drains`]).
     DRAIN_ENDS.fetch_add(1, Ordering::Release);
@@ -518,6 +523,22 @@ pub fn test_stall_across_end(shared: &Shared, end_between: bool, republish: bool
         DRAIN_SEEN.store(judged, Ordering::Relaxed);
     }
     (stall, stall && end_all_drains(shared, ends))
+}
+
+/// Test only: the drain's progress mark ([`DRAIN_SEEN`]), to store
+/// again with [`test_replay_drain_seen`].
+#[cfg(test)]
+pub fn test_drain_seen() -> u64 {
+    DRAIN_SEEN.load(Ordering::Relaxed)
+}
+
+/// Test only: `w` stored as the drain's progress mark ([`DRAIN_SEEN`]),
+/// and nothing else, as a reader that loaded an [`end`]'s 0, cleared the
+/// queries, and was held across the next [`end`] stores its record: the
+/// queries made in between are left as they are.
+#[cfg(test)]
+pub fn test_replay_drain_seen(w: u64) {
+    DRAIN_SEEN.store(w, Ordering::Relaxed);
 }
 
 /// Test only: the first query since the drain's last progress
@@ -702,7 +723,9 @@ fn seen_word(now_ns: u64, moves: u64) -> (r: u64)
 /// between its loads and its compare-and-exchange can still store a
 /// record over an [`end`]'s 0 with the last epoch's count: the caller
 /// judges by [`DRAIN_ENDS`], not by the record, whether an [`end`] came
-/// between ([`end_all_drains`]).
+/// between ([`end_all_drains`]), and [`end`] clears the queries before
+/// it counts itself, so a reader that judges by that record after the
+/// [`end`] needs queries made since the [`end`] to span a stall.
 fn stalled() -> bool
     requires
         crate::sys::may_syscall(),
@@ -736,11 +759,13 @@ fn stalled() -> bool
 /// in another thread came between, and the floors are the new epoch's.
 /// [`end`] adds to it before it releases [`DEPTH`] (which the Acquire
 /// here pairs with), so this sees every [`end`] that came before the
-/// bit. And `ends` was loaded with Acquire before the record, so a reader
-/// that saw an [`end`]'s count judged by a record made after that end's
-/// reset (or its 0, never a stall). Comparing the record instead would
-/// not do: a reader held across an [`end`] can store the last epoch's
-/// record again ([`stalled`]). A [`begin`] in another thread meanwhile is
+/// bit. And `ends` was loaded with Acquire before the record and the
+/// queries, so a reader that saw an [`end`]'s count judged by queries
+/// made after that end (it clears them before it counts itself): a
+/// stall it finds is a span of [`DRAIN_STALL_S`] after that [`end`]
+/// with no drain move, that epoch's, even when a reader held across the
+/// [`end`] stored the last epoch's record again ([`stalled`]). Comparing
+/// the record instead would not do, for that reason. A [`begin`] in another thread meanwhile is
 /// refused (`EBUSY`), as during another thread's transition.
 fn end_all_drains(shared: &Shared, ends: u64) -> bool {
     if DEPTH.compare_exchange(0, BUSY, Ordering::Acquire, Ordering::Relaxed).is_err() {
