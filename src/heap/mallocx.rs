@@ -588,20 +588,22 @@ pub fn alloc_huge(
 }
 
 /// Routing of a `MALLOCX` free (`dallocx`, `sdallocx`) on the calling
-/// thread. Aborts unless `p` is a live allocation. `blk` is the caller's
-/// token for `p` ([`Live::claims`](super::Live::claims)).
-pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<super::Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
+/// thread. Aborts unless `p` is a live allocation. `claim` is the
+/// caller's token for `p` ([`Claim::claims`](super::Claim::claims)), held
+/// or still the call's (`dallocx`), which the free paths claim only past
+/// their checks.
+pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(claim): Tracked<super::Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         shared.wf(),
-        blk.claims(p),
+        claim.claims(p),
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
         final(errno).val() == old(errno).val(),
         crate::heap::free_target(p),
-        blk.block(p),
+        claim.held matches Some(l) ==> l.block(p),
         !bad_tcache(tcache),
 {
     // Premise (`axiom_heap_use`): the caller uses the explicit cache
@@ -609,18 +611,18 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
     let tracked mut u = super::axiom_heap_use();
     let tracked mut loan = crate::sys::tls::HeapLoan::empty();
     match tcache {
-        Tcache::Default => crate::heap::free(shared, p, Tracked(super::Claim::held(blk)), Tracked(errno), Tracked(ord)),
+        Tcache::Default => crate::heap::free(shared, p, Tracked(claim), Tracked(errno), Tracked(ord)),
         Tcache::Explicit(t) => match shared.tcaches.get(t, Tracked(&mut u), Tracked(&mut loan)) {
             Some(h) => {
                 // The calling thread's slot cell, for the explicit cache's
                 // tick (`purge::on_tick`).
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
-                h.free(shared, p, Tracked(super::Claim::held(blk)), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
+                h.free(shared, p, Tracked(claim), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
                 shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
             },
             None => invalid_tcache(t),
         },
-        Tcache::None => crate::heap::free_direct(shared, p, Tracked(super::Claim::held(blk)), Tracked(ord)),
+        Tcache::None => crate::heap::free_direct(shared, p, Tracked(claim), Tracked(ord)),
     }
 }
 

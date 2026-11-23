@@ -33,7 +33,7 @@ axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
 
 ## `axiom_c_claim`
 
-src/heap/live.rs:1158. Kind: axiom. Category: C-program contract.
+src/heap/live.rs:1159. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of a call that hands a block over, `vspec::cbuf`): the token of the block the C caller hands over through a free or a reallocation ([`CCall::block`]): C holds the token of every block it was given and has not freed, and such a call passes one of them, or null.

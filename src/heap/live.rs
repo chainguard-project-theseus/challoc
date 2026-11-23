@@ -1145,14 +1145,15 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
 /// and two tokens of one slot or overlapping runs let a proof derive
 /// `false`. The run-time checks behind the frees (the bitmap bit test,
 /// the huge table lookup, the cache flush's release) stay in the code for
-/// such programs. `api::libc::free` and `api::cxx::delete` reach it
-/// only through `Claim::claim_call`, which [`Claim::settle`] calls
-/// past the bit test of a slot and [`Claim::settle_run`] past the huge
-/// lock's checks of a run (`VULN-CLASSES.md` E). Its other callers are the Rust entry points of
-/// the frees and of the reallocations (`free_sized`,
-/// `free_sized_hint`, `free_usable`, `realloc` and `realloc_usable`;
-/// `api::jemalloc::dallocx`, `sdallocx` and `rallocx`), each with the
-/// call's token it is passed, and the verification-only
+/// such programs. `api::libc::free`, `api::cxx::delete`,
+/// `api::libc::free_usable`, `realloc` and `realloc_usable`, and
+/// `api::jemalloc::dallocx` and `rallocx` reach it only through
+/// `Claim::claim_call`, which [`Claim::settle`] calls past the bit test
+/// of a slot and [`Claim::settle_run`] past the huge lock's checks of a
+/// run (`VULN-CLASSES.md` E). Its other callers are the Rust entry
+/// points of the sized frees (`free_sized`, `free_sized_hint`;
+/// `api::jemalloc::sdallocx`), each with the call's token it is passed,
+/// and the verification-only
 /// `api::libc::theorem_no_syscall_on_fast_paths` and
 /// `theorem_no_user_reads`, as those entry points do.
 pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)

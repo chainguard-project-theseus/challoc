@@ -277,25 +277,21 @@ mod tests {
                 &[("heap/thread.rs:", "fn create_heap_for_thread<", 1)],
             ),
             // The `free` contract (`heap::live::axiom_c_claim`): the plain
-            // frees (`libc::free`, `cxx::delete`) reach it only through
-            // `Claim::claim_call`, which `Claim::settle` calls past a
-            // slot's bit test and `Claim::settle_run` past the huge
-            // lock's checks (#835); every other entry point claims as its
-            // first step, and the two verification-only theorems restate
-            // those entry points.
+            // frees (`libc::free`, `cxx::delete`), `challoc_free_usable`,
+            // `dallocx`, `realloc`, `challoc_realloc_usable` and `rallocx`
+            // reach it only through `Claim::claim_call`, which
+            // `Claim::settle` calls past a slot's bit test and
+            // `Claim::settle_run` past the huge lock's checks (#835); the
+            // sized frees claim as their first step, and the two
+            // verification-only theorems restate those entry points.
             (
                 concat!("axiom_", "c_claim("),
                 &[
                     ("heap/live.rs:", "proof fn claim_call(", 1),
                     ("api/libc.rs:", "pub fn free_sized_hint(", 1),
                     ("api/libc.rs:", "pub fn free_sized(", 1),
-                    ("api/libc.rs:", "pub fn realloc(", 1),
-                    ("api/libc.rs:", "pub fn realloc_usable(", 1),
-                    ("api/libc.rs:", "pub fn free_usable(", 1),
-                    ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 2),
-                    ("api/libc.rs:", "fn theorem_no_user_reads(", 4),
-                    ("api/jemalloc.rs:", "pub fn rallocx(", 1),
-                    ("api/jemalloc.rs:", "pub fn dallocx(", 1),
+                    ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 1),
+                    ("api/libc.rs:", "fn theorem_no_user_reads(", 2),
                     ("api/jemalloc.rs:", "pub fn sdallocx(", 1),
                 ],
             ),
@@ -306,14 +302,20 @@ mod tests {
                     ("heap/live.rs:", "pub proof fn settle_run(", 1),
                 ],
             ),
-            // `libc::free` hands C's token down unclaimed (and the two
-            // theorems that restate its paths).
+            // `libc::free`, `free_usable`, `realloc`, `realloc_usable`,
+            // `jemalloc::dallocx` and `rallocx` hand C's token down
+            // unclaimed (and the two theorems that restate their paths).
             (
                 concat!("Claim::", "pending("),
                 &[
                     ("api/libc.rs:", "pub fn free(", 1),
-                    ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 1),
-                    ("api/libc.rs:", "fn theorem_no_user_reads(", 1),
+                    ("api/libc.rs:", "pub fn free_usable(", 1),
+                    ("api/libc.rs:", "pub fn realloc(", 1),
+                    ("api/libc.rs:", "pub fn realloc_usable(", 1),
+                    ("api/jemalloc.rs:", "pub fn dallocx(", 1),
+                    ("api/jemalloc.rs:", "pub fn rallocx(", 1),
+                    ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 2),
+                    ("api/libc.rs:", "fn theorem_no_user_reads(", 3),
                 ],
             ),
         ];

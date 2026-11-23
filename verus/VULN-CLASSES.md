@@ -227,18 +227,25 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   [#850](https://github.com/chainguard-project-theseus/challoc/issues/850));
   that the second free's check is ordered after the release is C's. A
   fact about the load, not C's view. The plain frees (`free`,
-  `delete`) take C's token for a slot start only past this test, with
-  its record: `heap::Claim::settle` requires `slot_checked(p, obs)`
+  `delete`), `challoc_free_usable`, `dallocx` and the reallocations
+  (`realloc`, `challoc_realloc_usable`, `rallocx`) take C's token for a
+  slot start only past this test, with its record:
+  `heap::Claim::settle` requires `slot_checked(p, obs)`
   ([#835](https://github.com/chainguard-project-theseus/challoc/issues/835)),
   so `axiom_c_claim` is not used before the check. The
   huge half: the huge free's
   checks (THEOREMS.md "Bad input", *(lock)*) return only for a page
-  where a live run starts at the lock, and the plain frees take C's
-  token for a huge page start only past them, under the lock:
+  where a live run starts at the lock, and the same entry points take
+  C's token for a huge page start only past them, under the lock:
   `heap::Claim::settle_run` requires `run_checked(page, runs)`, the
   process's run authority (which only the huge lock's value holds)
   with an extent starting at the page (`Huge::free_run`, or
-  `Huge::usable_size` for a `zero_on_free` clear, which runs first).
+  `Huge::usable_size` for a `zero_on_free` clear, which runs first, and
+  for the size `challoc_free_usable` returns and the reallocations
+  read). The sized frees (`free_sized`, `free_sized_hint`,
+  `free_aligned_sized`, `sdallocx`, the sized `delete`s) still claim
+  first: their bit test runs only at a cache flush unless
+  `exact_sized_free` is set.
 
 **What the code does (read, not proved; `docs/hardening.md` (1)).** An
 unsized free of a slot whose bitmap bit is clear aborts at the call
