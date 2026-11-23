@@ -2186,15 +2186,7 @@ impl SlabTable {
             gmask: geo.gmask,
         };
         proof {
-            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
-            assert forall|b: int| 0 <= b < 64 * nwords && slots.real(b) implies all@.contains(#[trigger] slots.addr(b)) by {
-                assert(Set::<int>::range(0, geo.nbits).filter(|b: int| geo.real(b)).contains(b));
-                assert(geo.addr(b) == slots.addr(b));
-            }
-            assert forall|m: int| #[trigger] fresh_marks(0, 64 * nwords).contains(m) implies marks@.contains(m) by {
-                crate::bitmap::lemma_marks_elems(0, 64 * nwords, m);
-                crate::bitmap::lemma_marks(0, 64 * nwords, m / 2);
-            }
+            lemma_new_slot_sets(geo, slots, all@, marks@, nwords, nslabs as int);
             assert(nslabs * cls.slab_bits <= 64 * nwords);
             crate::bitmap::lemma_marks_sub(0, nslabs * cls.slab_bits, 0, 64 * nwords);
             // The words end inside the bitmap's reservation, below `2^57`.
@@ -2250,28 +2242,12 @@ impl SlabTable {
             assert(1 <= page <= 0x8000_0000_0000_0000);
             assert(group >= 1);
             assert(0usize < nslabs ==> 0usize % group == 0);
-            // Every descriptor's permission, zero, for the commit lock.
-            assert forall|s: int| 0 <= s < nslabs implies #[trigger] dfresh(dps, desc_base as int, stride as int, dlocs, s) by {
-                assert(dps.contains_key(s));
-                assert(dinvs.contains_key(s));
-            }
-            // Every descriptor's invariant (`perms_ok`).
-            assert(desc_invs_ok(dinvs, dmap, pmap, dlocs, nslabs as int, ((stride as u32) as usize) >= 32)) by {
-                assert forall|s: int| #![trigger dinvs.contains_key(s)] #![trigger dinvs[s]] 0 <= s < nslabs implies dinvs.contains_key(s)
-                    && desc_inv_for(dinvs[s], &dmap[s].value())
-                    && dinvs[s].constant().loc == dlocs[s]
-                    && ((((stride as u32) as usize) >= 32) ==> pages_inv_for(dinvs[s], &pmap[s].value())) by {
-                    assert(dinvs.contains_key(s));
-                }
-            }
+            // Every descriptor's permission, zero, for the commit lock; its
+            // invariant, and that it is the one at its address (`perms_ok`).
+            lemma_new_descs(dmap, dps, pmap, dinvs, dlocs, desc_base as int, stride as int, nslabs as int);
             assert(1 <= page <= 0x8000_0000_0000_0000);
             assert(group >= 1);
             assert(0usize < nslabs ==> 0usize % group == 0);
-            // Each descriptor is the one at its address (`perms_ok`).
-            assert forall|s: int| 0 <= s < nslabs
-                implies desc_id(&(#[trigger] dmap[s]).value()) == desc_base + s * ((stride as u32) as int) by {
-                assert(dmap.contains_key(s));
-            }
         }
         // The class region's bytes, every slab's, read as zero: nothing
         // has written them since `Regions::reserve` mapped the region, and
@@ -3276,6 +3252,79 @@ proof fn fresh_words(tracked z: ZeroRaw, base: usize, start: usize, align: usize
         vstd::arithmetic::div_mod::lemma_add_mod_noop(start as int, base - start, 8);
     }
     axiom_fresh_words(z, base, n, c, once)
+}
+
+/// [`SlabTable::new`]'s slot-set facts for `fresh_word_invs`: every real
+/// bit's slot address is in the authority's set `all`, and every fresh
+/// marker is in `marks`, which is what is left once the init and owner
+/// markers are split off.
+proof fn lemma_new_slot_sets(geo: Slots, slots: Slots, all: Set<int>, marks: Set<int>, nwords: int, nslabs: int)
+    requires
+        all == crate::bitmap::slot_set(geo),
+        slots.sb == geo.sb,
+        slots.nslots == geo.nslots,
+        slots.nbits == geo.nbits,
+        slots.base == geo.base,
+        slots.slab_size == geo.slab_size,
+        slots.size == geo.size,
+        nwords >= 0,
+        marks == fresh_marks(0, 64 * nwords).union(init_marks(0, 64 * nwords)).union(owner_marks(0, nslabs)).difference(
+            init_marks(0, 64 * nwords).union(owner_marks(0, nslabs)),
+        ),
+    ensures
+        forall|b: int| 0 <= b < 64 * nwords && slots.real(b) ==> all.contains(#[trigger] slots.addr(b)),
+        forall|m: int| #[trigger] fresh_marks(0, 64 * nwords).contains(m) ==> marks.contains(m),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+    assert forall|b: int| 0 <= b < 64 * nwords && slots.real(b) implies all.contains(#[trigger] slots.addr(b)) by {
+        assert(Set::<int>::range(0, geo.nbits).filter(|b: int| geo.real(b)).contains(b));
+        assert(geo.addr(b) == slots.addr(b));
+    }
+    assert forall|m: int| #[trigger] fresh_marks(0, 64 * nwords).contains(m) implies marks.contains(m) by {
+        crate::bitmap::lemma_marks_elems(0, 64 * nwords, m);
+        crate::bitmap::lemma_marks(0, 64 * nwords, m / 2);
+    }
+}
+
+/// [`SlabTable::new`]'s descriptor facts, from [`table_perms`]'s: every
+/// descriptor's permission is zero and at the location its invariant
+/// names (`dfresh`, for the commit lock), its invariant is made
+/// (`desc_invs_ok`), and it is the one at its address.
+proof fn lemma_new_descs(
+    dmap: Map<int, PointsTo<SlabDesc>>,
+    dps: Map<int, DescPerm>,
+    pmap: Map<int, PointsTo<SlabPages>>,
+    dinvs: Map<int, DescInv>,
+    dlocs: Map<int, Loc>,
+    base: int,
+    stride: int,
+    nslabs: int,
+)
+    requires
+        forall|s: int| #![trigger dmap.contains_key(s)] #![trigger dmap[s]] 0 <= s < nslabs ==> dmap.contains_key(s)
+            && desc_id(&dmap[s].value()) == base + s * stride,
+        forall|s: int| #![trigger dps.contains_key(s)] #![trigger dps[s]] 0 <= s < nslabs ==> dps.contains_key(s)
+            && desc_fresh(dps[s], base + s * stride),
+        descs_inv_made(dinvs, dps, dmap, pmap, nslabs, stride >= 32),
+        dlocs == Map::<int, Loc>::new(dinvs.dom(), |s: int| dinvs[s].constant().loc),
+    ensures
+        forall|s: int| 0 <= s < nslabs ==> #[trigger] dfresh(dps, base, stride, dlocs, s),
+        desc_invs_ok(dinvs, dmap, pmap, dlocs, nslabs, stride >= 32),
+        forall|s: int| 0 <= s < nslabs ==> desc_id(&(#[trigger] dmap[s]).value()) == base + s * stride,
+{
+    assert forall|s: int| 0 <= s < nslabs implies #[trigger] dfresh(dps, base, stride, dlocs, s) by {
+        assert(dps.contains_key(s));
+        assert(dinvs.contains_key(s));
+    }
+    assert forall|s: int| #![trigger dinvs.contains_key(s)] #![trigger dinvs[s]] 0 <= s < nslabs implies dinvs.contains_key(s)
+        && desc_inv_for(dinvs[s], &dmap[s].value())
+        && dinvs[s].constant().loc == dlocs[s]
+        && (stride >= 32 ==> pages_inv_for(dinvs[s], &pmap[s].value())) by {
+        assert(dinvs.contains_key(s));
+    }
+    assert forall|s: int| 0 <= s < nslabs implies desc_id(&(#[trigger] dmap[s]).value()) == base + s * stride by {
+        assert(dmap.contains_key(s));
+    }
 }
 
 /// The class bitmap's words fit in its reservation rounded up to a whole
