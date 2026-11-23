@@ -75,7 +75,10 @@ pub struct Tcaches {
 /// holding a cache ([`heap_ok`]), which [`Tcaches::create`] puts in with
 /// the store that publishes it, [`Tcaches::get`] lends to its caller
 /// until [`Tcaches::put_back`], and [`Tcaches::destroy`] takes out with
-/// the swap that unpublishes it.
+/// the swap that unpublishes it. And the entries whose permission
+/// [`Tcaches::get`] has lent out and [`Tcaches::put_back`] has not yet
+/// returned (`lent`): a non-null entry's heap permission is in the
+/// registry or lent out ([`entry_ok`]).
 // Ghost: built and read only by proof code.
 #[allow(dead_code)]
 pub tracked struct TableVal {
@@ -84,6 +87,7 @@ pub tracked struct TableVal {
     pub tracked bounds: GhostSetAuth<(int, nat)>,
     pub tracked tokens: Map<(int, nat), Bound>,
     pub tracked heaps: Map<int, HeapPerm>,
+    pub ghost lent: Set<int>,
 }
 
 /// `hp` is the permission to the explicit cache's heap at `p`: a well
@@ -117,13 +121,18 @@ pub ghost struct TableKey {
 /// Table entry `i` in the table's invariant: its permission is for the
 /// atomic the key names (`k.entries[i]`, its [`entry_id`]), and it is
 /// null exactly when its generation is even; a heap permission the
-/// registry holds for it is for the heap it holds ([`heap_ok`]).
+/// registry holds for it is for the heap it holds ([`heap_ok`]); and
+/// when it is not null, the registry holds its heap's permission or has
+/// lent it out (`lent`), not both, and only a non-null entry is lent
+/// out.
 pub open spec fn entry_ok(k: TableKey, v: TableVal, i: int) -> bool {
     &&& v.entries.contains_key(i)
     &&& v.entries[i].id() == k.entries[i]
     &&& v.gens.contains_key(i)
     &&& (v.entries[i].value()@.addr == 0 <==> v.gens[i] % 2 == 0)
     &&& v.heaps.contains_key(i) ==> heap_ok(v.heaps[i], v.entries[i].value())
+    &&& v.entries[i].value()@.addr != 0 ==> (v.heaps.contains_key(i) || v.lent.contains(i))
+    &&& v.lent.contains(i) ==> (v.entries[i].value()@.addr != 0 && !v.heaps.contains_key(i))
 }
 
 /// Lower bound `p` in the table's invariant: an entry of the table, at
@@ -497,6 +506,7 @@ impl Tcaches {
                 bounds,
                 tokens: Map::tracked_empty(),
                 heaps: Map::tracked_empty(),
+                lent: Set::empty(),
             };
             proof {
                 assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(key, val, j) by {
@@ -750,25 +760,24 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
 
 /// Premise (the C caller's contract, [`axiom_heap_use`]'s): when
 /// [`Tcaches::get`] loads a non-null entry `i`, or [`Tcaches::destroy`]
-/// is about to swap one out, the table's registry ([`TableVal`]) holds
-/// the permission to its heap. [`Tcaches::create`]
-/// puts it in with the store that publishes the entry, and only
-/// `Tcaches::get` takes it out but [`Tcaches::destroy`], whose swap
-/// leaves the entry null. So it is out only while a caller of `get`
-/// holds the reference and has not yet handed it back
-/// ([`Tcaches::put_back`]): an explicit cache used by one thread at a time
-/// and not after `tcache.destroy` (nor destroyed while in use), with each
-/// `get` followed by its `put_back` on every path that returns (pinned by
-/// `heap::tcaches::tests::every_get_puts_back`), is never out at a `get`
-/// or a `destroy`.
-/// It states nothing of the heap: that it is well formed and at the
-/// entry's pointer is the registry's invariant ([`entry_ok`]).
-/// Proved state could narrow it but not replace it: a ghost set of
-/// lent-out entries in [`TableVal`] would make the premise "entry `i` is
-/// not lent out" and make a `create` that skips the insert fail to
-/// verify, but whether another thread has `i` lent out is still the C
-/// caller's contract, which no ghost state of this thread sees. That
-/// narrowing is tracked in chainguard-project-theseus/challoc#880.
+/// is about to swap one out, entry `i` is not lent out (`lent` in
+/// [`TableVal`]). The table's invariant ([`entry_ok`]) proves the rest:
+/// a non-null entry's heap permission is in the registry or lent out, so
+/// a not-lent-out entry's is in the registry. `Tcaches::get` alone lends
+/// a permission out, and [`Tcaches::put_back`] returns it (or
+/// [`Tcaches::destroy`]'s swap, which leaves the entry null, ends the
+/// loan). So an entry is lent out only while a caller of `get` holds the
+/// reference and has not yet handed it back: an explicit cache used by
+/// one thread at a time and not after `tcache.destroy` (nor destroyed
+/// while in use), with each `get` followed by its `put_back` on every
+/// path that returns (pinned by `heap::tcaches::tests::every_get_puts_back`),
+/// is never lent out at a `get` or a `destroy`. That `get` is the only
+/// place an entry joins `lent` is pinned by
+/// `heap::tcaches::tests::only_get_lends`. Whether another thread has `i`
+/// lent out is that contract, which no ghost state of this thread sees.
+/// It states nothing of the heap: that it is in the registry, well
+/// formed and at the entry's pointer is the registry's invariant
+/// ([`entry_ok`]).
 ///
 /// Checked by `heap::tcaches::tests::entry_heap_axiom_only_in_get_and_destroy`.
 axiom fn axiom_entry_heap(k: TableKey, tracked v: &TableVal, i: int)
@@ -777,7 +786,7 @@ axiom fn axiom_entry_heap(k: TableKey, tracked v: &TableVal, i: int)
         entry_ok(k, *v, i),
         v.entries[i].value()@.addr != 0,
     ensures
-        v.heaps.contains_key(i),
+        !v.lent.contains(i),
 ;
 
 /// The heap [`Heap::create`] (or, for [`Tcaches::create`],
@@ -923,6 +932,8 @@ impl Tcaches {
                     let tracked _old = v.heaps.tracked_remove(slot as int);
                 }
                 v.heaps.tracked_insert(slot as int, perm);
+                // Not lent out: the permission is the registry's.
+                v.lent = v.lent.remove(slot as int);
                 assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
                     assert(entry_ok(self.inv@.constant(), v0, j));
                     if j != slot as int {
@@ -968,13 +979,19 @@ impl Tcaches {
     /// ([`HeapUse::lent`]). So the heap is the one [`Tcaches::create`]
     /// made, well formed, as the last caller left it: the caller hands the
     /// permission back with [`Tcaches::put_back`] when the reference ends.
-    /// That the registry holds it at the load is [`axiom_entry_heap`]'s
-    /// premise.
+    /// The entry joins the registry's lent-out set (`lent`, [`TableVal`])
+    /// until then, and `u` lends one reference at a time: `get` requires
+    /// that `u` records no lent heap. That the entry is not lent out at
+    /// the load is [`axiom_entry_heap`]'s premise; that the registry then
+    /// holds its permission is the table's invariant ([`entry_ok`]).
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub fn get<'a>(&'a self, id: u16, Tracked(u): Tracked<&'a mut HeapUse>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: Option<&'a mut Heap>)
         requires
             old(loan).heap() is None,
+            // One reference per token at a time: a `get` with a token
+            // whose last `get` has not been handed back is rejected.
+            old(u).lent() is None,
         ensures
             r matches Some(h) ==> h.wf(),
             r matches Some(h) ==> !h.spec_rehome(),
@@ -1020,6 +1037,7 @@ impl Tcaches {
                     axiom_entry_heap(self.inv@.constant(), &v, i as int);
                     let ghost v0 = v;
                     let tracked hp = v.heaps.tracked_remove(i as int);
+                    v.lent = v.lent.insert(i as int);
                     lent = Some((p, hp.value()));
                     loan.put(hp);
                     assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
@@ -1067,22 +1085,27 @@ impl Tcaches {
     /// entry still holds the cache `u` read, at the generation read, and
     /// holds no permission for it; otherwise (a `tcache.destroy` and a
     /// `tcache.create` of the id in between, the caller's bug) the
-    /// permission is dropped. No code: the body is ghost.
+    /// permission is dropped. Either way `u` no longer records a lent
+    /// heap, so it may `get` again. No code: the body is ghost.
     #[inline(always)]
     // The index (`i`) is read by the ghost code only.
     #[allow(unused_variables)]
-    pub fn put_back(&self, id: u16, Tracked(u): Tracked<&HeapUse>, Tracked(loan): Tracked<&mut HeapLoan>)
+    pub fn put_back(&self, id: u16, Tracked(u): Tracked<&mut HeapUse>, Tracked(loan): Tracked<&mut HeapLoan>)
         requires
             (id as usize) < MAX_TCACHES,
-            u.read() matches Some(s) && s.index == id as int && s.atomic == self.spec_entry(id as int),
-            u.lent() matches Some((p, l)) && (old(loan).heap() matches Some(hp) && hp.addr() == p@.addr
+            old(u).read() matches Some(s) && s.index == id as int && s.atomic == self.spec_entry(id as int),
+            old(u).lent() matches Some((p, l)) && (old(loan).heap() matches Some(hp) && hp.addr() == p@.addr
                 && hp.value().keeps(l)),
         ensures
             final(loan).heap() is None,
+            final(u).lent() is None,
+            final(u).read() == old(u).read(),
+            final(u).watch() == old(u).watch(),
+            final(u).watch_loc() == old(u).watch_loc(),
     {
         proof {
             use_type_invariant(&*self);
-            use_type_invariant(u);
+            use_type_invariant(&*u);
         }
         let i = id as usize;
         vstd::open_atomic_invariant!(self.inv.borrow() => v => {
@@ -1096,6 +1119,7 @@ impl Tcaches {
                     Heap::lemma_keeps_home(l, hp.value());
                     Heap::lemma_home_kept_at(l, hp.value(), p as *mut Heap);
                     v.heaps.tracked_insert(i as int, hp);
+                    v.lent = v.lent.remove(i as int);
                     assert forall|j: int| 0 <= j < MAX_TCACHES implies #[trigger] entry_ok(self.inv@.constant(), v, j) by {
                         assert(entry_ok(self.inv@.constant(), v0, j));
                     }
@@ -1108,6 +1132,10 @@ impl Tcaches {
                 }
             }
         });
+        proof {
+            // The loan has ended: `u` may `get` again.
+            u.lent = None;
+        }
     }
 
     /// `tcache.flush`: return every cached slot of `id` to its slabs.
@@ -1135,7 +1163,7 @@ impl Tcaches {
                 proof {
                     assert(h.drained());
                 }
-                self.put_back(id, Tracked(&u), Tracked(&mut loan));
+                self.put_back(id, Tracked(&mut u), Tracked(&mut loan));
                 true
             }
             None => false,
@@ -1228,7 +1256,8 @@ impl Tcaches {
             proof {
                 assert(entry_ok(self.inv@.constant(), v, i as int));
                 if v.entries[i as int].value()@.addr != 0 {
-                    // Premise: the registry holds the heap's permission.
+                    // Premise: the entry is not lent out; so the registry
+                    // holds the heap's permission (`entry_ok`).
                     axiom_entry_heap(self.inv@.constant(), &v, i as int);
                 }
             }
@@ -1347,6 +1376,7 @@ impl Tcaches {
             shared.wf(),
             old(ord).allows(rank_tcaches()),
             (id as usize) < MAX_TCACHES,
+            old(u).lent() is None,
         ensures
             r ==> final(u).read()->Some_0.generation > final(u).read()->Some_0.floor->Some_0,
     {
@@ -1361,7 +1391,7 @@ impl Tcaches {
                 proof {
                     Heap::lemma_keeps_refl(*h);
                 }
-                self.put_back(id, Tracked(&*u), Tracked(&mut loan));
+                self.put_back(id, Tracked(&mut *u), Tracked(&mut loan));
                 true
             },
             None => false,
@@ -1447,6 +1477,19 @@ mod tests {
                 ("heap/tcaches.rs:", "pub fn get<", 1),
                 ("heap/tcaches.rs:", "pub fn destroy(", 1),
             ],
+        );
+    }
+
+    /// An entry joins the table's lent-out set (`TableVal::lent`) only in
+    /// `Tcaches::get`, where it lends the entry's permission out: a
+    /// `create` that put the entry in `lent` instead of registering the
+    /// permission would verify, and give `axiom_entry_heap` a false
+    /// premise at the next `get`.
+    #[test]
+    fn only_get_lends() {
+        crate::testutil::assert_only_at(
+            concat!("lent.", "insert("),
+            &[("heap/tcaches.rs:", "pub fn get<", 1)],
         );
     }
 

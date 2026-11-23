@@ -17,7 +17,7 @@ file.
 
 ## `T_TABLE`
 
-src/heap/tcaches.rs:240. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:249. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 Hashes: contract 2097268554, body none.
@@ -28,7 +28,7 @@ const T_TABLE: usize = core::mem::offset_of!(Tcaches, table);
 
 ## `T_LOCK`
 
-src/heap/tcaches.rs:242. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:251. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 Hashes: contract 2489631139, body none.
@@ -39,7 +39,7 @@ const T_LOCK: usize = core::mem::offset_of!(Tcaches, lock);
 
 ## `T_INV`
 
-src/heap/tcaches.rs:244. Kind: external_body const. Category: core library.
+src/heap/tcaches.rs:253. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 Hashes: contract 1448314863, body none.
@@ -50,7 +50,7 @@ const T_INV: usize = core::mem::offset_of!(Tcaches, inv);
 
 ## `axiom_tcaches_layout`
 
-src/heap/tcaches.rs:251. Kind: axiom. Category: core library.
+src/heap/tcaches.rs:260. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap/tcaches.rs).
 
 > `Tcaches`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `inv`) by the size, and a table entry not empty.
@@ -75,7 +75,7 @@ axiom fn axiom_tcaches_layout()
 
 ## `axiom_tcaches_assemble`
 
-src/heap/tcaches.rs:391. Kind: axiom. Category: raw pointer (internal).
+src/heap/tcaches.rs:400. Kind: axiom. Category: raw pointer (internal).
 Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_assemble::init_writes_every_field; not checked: the join itself, that the field permissions and `pad` may be exchanged for one `PointsTo<Tcaches>` at `p`, with its provenance, a premise of Verus's own model that no tool checks; the ghost identities the `ensures` carries over, each table entry's atomic identity (`vspec::entry::entry_id`, which the `inv`'s key records) and the lock's cell identity, which Kani does not observe; and the ghost fields (`inv`, the lock's rank and initial value), which have no bytes).
 
 > The written fields of the `Tcaches` at `p` (`Tcaches::split`'s parts and table entries, every one initialised), as the `Tcaches`: the value of each field is what its permission holds.
@@ -112,7 +112,7 @@ axiom fn axiom_tcaches_assemble(
 
 ## `axiom_heap_use`
 
-src/heap/tcaches.rs:744. Kind: axiom. Category: C-program contract.
+src/heap/tcaches.rs:754. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the C caller's contract): the calling thread uses the explicit cache it is about to reach through [`Tcaches::get`] with no other reference to it live, here or on another thread: an explicit cache is used by one thread at a time and not after `tcache.destroy` (the contract of [`Tcaches::get`]), and a destroyed cache is unreachable through the table.
@@ -130,12 +130,12 @@ pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
 
 ## `axiom_entry_heap`
 
-src/heap/tcaches.rs:774. Kind: axiom. Category: C-program contract.
+src/heap/tcaches.rs:783. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
-> Premise (the C caller's contract, [`axiom_heap_use`]'s): when [`Tcaches::get`] loads a non-null entry `i`, or [`Tcaches::destroy`] is about to swap one out, the table's registry ([`TableVal`]) holds the permission to its heap.
+> Premise (the C caller's contract, [`axiom_heap_use`]'s): when [`Tcaches::get`] loads a non-null entry `i`, or [`Tcaches::destroy`] is about to swap one out, entry `i` is not lent out (`lent` in [`TableVal`]).
 
-Hashes: contract 2125828168, body none.
+Hashes: contract 2428459710, body none.
 
 ```rust
 axiom fn axiom_entry_heap(k: TableKey, tracked v: &TableVal, i: int)
@@ -144,6 +144,6 @@ axiom fn axiom_entry_heap(k: TableKey, tracked v: &TableVal, i: int)
         entry_ok(k, *v, i),
         v.entries[i].value()@.addr != 0,
     ensures
-        v.heaps.contains_key(i),
+        !v.lent.contains(i),
 ;
 ```

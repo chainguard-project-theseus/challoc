@@ -421,7 +421,7 @@ pub fn alloc(
                         proof {
                             super::Heap::lemma_keeps_refl(*h);
                         }
-                        shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+                        shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
                         return (ptr::null_mut(), false, Tracked(Zeroed::empty(0)));
                     }
                     let (p, zero) = h.alloc_in(shared, a, class, Tracked(blk), errno, Tracked(&mut tls.cell), Tracked(ord));
@@ -431,7 +431,7 @@ pub fn alloc(
                     proof {
                         super::Heap::lemma_keeps_trans(old_h, h1, *h);
                     }
-                    shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+                    shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
                     (p, zero, z)
                 },
                 None => {
@@ -442,7 +442,7 @@ pub fn alloc(
                     proof {
                         super::Heap::lemma_keeps_trans(old_h, h1, *h);
                     }
-                    shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+                    shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
                     (p, zero, z)
                 },
             }
@@ -566,7 +566,7 @@ pub fn alloc_huge(
                 proof {
                     super::Heap::lemma_keeps_refl(*h);
                 }
-                shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+                shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
                 a
             },
             None => invalid_tcache(t),
@@ -616,7 +616,7 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(blk): Tracked<s
                 // tick (`purge::on_tick`).
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
                 h.free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
-                shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+                shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
             },
             None => invalid_tcache(t),
         },

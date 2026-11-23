@@ -891,7 +891,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int, Tracked(blk): Tracked<
                 shared.push_flags(),
                 Tracked(&mut blk),
             );
-            shared.tcaches.put_back(t, Tracked(&u), Tracked(&mut loan));
+            shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
             if freed {
                 return;
             }
