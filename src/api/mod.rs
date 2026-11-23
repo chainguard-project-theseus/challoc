@@ -144,7 +144,7 @@ use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
 
 verus! {
 
-/// The crate version as a NUL-terminated static string (`"0.1.0"`; the
+/// The crate version as a NUL-terminated static string (`"0.2.0"`; the
 /// soname's major, design 13.6, follows its major); with `challoc_features`
 /// and the size-returning entry points of design 13.7 (`libc.rs`) the whole
 /// challoc-specific surface, declared in `<challoc/challoc.h>`. A program

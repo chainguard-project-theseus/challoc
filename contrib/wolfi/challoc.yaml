@@ -38,7 +38,7 @@
 #     --signing-key melange.rsa --out-dir packages
 package:
   name: challoc
-  version: "0.1.0"
+  version: "0.2.0"
   epoch: 0
   description: A memory-safe, jemalloc-compatible malloc replacement for Wolfi and Chainguard OS
   copyright:
@@ -79,10 +79,10 @@ pipeline:
     if: ${{options.local-source.enabled}} == 'false'
     with:
       repository: https://github.com/chainguard-project-theseus/challoc
-      tag: v${{package.version}}
-      # The repository has no release tag yet (2026-09-20): this is the
-      # main commit the definition was written against. The Wolfi PR that
-      # carries this file sets the tag and its commit.
+      # Release tags carry no `v` (`0.1.0`). This commit is an old main
+      # commit, not a release's: the downstream package build sets each
+      # tag's commit.
+      tag: ${{package.version}}
       expected-commit: 4a7d30caedf898f23f100210d0e2770d59901fee
 
   - name: Check the tree matches the package version

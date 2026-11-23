@@ -63,7 +63,7 @@ package:
 vars:
   # The challoc release built into /usr/lib/valkey (contrib/wolfi/challoc.yaml
   # carries the same version for the system packages; keep them together).
-  challoc-version: "0.1.0"
+  challoc-version: "0.2.0"
   rust-version: "1.98"
   # What valkey-server --version and INFO memory's mem_allocator report:
   # "jemalloc-" JEMALLOC_VERSION_{MAJOR,MINOR,BUGFIX} "-challoc" from
@@ -103,9 +103,10 @@ pipeline:
     if: ${{options.local-challoc.enabled}} == 'false'
     with:
       repository: https://github.com/chainguard-project-theseus/challoc
-      tag: v${{vars.challoc-version}}
-      # No release tag yet (2026-09-20): the main commit this definition
-      # was written against. The Wolfi PR sets the tag and its commit.
+      # Release tags carry no `v` (`0.1.0`). This commit is an old main
+      # commit, not a release's: the downstream package build sets each
+      # tag's commit.
+      tag: ${{vars.challoc-version}}
       expected-commit: 5a1e715bca2f11402b998a18664016a47fa5a938
       destination: challoc
 

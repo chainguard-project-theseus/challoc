@@ -467,7 +467,7 @@ XML shape), Fiddle or `ctypes` in an interpreter, or an `atexit` hook
 preloaded into the process. The banner is jemalloc's (`___ Begin
 jemalloc statistics ___`; consumers key on it); `Version:
 "5.3.0-0-gchalloc"` says which library wrote it. `challoc_version()`
-(`0.1.0`) is the `dlsym` probe for "is challoc loaded";
+(`0.2.0`) is the `dlsym` probe for "is challoc loaded";
 `challoc_features()` returns the feature line alone.
 
 The lines an operator reads first, in the order they appear:

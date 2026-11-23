@@ -21,7 +21,7 @@
 extern "C" {
 #endif
 
-/* The crate version ("0.1.0"), a NUL-terminated static string; the dlsym
+/* The crate version ("0.2.0"), a NUL-terminated static string; the dlsym
  * probe for whether challoc is the loaded allocator (design 13.6). */
 const char *challoc_version(void);
 
