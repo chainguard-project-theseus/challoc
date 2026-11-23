@@ -1198,6 +1198,16 @@ impl Claim {
         &&& self.held is None ==> l.block(self.call->0.block()->0)
     }
 
+    /// [`Claim::took`] of `l`, a run's token of `n` pages: what a huge
+    /// free took, held or pending, with the page count it subtracts.
+    /// Opaque for the same reason; its callers reveal it.
+    #[verifier::opaque]
+    pub open spec fn took_run(self, l: Live, n: int) -> bool {
+        &&& self.took(l)
+        &&& l.run_opt() is Some
+        &&& l.run_opt()->0.npages() == n
+    }
+
     /// The token is held, and it is the live block `p`'s ([`Live::block`]).
     pub open spec fn held_block(self, p: *mut u8) -> bool {
         self.held matches Some(l) && l.block(p)

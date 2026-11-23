@@ -4981,16 +4981,16 @@ needed, since they change under the huge lock with the authorities.
 `Shared::alloc_huge` asserts that the pages it adds to the `large` word
 are the token's (`heap/shared.rs`). On the free side the token is a
 `heap::Claim` (#835): `free_run` ensures `r.pages` is the token's page
-count for a held claim, and for a pending one (`free`, `delete`) its own
-proof shows the token it claims past its checks has the descriptor's
-pages (`n == tok.npages()` after `claim_run`), which it returns;
-`Shared::free_huge` subtracts `r.pages`. Its `ensures` states no page
-count for a pending claim: the claimed token it hands back in its ghost
-argument `freed`
+count for a held claim and for a pending one (`free`, `delete`), whose
+token it claims past its checks: its proof shows that token has the
+descriptor's pages (`n == tok.npages()` after `claim_run`), and the
+token it hands back in its ghost argument `freed`
 ([#895](https://github.com/chainguard-project-theseus/challoc/issues/895))
-is stated only as the live block the call names. Stating the count too
-is open
-([#900](https://github.com/chainguard-project-theseus/challoc/issues/900)).
+is stated as a run's token of `r.pages` pages either way
+(`Claim::took_run`,
+[#900](https://github.com/chainguard-project-theseus/challoc/issues/900)).
+`Shared::free_huge` subtracts `r.pages` and asserts it is that token's
+count.
 
 **What the figures count.**
 - `allocated` (`curregs * size`): slots out of the bitmaps, which at a
@@ -10437,8 +10437,10 @@ returns the token as it was before a `zero_on_free` clear
 permission's provenance. `Huge::free_run` hands it back in a ghost
 argument, not a second result (a tuple with a zero-sized field as its
 return type changed the code of its callers), stated as one opaque
-fact, `claim.took(final(freed)@)` (`heap::Claim::took`, which its
-callers reveal), written in `claim_run`, to keep its rlimit headroom.
+fact, `claim.took_run(final(freed)@, r.pages)` (`heap::Claim::took_run`:
+`Claim::took` of a run's token of `r.pages` pages; its callers reveal
+both), written in `claim_run` and `lemma_took_run`, to keep its rlimit
+headroom.
 A ghost result is a copy of the token's value, not the token: read
 alone, `r@.block(p)` is met by any well-formed `Live` value at `p`, so
 for a pending claim it tells a caller little beyond `free_target(p)`
@@ -10506,6 +10508,9 @@ paragraph, unnumbered there; H, R and F in the paragraphs after the
 | R6 | `old_size_or_keep` settles with another slab's real `check_live` record | `Claim::settle` precondition (`bit_seen_at`'s bounds) |
 | F1, F2 | `free_usable_slow` or `free_fast_slot` returns an arbitrary token for the claimed one | their postconditions |
 | P1 | `claim_run` leaves its ghost argument `freed` (`free_run`'s) unset | its postcondition (`claim.took`) |
+| N1 | `free_run` drops its `lemma_took_run` call | its postcondition (`claim.took_run`) |
+| N2 | `claim_run` drops `final(freed)@.run_opt() == Some(tok)` | `lemma_took_run` precondition |
+| N3 | `Claim::took_run` drops its page-count conjunct | `Shared::free_huge`'s assert of the subtracted count |
 | P2 | `Heap::free_huge` returns `Shared::free_huge`'s token after a `zero_on_free` clear, not the one from before it | its postconditions (held and pending) |
 | P3 | `free_block`'s fast path returns an arbitrary token for the pushed one | its postcondition (`r@.block(p)`) |
 | P4 | `Shared::zero_huge` returns the token after the clear (the cast's provenance) | its postconditions (held and pending) |

@@ -3585,11 +3585,14 @@ impl Shared {
         let ghost c0 = claim;
         let run = self.huge.free_run(&self.meta, page, Tracked(claim), Tracked(&mut claimed), Tracked(ord));
         proof {
+            reveal(Claim::took_run);
             reveal(Claim::took);
             assert(c0.took(claimed@));
+            assert(claimed@.run_opt()->0.npages() == run.pages);
         }
         // Exact stats: the pages `note_huge_free` subtracts are the run's
-        // descriptor's (a held token's, `Huge::free_run`).
+        // descriptor's, the claimed token's (held or pending,
+        // `Huge::free_run`).
         self.owner(run.arena).0.note_huge_free(run.pages);
         (run.usable, Ghost(claimed@))
     }

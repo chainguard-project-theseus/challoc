@@ -1259,7 +1259,8 @@ pub(super) proof fn lemma_live_keyed(g: Inner, page: usize)
 /// value, which holds the run's extent `(page, n)`, and take the run
 /// token out of the claimed block (its permission is dropped). Out of
 /// `free_run`'s body, which keeps its rlimit. `freed` gets the claimed
-/// block, as it was before its run token was taken out ([`Claim::took`]):
+/// block, as it was before its run token (the result) was taken out
+/// ([`Claim::took`]):
 /// the held token, or for a pending claim the token of the block the
 /// call names.
 proof fn claim_run(tracked claim: Claim, tracked runs: &GhostSetAuth<(int, int)>, page: int, n: int, tracked freed: &mut Ghost<Live>) -> (tracked tok: RunToken)
@@ -1273,12 +1274,27 @@ proof fn claim_run(tracked claim: Claim, tracked runs: &GhostSetAuth<(int, int)>
         tok.start() == page,
         claim.held matches Some(l) ==> l.run_opt() == Some(tok),
         claim.took(final(freed)@),
+        final(freed)@.run_opt() == Some(tok),
 {
     let tracked mut claim = claim;
     claim.settle_run(page, runs);
     *freed = Ghost(claim.held->0);
     reveal(Claim::took);
     claim.held.tracked_unwrap().release_run()
+}
+
+/// [`Claim::took_run`] of the block `claim_run` handed back, whose run
+/// token `t` has the descriptor's `n` pages. Out of `free_run`'s body,
+/// which carries the result as one opaque fact.
+proof fn lemma_took_run(claim: Claim, l: Live, t: RunToken, n: int)
+    requires
+        claim.took(l),
+        l.run_opt() == Some(t),
+        t.npages() == n,
+    ensures
+        claim.took_run(l, n),
+{
+    reveal(Claim::took_run);
 }
 
 impl Huge {
@@ -1377,7 +1393,8 @@ impl Huge {
     /// (`VULN-CLASSES.md` E). The permission to the run's bytes is dropped
     /// with the claim, before the run's pages leave the lock. `freed`
     /// (ghost) gets the claimed token as it was before the free: the held
-    /// one, or for a pending claim the block the call names. It is a ghost
+    /// one, or for a pending claim the block the call names, a run's token
+    /// of `r.pages` pages either way ([`Claim::took_run`]). It is a ghost
     /// argument, not a second result, so the build's return type stays
     /// `RunInfo` (a tuple with a zero-sized second field changed the
     /// callers' code).
@@ -1420,7 +1437,7 @@ impl Huge {
             *final(ord) == *old(ord),
             r.pages <= u32::MAX,
             claim.held matches Some(l) ==> r.pages == l.run_opt()->0.npages(),
-            claim.took(final(freed)@),
+            claim.took_run(final(freed)@, r.pages as int),
     {
         hide(Inner::wf);
         hide(Seq::no_duplicates);
@@ -1483,6 +1500,7 @@ impl Huge {
         proof {
             self.lemma_run_ids(g0);
         }
+        let ghost c0 = claim;
         let tracked tok = claim_run(claim, _gm.runs.borrow(), page as int, n as int, freed);
         let ghost tpages = tok.pages@;
         proof {
@@ -1491,6 +1509,7 @@ impl Huge {
             tok.ext.agree(_gm.runs.borrow());
             lemma_token_extent(g0, d, tok.start(), tok.npages());
             assert(n == tok.npages());
+            lemma_took_run(c0, freed@, tok, n as int);
             let tracked RunToken { ext, pages } = tok;
             _gm.runs.borrow_mut().delete_singleton(ext);
             _gm.pgs.borrow_mut().delete(pages);
