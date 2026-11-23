@@ -405,10 +405,20 @@ THEOREMS.md "Bad input" *(lock)*). In part for a stale slot: a check
 ordered after the slot's release that passes saw a later claim of it
 (`lemma_claimed_again`,
 [#850](https://github.com/chainguard-project-theseus/challoc/issues/850)).
-Open: that the second free's check is ordered after the release, which
-the program carries no record of
+The C contract is no longer used before the check
+([#835](https://github.com/chainguard-project-theseus/challoc/issues/835)):
+the plain frees, `challoc_free_usable`, `dallocx` and the reallocations
+take C's token (`axiom_c_claim`) only past the bit test of a slot or
+the huge lock's checks of a run, with the check's record
+(`Claim::settle`, `Claim::settle_run`; THEOREMS.md "Frees claim C's
+token only past their check"), so a free of a slot no refill ever
+claimed, or of a page where no live run starts, aborts in a consistent
+proof context. Open: that the second free's check is ordered after the
+release, which the program carries no record of
 ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843));
-and C's view of a stale pointer past the checks.
+C's view of a stale pointer past the checks; the sized frees, which
+still claim first; and the queries (`malloc_usable_size`, `sallocx`,
+`xallocx`), which take no token.
 
 **[#735](https://github.com/chainguard-project-theseus/challoc/issues/735): integer overflow in pvalloc's page rounding (CVE-2013-4332, CVE-2021-3420)**
 
