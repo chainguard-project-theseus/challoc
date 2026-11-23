@@ -833,6 +833,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
                 &s.meta,
                 page_of(r.ptr),
                 Tracked::assume_new(),
+                Tracked::assume_new(),
                 Tracked::assume_new()
             )
             .pages,

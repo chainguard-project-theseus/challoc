@@ -6,10 +6,10 @@
 //! ([`Tcache::None`], straight against the slab bitmaps).
 
 use core::ptr;
-use vstd::prelude::Tracked;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked};
 
 use super::Shared;
 use crate::lock::LockOrder;
@@ -591,8 +591,10 @@ pub fn alloc_huge(
 /// thread. Aborts unless `p` is a live allocation. `claim` is the
 /// caller's token for `p` ([`Claim::claims`](super::Claim::claims)), held
 /// or still the call's (`dallocx`), which the free paths claim only past
-/// their checks.
-pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(claim): Tracked<super::Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
+/// their checks. The result is the token the check claimed (the held one,
+/// if the claim came in held), as it was before the free: the live block
+/// `p`'s.
+pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(claim): Tracked<super::Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Ghost<super::Live>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -604,6 +606,8 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(claim): Tracked
         final(errno).val() == old(errno).val(),
         crate::heap::free_target(p),
         claim.held matches Some(l) ==> l.block(p),
+        r@.block(p),
+        claim.held matches Some(l) ==> r@ == l,
         !bad_tcache(tcache),
 {
     // Premise (`axiom_heap_use`): the caller uses the explicit cache
@@ -617,8 +621,9 @@ pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache, Tracked(claim): Tracked
                 // The calling thread's slot cell, for the explicit cache's
                 // tick (`purge::on_tick`).
                 let tracked tls = crate::sys::tls::TlsSlot::entry();
-                h.free(shared, p, Tracked(claim), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
+                let freed = h.free(shared, p, Tracked(claim), Tracked(errno), Tracked(&mut tls.cell), Tracked(ord));
                 shared.tcaches.put_back(t, Tracked(&mut u), Tracked(&mut loan));
+                freed
             },
             None => invalid_tcache(t),
         },

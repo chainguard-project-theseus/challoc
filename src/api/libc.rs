@@ -692,16 +692,20 @@ pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut
         p@.addr != 0 ==> heap::free_target(p),
         *final(ord) == *old(ord),
 {
-    free_block(p, Tracked(Claim::pending(c)), Tracked(errno), Tracked(ord))
+    free_block(p, Tracked(Claim::pending(c)), Tracked(errno), Tracked(ord));
 }
 
 /// [`free`] with the caller's token for `p` ([`Claim::claims`]), held or
 /// still the call's, which the free takes back, claiming it only past the
-/// check of a slot. `theorem_no_syscall_on_fast_paths` restates its fast
-/// path (path 2); `api::restated::fast_path_restatements_match_their_bodies`
-/// checks that the two make the same calls.
+/// check of a slot or huge run. For a non-null `p`, the result is the
+/// token the free took, as it was before the free: the live block `p`'s
+/// (C's token, claimed past the check, for a pending claim). A held token
+/// is also the token of the live block `p`.
+/// `theorem_no_syscall_on_fast_paths` restates its fast path (path 2);
+/// `api::restated::fast_path_restatements_match_their_bodies` checks that
+/// the two make the same calls.
 #[inline(always)]
-pub fn free_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+pub fn free_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Ghost<Live>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -711,6 +715,7 @@ pub fn free_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tr
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> (claim.held matches Some(l) ==> l.block(p)),
+        p@.addr != 0 ==> r@.block(p),
         *final(ord) == *old(ord),
 {
     let tracked mut blk = claim;
@@ -727,8 +732,9 @@ pub fn free_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tr
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: the slot value of this thread.
-        if unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) }.0.is_some() {
-            return;
+        let (class, freed) = unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) };
+        if class.is_some() {
+            return freed;
         }
     }
     free_slow(p, Tracked(blk), Tracked(errno), Tracked(ord))
@@ -1021,7 +1027,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
-            heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(ord))
+            heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(ord));
         }
         None => free_before_init(p),
     }
@@ -1119,10 +1125,12 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tra
 /// Everything `free` does off its fast path: heap creation, a full cache,
 /// huge runs, and the aborts for invalid pointers (the checks are repeated
 /// from scratch here, so a fast-path `false` for a bad pointer ends in the
-/// same message it always did).
+/// same message it always did). For a non-null `p`, the result is the
+/// token the check claimed (the held one, if the claim came in held), as
+/// it was before the free ([`heap::free`]'s).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8, Tracked(blk): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+fn free_slow(p: *mut u8, Tracked(blk): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Ghost<Live>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
@@ -1132,10 +1140,13 @@ fn free_slow(p: *mut u8, Tracked(blk): Tracked<Claim>, Tracked(errno): Tracked<&
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> (blk.held matches Some(l) ==> l.block(p)),
+        p@.addr != 0 ==> r@.block(p),
+        p@.addr != 0 ==> (blk.held matches Some(l) ==> r@ == l),
         *final(ord) == *old(ord),
 {
     if p.is_null() {
-        return;
+        // No block, so no token: any value.
+        return Ghost(vstd::pervasive::arbitrary());
     }
     match super::shared_if_ready() {
         Some(shared) => heap::free(shared, p, Tracked(blk), Tracked(errno), Tracked(ord)),
@@ -1856,6 +1867,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tr
         p@.addr != 0 ==> heap::free_target(p),
         final(out).gives(r.0, size as int),
         p@.addr != 0 && size == 0 ==> (claim.held matches Some(blk) ==> blk.block(p)),
+        p@.addr != 0 && size == 0 ==> r.1@.block(p),
         p@.addr != 0 && size != 0 ==> {
             let blk = r.1@;
             &&& claim.held matches Some(b) ==> blk == b
@@ -1872,8 +1884,8 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tr
         return (malloc_block(size, Tracked(out), Tracked(errno), Tracked(ord)), Ghost(vstd::pervasive::arbitrary()));
     }
     if size == 0 {
-        free_block(p, Tracked(claim), Tracked(&mut *errno),Tracked(ord));
-        return (ptr::null_mut(), Ghost(vstd::pervasive::arbitrary()));
+        let freed = free_block(p, Tracked(claim), Tracked(&mut *errno),Tracked(ord));
+        return (ptr::null_mut(), freed);
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     proof {
@@ -2625,6 +2637,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
         final(out).gives(r.0, size as int),
         p@.addr != 0 && size == 0 ==> (claim.held matches Some(blk) ==> blk.block(p)),
+        p@.addr != 0 && size == 0 ==> r.2@.block(p),
         p@.addr != 0 && size != 0 ==> {
             let blk = r.2@;
             &&& claim.held matches Some(b) ==> blk == b
@@ -2643,9 +2656,9 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         return (q, s, Ghost(vstd::pervasive::arbitrary()));
     }
     if size == 0 {
-        free_block(p, Tracked(claim), Tracked(&mut *errno),Tracked(&mut *ord));
+        let freed = free_block(p, Tracked(claim), Tracked(&mut *errno),Tracked(&mut *ord));
         let s = store_usable(usable, 0, Tracked(uout));
-        return (ptr::null_mut(), s, Ghost(vstd::pervasive::arbitrary()));
+        return (ptr::null_mut(), s, freed);
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     let tracked mut claim = claim;

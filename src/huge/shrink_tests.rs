@@ -46,6 +46,7 @@ fn shrink(env: &Env, h: &Huge, p: *mut u8, size: usize) -> Option<(u16, usize)> 
         tail,
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     h.audit();
     Some((arena, k))

@@ -1016,14 +1016,16 @@ class, `Shared::free_huge` a page index from
   `free_sized_block`, `free_usable_block`, `realloc_block`,
   `jemalloc::dallocx_block`, `sdallocx_block`, `rallocx_zeroed`,
   `heap::free`, `Heap::free`). The plain frees' cores (`libc::free_block`,
-  `heap::free`, `Heap::free`, `free_direct`) take a `heap::Claim` and
-  state this only for a token the caller already holds (`claim.held
-  matches Some(l) ==> l.block(p)`): for `free` and `delete`, whose claim
-  is still C's, they state no liveness, because the token is claimed only
-  past the bit test or the huge lock's checks (`Claim::settle`,
-  `Claim::settle_run`,
+  `heap::free`, `Heap::free`, `free_direct`) take a `heap::Claim`, which
+  for `free` and `delete` is still C's: it is claimed only past the bit
+  test or the huge lock's checks (`Claim::settle`, `Claim::settle_run`,
   [#835](https://github.com/chainguard-project-theseus/challoc/issues/835))
-  and then given to the cache or bitmap. For a slot or huge page start that is not
+  and then given to the cache or bitmap. They return the claimed token
+  as a ghost result, as it was before the free, and state the fact of it
+  (`r@.block(p)`,
+  [#895](https://github.com/chainguard-project-theseus/challoc/issues/895)),
+  so it holds on C's route too; for a held token they also state
+  `l.block(p)`. For a slot or huge page start that is not
   live, C has no token, and the boundary's `axiom_c_claim` (the `free`
   contract, common premises) makes the context inconsistent instead of
   proving the abort.
@@ -3812,11 +3814,10 @@ holds the slot tokens of exactly the clear bits, so a clear bit means
 the slot is back in its bitmap, but that fact holds only inside the
 atomic invariant at the instant of the load, and the free cores'
 `ensures` of a live block (`blk.block(p)`) come from the token, not
-from the test: the sized cores state it of the up-front token, the
-realloc cores and `free_usable_block` of the claimed token they return
-as a ghost result, and the plain free cores only of a token the caller
-holds (for C's pending claim they state `free_target(p)` alone). Those
-B cells stay `p`.
+from the test: the sized cores state it of the up-front token, and the
+realloc cores, `free_usable_block` and the plain free cores of the
+claimed token they return as a ghost result (for C's pending claim, the
+token `axiom_c_claim` gave past the check). Those B cells stay `p`.
 
 *(lock)*: the huge free's checks are proved, with or without a token
 (`huge/free.rs`). `Huge::free_run` runs them in `Huge::live_run_lookup`
@@ -4984,8 +4985,12 @@ count for a held claim, and for a pending one (`free`, `delete`) its own
 proof shows the token it claims past its checks has the descriptor's
 pages (`n == tok.npages()` after `claim_run`), which it returns;
 `Shared::free_huge` subtracts `r.pages`. Its `ensures` states no page
-count for a pending claim, because the token it would name is made
-inside the call.
+count for a pending claim: the claimed token it hands back in its ghost
+argument `freed`
+([#895](https://github.com/chainguard-project-theseus/challoc/issues/895))
+is stated only as the live block the call names. Stating the count too
+is open
+([#900](https://github.com/chainguard-project-theseus/challoc/issues/900)).
 
 **What the figures count.**
 - `allocated` (`curregs * size`): slots out of the bitmaps, which at a
@@ -10408,19 +10413,41 @@ starts at `page` (*(lock)*). Where each entry point settles:
 | `realloc`, `rallocx` (`old_size_or_keep`) | past `check_live` and `Shared::check_not_cached`; `realloc(p, 0)` as `free` | `Huge::usable_size`, for the old size |
 | `challoc_realloc_usable` (`realloc_old`) | as `realloc` | as `realloc` |
 
-What the cores state of the claimed token differs. The realloc cores
-(`realloc_block`, `realloc_usable_stored`, `rallocx_zeroed`) and
-`free_usable_block` return it as a ghost result and state their token
-results against it, so they keep, for a pending claim, the facts they
-stated of an up-front token (interface contract, rows 3, 4, 14, 15 and
-17). The plain free cores (`free_block`, `free_slow`, `dallocx_block`,
-`heap::free`, `Heap::free`, `free_direct`) and `realloc_block`'s
-size-0 arm state the live-block fact `l.block(p)` only under
-`claim.held matches Some(l)`: on C's route the claim is pending, so for
-a returning `free(p)`, `dallocx(p)` or `realloc(p, 0)` they state only
-`free_target(p)` (rows 10 and 20, whose B cells are `p` either way).
-The sized cores, which claim first, still state `blk.block(p)` of the
-up-front token (`free_sized_block`).
+Every core returns the claimed token as a ghost result, as it was
+before the free, and states its facts against it, so for a pending
+claim it keeps the facts it stated of an up-front token. The realloc
+cores (`realloc_block`, `realloc_usable_stored`, `rallocx_zeroed`) and
+`free_usable_block` state their token results against it (interface
+contract, rows 3, 4, 14, 15 and 17). The plain free cores
+(`free_block`, `free_slow`, `dallocx_block`, `mallocx::free`,
+`heap::free`, `Heap::free`, `free_direct`) and the size-0 arms of
+`realloc_block` and `realloc_usable_stored` state the live-block fact
+`r@.block(p)` of it: on C's route too, a returning `free(p)`,
+`dallocx(p)` or `realloc(p, 0)` states that the token its check
+claimed was the live block `p`'s
+([#895](https://github.com/chainguard-project-theseus/challoc/issues/895);
+rows 10 and 20, whose B cells are `p` either way, because the fact rests
+on *(C)* past the check, and because a ghost copy, read alone, says
+little more than `free_target(p)`; below). For a held claim `l`, the cores but
+`free_block` and the size-0 arms also state that the result is `l`;
+`free_block` states `l.block(p)`, since its fast path may hand the slow
+path a token of the same length in place of `l`. The huge route
+returns the token as it was before a `zero_on_free` clear
+(`Shared::zero_huge`'s ghost result), whose cast changes the
+permission's provenance. `Huge::free_run` hands it back in a ghost
+argument, not a second result (a tuple with a zero-sized field as its
+return type changed the code of its callers), stated as one opaque
+fact, `claim.took(final(freed)@)` (`heap::Claim::took`, which its
+callers reveal), written in `claim_run`, to keep its rlimit headroom.
+A ghost result is a copy of the token's value, not the token: read
+alone, `r@.block(p)` is met by any well-formed `Live` value at `p`, so
+for a pending claim it tells a caller little beyond `free_target(p)`
+(a slot or huge page start of the right shape). What it adds is that
+the proof's claimed token is the one stated, which the mutants below
+check, and that the cores state the same fact on both routes. The
+sized cores, which
+claim first, still state `blk.block(p)` of the up-front token
+(`free_sized_block`).
 
 **Covers.** The entry points in the table, and the verification-only
 `api::libc::theorem_no_syscall_on_fast_paths` and
@@ -10478,6 +10505,12 @@ paragraph, unnumbered there; H, R and F in the paragraphs after the
 | R1, R7 | `old_size_or_keep` or `realloc_old` settles before its bit test | `Claim::settle` precondition |
 | R6 | `old_size_or_keep` settles with another slab's real `check_live` record | `Claim::settle` precondition (`bit_seen_at`'s bounds) |
 | F1, F2 | `free_usable_slow` or `free_fast_slot` returns an arbitrary token for the claimed one | their postconditions |
+| P1 | `claim_run` leaves its ghost argument `freed` (`free_run`'s) unset | its postcondition (`claim.took`) |
+| P2 | `Heap::free_huge` returns `Shared::free_huge`'s token after a `zero_on_free` clear, not the one from before it | its postconditions (held and pending) |
+| P3 | `free_block`'s fast path returns an arbitrary token for the pushed one | its postcondition (`r@.block(p)`) |
+| P4 | `Shared::zero_huge` returns the token after the clear (the cast's provenance) | its postconditions (held and pending) |
+| P5 | `Heap::free`'s slot branch returns an arbitrary token | its postconditions |
+| P6 | `Shared::free_huge` returns an arbitrary token for `free_run`'s | its postconditions |
 
 ## Sized frees run plain `free`'s check under `exact_sized_free` (rests on the C-boundary assumption)
 
@@ -10971,9 +11004,10 @@ that the Rust entry point calls with a fresh `Live` token (allocations:
 the token goes to C with the block), with C's token for its pointer
 still unclaimed (`Claim::pending`: the plain frees, `free_usable`,
 `dallocx` and the reallocations, whose cores claim it through
-`axiom_c_claim` only past their check, and the realloc cores and
-`free_usable_block` return the claimed token as a ghost result their
-`ensures` name), or with the one
+`axiom_c_claim` only past their check and return the claimed token as
+a ghost result their `ensures` name: the realloc cores,
+`free_usable_block`, the plain free cores and the size-0 arms of
+`realloc_block` and `realloc_usable_stored`), or with the one
 `axiom_c_claim` gives up front (the sized frees). The tokens are ghost,
 so the core is the entry point's code, and its `ensures` is the
 symbol's contract for those cells.
@@ -11007,9 +11041,12 @@ Properties:
   slab (theorem 7), so a free into one does not return. The
   *(live)* cells (a stale or double free) stay `p`: the free cores
   claim the token of a live block (up front for the sized frees, past
-  the check for the others) and, given a held or up-front token, ensure
-  that what they freed was live (the plain free cores state nothing of
-  that kind for C's pending claim), but C holds that token only by
+  the check for the others) and ensure that what they freed was live:
+  of a held or up-front token, or, for C's pending claim, of the token
+  `axiom_c_claim` gave past the check, which the plain free cores return
+  as a ghost result (`r@.block(p)`, #895; a copy of the token's value,
+  so read alone it adds little beyond `free_target(p)`). C holds that
+  token only by
   `axiom_c_claim` (the `free` contract), so a non-live free is excluded
   by that C-boundary assumption rather than proved to abort. The "Bad input" section above
   lists every kind of bad input by entry point, with what is proved not
@@ -11043,7 +11080,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 12 | `challoc_malloc_usable`                     | P | P | . | . | P | . | P |
 | 13 | `challoc_calloc_usable`                     | P | P | P | . | P | . | P |
 | 14 | `challoc_realloc_usable`                    | P | P | . | p | P | p | P |
-| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | P |
+| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | p |
 | 16 | `mallocx`                                   | P | P | P | . | p | p | . |
 | 17 | `rallocx`                                   | P | P | P | p | p | p | . |
 | 18 | `xallocx`                                   | . | . | . | . | . | p | p |
@@ -11163,10 +11200,11 @@ Notes that recur below:
   `p@.addr != 0 ==> blk.block(p)`: what it freed was a live block, whose
   token it gave back to the cache or the bitmap word (slots) or the run
   authorities (runs). The plain frees' cores (`libc::free_block`,
-  `heap::free`, `Heap::free`, `free_direct`) ensure it only for a token
-  the caller already holds: `free` and `delete` pass C's token unclaimed
-  and claim it past the bit test (`Claim::settle`, #835), so for them
-  the cell rests on that claim. A non-live pointer that is a slot or huge page
+  `heap::free`, `Heap::free`, `free_direct`) ensure it of the token they
+  claimed, which they return as a ghost result (`r@.block(p)`, #895):
+  `free` and `delete` pass C's token unclaimed and claim it past the bit
+  test or the huge lock's checks (`Claim::settle`, `settle_run`, #835),
+  so for them the cell rests on that claim. A non-live pointer that is a slot or huge page
   start has no token in C's hands; the boundary's `axiom_c_claim` (the
   `free` contract) makes such a call's context inconsistent, and the
   run-time checks (`SlabTable::check_live`, `class/table.rs`, the
@@ -11190,8 +11228,13 @@ Notes that recur below:
   queries (`malloc_usable_size`, `sallocx`, `xallocx`) take no token, so
   their huge half is not tied to the request: `p` for rows 9, 18 and 19.
   `challoc_free_usable`'s core returns the token its check claimed as a
-  ghost result and states `r == blk.len()` of it, so row 15 is `P`
-  ([#892](https://github.com/chainguard-project-theseus/challoc/issues/892)). The allocating `_usable` entry points are
+  ghost result and states `r == blk.len()` of it
+  ([#892](https://github.com/chainguard-project-theseus/challoc/issues/892)),
+  but row 15 is `p`: the result is a copy of the token's value, and read
+  alone `r == blk.len()` is met by the length of any well-formed run at
+  `p`, close to `usable_of`'s shape. That the copy is the token the check
+  claimed is in the proofs (mutants F1, F2), not in the `ensures` a
+  client reads (#895). The allocating `_usable` entry points are
   `.0` of `_stored` twins (`malloc_usable_stored`,
   `realloc_usable_stored`; `calloc_usable_zeroed`'s third result) that
   return the `Stored` token of `store_usable` (verified: it writes through
@@ -11360,8 +11403,11 @@ alone):
     `free_fast_slot` past the bit test (its own ghost result, the
     token the push took, as it was before the push) or by
     `free_usable_slow` past `classify_free` or `Huge::usable_size`.
-    So for a huge run `r` is the run token's usable pages, not only a
-    shape (#892, which took back the `p` #891 left here). For a token
+    That `blk` is the token the check claimed is in the proofs (mutants
+    F1, F2), not in the `ensures`: the ghost result is a copy of the
+    token's value, and read alone `r == blk.len()` is met by the length
+    of any well-formed run at `p`, close to `usable_of`'s shape. So the
+    U cell is `p` (#895; #892 had marked it `P`). For a token
     the caller holds, the core also ensures `l.block(p) && r == l.len()`.
     The `usable_of` half needs no token.
     `errno` is preserved as by `free`: `free_usable` and
@@ -11660,6 +11706,10 @@ What each partial or missing cell leaves out, and what it rests on:
   `P` cells (rows 10, 11, 15, 26-28) and the unchanged `errno` of rows
   20 and 21 rest on the premise that no libc call in trusted code on
   their paths leaves `errno` changed (*(errno)*).
+- **U** (row 15): `challoc_free_usable`'s huge half states `r ==
+  blk.len()` of a ghost copy of the token its check claimed; a client of
+  the `ensures` cannot tell that copy from any well-formed run token at
+  `p`, so the cell is `p` (see the `usable_size` note above).
 - **U** (rows 9, 18, 19): the huge half of a query. `usable_size` with
   the block's run token gives exactly its usable bytes, but the queries
   take no token (giving them one would add an `axiom_c_claim` site for a

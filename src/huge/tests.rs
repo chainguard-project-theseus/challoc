@@ -148,6 +148,7 @@ impl Env {
                 page,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
+                Tracked::assume_new(),
             )
             .usable;
         h.audit();
@@ -948,6 +949,7 @@ fn table_grows_and_lookups_survive_backward_shift() {
                 page,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
+                Tracked::assume_new(),
             );
         }
     }
@@ -976,6 +978,7 @@ fn table_grows_and_lookups_survive_backward_shift() {
             h.free_run(
                 &env.meta,
                 page,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
             );
@@ -1121,6 +1124,7 @@ fn randomised_model_check() {
         h.free_run(
             &env.meta,
             page,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
         );
@@ -1436,6 +1440,7 @@ fn concurrent_runs_are_disjoint() {
                     page,
                     Tracked::assume_new(),
                     Tracked::assume_new(),
+                    Tracked::assume_new(),
                 );
             }
             got
@@ -1716,8 +1721,14 @@ impl Huge {
 impl Huge {
     /// [`Huge::free_run`] returning only the usable bytes released.
     pub fn free(&self, meta: &Meta, page: usize) -> usize {
-        self.free_run(meta, page, Tracked::assume_new(), Tracked::assume_new())
-            .usable
+        self.free_run(
+            meta,
+            page,
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        )
+        .usable
     }
 }
 

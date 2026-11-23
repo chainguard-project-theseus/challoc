@@ -173,7 +173,7 @@ fn zero_on_free_clears_a_huge_run() {
         // SAFETY: `usable` is the huge allocation's usable size.
         unsafe { ptr::write_bytes(p, 0xA5, usable) };
         if direct {
-            super::free_direct(s, p, Tracked::assume_new(), Tracked::assume_new())
+            super::free_direct(s, p, Tracked::assume_new(), Tracked::assume_new());
         } else {
             t.free(p)
         }

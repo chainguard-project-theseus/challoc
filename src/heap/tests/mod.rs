@@ -96,7 +96,7 @@ impl TestHeap {
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
-        )
+        );
     }
 
     pub(crate) fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
