@@ -140,8 +140,8 @@ checks:
   # request ci/run:kani-arm64 or ci/run:kani-ignoring-arm64, or `chainctl
   # checks run . --check kani-arm64` on a pushed commit). The downstream
   # package build runs `make verify`, whose VERIFY_TARGETS (Makefile)
-  # include kani, kani-q8, kani-regular-sharded and
-  # kani-regular-sharded-q8 (kani-regular in shards at once), on each
+  # include kani-regular-sharded and kani-regular-sharded-q8
+  # (kani-regular in shards at once; it verifies what kani does), on each
   # architecture it builds for, so these are worth running on a change to
   # a harness, to a Kani model of a target-specific item (src/sys/,
   # src/rseq.rs, the TLS slot) and before

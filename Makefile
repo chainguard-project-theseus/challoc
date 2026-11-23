@@ -301,22 +301,31 @@ melange: ## build and test the Wolfi packages of contrib/wolfi/challoc.yaml with
 # `make verify` (the kit's) runs every target VERIFY_TARGETS lists, in
 # order, which is what the package build runs (with VERUS_BASE=none). The
 # list is what the Verus and Kani checks verify, and the controls they
-# run (the kit's rule): verus.yaml's verus checks, kani.yaml's kani and
-# kani-ignoring, and lint's notcopy-control and kani-boolcmp. A Verus or
+# run (the kit's rule): verus.yaml's verus checks, kani.yaml's
+# kani-ignoring (which verifies what its kani check does, below), and lint's notcopy-control and kani-boolcmp. A Verus or
 # Kani check that verifies something more adds its target here in the
 # same pull request. verus-q8, notcopy-control and kani-boolcmp are the
 # steps those checks run besides the kit's targets, as targets the checks
-# call too. kani-q8 matches the command kani.yaml's kani check runs at
-# QUANTUM=8 (`make kani QUANTUM=8`), but the check doesn't call it: it
-# runs the kit target with QUANTUM over a matrix. kani-regular-sharded
-# and kani-regular-sharded-q8 run kani-ignoring's command, the kit's
-# kani-regular split into shards, with a quantum's shards all at once
-# (below). The other verifying checks
+# call too. kani-regular-sharded and kani-regular-sharded-q8 run
+# kani-ignoring's command, the kit's kani-regular split into shards, with
+# a quantum's shards all at once (below).
+#
+# kani.yaml's kani check (`make kani`, terse, four at a time) is not
+# listed: it verifies what kani-regular verifies. Both run every harness
+# through the kit's kani.sh with the same KANI_FLAGS and KANI_LIST_FLAGS
+# (no KANI_ARGS, no --default-unwind; the unwind bounds are the
+# harnesses' own `#[kani::unwind]`), and differ only in output: `-j 4
+# --output-format terse` there, `--output-format regular` and CBMC's
+# `--verbosity 9` here, plus the `warning: ignoring` scan. At dc5da63
+# both runs gave every one of the 154 harnesses, at both quanta, the same
+# property count, failed count and unreachable count (66,579 properties
+# a quantum). The check stays in CI as the fast presubmit half; kani-q8
+# is its command at QUANTUM=8. The other verifying checks
 # stay with CI and are not in the package build: isla and emptyasm
 # (isla.yaml), genmc (genmc.yaml), loom and loom-count (lint.yaml),
 # weakmem-stress (weakmem.yaml), perf-budget (perf-budget.yaml), and the
 # tests, Miri and fuzzing.
-VERIFY_TARGETS = verus verus-q8 notcopy-control kani-boolcmp kani kani-q8 kani-regular-sharded kani-regular-sharded-q8
+VERIFY_TARGETS = verus verus-q8 notcopy-control kani-boolcmp kani-regular-sharded kani-regular-sharded-q8
 VERUS_MODE = verify
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` that no harness reaches; `-Z stubbing` for `kani::stub`,
