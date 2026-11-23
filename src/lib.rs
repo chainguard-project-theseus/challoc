@@ -276,6 +276,37 @@ mod tests {
                 concat!("note_", "create("),
                 &[("heap/thread.rs:", "fn create_heap_for_thread<", 1)],
             ),
+            // The `free` contract (`heap::live::axiom_c_claim`): the plain
+            // frees (`libc::free`, `cxx::delete`) reach it only through
+            // `Claim::settle`, past their bit test (#835); every other
+            // entry point claims as its first step, and the two
+            // verification-only theorems restate those entry points.
+            (
+                concat!("axiom_", "c_claim("),
+                &[
+                    ("heap/live.rs:", "pub proof fn settle(", 1),
+                    ("api/libc.rs:", "pub fn free_sized_hint(", 1),
+                    ("api/libc.rs:", "pub fn free_sized(", 1),
+                    ("api/libc.rs:", "pub fn realloc(", 1),
+                    ("api/libc.rs:", "pub fn realloc_usable(", 1),
+                    ("api/libc.rs:", "pub fn free_usable(", 1),
+                    ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 2),
+                    ("api/libc.rs:", "fn theorem_no_user_reads(", 4),
+                    ("api/jemalloc.rs:", "pub fn rallocx(", 1),
+                    ("api/jemalloc.rs:", "pub fn dallocx(", 1),
+                    ("api/jemalloc.rs:", "pub fn sdallocx(", 1),
+                ],
+            ),
+            // `libc::free` hands C's token down unclaimed (and the two
+            // theorems that restate its paths).
+            (
+                concat!("Claim::", "pending("),
+                &[
+                    ("api/libc.rs:", "pub fn free(", 1),
+                    ("api/libc.rs:", "fn theorem_no_syscall_on_fast_paths(", 1),
+                    ("api/libc.rs:", "fn theorem_no_user_reads(", 1),
+                ],
+            ),
         ];
         for (call, sites) in PINS {
             crate::testutil::assert_only_at(call, sites);

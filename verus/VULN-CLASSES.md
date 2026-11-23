@@ -226,7 +226,11 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   (`lemma_claimed_again`,
   [#850](https://github.com/chainguard-project-theseus/challoc/issues/850));
   that the second free's check is ordered after the release is C's. A
-  fact about the load, not C's view. The
+  fact about the load, not C's view. The plain frees (`free`,
+  `delete`) take C's token for a slot start only past this test, with
+  its record: `heap::Claim::settle` requires `slot_checked(p, obs)`
+  ([#835](https://github.com/chainguard-project-theseus/challoc/issues/835)),
+  so `axiom_c_claim` is not used before the check. The
   huge half: the huge free's
   checks (THEOREMS.md "Bad input", *(lock)*) return only for a page
   where a live run starts at the lock.

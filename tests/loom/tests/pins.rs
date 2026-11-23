@@ -257,13 +257,13 @@ const PINS: &[(&str, &[&str])] = &[
         &[
             "let committed = crate::class::load_mirror(&self.committed, self.committed_inv);",
             "if slab >= committed {",
-            "let word = unsafe { table.bit_word(bits_base, index, Ghost(slab), Ghost(slot as usize), Ghost(bit)) };",
+            "let word = unsafe { table.bit_word(bits_base, index, Ghost(slab), Ghost(slot as usize), Ghost(bit), Tracked(obs)) };",
             "if (word >> (bit % 64)) & 1 == 0 {",
             "unsafe { table.owner_from(self.owners_base, self.lg_group, slab) }",
             "let home = h.arena_volatile();",
             "crate::vspec::slice::array_get_unchecked(&self.lines, class).owner(",
             ") == home",
-            "let Some(slab) = line.set_slab(p, table) else {",
+            "let Some(slab) = line.set_slab(p, table, Tracked(obs)) else {",
         ],
     ),
     // `free_fast_slot` and `free_fast_tail` (tests/loom/src/free.rs). The
@@ -272,7 +272,7 @@ const PINS: &[(&str, &[&str])] = &[
     (
         "src/heap/paths.rs",
         &[
-            "let Some((class, slab)) = shared.set_slot(p) else {",
+            "let Some((class, slab)) = shared.set_slot(p, Tracked(&mut obs)) else {",
             "let flags = shared.free_flags();",
             "0 => unsafe { heap_from_slot(t, tp, false, Tracked(&tls.cell), Tracked(&mut tls.loan)) }.push_fast(",
             "FREE_ROUTE => {",

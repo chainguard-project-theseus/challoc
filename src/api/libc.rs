@@ -37,7 +37,7 @@ use core::ffi::c_int;
 use core::ptr;
 
 use crate::QUANTUM;
-use crate::heap::{self, Live, Shared};
+use crate::heap::{self, Claim, Live, Shared};
 #[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, SMALL_MAX, class_of, class_of_small};
@@ -672,7 +672,11 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
 
 /// `free`. Null is a no-op; anything that is not a live allocation aborts.
 /// C holds the token of the block it frees ([`heap::live::axiom_c_claim`],
-/// the one trusted step of the C contract).
+/// the one trusted step of the C contract). The free claims it only past
+/// its check of a slot (`VULN-CLASSES.md` E, [`Claim::settle`]): only
+/// past a load that found the slot's bit set in a value its bitmap word
+/// held ([`heap::slot_checked`]), so a pointer to a slot no refill ever
+/// claimed aborts before the C contract is used.
 #[inline(always)]
 pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
@@ -685,28 +689,28 @@ pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut
         p@.addr != 0 ==> heap::free_target(p),
         *final(ord) == *old(ord),
 {
-    let tracked blk = heap::live::axiom_c_claim(c);
-    free_block(p, Tracked(blk), Tracked(errno), Tracked(ord))
+    free_block(p, Tracked(Claim::pending(c)), Tracked(errno), Tracked(ord))
 }
 
-/// [`free`] with the caller's token for `p` ([`Live::claims`]), which the
-/// free takes back. `theorem_no_syscall_on_fast_paths` restates its fast
+/// [`free`] with the caller's token for `p` ([`Claim::claims`]), held or
+/// still the call's, which the free takes back, claiming it only past the
+/// check of a slot. `theorem_no_syscall_on_fast_paths` restates its fast
 /// path (path 2); `api::restated::fast_path_restatements_match_their_bodies`
 /// checks that the two make the same calls.
 #[inline(always)]
-pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+pub fn free_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
-        blk.claims(p),
+        claim.claims(p),
         old(ord).top() == 0,
     ensures
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
-        p@.addr != 0 ==> blk.block(p),
+        p@.addr != 0 ==> (claim.held matches Some(l) ==> l.block(p)),
         *final(ord) == *old(ord),
 {
-    let tracked mut blk = blk;
+    let tracked mut blk = claim;
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
     // Null is one of those outcomes: it is in no class region (the
@@ -751,7 +755,9 @@ pub fn free_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Track
 /// The block tokens are taken as
 /// the entry points take them: an empty `Live` for a pop,
 /// [`heap::live::axiom_c_claim`] for a free, of the call's token for `p`
-/// (`claim`, [`CCall`], as an export mints it).
+/// (`claim`, [`CCall`], as an export mints it), except plain `free`
+/// (path 2), which passes it unclaimed ([`Claim::pending`]) as `free`
+/// does, to be claimed past the bit test ([`Claim::settle`]).
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
@@ -785,7 +791,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
             if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
                 // SAFETY: as in `free_block`.
                 let s = unsafe { super::shared_deref(super::shared_base()) };
-                let tracked mut b = heap::live::axiom_c_claim(claim);
+                let tracked mut b = Claim::pending(claim);
                 // SAFETY: as in `free_block`.
                 let _ = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) };
             }
@@ -811,9 +817,9 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
             if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
                 // SAFETY: as in `free_block`.
                 let s = unsafe { super::shared_deref(super::shared_base()) };
-                let tracked mut b = heap::live::axiom_c_claim(claim);
+                let tracked mut b = Claim::held(heap::live::axiom_c_claim(claim));
                 // SAFETY: as in `free_block`.
-                if let Some(c) = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) } {
+                if let Some(c) =unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) } {
                     let _ = class_size(c);
                 }
             }
@@ -858,7 +864,7 @@ fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8
             let _ = super::jemalloc::mallocx_zeroed(n, flags, Tracked(&mut out), Tracked(errno), Tracked(ord));
         },
         4 => {
-            let tracked b = heap::live::axiom_c_claim(claim);
+            let tracked b = Claim::pending(claim);
             free_block(p, Tracked(b), Tracked(errno), Tracked(ord));
         },
         5 => {
@@ -1011,7 +1017,7 @@ fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>, Tracked(blk): T
     match super::shared_if_ready() {
         Some(shared) => {
             shared.check_size_hint(p, size, hint, Tracked(&blk), Tracked(&mut *ord));
-            heap::free(shared, p, Tracked(blk), Tracked(errno), Tracked(ord))
+            heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(ord))
         }
         None => free_before_init(p),
     }
@@ -1112,7 +1118,7 @@ pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize, Tracked(c): Tra
 /// same message it always did).
 #[cold]
 #[inline(never)]
-fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+fn free_slow(p: *mut u8, Tracked(blk): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
         crate::sys::may_abort(),
         blk.claims(p),
@@ -1121,7 +1127,7 @@ fn free_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tracked<&m
     ensures
         final(errno).val() == old(errno).val(),
         p@.addr != 0 ==> heap::free_target(p),
-        p@.addr != 0 ==> blk.block(p),
+        p@.addr != 0 ==> (blk.held matches Some(l) ==> l.block(p)),
         *final(ord) == *old(ord),
 {
     if p.is_null() {
@@ -1797,7 +1803,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
         return malloc_block(size, Tracked(out), Tracked(errno), Tracked(ord));
     }
     if size == 0 {
-        free_block(p, Tracked(blk), Tracked(&mut *errno), Tracked(ord));
+        free_block(p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(ord));
         return ptr::null_mut();
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
@@ -1854,7 +1860,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(blk): Tracked<Live>, Track
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
-    heap::free(shared, p, Tracked(blk), Tracked(&mut *errno), Tracked(ord));
+    heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(ord));
     q
 }
 
@@ -2556,7 +2562,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         return malloc_usable_stored(size, usable, Tracked(uout), Tracked(out), Tracked(errno), Tracked(&mut *ord));
     }
     if size == 0 {
-        free_block(p, Tracked(blk), Tracked(&mut *errno), Tracked(&mut *ord));
+        free_block(p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(&mut *ord));
         let s = store_usable(usable, 0, Tracked(uout));
         return (ptr::null_mut(), s);
     }
@@ -2623,7 +2629,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
-    heap::free(shared, p, Tracked(blk), Tracked(&mut *errno), Tracked(&mut *ord));
+    heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(&mut *ord));
     (q, s)
 }
 
@@ -2790,8 +2796,8 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno)
         p@.addr != 0 ==> 0 < r,
         p@.addr != 0 ==> blk.block(p) && r == blk.len(),
 {
-    let tracked mut blk = blk;
     let ghost b0 = blk;
+    let tracked mut blk = Claim::held(blk);
     if p.is_null() {
         return 0;
     }
@@ -2810,6 +2816,7 @@ pub fn free_usable_block(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno)
             return class_size(class);
         }
     }
+    let tracked blk = blk.held.tracked_unwrap();
     free_usable_slow(p, Tracked(blk), Tracked(errno), Tracked(ord))
 }
 
@@ -2842,7 +2849,10 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
         shared.lemma_wf_ready();
         shared.lemma_regions_ok();
     }
-    let usable = match shared.classify_free(p, Tracked(&blk)) {
+    let tracked mut claim = Claim::held(blk);
+    let kind = shared.classify_free(p, Tracked(&mut claim));
+    let tracked blk = claim.held.tracked_unwrap();
+    let usable = match kind {
         Ok((class, _)) => {
             proof {
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
@@ -2865,7 +2875,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
     proof {
         blk.lemma_nonnull();
     }
-    heap::free(shared, p, Tracked(blk), Tracked(errno), Tracked(&mut *ord));
+    heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(&mut *ord));
     usable
 }
 

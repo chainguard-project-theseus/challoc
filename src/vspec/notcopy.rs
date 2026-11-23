@@ -46,7 +46,7 @@ use crate::arena::{ArenaParts, ArenasParts, Held, Homed, RegVal, SparePerm};
 use crate::bitmap::FullSeen;
 use crate::class::{BitLoad, SlotToks};
 use crate::heap::slotstate::{SlotState, Slots};
-use crate::heap::{Built, CachePerms, FreshHeap, HeapPerm, HeapUse, Live, NodeHead};
+use crate::heap::{Built, CachePerms, Claim, FreshHeap, HeapPerm, HeapUse, Live, NodeHead};
 use crate::heap::{SharedParts, TableVal, TableWrite, TcachesParts};
 use crate::huge::RunToken;
 use crate::layout::Reserved;
@@ -158,6 +158,10 @@ const _: () = assert!(<FreshHeap as NotCopy<_>>::HOLDS && <FreshHeap as NotClone
 
 // `Live` is neither Copy nor Clone: a live block's token.
 const _: () = assert!(<Live as NotCopy<_>>::HOLDS && <Live as NotClone<_>>::HOLDS);
+
+// `Claim` is neither Copy nor Clone: a freed block's token, held or the
+// call's.
+const _: () = assert!(<Claim as NotCopy<_>>::HOLDS && <Claim as NotClone<_>>::HOLDS);
 
 // `NodeHead` is neither Copy nor Clone: an `others` node's permissions.
 const _: () = assert!(<NodeHead as NotCopy<_>>::HOLDS && <NodeHead as NotClone<_>>::HOLDS);

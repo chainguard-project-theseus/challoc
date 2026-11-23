@@ -687,6 +687,16 @@ pub open(crate) spec fn mark_loc(c: int) -> Loc {
     crate::heap::Shared::built_at(crate::heap::Shared::storage()).tables[c].spec_slots().mloc
 }
 
+/// The location of class `c`'s bitmap words' seen values
+/// (`bitmap::seen_ok`, #847, #850): the one made by class `c`'s table in
+/// the stored `Shared`, as for [`mark_loc`]. So a bit test's witness at
+/// it ([`SlabTable::load_seen`]) is one a word invariant of the
+/// process's bitmap made. Opaque, as [`mark_loc`] is.
+#[verifier::opaque]
+pub open(crate) spec fn seen_loc(c: int) -> Loc {
+    crate::heap::Shared::built_at(crate::heap::Shared::storage()).tables[c].spec_slots().hloc
+}
+
 /// The authority of class `c`'s slot tokens (`bitmap.rs`, "Slot tokens"):
 /// the one made by class `c`'s table in the stored `Shared`, as for
 /// [`mark_loc`]. Opaque, as [`mark_loc`] is.
@@ -793,6 +803,69 @@ pub proof fn lemma_claimed_again(l0: BitLoad, l1: BitLoad, loc: Loc, j: int, k: 
     ensures
         l0.seen()->Some_0.1.1 < l1.seen()->Some_0.1.1,
 {
+}
+
+/// The bit test's record `l` found the slot at address `a` allocated in
+/// `t`'s bitmap: for the slab and slot at `a` (a real slab and slot, so
+/// the pair is `a`'s own: [`lemma_bit_seen_at_own`]), `l` is a load of
+/// the slot's word ([`SlabTable::load_seen`]: the witness of a value `x` the
+/// word held, and the tokens of exactly the clear bits of `x`), and the
+/// slot's token is not among them ([`slot_free_at`]): the slot's bit was
+/// set in `x`. A plain free claims C's token for a slot start only past
+/// such a load ([`Claim::settle`](crate::heap::Claim::settle),
+/// `VULN-CLASSES.md` E). Only the word invariants make the witness, so a
+/// caller cannot meet this without the load (#843, #847).
+pub open spec fn bit_seen_at(t: SlabTable, a: int, l: BitLoad) -> bool {
+    exists|slab: int, slot: int|
+        0 <= slab < t.spec_nslabs() && 0 <= slot < class_table()[t.spec_class() as int].nslots
+            && process_regions().slot_at(t.spec_class() as int, slab, slot) == a
+            && #[trigger] t.load_seen(slab, slot, l)
+            && !slot_free_at(l.toks(), t.spec_class() as int, slab, slot)
+}
+
+/// [`bit_seen_at`] names the slot's own word: a record that meets it for
+/// the address of slot `slot` of slab `slab` (both real) is a load of
+/// that slot's word with the slot's bit set. The real pair for an
+/// address is unique (`nslots * size <= slab_size`), so a record of any
+/// other word, the load of another slot's check, meets it for no slot
+/// start but its own word's (#886's review).
+pub proof fn lemma_bit_seen_at_own(t: SlabTable, slab: int, slot: int, l: BitLoad)
+    requires
+        0 <= t.spec_class() < crate::layout::NCLASSES,
+        0 <= slab < t.spec_nslabs(),
+        0 <= slot < class_table()[t.spec_class() as int].nslots,
+        bit_seen_at(t, process_regions().slot_at(t.spec_class() as int, slab, slot), l),
+    ensures
+        t.load_seen(slab, slot, l),
+        !slot_free_at(l.toks(), t.spec_class() as int, slab, slot),
+{
+    let c = t.spec_class() as int;
+    let a = process_regions().slot_at(c, slab, slot);
+    let (s2, k2) = choose|s2: int, k2: int|
+        0 <= s2 < t.spec_nslabs() && 0 <= k2 < class_table()[c].nslots
+            && process_regions().slot_at(c, s2, k2) == a
+            && #[trigger] t.load_seen(s2, k2, l)
+            && !slot_free_at(l.toks(), c, s2, k2);
+    crate::vspec::class::lemma_class_table_wf(c);
+    let sz = class_table()[c].size as int;
+    let ss = (1usize << class_table()[c].lg_slab) as int;
+    let n = class_table()[c].nslots as int;
+    assert(slot * sz < ss) by (nonlinear_arith)
+        requires 0 <= slot < n, n * sz <= ss, sz > 0;
+    assert(k2 * sz < ss) by (nonlinear_arith)
+        requires 0 <= k2 < n, n * sz <= ss, sz > 0;
+    assert(0 <= slot * sz) by (nonlinear_arith)
+        requires 0 <= slot, sz > 0;
+    assert(0 <= k2 * sz) by (nonlinear_arith)
+        requires 0 <= k2, sz > 0;
+    let x = slab * ss + slot * sz;
+    assert(x == s2 * ss + k2 * sz);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(x, ss, slab, slot * sz);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(x, ss, s2, k2 * sz);
+    assert(s2 == slab);
+    assert(k2 * sz == slot * sz);
+    assert(k2 == slot) by (nonlinear_arith)
+        requires k2 * sz == slot * sz, sz > 0;
 }
 
 /// `p` is an initialised permission to the `T` at `addr`, through a
@@ -1432,15 +1505,16 @@ impl SlabTable {
     }
 
     /// The table is the process's table of its class: its slot-token and
-    /// marker authorities are the class's ([`slot_loc`], [`mark_loc`]) and
-    /// so is its guard geometry
-    /// ([`guard_geom`](crate::layout::guard_geom)). Class `c`'s table in
-    /// the stored `Shared` is (`Shared::built`, which `Shared::init` proves
-    /// by revealing the three); a table built anywhere else is not known
-    /// to be.
+    /// marker authorities and its words' seen values are the class's
+    /// ([`slot_loc`], [`mark_loc`], [`seen_loc`]) and so is its guard
+    /// geometry ([`guard_geom`](crate::layout::guard_geom)). Class `c`'s
+    /// table in the stored `Shared` is (`Shared::built`, which
+    /// `Shared::init` proves by revealing the four); a table built
+    /// anywhere else is not known to be.
     pub open spec fn is_process(&self) -> bool {
         &&& self.spec_slots().loc == slot_loc(self.spec_class() as int)
         &&& self.spec_slots().mloc == mark_loc(self.spec_class() as int)
+        &&& self.spec_slots().hloc == seen_loc(self.spec_class() as int)
         &&& crate::layout::guard_geom(self.spec_class() as int) == (self.spec_slots().glg, self.spec_slots().gmask)
     }
 
@@ -4579,9 +4653,14 @@ impl SlabTable {
     /// has it for every set slot bit ([`SlabTable::lemma_held_seen`]).
     /// Without the token the value returned is not specified: the release
     /// it routes to reads the owner again, with the witness
-    /// ([`owner`](SlabTable::owner)).
-    // `credit` is read only by the proof (ghost).
-    #[allow(unused_variables)]
+    /// ([`owner`](SlabTable::owner)). The frees run its two halves apart,
+    /// [`check_live`] and [`located_owner`], so as to claim the block
+    /// between them (`Shared::classify_free`); the build's one caller is
+    /// the tests' `SlabTable::check`.
+    ///
+    /// [`check_live`]: SlabTable::check_live
+    /// [`located_owner`]: SlabTable::located_owner
+    #[cfg_attr(not(test), allow(dead_code))]
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize, held: Tracked<&Option<GhostSingleton<int>>>, Tracked(obs): Tracked<&mut BitLoad>) -> (r: u16)
         requires
@@ -4598,12 +4677,42 @@ impl SlabTable {
             self.load_after(slab as int, slot as int, *old(obs), *final(obs)),
     {
         self.check_live(slab, slot, p, held, Tracked(obs));
+        // SAFETY: `check_live` returned.
+        unsafe { self.located_owner(slab, slot, held) }
+    }
+
+    /// The owner read of [`check_located`], after its bit test
+    /// ([`check_live`]): the arena that owns `slab`, exactly so with the
+    /// slot's token (`held`, [`holds_slot`]), which is the witness the
+    /// read needs. Split out so that a free can run the bit test with no
+    /// token, claim the block, and then read the owner with its token
+    /// (`Shared::classify_free`).
+    ///
+    /// # Safety
+    /// [`check_live`] returned for `slab` and `slot`: `slab` is below a
+    /// value the watermark held, so its group's owner word is committed.
+    ///
+    /// [`check_located`]: SlabTable::check_located
+    /// [`check_live`]: SlabTable::check_live
+    // `credit` is read only by the proof (ghost).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    pub unsafe fn located_owner(&self, slab: usize, slot: usize, held: Tracked<&Option<GhostSingleton<int>>>) -> (r: u16)
+        requires
+            self.is_process(),
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].nslots,
+        ensures
+            holds_slot(*held@, self.spec_class() as int, slab as int, slot as int)
+                ==> r == slab_owner(self.spec_class() as int, slab as int),
+    {
         let credit = vstd::invariant::create_open_invariant_credit();
         proof {
             use_type_invariant(self);
         }
         let tracked seen = self.lemma_held_seen(held.get(), credit.get(), slab, slot);
-        // SAFETY: `check_live` returned, so `slab` is below the watermark.
+        // SAFETY: `slab` is below the slab count; the caller's bit test
+        // (`check_live`) returned, so it is below the watermark.
         unsafe { self.owner_at(slab, Tracked(seen)) }
     }
 
@@ -5878,6 +5987,7 @@ impl SlabTable {
         Ghost(slab): Ghost<usize>,
         Ghost(slot): Ghost<usize>,
         Ghost(bit): Ghost<usize>,
+        Tracked(obs): Tracked<&mut BitLoad>,
     ) -> (x: u64)
         requires
             self.is_process(),
@@ -5888,12 +5998,19 @@ impl SlabTable {
             index == bit / 64,
         ensures
             (x >> (bit % 64)) & 1 != 0 ==> !crate::layout::guard_slab(self.spec_class() as int, slab as int),
+            // The load's record: a set bit is one the slot's word held,
+            // with the slot's token not among the word's at the load.
+            ((x >> (bit % 64)) & 1 != 0) == !slot_free_at(final(obs).toks(), self.spec_class() as int, slab as int, slot as int),
+            self.load_seen(slab as int, slot as int, *final(obs)),
         opens_invariants [crate::bitmap::word_ns()]
     {
         let tracked none = None;
-        let tracked mut obs = BitLoad::new();
         // SAFETY: guaranteed by the caller.
-        unsafe { self.bit_word_held(bits_base, index, Ghost(slab), Ghost(slot), Ghost(bit), Tracked(&none), Tracked(&mut obs)) }
+        let x = unsafe { self.bit_word_held(bits_base, index, Ghost(slab), Ghost(slot), Ghost(bit), Tracked(&none), Tracked(obs)) };
+        proof {
+            assert(bit as int / 64 == (slab as int * class_table()[self.spec_class() as int].slab_bits + slot as int) / 64);
+        }
+        x
     }
 
     /// The owner word of `slab`'s group, through the class line's copies

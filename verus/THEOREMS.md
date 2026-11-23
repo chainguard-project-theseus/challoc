@@ -310,8 +310,26 @@ claims it (`Live::claims`): the slot's token if the pointer is a
 slot start, the token of the run that starts there if it is a huge page
 start, nothing otherwise. The allocations hand C the token of every
 block they return (`Live::gives`), so C, which holds the block,
-holds the token. It is called once per C call, by the Rust entry point
-the export calls, before anything else: `libc::free`, `free_sized_hint`
+holds the token. The plain frees (`libc::free` and `cxx::delete`, through
+`libc::free_block`) pass C's token down unclaimed (`heap::live::Claim`,
+[#835](https://github.com/chainguard-project-theseus/challoc/issues/835))
+and call it only through `Claim::settle`, past their check: for a
+pending claim of a slot start, `settle` requires `heap::slot_checked(p,
+obs)`, the bit test's record `obs` showing the slot's bit set in a
+value its bitmap word held (`class::bit_seen_at`, over `load_seen`,
+whose witness only a word invariant makes). The fast path settles
+after `Shared::set_slot`'s bit test (`heap::free_fast_slot`), the slow
+path after `SlabTable::check_live` (`Shared::classify_free`, which then
+reads the owner with the slot's token, `SlabTable::located_owner`). A
+huge page start is still claimed as `classify_free` classifies it. So a
+plain free of a slot no refill ever claimed aborts before the C
+contract is used. That the plain frees reach `axiom_c_claim` only
+through `settle` is not a Verus fact (`axiom_c_claim` is `pub`, and
+`Claim::held` takes any `Live`): it is these bodies, pinned by
+`trusted_mint_sites_are_pinned` (`lib.rs`), which lists every caller
+of `axiom_c_claim` and of `Claim::pending` (`libc::free` and the two
+verification-only restatements of its paths). Every other caller calls it once per C call, by the
+Rust entry point the export calls, before anything else: `free_sized_hint`
 (`free_aligned_sized` and the aligned sized `delete`s; `free_sized`, and
 so `operator delete(void*, size_t)` and its array form, claim in
 `free_sized` itself, which hands the token to `free_sized_with`, as
@@ -338,7 +356,9 @@ fails if a line outside a comment names an `exports` module (a path
 through one, or a `use` of one). A double free, or a free of a slot or
 huge page start that is not a live block, gives C a token it does not
 hold, which makes the proof context inconsistent at that call: it voids
-theorem 3 for that free and every theorem for later calls. A pointer
+theorem 3 for that free and every theorem for later calls. For a plain
+free of a slot start that happens only past a passing bit test (above),
+so its proof up to the check rests on no token. A pointer
 that is neither a slot start nor a huge page start gets no token and
 the call does not return (theorem 3, which is not voided for it).
 
@@ -971,7 +991,14 @@ class, `Shared::free_huge` a page index from
   (`p@.addr != 0 ==> blk.block(p)`: `libc::free_block`,
   `free_sized_block`, `free_usable_block`, `realloc_block`,
   `jemalloc::dallocx_block`, `sdallocx_block`, `rallocx_zeroed`,
-  `heap::free`, `Heap::free`). For a slot or huge page start that is not
+  `heap::free`, `Heap::free`). The plain frees' cores (`libc::free_block`,
+  `heap::free`, `Heap::free`, `free_direct`) take a `heap::Claim` and
+  state this only for a token the caller already holds (`claim.held
+  matches Some(l) ==> l.block(p)`): for `free` and `delete`, whose claim
+  is still C's, they state no liveness, because the token is claimed only
+  past the bit test (`Claim::settle`,
+  [#835](https://github.com/chainguard-project-theseus/challoc/issues/835))
+  and then given to the cache or bitmap. For a slot or huge page start that is not
   live, C has no token, and the boundary's `axiom_c_claim` (the `free`
   contract, common premises) makes the context inconsistent instead of
   proving the abort.
@@ -3738,7 +3765,12 @@ block is excluded by `heap::live::axiom_c_claim` (`heap/live.rs`,
 the `free` contract in the common premises): the free cores take C's
 `Live` token for the pointer and give it back to the allocator, and for
 such a pointer C holds no token, so the axiom's token makes the proof
-context inconsistent and nothing is proved for that call. The run-time
+context inconsistent and nothing is proved for that call. A plain free
+of a slot start (`free`, `delete`) takes the token only past its bit
+test, with the test's record (`Claim::settle`, `slot_checked`,
+[#835](https://github.com/chainguard-project-theseus/challoc/issues/835)),
+so a slot no refill ever claimed aborts first, in a consistent
+context. The run-time
 checks behind those rows are verified code (each abort helper ends in
 `sys::abort_fmt` and returns `!`), but no theorem says they fire for
 every non-live block: the bitmap word invariant (`bitmap::WordPred`)
@@ -3941,7 +3973,18 @@ of the invariant's tokens failed its postcondition, as it still does.
 fails its precondition (#850). `release` returning the witness of the
 value before its write fails `lemma_seen_witness`'s precondition and
 its own postcondition, and `lemma_claimed_again` without the clear bit
-in the release's value fails its postcondition.
+in the release's value fails its postcondition. `Shared::classify_free`
+settling the claim before `check_live` (with a fresh `BitLoad`), and
+`heap::free_fast_slot` settling with a fresh `BitLoad` instead of
+`set_slot`'s record, each fail `Claim::settle`'s precondition, and
+`SlabTable::bit_word` loading into a record other than its out
+parameter fails its postconditions (#835). `classify_free` settling
+with `BitLoad::of_release` of a witness from its own `GhostISetAuth`
+fails `settle`'s precondition (`is_process` names `seen_loc`), and so
+does settling with the record of another slab's `check_live`;
+`class::bit_seen_at` without its bounds on the slab and slot fails
+`lemma_bit_seen_at_own`, which shows a record meeting it for a slot
+start is a load of that slot's own word (#886).
 
 The pointer-shape rows hold without *(C)*: `axiom_c_claim`'s token for
 a pointer that is no slot start and no huge page start claims nothing,
@@ -10875,7 +10918,11 @@ Notes that recur below:
   not return. A free core takes the caller's token for `p` (`Live::claims`) and ensures
   `p@.addr != 0 ==> blk.block(p)`: what it freed was a live block, whose
   token it gave back to the cache or the bitmap word (slots) or the run
-  authorities (runs). A non-live pointer that is a slot or huge page
+  authorities (runs). The plain frees' cores (`libc::free_block`,
+  `heap::free`, `Heap::free`, `free_direct`) ensure it only for a token
+  the caller already holds: `free` and `delete` pass C's token unclaimed
+  and claim it past the bit test (`Claim::settle`, #835), so for them
+  the cell rests on that claim. A non-live pointer that is a slot or huge page
   start has no token in C's hands; the boundary's `axiom_c_claim` (the
   `free` contract) makes such a call's context inconsistent, and the
   run-time checks (`SlabTable::check_live`, `class/table.rs`, the
