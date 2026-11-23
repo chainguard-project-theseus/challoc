@@ -278,13 +278,15 @@ mod tests {
             ),
             // The `free` contract (`heap::live::axiom_c_claim`): the plain
             // frees (`libc::free`, `cxx::delete`) reach it only through
-            // `Claim::settle`, past their bit test (#835); every other
-            // entry point claims as its first step, and the two
-            // verification-only theorems restate those entry points.
+            // `Claim::claim_call`, which `Claim::settle` calls past a
+            // slot's bit test and `Claim::settle_run` past the huge
+            // lock's checks (#835); every other entry point claims as its
+            // first step, and the two verification-only theorems restate
+            // those entry points.
             (
                 concat!("axiom_", "c_claim("),
                 &[
-                    ("heap/live.rs:", "pub proof fn settle(", 1),
+                    ("heap/live.rs:", "proof fn claim_call(", 1),
                     ("api/libc.rs:", "pub fn free_sized_hint(", 1),
                     ("api/libc.rs:", "pub fn free_sized(", 1),
                     ("api/libc.rs:", "pub fn realloc(", 1),
@@ -295,6 +297,13 @@ mod tests {
                     ("api/jemalloc.rs:", "pub fn rallocx(", 1),
                     ("api/jemalloc.rs:", "pub fn dallocx(", 1),
                     ("api/jemalloc.rs:", "pub fn sdallocx(", 1),
+                ],
+            ),
+            (
+                concat!(".claim_", "call("),
+                &[
+                    ("heap/live.rs:", "pub proof fn settle(", 1),
+                    ("heap/live.rs:", "pub proof fn settle_run(", 1),
                 ],
             ),
             // `libc::free` hands C's token down unclaimed (and the two

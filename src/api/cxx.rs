@@ -470,7 +470,8 @@ pub fn new_aligned_block(
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 /// C++ holds the token of the block it frees
 /// ([`crate::heap::live::axiom_c_claim`]), which `free` claims only past
-/// its check of a slot ([`crate::heap::Claim::settle`]).
+/// its check of a slot ([`crate::heap::Claim::settle`]) or of a huge run
+/// ([`crate::heap::Claim::settle_run`]).
 #[inline(always)]
 pub fn delete(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
     requires

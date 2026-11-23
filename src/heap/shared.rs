@@ -3274,8 +3274,9 @@ impl Shared {
     /// aborts before the C contract is used: the claim takes the test's
     /// record ([`slot_checked`](crate::heap::slot_checked)). The owner is
     /// read after the claim, with the slot's token as its witness, so the
-    /// arena is the slot's owner. A huge page start takes the claim as it
-    /// is classified; `Huge::free_run` checks it. With the live block's
+    /// arena is the slot's owner. A huge page start returns the claim as
+    /// it was: `Huge::free_run` checks the run and claims it
+    /// ([`Claim::settle_run`]). With the live block's
     /// token, neither `invalid_free` nor the bit test can fire; the
     /// watermark compare is not yet proved not to fire.
     #[inline(always)]
@@ -3285,9 +3286,10 @@ impl Shared {
             old(claim).claims(p),
             self.wf(),
         ensures
-            final(claim).held is Some,
+            r is Ok ==> final(claim).held is Some,
             final(claim).claims(p),
             old(claim).held is Some ==> *final(claim) == *old(claim),
+            r is Err ==> *final(claim) == *old(claim),
             r matches Ok((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
             // The claimed block's token names the arena that owns the slot.
             r matches Ok((c, a)) ==> a == crate::class::slot_owner(c as int, p@.addr),
@@ -3345,21 +3347,9 @@ impl Shared {
                 let arena = unsafe { table.located_owner(slab as usize, slot as usize, Tracked(claim.held.tracked_borrow().slot_ref())) };
                 Ok((class, arena))
             }
-            Kind::Huge { page } => {
-                proof {
-                    // A page start of the huge region is no slot start, so
-                    // the claim takes no bit test's record (#835 step 2
-                    // moves it past `Huge::free_run`'s checks).
-                    if crate::heap::slot_start(p) {
-                        let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
-                        assert(self.regions.is_slot_addr(c, p@.addr));
-                        crate::vspec::zero::lemma_slot_not_huge(c, p as usize);
-                    }
-                    let tracked none = crate::class::BitLoad::new();
-                    claim.settle(p, &none);
-                }
-                Err(page)
-            },
+            // The claim goes on as it is: `Huge::free_run` (or the size
+            // query of a `zero_on_free` clear) claims it past its checks.
+            Kind::Huge { page } => Err(page),
             Kind::Invalid => {
                 proof {
                     if claim.held_block(p) {
@@ -3443,31 +3433,57 @@ impl Shared {
     /// `zero_on_free` for a huge run: clear the usable bytes of the live
     /// run starting at `page` (aborts unless it is one) before its release.
     /// Out of line: it takes the huge lock for the size and then writes
-    /// the whole run. `blk` is the run's token, whose permission to the
-    /// run's usable bytes the clear takes (through the cast of the page's
-    /// address, `vspec::user::axiom_cast`). Returns the token for the
-    /// cleared bytes.
+    /// the whole run. `claim` is the run's token ([`Claim::run_claim`]),
+    /// held or still the call's, claimed past the size query's check
+    /// ([`Huge::usable_size`](crate::huge::Huge::usable_size)); the clear
+    /// takes its permission to the run's usable bytes (through the cast
+    /// of the page's address, `vspec::user::axiom_cast`). Returns the
+    /// token for the cleared bytes.
     #[cold]
     #[inline(never)]
-    pub fn zero_huge(&self, page: usize, Tracked(blk): Tracked<&mut Live>, Tracked(ord): Tracked<&mut LockOrder>) -> (z: Tracked<Zeroed>)
+    pub fn zero_huge(&self, page: usize, Tracked(claim): Tracked<&mut Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> (z: Tracked<Zeroed>)
         requires
-            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && old(claim).held is Some),
             crate::sys::may_syscall(),
             self.wf(),
             page <= self.huge_pages(),
-            old(blk).run_block(page as int),
+            old(claim).run_claim(page as int),
+            old(claim).held matches Some(l) ==> l.run_block(page as int),
             old(ord).allows(rank_huge()),
         ensures
             self.huge_run_zero(z@, page),
-            final(blk).run_block(page as int),
-            z@.addr() == final(blk).addr() as int,
-            z@.len() == final(blk).len(),
+            final(claim).held matches Some(l) && l.run_block(page as int),
+            z@.addr() == final(claim).held->0.addr() as int,
+            z@.len() == final(claim).held->0.len(),
             *final(ord) == *old(ord),
     {
         proof {
             self.lemma_wf_slow();
+            self.lemma_regions_ok();
         }
-        let n = self.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(ord));
+        // The size, with the run's check: a held claim lends its run token
+        // to the query (and is set aside meanwhile), a pending one is
+        // claimed there (`Huge::usable_size`, `Claim::settle_run`),
+        // before the clear.
+        let tracked mut aside = Claim::none();
+        proof {
+            if claim.held is Some {
+                vstd::modes::tracked_swap(&mut aside, claim);
+            }
+        }
+        let tracked none: Option<crate::huge::RunToken> = None;
+        let tracked tok = if aside.held is Some {
+            aside.held.tracked_borrow().run_ref()
+        } else {
+            &none
+        };
+        let n = self.huge.usable_size(page, Tracked(tok), Tracked(&mut *claim), Tracked(ord));
+        proof {
+            if aside.held is Some {
+                vstd::modes::tracked_swap(&mut aside, claim);
+            }
+        }
+        let tracked mut blk = claim.held.tracked_take();
         proof {
             broadcast use vstd::layout::align_of_u8;
             // The run's usable bytes end inside the huge region.
@@ -3522,7 +3538,7 @@ impl Shared {
             self.regions.lemma_block_nonzero(0, a, 1, 0);
         }
         // The permission, through the cast of the page's address.
-        let ghost orig = *blk;
+        let ghost orig = blk;
         let tracked mut m = blk.take_mem();
         proof {
             crate::vspec::user::axiom_cast(&mut m);
@@ -3531,36 +3547,37 @@ impl Shared {
         let z = unsafe { crate::vspec::user::zero_user(crate::vspec::addr::addr_to_ptr(self.regions.huge_addr(page)), n, Tracked(&mut m)) };
         proof {
             blk.put_mem(m, orig);
+            claim.held = Some(blk);
         }
         z
     }
 
     /// Free the huge run starting at `page`. Aborts unless it is a live
-    /// run start. Returns the usable bytes released.
-    pub fn free_huge(&self, page: usize, Tracked(tok): Tracked<crate::huge::RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> usize
+    /// run start. Returns the usable bytes released. `claim` is the run's
+    /// token ([`Claim::run_claim`]), held or still the call's;
+    /// [`Huge::free_run`](crate::huge::Huge::free_run) claims it past its
+    /// checks.
+    pub fn free_huge(&self, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> usize
         requires
-            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held is Some),
             crate::sys::may_syscall(),
             old(ord).allows(rank_huge()),
             self.wf(),
             page <= self.huge_pages(),
-            tok.wf(),
-            tok.start() == page,
+            claim.run_claim(page as int),
         ensures
             *final(ord) == *old(ord),
     {
         proof {
             self.lemma_wf_slow();
+            self.lemma_regions_ok();
         }
-        let ghost np = tok.npages();
         proof {
             self.lemma_huge_process();
         }
-        let run = self.huge.free_run(&self.meta, page, Tracked(tok), Tracked(ord));
-        // Exact stats: the pages `note_huge_free` subtracts are the token's.
-        proof {
-            assert(run.pages == np);
-        }
+        let run = self.huge.free_run(&self.meta, page, Tracked(claim), Tracked(ord));
+        // Exact stats: the pages `note_huge_free` subtracts are the run's
+        // descriptor's (a held token's, `Huge::free_run`).
         self.owner(run.arena).0.note_huge_free(run.pages);
         run.usable
     }
@@ -3731,10 +3748,12 @@ impl Shared {
                 // The permission to the tail's bytes was given up above
                 // (`put_shrunk_run`), so the free that makes its pages
                 // allocatable again comes after it, as the plain free's
-                // `into_run` comes before `Shared::free_huge`: no thread
-                // can be handed those pages while `blk` still covers them.
+                // `Live::release_run` (in `Huge::free_run`, under the lock)
+                // comes before the run's pages leave the authority: no
+                // thread can be handed those pages while `blk` still
+                // covers them.
                 let tracked tail = tail.tracked_unwrap();
-                let _ = self.huge.free_run(&self.meta, tp, Tracked(tail), Tracked(ord));
+                let _ = self.huge.free_run(&self.meta, tp, Tracked(Claim::held(Live::of_run(tail))), Tracked(ord));
                 self.owner(arena).0.note_huge_shrink(k);
                 let n = self.huge.usable_for(size);
                 if let Some(h) = super::existing_heap(super::shared_ptr(self)) {

@@ -4,6 +4,9 @@
 //! run-token reads [`Huge::usable_size`] and [`Huge::lookup`].
 
 use super::*;
+use crate::heap::Claim;
+#[cfg(doc)]
+use crate::heap::Live;
 
 verus! {
 
@@ -1180,8 +1183,29 @@ pub(super) proof fn lemma_live_keyed(g: Inner, page: usize)
     }
 }
 
+/// [`Huge::free_run`] past its checks: settle the run's claim
+/// ([`Claim::settle_run`]) with `runs`, the run authority of the lock's
+/// value, which holds the run's extent `(page, n)`, and take the run
+/// token out of the claimed block (its permission is dropped). Out of
+/// `free_run`'s body, which keeps its rlimit.
+proof fn claim_run(tracked claim: Claim, tracked runs: &GhostSetAuth<(int, int)>, page: int, n: int) -> (tracked tok: RunToken)
+    requires
+        crate::heap::regions_ok(),
+        claim.run_claim(page),
+        runs.id() == run_loc(),
+        runs@.contains((page, n)),
+    ensures
+        tok.wf(),
+        tok.start() == page,
+        claim.held matches Some(l) ==> l.run_opt() == Some(tok),
+{
+    let tracked mut claim = claim;
+    claim.settle_run(page, runs);
+    claim.held.tracked_unwrap().release_run()
+}
+
 impl Huge {
-    /// The huge free's first check: `d`, the table's entry for `page` in
+    /// The huge free's first check:`d`, the table's entry for `page` in
     /// `g` (the huge lock's value), is a descriptor. Aborts with
     /// `not_a_run` when the table maps nothing to `page`.
     ///
@@ -1266,6 +1290,16 @@ impl Huge {
     /// (`start`, `pages` with the guard, `usable`, `arena`), for the
     /// caller's per-arena counters.
     ///
+    /// `claim` is the run's token ([`Claim::run_claim`]): held (a live
+    /// run's [`Live`], or [`Live::of_run`] of a run token), or still the
+    /// call's, claimed ([`Claim::settle_run`]) only past the checks
+    /// ([`Huge::live_run_lookup`], [`Huge::live_run_checks`]), with the
+    /// run authority the lock holds as their record
+    /// ([`run_checked`](crate::heap::run_checked)). So a stale or forged
+    /// page start aborts before the C contract is used
+    /// (`VULN-CLASSES.md` E). The permission to the run's bytes is dropped
+    /// with the claim, before the run's pages leave the lock.
+    ///
     /// Proved to keep `Inner::wf`: the run and its free neighbours leave
     /// the table and the counters, one of them (the survivor) comes back
     /// as the merged free extent, which covers exactly their pages, and
@@ -1286,20 +1320,21 @@ impl Huge {
     #[verifier::loop_isolation(false)]
     // The coalescing loops are spelled out (see below), not `while let`.
     #[allow(clippy::while_let_loop)]
-    pub fn free_run(&self, meta: &Meta, page: usize, Tracked(tok): Tracked<RunToken>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: RunInfo)
+    pub fn free_run(&self, meta: &Meta, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: RunInfo)
         requires
-            crate::sys::may_abort() || crate::sys::valid_aborts(),
+            crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held is Some),
             crate::sys::may_syscall(),
             self.is_process(),
             meta.is_process(),
             meta.live_id() == self.spec_mid(),
-            tok.wf(),
-            tok.start() == page,
+            crate::heap::regions_ok(),
+            page <= self.spec_npages(),
+            claim.run_claim(page as int),
             old(ord).allows(rank_huge()),
         ensures
             *final(ord) == *old(ord),
             r.pages <= u32::MAX,
-            r.pages == tok.npages(),
+            claim.held matches Some(l) ==> r.pages == l.run_opt()->0.npages(),
     {
         hide(Inner::wf);
         hide(Seq::no_duplicates);
@@ -1321,20 +1356,23 @@ impl Huge {
         }
         let _gi: &Inner = &g;
         proof {
-            // The token's run is live: its extent is in the run authority
-            // (as in `lookup`), and its pages lie in the region.
-            let tracked t = &tok;
+            // A held token's run is live: its extent is in the run
+            // authority (as in `lookup`), and its pages lie in the region.
+            // A pending claim has no token yet; the checks below decide.
             self.lemma_process_runs();
             self.lemma_run_ids(g@);
-            theorem_run_counted(_gi, t);
             lemma_run_auths(g@);
             lemma_active(g@.descs@);
-            let x = choose|x: *mut HugeDesc|
-                #![trigger g@.descs@.contains_key(x)]
-                #![trigger run_at(g@.descs@[x].value(), (t.start(), t.npages()))]
-                g@.descs@.contains_key(x) && run_at(g@.descs@[x].value(), (t.start(), t.npages()));
-            assert(desc_ok(g@.descs@[x].value(), g0.next_page));
-            assert(g@.runs@@.contains((page as int, t.npages())));
+            if claim.held is Some {
+                let tracked t = claim.held.tracked_borrow().run_ref().tracked_borrow();
+                theorem_run_counted(_gi, t);
+                let x = choose|x: *mut HugeDesc|
+                    #![trigger g@.descs@.contains_key(x)]
+                    #![trigger run_at(g@.descs@[x].value(), (t.start(), t.npages()))]
+                    g@.descs@.contains_key(x) && run_at(g@.descs@[x].value(), (t.start(), t.npages()));
+                assert(desc_ok(g@.descs@[x].value(), g0.next_page));
+                assert(g@.runs@@.contains((page as int, t.npages())));
+            }
         }
         // The checks: the table's descriptor at `page` is an `Active` run
         // starting there.
@@ -1351,10 +1389,16 @@ impl Huge {
         let (start, n, state, usable, arena) =
             (g.desc(d).start(), g.desc(d).pages(), g.desc(d).state(), g.desc(d).usable, g.desc(d).arena());
         self.live_run_checks(Ghost(g@), page, Ghost(d), state, start);
-        // The run's token: its extent is this run's (one `Active` extent
+        // The checks passed: claim the run, with the run authority as
+        // their record, and take its token out (the permission to its
+        // bytes is dropped). Its extent is this run's (one `Active` extent
         // starts at `page`), and it leaves the run authorities.
-        let ghost tpages = tok.pages@;
         let _gm: &mut Inner = &mut g;
+        proof {
+            self.lemma_run_ids(g0);
+        }
+        let tracked tok = claim_run(claim, _gm.runs.borrow(), page as int, n as int);
+        let ghost tpages = tok.pages@;
         proof {
             lemma_run_auths(g0);
             self.lemma_run_ids(g0);
@@ -1789,13 +1833,28 @@ impl Huge {
     /// the usable pages of the run token `tok` holds, if it is this run's.
     /// With that token neither abort can fire, so the caller needs only
     /// `valid_aborts`.
-    pub fn usable_size(&self, page: usize, Tracked(tok): Tracked<&Option<RunToken>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    ///
+    /// `claim` is a free's pending claim of the run ([`Claim::run_claim`],
+    /// the call's token, not claimed yet), or [`Claim::none`]. A pending
+    /// claim is claimed ([`Claim::settle_run`]) only past the checks, with
+    /// the run authority the lock holds as their record, as in
+    /// [`Huge::free_run`]: `Shared::zero_huge` clears a freed run before
+    /// `free_run`, so its claim is settled here. Any other `claim` is
+    /// left as it is.
+    pub fn usable_size(
+        &self,
+        page: usize,
+        Tracked(tok): Tracked<&Option<RunToken>>,
+        Tracked(claim): Tracked<&mut Claim>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: usize)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && holds_run(*tok, page as int)),
             crate::sys::may_syscall(),
             page <= self.spec_npages(),
             self.runs_process(),
             old(ord).allows(rank_huge()),
+            old(claim).held is None && old(claim).call is Some ==> crate::heap::regions_ok() && old(claim).run_claim(page as int),
         ensures
             *final(ord) == *old(ord),
             page < self.spec_npages(),
@@ -1804,6 +1863,12 @@ impl Huge {
             // A live run's interior page or guard is no run start: the
             // query returns only at a run's first page.
             tok is Some && tok.unwrap().wf() && tok.unwrap().start() <= page < tok.unwrap().start() + tok.unwrap().npages() ==> tok.unwrap().start() == page,
+            !(old(claim).held is None && old(claim).call is Some) ==> *final(claim) == *old(claim),
+            old(claim).held is None && old(claim).call is Some ==> {
+                &&& final(claim).held matches Some(l) && l.run_block(page as int)
+                &&& final(claim).held->0.block(old(claim).call->0.block()->0)
+                &&& r == (final(claim).held->0.run_opt()->0.npages() - GUARD_PAGES) * self.spec_page()
+            },
     {
         proof {
             use_type_invariant(self);
@@ -1858,6 +1923,20 @@ impl Huge {
             // extent shares a page with the token's.
             if tok is Some && tok.unwrap().wf() && tok.unwrap().start() <= page < tok.unwrap().start() + tok.unwrap().npages() {
                 let tracked t = tok.tracked_borrow();
+                t.ext.agree(_gi.runs.borrow());
+                lemma_token_extent(g@, d, t.start(), t.npages());
+            }
+            // The checks passed: the run authority holds the extent of the
+            // `Active` descriptor `d`, which starts at `page`. A pending
+            // claim is claimed with it as their record; its token's extent
+            // is `d`'s.
+            if claim.held is None && claim.call is Some {
+                lemma_run_auths(g@);
+                lemma_active(g@.descs@);
+                assert(run_at(v, (page as int, v.pages as int)));
+                assert(g@.runs@@.contains((page as int, v.pages as int)));
+                claim.settle_run(page as int, _gi.runs.borrow());
+                let tracked t = claim.held.tracked_borrow().run_ref().tracked_borrow();
                 t.ext.agree(_gi.runs.borrow());
                 lemma_token_extent(g@, d, t.start(), t.npages());
             }
