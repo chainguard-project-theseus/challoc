@@ -535,6 +535,21 @@ pub open spec fn slot_checked(p: *mut u8, l: crate::class::BitLoad) -> bool {
     exists|t: crate::class::SlabTable| t.is_process() && #[trigger] crate::class::bit_seen_at(t, p@.addr as int, l)
 }
 
+/// A free's huge check passed for the run at page `page` (`VULN-CLASSES.md`
+/// E), by its record `runs`: the process's authority of the live runs'
+/// extents ([`run_loc`](crate::huge::run_loc)) holds an extent that
+/// starts at `page`. That authority is one per process, kept in the huge
+/// lock's value, so a proof can borrow it only while it holds the lock,
+/// and this holds only past the lock's checks
+/// (`Huge::live_run_checks`). The plain frees need it to claim C's token
+/// for a huge run ([`Claim::settle_run`](crate::heap::Claim::settle_run)):
+/// a page start with no live run there aborts before the C contract is
+/// used.
+pub open spec fn run_checked(page: int, runs: vstd::resource::set::GhostSetAuth<(int, int)>) -> bool {
+    &&& runs.id() == crate::huge::run_loc()
+    &&& exists|n: int| #[trigger] runs@.contains((page, n))
+}
+
 /// A sized free's size hint names `p`'s class: if `p` is a slot start of
 /// class `c`, `hint` is `Some(c)`.
 /// `hint` is the class the size (and alignment) the program passed name,

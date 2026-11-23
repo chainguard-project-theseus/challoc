@@ -321,14 +321,26 @@ whose witness only a word invariant makes). The fast path settles
 after `Shared::set_slot`'s bit test (`heap::free_fast_slot`), the slow
 path after `SlabTable::check_live` (`Shared::classify_free`, which then
 reads the owner with the slot's token, `SlabTable::located_owner`). A
-huge page start is still claimed as `classify_free` classifies it. So a
-plain free of a slot no refill ever claimed aborts before the C
-contract is used. That the plain frees reach `axiom_c_claim` only
-through `settle` is not a Verus fact (`axiom_c_claim` is `pub`, and
+huge page start goes on unclaimed past `classify_free`, and is claimed
+by `Claim::settle_run` past the huge lock's checks: `Huge::free_run`
+settles between `live_run_checks` and taking the run's token out (in
+the helper `claim_run`), and `Huge::usable_size` settles past its own
+checks when a `zero_on_free` clear (`Shared::zero_huge`) runs first. For
+a pending claim, `settle_run` requires `heap::run_checked(page, runs)`:
+`runs` is the process's authority of the live runs' extents
+(`huge::run_loc`), which only the huge lock's value holds, with an
+extent starting at `page`. `settle` requires a slot start for a
+pending claim, so a huge page start has no other way to its token. So a
+plain free of a slot no refill ever claimed, or of a page start where
+no live run starts, aborts before the C contract is used. That the
+plain frees reach `axiom_c_claim` only through `settle` and
+`settle_run` is not a Verus fact (`axiom_c_claim` is `pub`, and
 `Claim::held` takes any `Live`): it is these bodies, pinned by
 `trusted_mint_sites_are_pinned` (`lib.rs`), which lists every caller
-of `axiom_c_claim` and of `Claim::pending` (`libc::free` and the two
-verification-only restatements of its paths). Every other caller calls it once per C call, by the
+of `axiom_c_claim` (in `heap::live`, only `Claim::claim_call`, which
+only `settle` and `settle_run` call) and of `Claim::pending`
+(`libc::free` and the two verification-only restatements of its
+paths). Every other caller calls it once per C call, by the
 Rust entry point the export calls, before anything else: `free_sized_hint`
 (`free_aligned_sized` and the aligned sized `delete`s; `free_sized`, and
 so `operator delete(void*, size_t)` and its array form, claim in
@@ -996,7 +1008,8 @@ class, `Shared::free_huge` a page index from
   state this only for a token the caller already holds (`claim.held
   matches Some(l) ==> l.block(p)`): for `free` and `delete`, whose claim
   is still C's, they state no liveness, because the token is claimed only
-  past the bit test (`Claim::settle`,
+  past the bit test or the huge lock's checks (`Claim::settle`,
+  `Claim::settle_run`,
   [#835](https://github.com/chainguard-project-theseus/challoc/issues/835))
   and then given to the cache or bitmap. For a slot or huge page start that is not
   live, C has no token, and the boundary's `axiom_c_claim` (the `free`
@@ -2762,8 +2775,10 @@ theorem does not follow a token through the cache (see below).
 - The writes take the freed block's permission (`vspec::user::UserMem`),
   which the free path holds in its `Live` token together with the
   slot or run token: `zero_slot` and `zero_huge` borrow it
-  (`Live::take_mem`, `put_mem`), and `take_slot` or `into_run` then drop
-  it with the token.
+  (`Live::take_mem`, `put_mem`), and `take_slot` (a slot) or
+  `release_run` (a run, inside `Huge::free_run`, under the huge lock and
+  before the run's pages leave the authorities) then drop it with the
+  token.
   `zero_huge` gets the run's token and clears exactly that token's usable
   pages, through the cast of the page's address
   (`vspec::user::axiom_cast`, the exposed-provenance premise).
@@ -3770,7 +3785,9 @@ of a slot start (`free`, `delete`) takes the token only past its bit
 test, with the test's record (`Claim::settle`, `slot_checked`,
 [#835](https://github.com/chainguard-project-theseus/challoc/issues/835)),
 so a slot no refill ever claimed aborts first, in a consistent
-context. The run-time
+context; a huge page start, only past the huge lock's checks, with the
+run authority as their record (`Claim::settle_run`, `run_checked`), so
+a page where no live run starts aborts first too. The run-time
 checks behind those rows are verified code (each abort helper ends in
 `sys::abort_fmt` and returns `!`), but no theorem says they fire for
 every non-live block: the bitmap word invariant (`bitmap::WordPred`)
@@ -3847,6 +3864,24 @@ check fails its postcondition. Without the `start != page` check it
 still verifies: an `Active` descriptor's only table key is its start
 (`is_key`), so the table lookup at `page` already gives a descriptor
 starting at `page`; the check stays as defence in depth.
+
+The huge claim (#835 step 2; full `cargo verus verify` on a copy, each
+one error unless named): `free_run` settling the claim before
+`live_run_lookup` (H1), or between it and `live_run_checks` (H5: the
+descriptor in hand, not yet shown `Active` or starting at `page`), fails
+`Claim::settle_run`'s precondition (H5 also puts `free_run`'s body over
+its rlimit); `Heap::free`'s huge branch settling with `Claim::settle`
+and a fresh `BitLoad` (step 1's route, H2) fails `settle`'s
+precondition (no slot start); `claim_run` settling with a fresh
+`GhostSetAuth` holding `(page, n)` (H3) fails `settle_run`'s
+precondition (its id is not `run_loc()`), and so does settling with the
+lock's authority knowing only an extent `(q, n)` for an unrelated `q`
+(H6); `usable_size` settling a pending claim before its checks (H4)
+fails `settle_run`'s precondition. `libc::free` claiming up front
+(`Claim::held(axiom_c_claim(c))` for `Claim::pending(c)`, H7) still
+verifies (4392 verified, 0 errors): `trusted_mint_sites_are_pinned`
+rejects it (a call of `axiom_c_claim(` in `pub fn free`, not a listed
+site).
 
 *(ghost token)*: `api::libc::usable_size` takes a `Tracked<&Live>` that
 its executable code never reads, and is verified for every value of it.
@@ -4883,10 +4918,15 @@ admits, `stats.runs` is the number of extents the run authority holds and
 extent per live `RunToken`, and its pages (`theorem_run_counted`: a token's extent and pages are among them). These are the
 `huge:` counters of `malloc_stats_print`; no quiescence premise is
 needed, since they change under the huge lock with the authorities.
-`free_run` ensures `r.pages == tok.npages()`, and
-`Shared::alloc_huge` and `free_huge` assert that the pages they add to
-and subtract from the `large` word are the token's
-(`heap/shared.rs`).
+`Shared::alloc_huge` asserts that the pages it adds to the `large` word
+are the token's (`heap/shared.rs`). On the free side the token is a
+`heap::Claim` (#835): `free_run` ensures `r.pages` is the token's page
+count for a held claim, and for a pending one (`free`, `delete`) its own
+proof shows the token it claims past its checks has the descriptor's
+pages (`n == tok.npages()` after `claim_run`), which it returns;
+`Shared::free_huge` subtracts `r.pages`. Its `ensures` states no page
+count for a pending claim, because the token it would name is made
+inside the call.
 
 **What the figures count.**
 - `allocated` (`curregs * size`): slots out of the bitmaps, which at a

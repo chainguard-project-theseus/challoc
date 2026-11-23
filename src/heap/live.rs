@@ -37,8 +37,9 @@ verus! {
 /// [`RunToken`] (`run`), with the permission to its usable bytes (`mem`,
 /// [`UserMem`]). Made by [`Live::from_slot`] and [`Live::from_run`]
 /// ([`Live::empty`] holds nothing);
-/// taken apart by [`Live::take_slot`] and [`Live::into_run`], which drop
-/// the permission as they give the slot or run token out;
+/// taken apart by [`Live::take_slot`], [`Live::into_run`] and
+/// [`Live::release_run`], which drop the permission as they give the slot
+/// or run token out;
 /// [`Live::take_mem`] and [`Live::put_mem`] lend the permission to a fill.
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
@@ -324,6 +325,16 @@ impl Live {
         Live { addr: p@.addr, class: 0, slot: None, run: Some(t), mem: Some(m) }
     }
 
+    /// The run token `t` alone, with no permission (not [`Live::wf`]):
+    /// what [`Huge::free_run`](crate::huge::Huge::free_run) takes, held,
+    /// for a run the allocator frees itself (a shrink's tail).
+    pub proof fn of_run(tracked t: RunToken) -> (tracked r: Live)
+        ensures
+            r.run_opt() == Some(t),
+    {
+        Live { addr: 0, class: 0, slot: None, run: Some(t), mem: None }
+    }
+
     /// The token holds a slot token.
     pub closed spec fn has_slot(self) -> bool {
         self.slot is Some
@@ -475,6 +486,22 @@ impl Live {
         ensures
             t.wf(),
             t.start() == page,
+            Some(t) == self.run_opt(),
+    {
+        let tracked Live { addr, class, slot, run, mem } = self;
+        run.tracked_unwrap()
+    }
+
+    /// The run token out of a token that holds one, the rest (the
+    /// permission, when it holds one) dropped: [`Huge::free_run`]'s
+    /// claim, held or claimed past its checks, whose run it frees. Unlike
+    /// [`Live::take_run`], nothing is lent: the token is used up.
+    ///
+    /// [`Huge::free_run`]: crate::huge::Huge::free_run
+    pub proof fn release_run(tracked self) -> (tracked t: RunToken)
+        requires
+            self.run_opt() is Some,
+        ensures
             Some(t) == self.run_opt(),
     {
         let tracked Live { addr, class, slot, run, mem } = self;
@@ -849,10 +876,12 @@ impl Live {
 /// a bare slot or run token into the token they make with the permission.
 /// A permission exists only inside the [`Live`] that holds its block's
 /// slot or run token, and the slot or run token comes out bare only
-/// through [`Live::take_slot`] and [`Live::into_run`], which drop the
-/// permission. There is one token per block (the class bitmap's and the
-/// huge allocator's authorities), so no second permission can be minted
-/// for bytes whose first is still held. The third caller,
+/// through [`Live::take_slot`], [`Live::into_run`] and
+/// [`Live::release_run`] (the plain huge free's, inside `Huge::free_run`
+/// under the huge lock), which drop the permission. There is one token
+/// per block (the class bitmap's and the huge allocator's authorities),
+/// so no second permission can be minted for bytes whose first is still
+/// held. The third caller,
 /// [`Live::put_run`], mints the permission to the bytes a run gained by
 /// growing in place, past those its kept permission covers: they were no
 /// live block's usable bytes (the run's old guard page and pages no live
@@ -1117,9 +1146,9 @@ proof fn lemma_one_apart(tracked m: &mut Map<int, Live>, tracked t: &mut Live, n
 /// `false`. The run-time checks behind the frees (the bitmap bit test,
 /// the huge table lookup, the cache flush's release) stay in the code for
 /// such programs. `api::libc::free` and `api::cxx::delete` reach it
-/// through [`Claim::settle`], past the bit test of a slot
-/// (`VULN-CLASSES.md` E; a huge page start is claimed as it is
-/// classified). Its other callers are the Rust entry points of
+/// only through `Claim::claim_call`, which [`Claim::settle`] calls
+/// past the bit test of a slot and [`Claim::settle_run`] past the huge
+/// lock's checks of a run (`VULN-CLASSES.md` E). Its other callers are the Rust entry points of
 /// the frees and of the reallocations (`free_sized`,
 /// `free_sized_hint`, `free_usable`, `realloc` and `realloc_usable`;
 /// `api::jemalloc::dallocx`, `sdallocx` and `rallocx`), each with the
@@ -1171,6 +1200,17 @@ impl Claim {
         Claim { held: Some(l), call: None }
     }
 
+    /// No token at all: claims nothing, and settles nothing (what a size
+    /// query that holds the run's token, or none, passes
+    /// `Huge::usable_size`).
+    pub proof fn none() -> (tracked r: Claim)
+        ensures
+            r.held is None,
+            r.call is None,
+    {
+        Claim { held: None, call: None }
+    }
+
     /// The call's token, not claimed yet.
     pub proof fn pending(tracked c: CCall) -> (tracked r: Claim)
         ensures
@@ -1180,27 +1220,82 @@ impl Claim {
         Claim { held: None, call: Some(c) }
     }
 
-    /// Claim the block: a pending call's token becomes the block's
-    /// ([`axiom_c_claim`], the seam); a held token stays as it is. The
-    /// free paths call it only past their run-time check, and for a
-    /// pending claim of a slot start it takes that check's record: `obs`
-    /// is a load of the slot's bitmap word that found its bit set in a
-    /// value the word held ([`slot_checked`](crate::heap::slot_checked)),
-    /// which only the word invariants can make. So C's token for a slot
-    /// is claimed only past a passing bit test (`VULN-CLASSES.md` E).
+    /// The claim of the run at page `page` of the huge region: held, a
+    /// token with that run's [`RunToken`] (a run's [`Live`], or
+    /// [`Live::of_run`] of a run token alone); pending, the call's token
+    /// for the page's start.
+    pub open spec fn run_claim(self, page: int) -> bool {
+        match self.held {
+            Some(l) => crate::huge::holds_run(l.run_opt(), page),
+            None => self.call matches Some(c) && c.block() matches Some(p) && process_regions().is_huge_block(p@.addr, 1) && page == ((
+            p@.addr - process_regions().huge_base) as usize) >> process_regions().lg_page,
+        }
+    }
+
+    /// Claim the block of a slot: a pending call's token becomes the
+    /// block's (`Claim::claim_call`); a held token stays as it is. The
+    /// free paths call it only past their bit test, and a pending claim
+    /// takes that check's record: `p` is a slot start and `obs` a load of
+    /// the slot's bitmap word that found its bit set in a value the word
+    /// held ([`slot_checked`](crate::heap::slot_checked)), which only the
+    /// word invariants can make. So C's token for a slot is claimed only
+    /// past a passing bit test (`VULN-CLASSES.md` E); a huge run's is
+    /// claimed by [`Claim::settle_run`].
     pub proof fn settle(tracked &mut self, p: *mut u8, tracked obs: &crate::class::BitLoad)
         requires
             old(self).claims(p),
-            old(self).held is None && crate::heap::slot_start(p) ==> crate::heap::slot_checked(p, *obs),
+            old(self).held is None ==> crate::heap::slot_start(p) && crate::heap::slot_checked(p, *obs),
         ensures
             final(self).held is Some,
             final(self).claims(p),
             old(self).held is Some ==> *final(self) == *old(self),
     {
         if self.held is None {
-            let tracked c = self.call.tracked_take();
-            self.held = Some(axiom_c_claim(c));
+            self.claim_call(p);
         }
+    }
+
+    /// Claim the block of the huge run at page `page`, as
+    /// [`Claim::settle`] does a slot's: a pending claim takes the huge
+    /// check's record, `runs`, the process's authority of the live runs'
+    /// extents with one starting at `page`
+    /// ([`run_checked`](crate::heap::run_checked)), which a proof can
+    /// borrow only from the huge lock's value. `Huge::free_run` and
+    /// `Huge::usable_size` call it past their checks, under the lock. So
+    /// C's token for a huge run is claimed only past a passing lookup
+    /// (`VULN-CLASSES.md` E).
+    pub proof fn settle_run(tracked &mut self, page: int, tracked runs: &vstd::resource::set::GhostSetAuth<(int, int)>)
+        requires
+            crate::heap::regions_ok(),
+            old(self).run_claim(page),
+            old(self).held is None ==> crate::heap::run_checked(page, *runs),
+        ensures
+            final(self).held is Some,
+            final(self).run_claim(page),
+            old(self).held is Some ==> *final(self) == *old(self),
+            old(self).held is None ==> final(self).held->0.run_block(page),
+            old(self).held is None ==> final(self).held->0.block(old(self).call->0.block()->0),
+    {
+        if self.held is None {
+            let p = self.call->0.block()->0;
+            self.claim_call(p);
+            lemma_not_slot(p);
+            self.held->0.lemma_run_block(p, page as usize);
+        }
+    }
+
+    /// The one use of [`axiom_c_claim`]: a pending call's token becomes
+    /// the block's. Only [`Claim::settle`] and [`Claim::settle_run`] call
+    /// it, each past its check.
+    proof fn claim_call(tracked &mut self, p: *mut u8)
+        requires
+            old(self).held is None,
+            old(self).call matches Some(c) && c.block() == Some(p),
+        ensures
+            final(self).held matches Some(l) && l.claims(p),
+    {
+        let tracked c = self.call.tracked_take();
+        self.held = Some(axiom_c_claim(c));
     }
 }
 

@@ -676,7 +676,10 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
 /// its check of a slot (`VULN-CLASSES.md` E, [`Claim::settle`]): only
 /// past a load that found the slot's bit set in a value its bitmap word
 /// held ([`heap::slot_checked`]), so a pointer to a slot no refill ever
-/// claimed aborts before the C contract is used.
+/// claimed aborts before the C contract is used; and of a huge page start
+/// only past the huge lock's checks ([`Claim::settle_run`],
+/// [`heap::run_checked`]), so a page where no live run starts aborts
+/// first too.
 #[inline(always)]
 pub fn free(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
     requires
@@ -1226,7 +1229,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tr
                     shared.lemma_run_page(p, page, *blk);
                 }
             }
-            let r = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(ord));
+            let r = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut Claim::none()), Tracked(ord));
             proof {
                 shared.lemma_huge_run_usable(p as usize, r);
                 crate::vspec::usable::lemma_usable_run(shared, p, r);
@@ -1662,7 +1665,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                     shared.lemma_run_page(p, page, *blk);
                 }
             }
-            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(ord));
+            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut Claim::none()), Tracked(ord));
             proof {
                 shared.lemma_run_page(p, page, *blk);
                 // What the descriptor reads is `p`'s usable size; a page
@@ -2707,7 +2710,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize, Tracked(blk): Tracked<&
                     shared.lemma_run_page(p, page, *blk);
                 }
             }
-            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut *ord));
+            let old = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut Claim::none()), Tracked(&mut *ord));
             proof {
                 crate::meta::lemma_is_pow2_one();
                 heap::lemma_quantum_pow2();
@@ -2863,7 +2866,7 @@ fn free_usable_slow(p: *mut u8, Tracked(blk): Tracked<Live>, Tracked(errno): Tra
             class_size(class)
         },
         Err(page) => {
-            let u = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut *ord));
+            let u = shared.huge.usable_size(page, Tracked(blk.run_ref()), Tracked(&mut Claim::none()), Tracked(&mut *ord));
             proof {
                 shared.lemma_huge_run_usable(p@.addr, u);
                 crate::vspec::usable::lemma_usable_run(shared, p, u);

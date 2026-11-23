@@ -233,7 +233,12 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   so `axiom_c_claim` is not used before the check. The
   huge half: the huge free's
   checks (THEOREMS.md "Bad input", *(lock)*) return only for a page
-  where a live run starts at the lock.
+  where a live run starts at the lock, and the plain frees take C's
+  token for a huge page start only past them, under the lock:
+  `heap::Claim::settle_run` requires `run_checked(page, runs)`, the
+  process's run authority (which only the huge lock's value holds)
+  with an extent starting at the page (`Huge::free_run`, or
+  `Huge::usable_size` for a `zero_on_free` clear, which runs first).
 
 **What the code does (read, not proved; `docs/hardening.md` (1)).** An
 unsized free of a slot whose bitmap bit is clear aborts at the call

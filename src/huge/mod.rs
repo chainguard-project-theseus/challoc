@@ -2149,6 +2149,11 @@ proof fn lemma_push_contains(l: Seq<*mut HugeDesc>, y: *mut HugeDesc, x: *mut Hu
 
 /// The extents after a take: inside the new mark, disjoint, each under
 /// exactly its keys.
+///
+/// The proof's solver cost moves with unrelated items elsewhere in the
+/// crate; its own solver instance (`spinoff_prover`) keeps them out of
+/// its context.
+#[verifier::spinoff_prover]
 proof fn lemma_took_extents(g0: Inner, g1: Inner, t: Take)
     requires
         g0.wf(),
