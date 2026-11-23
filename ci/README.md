@@ -25,6 +25,7 @@ Each script also runs by hand on a Linux host with Docker.
 | `codegen-fncmp-test.sh` | the `codegen-fncmp` check: `scripts/codegen-fncmp.py` on each dump pair in `scripts/testdata/codegen-fncmp`, its verdict line against the expected one; `codegen-notices.sh` on the reports in `scripts/testdata/codegen-notices`; `codegen.sh` with that directory's stand-in compare exiting 0 and 2 |
 | `kani-boolcmp-test.sh` | `scripts/kani-boolcmp.sh` (ordering comparisons on bools in Kani code) over `src/`, which must be clean, and over its fixtures in `scripts/testdata/kani-boolcmp` |
 | `kani-regular-sharded.sh` | `make kani-regular-sharded`: the kit's `kani-regular` at one quantum in `KANI_REGULAR_SHARDS` shards at once, each in its own copy of the tree, failing unless every shard passes and their harnesses add up to the full list; `make verify` runs it |
+| `kani-regular-sharded-test.sh` | `kani-regular-sharded.sh` against a stand-in make: bad shard counts exit 2 with no shard started, a full split passes, a failed, silent or short shard fails (lint's `kani-regular-sharded` check) |
 | `kani-weights.txt` | not a script: the seconds each Kani harness takes, which the `kani-ignoring` check's shards and `kani-regular-sharded.sh` balance by (`make kani KANI_WEIGHTS=ci/kani-weights.txt`, the kit's `kani.sh`) |
 
 `expected-skips/<cell>.txt` holds the skip keys (the first word after

@@ -388,8 +388,7 @@ kani-regular-q8: ## make kani-regular at quantum 8
 #
 # Memory bounds KANI_REGULAR_SHARDS: 8 shards at once peaked at 46.9 GiB
 # in use, and 4 at 32 GiB (a CBMC needs up to 12.4 GiB, on the heaviest
-# harnesses). The 8 fit the 64 GiB the package build asks for
-# (contrib/wolfi/challoc.yaml); a builder with less memory sets
+# harnesses). The 8 fit a 64 GiB package build; a builder with less memory sets
 # KANI_REGULAR_SHARDS lower, or runs kani-regular and kani-regular-q8,
 # one harness at a time in about 12.4 GiB. A shard whose CBMC is killed
 # fails the run. Both quanta's shards at once would not fit (4 shards

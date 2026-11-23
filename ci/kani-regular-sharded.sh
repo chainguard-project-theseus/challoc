@@ -7,22 +7,25 @@
 # Each shard runs in its own copy of the tree under
 # target/kani-shards/qQUANTUM/, since the kit's kani.sh keeps its state in
 # ./target/kani and `cargo kani list` writes ./kani-list.json. Each
-# shard's output is printed once all have finished. It fails when a shard
-# fails (kani.sh fails a shard with no harnesses, a harness that does not
+# shard's output is printed in shard order, once it and the shards before
+# it have finished. It passes only when every shard started and passed
+# and the shards' harnesses add up to the total their kani.sh listed, so
+# a split that drops a harness cannot pass. It fails when a shard fails
+# (kani.sh fails a shard with no harnesses, a harness that does not
 # verify and a `warning: ignoring` line), when SHARDS is not a whole
-# number of at least 1, when a copy of the tree fails, and when the
-# shards' harnesses do not add up to the total each shard's kani.sh
-# listed, so a split that drops a harness cannot pass. A passing shard's
-# copy is removed; a failing one's is kept, with its log.
+# number from 1 to 999, and when a copy of the tree fails. A passing
+# shard's copy is removed; a failing one's is kept, with its log.
+# ci/kani-regular-sharded-test.sh checks it with a stand-in make.
 set -eu
 
-quantum=${1:?usage: kani-regular-sharded.sh QUANTUM SHARDS}
-shards=${2:?usage: kani-regular-sharded.sh QUANTUM SHARDS}
+[ "$#" -eq 2 ] || { echo "usage: kani-regular-sharded.sh QUANTUM SHARDS" >&2; exit 2; }
+quantum=$1
+shards=$2
 make=${MAKE:-make}
 
 case "$shards" in
-  '' | *[!0-9]* | 0*)
-    echo "kani-regular-sharded: SHARDS is a whole number of at least 1, not '$shards'" >&2
+  '' | *[!0-9]* | 0* | ????*)
+    echo "kani-regular-sharded: SHARDS is a whole number from 1 to 999, not '$shards'" >&2
     exit 2 ;;
 esac
 
@@ -61,7 +64,7 @@ for p in $pids; do
   echo "=== shard $s of $shards, quantum $quantum: $r"
   cat "$root/$s.log"
   # kani.sh: "kani: shard S of N: K of T harnesses".
-  line=$(grep -E '^kani: shard [0-9]+ of [0-9]+: [0-9]+ of [0-9]+ harnesses$' "$root/$s.log" || true)
+  line=$(grep -E '^kani: shard [0-9]+ of [0-9]+: [0-9]+ of [0-9]+ harnesses$' "$root/$s.log" | head -n 1 || true)
   if [ -z "$line" ]; then
     echo "kani-regular-sharded: shard $s printed no 'kani: shard' line" >&2
     rc=1
@@ -79,13 +82,11 @@ for p in $pids; do
   [ "$r" = FAILED ] || rm -rf "${root:?}/$s"
 done
 
-if [ "$started" -ne "$shards" ]; then
-  echo "kani-regular-sharded: started $started of $shards shards" >&2
-  rc=1
-elif [ -n "$total" ] && [ "$ran" -ne "$total" ]; then
-  echo "kani-regular-sharded: the shards ran $ran harnesses of the $total listed" >&2
-  rc=1
-else
-  echo "kani-regular-sharded: quantum $quantum, $ran of ${total:-?} harnesses in $shards shards"
+# The pass is stated as a positive, so a test that errors (an operand out
+# of the shell's range) fails the run rather than falling through.
+if [ "$rc" -eq 0 ] && [ "$started" -eq "$shards" ] && [ -n "$total" ] && [ "$ran" -eq "$total" ]; then
+  echo "kani-regular-sharded: quantum $quantum, $ran of $total harnesses in $shards shards"
+  exit 0
 fi
-exit "$rc"
+echo "kani-regular-sharded: started $started of $shards shards, ran $ran harnesses of the ${total:-?} listed" >&2
+exit 1
