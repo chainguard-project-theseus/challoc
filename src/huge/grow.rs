@@ -298,7 +298,9 @@ proof fn lemma_grew_extents(g0: Inner, g1: Inner, t: Grow)
 }
 
 /// The tallies after a growth gain `delta`; `all` stays a list of the
-/// live descriptors.
+/// live descriptors. The list facts of the extent's removal come from
+/// [`super::free::lemma_drop`], out of this body, which keeps its rlimit
+/// headroom: its quantifiers over pairs of indices are out of sight here.
 #[verifier::spinoff_prover]
 proof fn lemma_grew_tally(g0: Inner, g1: Inner, t: Grow, k: int)
     requires
@@ -354,25 +356,7 @@ proof fn lemma_grew_tally(g0: Inner, g1: Inner, t: Grow, k: int)
         lemma_tally_frame(b, dm, d1, k);
         lemma_tally_remove(a0, dm, j, k);
         assert(dm[t.x].value() == t.ve);
-        assert(b.no_duplicates()) by {
-            assert forall|i1: int, i2: int| 0 <= i1 < b.len() && 0 <= i2 < b.len() && i1 != i2 implies b[i1] != b[i2] by {
-                let j1 = if i1 < j { i1 } else { i1 + 1 };
-                let j2 = if i2 < j { i2 } else { i2 + 1 };
-                assert(b[i1] == a0[j1] && b[i2] == a0[j2]);
-            }
-        }
-        assert forall|y: *mut HugeDesc| #[trigger] b.contains(y) <==> a0.contains(y) && y != t.x by {
-            if b.contains(y) {
-                let i = b.index_of(y);
-                let i0 = if i < j { i } else { i + 1 };
-                assert(a0[i0] == y);
-            }
-            if a0.contains(y) && y != t.x {
-                let i0 = a0.index_of(y);
-                let i = if i0 < j { i0 } else { i0 - 1 };
-                assert(b[i] == y);
-            }
-        }
+        super::free::lemma_drop(a0, t.x);
         assert forall|y: *mut HugeDesc| #[trigger] d1.contains_key(y) <==> g1.all@.contains(y) by {
             assert(d1.contains_key(y) <==> t.model(d0, y) is Some);
         }

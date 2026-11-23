@@ -1077,7 +1077,7 @@ proof fn lemma_free_start(g0: Inner, page: usize)
 }
 
 /// Removing `y` from a list without duplicates removes exactly `y`.
-proof fn lemma_drop(l: Seq<*mut HugeDesc>, y: *mut HugeDesc)
+pub(super) proof fn lemma_drop(l: Seq<*mut HugeDesc>, y: *mut HugeDesc)
     requires
         l.no_duplicates(),
         l.contains(y),
