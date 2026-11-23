@@ -1670,6 +1670,29 @@ const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 
 verus! {
 
+/// [`stack_mut`]'s frame in one fact: the borrow of entries
+/// `start..start + len` took the stack's permissions from `before` to
+/// `after`, the slice started as `r0` (on the written entries) and ended
+/// as `rf`. Opaque, so that a caller with a large context passes it on
+/// to a lemma as one term.
+#[verifier::opaque]
+spec fn stack_moved(
+    before: Map<*mut *mut u8, PointsTo<*mut u8>>,
+    after: Map<*mut *mut u8, PointsTo<*mut u8>>,
+    slots: *mut *mut u8,
+    start: int,
+    len: int,
+    r0: Seq<*mut u8>,
+    rf: Seq<*mut u8>,
+) -> bool {
+    &&& slots_grow(before, after)
+    &&& forall|i: int| start <= i < start + len ==> #[trigger] after[slot_ptr(slots, i)].is_init()
+    &&& forall|i: int| start <= i < start + len && before[slot_ptr(slots, i)].is_init() ==> r0[i - start] == #[trigger] before[slot_ptr(slots, i)].value()
+    &&& forall|i: int| start <= i < start + len ==> #[trigger] after[slot_ptr(slots, i)].value() == rf[i - start]
+    &&& forall|q: *mut *mut u8|
+        before.contains_key(q) && (forall|i: int| start <= i < start + len ==> q != #[trigger] slot_ptr(slots, i)) ==> #[trigger] after[q] == before[q]
+}
+
 /// `slots[start..start + len]` as a slice, for the slice operations of
 /// the refill, the flush and the run rebuild (claims, selections, sorts,
 /// reversals). The slice borrows the entries' permissions: every entry it
@@ -1715,10 +1738,12 @@ unsafe fn stack_mut<'a>(
         forall|q: *mut *mut u8|
             old(perms).contains_key(q) && (forall|i: int| start <= i < start + len ==> q != #[trigger] slot_ptr(slots, i))
                 ==> #[trigger] final(perms)[q] == old(perms)[q],
+        stack_moved(*old(perms), *final(perms), slots, start as int, len as int, r@, final(r)@),
 {
     proof {
         // The primitive's contract names the entries by `ptr_add`.
         assert forall|i: int| #[trigger] crate::vspec::ptr::ptr_add(slots, i as usize) == slot_ptr(slots, i) by {}
+        reveal(stack_moved);
     }
     // SAFETY: guaranteed by the caller.
     unsafe { crate::vspec::slice::slice_mut_from_perms(slots, start, len, Tracked(perms)) }

@@ -39,7 +39,7 @@ use super::{CacheHeader, CachePerms, Heap, Live, Shared, stack_mut};
 use super::{
     cell_ok, hand_out, lemma_handed_ok, lemma_rebuild_moves, lemma_rebuild_tracks,
     lemma_stack_fill, lemma_stack_grow, lemma_stack_shrink, pac_mode, plain, regions_ok, slot_in,
-    slot_ptr, slots_grow, stored, zero,
+    slot_ptr, slots_grow, stack_moved, stored, zero,
 };
 #[cfg(verus_keep_ghost)]
 use crate::class::{ptr_addrs, slot_loc};
@@ -590,6 +590,7 @@ impl Heap {
                 tracked_swap(&mut self.perms.borrow_mut().slots, &mut sl);
             }
             let out = stack_mut(slots, len, want, Tracked(&mut sl));
+            let ghost out0 = out@;
             let tracked mut toks = crate::class::SlotToks::empty();
             let (oa, ow) = shared.owner(arena);
             proof {
@@ -673,7 +674,7 @@ impl Heap {
                     }
                 }
                 assert(p1.claimed());
-                CachePerms::lemma_rebuild_some(perms, ztok, &mut toks, p1, s2, cache, len as int, want as int, nn, claim.zeroed, claimed, out@, all0, all@);
+                CachePerms::lemma_rebuild_some(perms, ztok, &mut toks, p1, s2, cache, len as int, want as int, nn, claim.zeroed, claimed, out0, out@, all0, all@);
                 Heap::lemma_keeps_trans(*old(self), h1, *self);
             }
         }
@@ -825,6 +826,7 @@ impl CachePerms {
         n: int,
         zeroed: bool,
         claimed: Seq<*mut u8>,
+        out0: Seq<*mut u8>,
         outf: Seq<*mut u8>,
         all0: Seq<*mut u8>,
         allf: Seq<*mut u8>,
@@ -859,24 +861,11 @@ impl CachePerms {
             outf.len() == want,
             forall|k: int| 0 <= k < n ==> (#[trigger] outf[k])@.addr == stored(claimed[n - 1 - k]@.addr, o.hdr(p).slots),
             // The first slice (`len..len + want`, from `o.slots` to `mid`).
-            slots_grow(o.slots, mid),
-            forall|q: *mut *mut u8|
-                o.slots.contains_key(q) && (forall|i: int| len <= i < len + want ==> q != #[trigger] slot_ptr(o.hdr(p).slots, i))
-                    ==> #[trigger] mid[q] == o.slots[q],
-            forall|i: int| len <= i < len + want ==> #[trigger] mid[slot_ptr(o.hdr(p).slots, i)].is_init(),
-            forall|i: int| len <= i < len + want ==> #[trigger] mid[slot_ptr(o.hdr(p).slots, i)].value() == outf[i - len],
+            stack_moved(o.slots, mid, o.hdr(p).slots, len, want, out0, outf),
             // The second (`0..len + n`, from `mid` to `old(perms).slots`).
             all0.len() == len + n,
             allf.len() == len + n,
-            slots_grow(mid, old(perms).slots),
-            forall|i: int| 0 <= i < len + n ==> #[trigger] old(perms).slots[slot_ptr(o.hdr(p).slots, i)].is_init(),
-            forall|i: int|
-                0 <= i < len + n && mid[slot_ptr(o.hdr(p).slots, i)].is_init()
-                    ==> all0[i] == #[trigger] mid[slot_ptr(o.hdr(p).slots, i)].value(),
-            forall|i: int| 0 <= i < len + n ==> #[trigger] old(perms).slots[slot_ptr(o.hdr(p).slots, i)].value() == allf[i],
-            forall|q: *mut *mut u8|
-                mid.contains_key(q) && (forall|i: int| 0 <= i < len + n ==> q != #[trigger] slot_ptr(o.hdr(p).slots, i))
-                    ==> #[trigger] old(perms).slots[q] == mid[q],
+            stack_moved(mid, old(perms).slots, o.hdr(p).slots, 0, len + n, all0, allf),
             len >= n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else if i < len { all0[i] } else { all0[i - len] },
             len < n ==> forall|i: int| 0 <= i < len + n ==> #[trigger] allf[i] == if i < n { all0[len + i] } else { all0[i - n] },
         ensures
@@ -886,6 +875,7 @@ impl CachePerms {
             final(perms).zero_ok(),
             final(perms).tokened(),
     {
+        reveal(stack_moved);
         let slots = o.hdr(p).slots;
         let c = o.cls[p];
         assert(cell_ok(p, o.hdrs[p], o.slots));
