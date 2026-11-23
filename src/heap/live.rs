@@ -1188,6 +1188,16 @@ impl Claim {
         }
     }
 
+    /// `l` is the token a free took for this claim, as it was before the
+    /// free: the held one, or for a pending claim the token of the block
+    /// the call names. Opaque, so that `Huge::free_run`'s long body
+    /// carries it as one fact; its callers reveal it.
+    #[verifier::opaque]
+    pub open spec fn took(self, l: Live) -> bool {
+        &&& self.held matches Some(x) ==> l == x
+        &&& self.held is None ==> l.block(self.call->0.block()->0)
+    }
+
     /// The token is held, and it is the live block `p`'s ([`Live::block`]).
     pub open spec fn held_block(self, p: *mut u8) -> bool {
         self.held matches Some(l) && l.block(p)

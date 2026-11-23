@@ -722,14 +722,17 @@ pub fn dallocx(p: *mut u8, flags: c_int, Tracked(c): Tracked<CCall>, Tracked(err
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
         *final(ord) == *old(ord),
 {
-    dallocx_block(p, flags, Tracked(crate::heap::Claim::pending(c)), Tracked(errno), Tracked(ord))
+    dallocx_block(p, flags, Tracked(crate::heap::Claim::pending(c)), Tracked(errno), Tracked(ord));
 }
 
 /// [`dallocx`] with the caller's token for `p`
 /// ([`Claim::claims`](crate::heap::Claim::claims)), held or still the
 /// call's, which the free claims past its check and takes back: for a
-/// held token, the token of the live block `p`.
-pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<crate::heap::Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>)
+/// held token, the token of the live block `p`. For a non-null `p`, the
+/// result is the token the free took, as it was before the free: the
+/// live block `p`'s (C's token, claimed past the check, for a pending
+/// claim).
+pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<crate::heap::Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Ghost<Live>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -741,15 +744,18 @@ pub fn dallocx_block(p: *mut u8, flags: c_int, Tracked(blk): Tracked<crate::heap
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
         p@.addr != 0 ==> (blk.held matches Some(l) ==> l.block(p)),
+        p@.addr != 0 ==> r@.block(p),
+        p@.addr != 0 ==> (blk.held matches Some(l) ==> r@ == l),
 {
     if p.is_null() {
-        return;
+        // No block, so no token: any value.
+        return Ghost(vstd::pervasive::arbitrary());
     }
     let f = Flags::decode(flags as u32);
     let Some(shared) = super::shared_if_ready() else {
         not_an_allocation("dallocx", p)
     };
-    mallocx::free(shared, p, f.tcache, Tracked(blk), Tracked(errno), Tracked(ord));
+    mallocx::free(shared, p, f.tcache, Tracked(blk), Tracked(errno), Tracked(ord))
 }
 
 /// `sdallocx(p, size, flags)`: `size` must satisfy `nallocx(size, flags)

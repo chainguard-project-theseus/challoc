@@ -4,9 +4,7 @@
 //! run-token reads [`Huge::usable_size`] and [`Huge::lookup`].
 
 use super::*;
-use crate::heap::Claim;
-#[cfg(doc)]
-use crate::heap::Live;
+use crate::heap::{Claim, Live};
 
 verus! {
 
@@ -1260,8 +1258,11 @@ pub(super) proof fn lemma_live_keyed(g: Inner, page: usize)
 /// ([`Claim::settle_run`]) with `runs`, the run authority of the lock's
 /// value, which holds the run's extent `(page, n)`, and take the run
 /// token out of the claimed block (its permission is dropped). Out of
-/// `free_run`'s body, which keeps its rlimit.
-proof fn claim_run(tracked claim: Claim, tracked runs: &GhostSetAuth<(int, int)>, page: int, n: int) -> (tracked tok: RunToken)
+/// `free_run`'s body, which keeps its rlimit. `freed` gets the claimed
+/// block, as it was before its run token was taken out ([`Claim::took`]):
+/// the held token, or for a pending claim the token of the block the
+/// call names.
+proof fn claim_run(tracked claim: Claim, tracked runs: &GhostSetAuth<(int, int)>, page: int, n: int, tracked freed: &mut Ghost<Live>) -> (tracked tok: RunToken)
     requires
         crate::heap::regions_ok(),
         claim.run_claim(page),
@@ -1271,9 +1272,12 @@ proof fn claim_run(tracked claim: Claim, tracked runs: &GhostSetAuth<(int, int)>
         tok.wf(),
         tok.start() == page,
         claim.held matches Some(l) ==> l.run_opt() == Some(tok),
+        claim.took(final(freed)@),
 {
     let tracked mut claim = claim;
     claim.settle_run(page, runs);
+    *freed = Ghost(claim.held->0);
+    reveal(Claim::took);
     claim.held.tracked_unwrap().release_run()
 }
 
@@ -1371,7 +1375,12 @@ impl Huge {
     /// ([`run_checked`](crate::heap::run_checked)). So a stale or forged
     /// page start aborts before the C contract is used
     /// (`VULN-CLASSES.md` E). The permission to the run's bytes is dropped
-    /// with the claim, before the run's pages leave the lock.
+    /// with the claim, before the run's pages leave the lock. `freed`
+    /// (ghost) gets the claimed token as it was before the free: the held
+    /// one, or for a pending claim the block the call names. It is a ghost
+    /// argument, not a second result, so the build's return type stays
+    /// `RunInfo` (a tuple with a zero-sized second field changed the
+    /// callers' code).
     ///
     /// Proved to keep `Inner::wf`: the run and its free neighbours leave
     /// the table and the counters, one of them (the survivor) comes back
@@ -1396,7 +1405,7 @@ impl Huge {
     #[verifier::loop_isolation(false)]
     // The coalescing loops are spelled out (see below), not `while let`.
     #[allow(clippy::while_let_loop)]
-    pub fn free_run(&self, meta: &Meta, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: RunInfo)
+    pub fn free_run(&self, meta: &Meta, page: usize, Tracked(claim): Tracked<Claim>, Tracked(freed): Tracked<&mut Ghost<Live>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: RunInfo)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held is Some),
             crate::sys::may_syscall(),
@@ -1411,6 +1420,7 @@ impl Huge {
             *final(ord) == *old(ord),
             r.pages <= u32::MAX,
             claim.held matches Some(l) ==> r.pages == l.run_opt()->0.npages(),
+            claim.took(final(freed)@),
     {
         hide(Inner::wf);
         hide(Seq::no_duplicates);
@@ -1473,7 +1483,7 @@ impl Huge {
         proof {
             self.lemma_run_ids(g0);
         }
-        let tracked tok = claim_run(claim, _gm.runs.borrow(), page as int, n as int);
+        let tracked tok = claim_run(claim, _gm.runs.borrow(), page as int, n as int, freed);
         let ghost tpages = tok.pages@;
         proof {
             lemma_run_auths(g0);

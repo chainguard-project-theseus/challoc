@@ -245,9 +245,11 @@ impl Heap {
     /// the slot's bit test ([`Shared::classify_free`], [`Claim::settle`]
     /// with the test's record, [`slot_checked`](super::slot_checked)), or
     /// a run's past the huge lock's checks ([`Heap::free_huge`],
-    /// [`Claim::settle_run`]).
+    /// [`Claim::settle_run`]). The result is the token the check claimed
+    /// (the held one, if the claim came in held), as it was before the
+    /// free: the live block `p`'s.
     #[inline(always)]
-    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+    pub fn free(&mut self, shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(cell): Tracked<&mut crate::sys::tls::TlsCell>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Ghost<Live>)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held_block(p)),
             crate::sys::may_syscall(),
@@ -264,6 +266,8 @@ impl Heap {
             !old(self).spec_rehome() ==> final(self).keeps(*old(self)),
             free_target(p),
             claim.held matches Some(l) ==> l.block(p),
+            r@.block(p),
+            claim.held matches Some(l) ==> r@ == l,
                 *final(ord) == *old(ord),
     {
         proof {
@@ -278,6 +282,7 @@ impl Heap {
                     blk.lemma_claimed_block(p);
                     blk.lemma_claims_slot(p, class as int);
                 }
+                let ghost claimed = blk;
                 // The freed slot's token, with the permission to its bytes.
                 // During a fork epoch a slot below its arena's floor goes
                 // the way of another arena's: onto the flush-only
@@ -295,6 +300,7 @@ impl Heap {
                 } else {
                     self.free_other(shared, class, p, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
                 }
+                Ghost(claimed)
             }
             Err(page) => {
                 proof {
@@ -476,10 +482,11 @@ impl Heap {
     /// Free of a huge run on this thread. `claim` is the run's token
     /// ([`Claim::run_claim`]), held or still the call's: the checks of the
     /// clear's size query or of `Huge::free_run` claim it
-    /// ([`Claim::settle_run`]).
+    /// ([`Claim::settle_run`]). The result is the token they claimed (the
+    /// held one, if the claim came in held), as it was before the free.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Ghost<Live>)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held is Some),
             crate::sys::may_syscall(),
@@ -493,19 +500,29 @@ impl Heap {
             final(self).keeps(*old(self)),
             final(self).caches_same(*old(self)),
             *final(ord) == *old(ord),
+            claim.held matches Some(l) ==> r@ == l,
+            claim.held is None ==> r@.block(claim.call->0.block()->0),
     {
         let tracked mut claim = claim;
+        let ghost mut cleared: Option<Live> = None;
         if shared.zero_on_free() {
             // The token for the cleared run (`theorem_zero_on_free_huge`).
-            let Tracked(z) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
+            let (Tracked(z), _before) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
             proof {
                 super::zero::theorem_zero_on_free_huge(&z, claim.held->0, page as int);
+                cleared = Some(_before@);
             }
         }
         // The run's token goes to `Huge::free_run`, which drops the
         // permission to its bytes with it.
-        let n = shared.free_huge(page, Tracked(claim), Tracked(ord));
+        let (n, _freed) = shared.free_huge(page, Tracked(claim), Tracked(ord));
         self.count_uncached_free(n);
+        // The token as it was before the clear, when there was one.
+        let ghost r = match cleared {
+            Some(l) => l,
+            None => _freed@,
+        };
+        Ghost(r)
     }
 
     /// `bytes` were allocated on this thread without passing through a
@@ -1350,9 +1367,11 @@ pub fn alloc_zeroed(shared: &Shared, class: usize, Tracked(blk): Tracked<&mut Li
 /// is an allocated slab slot or a live huge run. `claim` is the caller's
 /// token for `p` ([`Claim::claims`]), claimed only past the slot's bit
 /// test, with its record ([`slot_checked`](super::slot_checked)), or a
-/// run's past the huge lock's checks ([`Claim::settle_run`]).
+/// run's past the huge lock's checks ([`Claim::settle_run`]). The result
+/// is the token the check claimed (the held one, if the claim came in
+/// held), as it was before the free: the live block `p`'s.
 #[inline(always)]
-pub fn free(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+pub fn free(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Ghost<Live>)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -1363,6 +1382,8 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked
         final(errno).val() == old(errno).val(),
         free_target(p),
         claim.held matches Some(l) ==> l.block(p),
+        r@.block(p),
+        claim.held matches Some(l) ==> r@ == l,
         *final(ord) == *old(ord),
 {
     // The slot's cell goes down the free path for its tick, which may
@@ -1377,8 +1398,8 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked
 /// `free` of a non-null pointer straight to its slab bitmap or the huge
 /// allocator, through no cache (`MALLOCX_TCACHE_NONE`, or a thread without
 /// a heap). Counted in the thread's statistics when it has a heap.
-/// `claim` as for [`free`].
-pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
+/// `claim` as for [`free`], and so is the result.
+pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Ghost<Live>)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held_block(p)),
@@ -1389,6 +1410,8 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
     ensures
         free_target(p),
         claim.held matches Some(l) ==> l.block(p),
+        r@.block(p),
+        claim.held matches Some(l) ==> r@ == l,
         *final(ord) == *old(ord),
 {
     proof {
@@ -1400,6 +1423,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
     match shared.classify_free(p, Tracked(&mut claim)) {
         Ok((class, arena)) => {
             let tracked blk = claim.held.tracked_unwrap();
+            let ghost claimed = blk;
             proof {
                 blk.lemma_claimed_block(p);
                 blk.lemma_claims_slot(p, class as int);
@@ -1430,6 +1454,10 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_direct_free(class);
             }
+            proof {
+                claimed.lemma_claimed_block(p);
+            }
+            Ghost(claimed)
         }
         Err(page) => {
             proof {
@@ -1438,19 +1466,27 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
                     claim.held->0.lemma_run_block(p, page);
                 }
             }
+            let ghost mut cleared: Option<Live> = None;
             if shared.zero_on_free() {
                 // The token for the cleared run (`theorem_zero_on_free_huge`).
-                let Tracked(z) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
+                let (Tracked(z), _before) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
                 proof {
                     super::zero::theorem_zero_on_free_huge(&z, claim.held->0, page as int);
+                    cleared = Some(_before@);
                 }
             }
             // The run's token goes to `Huge::free_run`, which drops the
             // permission to its bytes with it.
-            let n = shared.free_huge(page, Tracked(claim), Tracked(&mut *ord));
+            let (n, _freed) = shared.free_huge(page, Tracked(claim), Tracked(&mut *ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_uncached_free(n);
             }
+            // The token as it was before the clear, when there was one.
+            let ghost r = match cleared {
+                Some(l) => l,
+                None => _freed@,
+            };
+            Ghost(r)
         }
     }
 }
@@ -1521,7 +1557,7 @@ fn theorem_valid_run_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut u8
             proof {
                 claim.held->0.lemma_run_block(p, page);
             }
-            h.free_huge(shared, page, Tracked(claim), Tracked(&mut *ord))
+            h.free_huge(shared, page, Tracked(claim), Tracked(&mut *ord));
         },
     }
 }

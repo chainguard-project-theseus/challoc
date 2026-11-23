@@ -3438,10 +3438,11 @@ impl Shared {
     /// ([`Huge::usable_size`](crate::huge::Huge::usable_size)); the clear
     /// takes its permission to the run's usable bytes (through the cast
     /// of the page's address, `vspec::user::axiom_cast`). Returns the
-    /// token for the cleared bytes.
+    /// token for the cleared bytes, and the token the check claimed (the
+    /// held one, if the claim came in held) as it was before the clear.
     #[cold]
     #[inline(never)]
-    pub fn zero_huge(&self, page: usize, Tracked(claim): Tracked<&mut Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> (z: Tracked<Zeroed>)
+    pub fn zero_huge(&self, page: usize, Tracked(claim): Tracked<&mut Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Tracked<Zeroed>, Ghost<Live>))
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && old(claim).held is Some),
             crate::sys::may_syscall(),
@@ -3451,10 +3452,12 @@ impl Shared {
             old(claim).held matches Some(l) ==> l.run_block(page as int),
             old(ord).allows(rank_huge()),
         ensures
-            self.huge_run_zero(z@, page),
+            self.huge_run_zero(r.0@, page),
             final(claim).held matches Some(l) && l.run_block(page as int),
-            z@.addr() == final(claim).held->0.addr() as int,
-            z@.len() == final(claim).held->0.len(),
+            r.0@.addr() == final(claim).held->0.addr() as int,
+            r.0@.len() == final(claim).held->0.len(),
+            old(claim).held matches Some(l) ==> r.1@ == l,
+            old(claim).held is None ==> r.1@.block(old(claim).call->0.block()->0),
             *final(ord) == *old(ord),
     {
         proof {
@@ -3549,15 +3552,16 @@ impl Shared {
             blk.put_mem(m, orig);
             claim.held = Some(blk);
         }
-        z
+        (z, Ghost(orig))
     }
 
     /// Free the huge run starting at `page`. Aborts unless it is a live
     /// run start. Returns the usable bytes released. `claim` is the run's
     /// token ([`Claim::run_claim`]), held or still the call's;
     /// [`Huge::free_run`](crate::huge::Huge::free_run) claims it past its
-    /// checks.
-    pub fn free_huge(&self, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> usize
+    /// checks. The second result is the token it claimed (the held one,
+    /// if the claim came in held), as it was before the free.
+    pub fn free_huge(&self, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (usize, Ghost<Live>))
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held is Some),
             crate::sys::may_syscall(),
@@ -3567,6 +3571,8 @@ impl Shared {
             claim.run_claim(page as int),
         ensures
             *final(ord) == *old(ord),
+            claim.held matches Some(l) ==> r.1@ == l,
+            claim.held is None ==> r.1@.block(claim.call->0.block()->0),
     {
         proof {
             self.lemma_wf_slow();
@@ -3575,11 +3581,17 @@ impl Shared {
         proof {
             self.lemma_huge_process();
         }
-        let run = self.huge.free_run(&self.meta, page, Tracked(claim), Tracked(ord));
+        let tracked mut claimed: Ghost<Live> = Ghost(vstd::pervasive::arbitrary());
+        let ghost c0 = claim;
+        let run = self.huge.free_run(&self.meta, page, Tracked(claim), Tracked(&mut claimed), Tracked(ord));
+        proof {
+            reveal(Claim::took);
+            assert(c0.took(claimed@));
+        }
         // Exact stats: the pages `note_huge_free` subtracts are the run's
         // descriptor's (a held token's, `Huge::free_run`).
         self.owner(run.arena).0.note_huge_free(run.pages);
-        run.usable
+        (run.usable, Ghost(claimed@))
     }
 
     /// Grow the live huge run at `p` in place to hold `size` bytes
@@ -3753,7 +3765,9 @@ impl Shared {
                 // thread can be handed those pages while `blk` still
                 // covers them.
                 let tracked tail = tail.tracked_unwrap();
-                let _ = self.huge.free_run(&self.meta, tp, Tracked(Claim::held(Live::of_run(tail))), Tracked(ord));
+                // The shrink needs no fact about the freed tail's token.
+                let tracked mut freed: Ghost<Live> = Ghost(vstd::pervasive::arbitrary());
+                let _ = self.huge.free_run(&self.meta, tp, Tracked(Claim::held(Live::of_run(tail))), Tracked(&mut freed), Tracked(ord));
                 self.owner(arena).0.note_huge_shrink(k);
                 let n = self.huge.usable_for(size);
                 if let Some(h) = super::existing_heap(super::shared_ptr(self)) {
