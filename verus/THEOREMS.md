@@ -358,8 +358,9 @@ the call does not return (theorem 3, which is not voided for it).
   the caller's `HeapUse` token, which `heap::tcaches::axiom_heap_use`
   (`heap/tcaches.rs`, trusted) mints once per call that reaches an
   existing explicit cache, and `axiom_entry_heap` (trusted) states that
-  the registry holds a non-null entry's permission when `get` or
-  `destroy` loads it. For the calling thread's heap, assumed by the slot
+  a non-null entry is not lent out when `get` or `destroy` loads it;
+  that the registry then holds its permission is proved (a ghost
+  `lent` set in the table's invariant). For the calling thread's heap, assumed by the slot
   token `sys::tls::TlsSlot::entry` (an axiom): a token whose
   slot holds a heap holds the heap's linear permission
   (`heap::thread::HeapPerm`, abstract: a `vstd` `PointsTo<Heap>` would
@@ -10020,15 +10021,16 @@ pub fn get<'a>(&'a self, id: u16, Tracked(u): Tracked<&'a mut HeapUse>, Tracked(
 
 | seam | kind | what it gives here |
 |---|---|---|
-| `axiom_entry_heap` (`heap/tcaches.rs`) | C-program contract, assumption | when `get` loads a non-null entry, the registry holds its permission: no other caller holds it out. Called only in `get` and in `Tcaches::destroy`'s swap (`entry_heap_axiom_only_in_get_and_destroy`; the destroy call is the next section's); each `get` is followed by its `put_back` on every path (`every_get_puts_back`). It states nothing of the heap. |
+| `axiom_entry_heap` (`heap/tcaches.rs`) | C-program contract, assumption | when `get` loads a non-null entry, it is not lent out (narrowed by #880, next section but one; before, the registry holds its permission). Called only in `get` and in `Tcaches::destroy`'s swap (`entry_heap_axiom_only_in_get_and_destroy`; the destroy call is the next section's); each `get` is followed by its `put_back` on every path (`every_get_puts_back`). It states nothing of the heap. |
 | `axiom_heap_use` (`heap/tcaches.rs`) | C-program contract, assumption | the caller's token, as before |
 | `HeapPerm::assemble` (`heap/thread.rs`) | allocator invariant, partly checked by Kani | the fresh heap's permission, now with `rehome`; `detached_writers_store_the_assembled_fields` checks `Heap::create_detached`'s writer order, as `writers_store_the_assembled_fields` checks `Heap::create`'s |
 | `slot_heap_ref` (`heap/thread.rs`) | raw pointer, partly checked by Kani | the reference from the loan's permission |
 | `axiom_tcaches_assemble`, `axiom_tcaches_layout` | as in the section above | the table's invariant |
 
-**Not covered.** That `create` puts the permission in is not something
-a specification observes: mutation M5 below verifies, and that fact is
-what `axiom_entry_heap`'s doc names. `Tcaches::destroy` hands the
+**Not covered.** That `create` puts the permission in was not something
+a specification observed: mutation M5 below verified. The ghost `lent`
+set (the section on lent-out entries below) now rejects it.
+`Tcaches::destroy` hands the
 permission it takes out of the registry to `Heap::destroy` (next
 section).
 
@@ -10041,7 +10043,83 @@ heap::tcaches` and the named modules):
 | M2 | `heap_ok` without `home_at` | `HeapUse` type invariant |
 | M3 | `Heap::keeps` without `head` (`heap`) | postcondition (`lemma_keeps_home`) |
 | M4 | `Heap::free` without `!rehome ==> keeps` (`heap::mallocx`) | precondition (`put_back` in `mallocx::free`) |
-| M5 | `create` drops the permission instead of registering it | not rejected (see "Not covered") |
+| M5 | `create` drops the permission instead of registering it | not rejected at the time; rejected since #880 (assertion, `entry_ok` in `create`) |
+
+## An explicit cache's entry is lent out to one reference at a time (narrows `axiom_entry_heap`; rests on the explicit-cache contract)
+
+`axiom_entry_heap` used to state that the registry holds a non-null
+entry's heap permission when `Tcaches::get` or `Tcaches::destroy`
+loads it. Most of that is now proved; the premise left is that the
+entry is not lent out (chainguard-project-theseus/challoc#880).
+
+**Statement.** The table's invariant (`TableVal`, `heap/tcaches.rs`)
+holds a ghost set of lent-out entries (`TableVal::lent`), and
+`entry_ok` states that a non-null entry's permission is in the registry
+or the entry is lent out, never both, and that only a non-null entry is
+lent out. `Tcaches::create` puts the permission in and clears the entry
+from `lent`; `Tcaches::get` moves it to the caller's loan and adds the
+entry to `lent`; `Tcaches::put_back` returns it and removes the entry;
+`Tcaches::destroy`'s swap takes it out and leaves the entry null.
+`axiom_entry_heap` now ensures only `!v.lent.contains(i)`; the
+registry's holding the permission follows from `entry_ok`.
+
+Within one function, a token lends one reference at a time: `get`
+requires `old(u).lent() is None`, and `put_back` takes `&mut HeapUse`
+and ensures `final(u).lent() is None`, keeping its read record and
+lower bound (`destroy_then_get`'s theorem reads them after it).
+
+```rust
+// heap/tcaches.rs
+pub open spec fn entry_ok(k: TableKey, v: TableVal, i: int) -> bool {
+    // ...
+    &&& v.entries[i].value()@.addr != 0 ==> (v.heaps.contains_key(i) || v.lent.contains(i))
+    &&& v.lent.contains(i) ==> (v.entries[i].value()@.addr != 0 && !v.heaps.contains_key(i))
+}
+
+axiom fn axiom_entry_heap(k: TableKey, tracked v: &TableVal, i: int)
+    requires
+        0 <= i < MAX_TCACHES,
+        entry_ok(k, *v, i),
+        v.entries[i].value()@.addr != 0,
+    ensures
+        !v.lent.contains(i),
+;
+```
+
+**Premises (seams).**
+
+| seam | kind | what it gives here |
+|---|---|---|
+| `axiom_entry_heap` (`heap/tcaches.rs`) | C-program contract, assumption | at `get`'s load and `destroy`'s swap of a non-null entry: no `get` (on this thread or another) holds the entry out. Whether another thread holds it is the explicit-cache contract (one thread per cache at a time, not after `tcache.destroy`), which no ghost state of this thread sees. Pinned by `entry_heap_axiom_only_in_get_and_destroy` and `every_get_puts_back`, unchanged, and by `only_get_lends` (an entry joins `lent` only in `get`) |
+| `axiom_heap_use` (`heap/tcaches.rs`) | C-program contract, assumption | the caller's token, minted with nothing lent (`u.lent() is None`), as before |
+
+**Not covered.** A function that returns without `put_back` after a
+`get` found a cache is not rejected (the token is dropped); that stays
+`every_get_puts_back`'s guard. The `lent` set is not per thread, so it
+cannot tell another thread's loan from a leaked one; the axiom's premise
+covers both. The invariant fixes `lent` from the other fields (a
+non-null entry is in `lent` exactly when the registry lacks its
+permission), so it rules out no state the base admitted: what it adds
+is that each change to the registry must say what it did to `lent`.
+That `get` is the only place an entry joins `lent` is not proved;
+`only_get_lends` pins it (mutant M6 below).
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module
+heap::tcaches`, each on a copy of the tree):
+
+| id | change | rejected by |
+|---|---|---|
+| M5 | `create` drops the permission instead of registering it | assertion (`entry_ok` in `create`) |
+| L1 | `get` does not add the entry to `lent` | assertion (`entry_ok` in `get`) |
+| L2 | `put_back` does not remove the entry from `lent` | assertion (`entry_ok` in `put_back`, the disjointness conjunct) |
+| L3 | `destroy` without a removal of the entry from `lent` after its swap (an earlier draft had one) | not rejected, and so the removal was dropped: the axiom (non-null entry) or `entry_ok` (null entry) already proves the entry is not in `lent` at the swap |
+| L4 | `put_back` leaves `u.lent` set | postcondition (`final(u).lent() is None`) |
+| L5 | `flush` calls `get` twice with one token before its `put_back` | precondition (`old(u).lent() is None`) |
+| M6 | `create` drops the permission and puts the entry in `lent` in place of the removal | not rejected by Verus; `only_get_lends` fails on it |
+
+**Runtime.** Ghost only: no exec statement changes (`put_back`'s body
+was already ghost; its token argument is erased). The codegen verdict
+should be IDENTICAL.
 
 ## Every heap `Heap::destroy` frees comes with its permission (rests on the explicit-cache contract and the slot premise)
 
@@ -10086,7 +10164,7 @@ pub unsafe fn destroy(h: *mut Heap, shared: &Shared, Tracked(loan): Tracked<crat
 
 | seam | kind | what it gives here |
 |---|---|---|
-| `axiom_entry_heap` (`heap/tcaches.rs`) | C-program contract, assumption | now also at `Tcaches::destroy`'s swap: the registry holds the entry's permission (`entry_heap_axiom_only_in_get_and_destroy`) |
+| `axiom_entry_heap` (`heap/tcaches.rs`) | C-program contract, assumption | now also at `Tcaches::destroy`'s swap: the entry is not lent out, so the registry holds its permission (`entry_ok`; `entry_heap_axiom_only_in_get_and_destroy`) |
 | `TlsSlot::entry` (`sys/tls.rs`) | slot premise, assumption | the destructor's token: `slot_ok`, which now includes `home_at` of the cast pointer. `home_at` is of the heap's private ghost fields `home_hdrs` and `head`, which only creation sets and only `Heap::destroy` takes from |
 | `slot_heap_ref` (`heap/thread.rs`) | raw pointer, partly checked by Kani | the reference `Heap::destroy` and the destructor take from the loan |
 | `addr_to_ptr` (`vspec/addr.rs`) | raw pointer | the destructor's pointer, with the cast provenance |
