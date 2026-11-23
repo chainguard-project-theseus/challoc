@@ -1,7 +1,8 @@
 # Lint, on every pull request and on main: rustfmt, clippy with -D
 # warnings (which also fails the build on any rustc warning), the
 # ctest-cc.sh cache race test, the loom models, shellcheck, the
-# codegen-fncmp fixtures, the Kani bool-comparison lint, the not-Copy
+# codegen-fncmp fixtures, the Kani bool-comparison lint, the
+# kani-regular-sharded script's test, the not-Copy
 # control and the bench harness's unit tests all block.
 # msrv-build builds the shipped cdylib with the rust-version toolchain.
 # loom-count, the slow loom count model, blocks too but runs only on
@@ -158,6 +159,20 @@ checks:
     timeout: 5m
     # The Makefile's kani-boolcmp, which `make verify` runs too.
     cmd: [make, kani-boolcmp]
+
+  kani-regular-sharded:
+    description: >-
+      ci/kani-regular-sharded-test.sh: ci/kani-regular-sharded.sh (the
+      Makefile's kani-regular-sharded, which `make verify` runs) against a
+      stand-in make. A shard count that is not a whole number from 1 to
+      999 must exit 2 with no shard started, a full split must pass, and a
+      shard that fails, prints no shard line or drops a harness from the
+      count must fail the run.
+    trigger: [presubmit, postsubmit]
+    environment:
+      packages: [busybox]
+    timeout: 5m
+    cmd: [sh, ci/kani-regular-sharded-test.sh]
 
   notcopy-control:
     description: >-

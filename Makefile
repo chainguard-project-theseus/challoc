@@ -301,20 +301,31 @@ melange: ## build and test the Wolfi packages of contrib/wolfi/challoc.yaml with
 # `make verify` (the kit's) runs every target VERIFY_TARGETS lists, in
 # order, which is what the package build runs (with VERUS_BASE=none). The
 # list is what the Verus and Kani checks verify, and the controls they
-# run (the kit's rule): verus.yaml's verus checks, kani.yaml's kani and
-# kani-ignoring, and lint's notcopy-control and kani-boolcmp. A Verus or
+# run (the kit's rule): verus.yaml's verus checks, kani.yaml's
+# kani-ignoring (which verifies what its kani check does, below), and lint's notcopy-control and kani-boolcmp. A Verus or
 # Kani check that verifies something more adds its target here in the
 # same pull request. verus-q8, notcopy-control and kani-boolcmp are the
 # steps those checks run besides the kit's targets, as targets the checks
-# call too. kani-q8 and kani-regular-q8 match the commands kani.yaml's
-# checks run at QUANTUM=8 (`make kani QUANTUM=8`, and kani-ignoring's
-# regular-format run), but the checks don't call them: they run the kit
-# target with QUANTUM over a matrix. The other verifying checks
+# call too. kani-regular-sharded and kani-regular-sharded-q8 run
+# kani-ignoring's command, the kit's kani-regular split into shards, with
+# a quantum's shards all at once (below).
+#
+# kani.yaml's kani check (`make kani`, terse, four at a time) is not
+# listed: it verifies what kani-regular verifies. Both run every harness
+# through the kit's kani.sh with the same KANI_FLAGS and KANI_LIST_FLAGS
+# (no KANI_ARGS, no --default-unwind; the unwind bounds are the
+# harnesses' own `#[kani::unwind]`), and differ only in output: `-j 4
+# --output-format terse` there, `--output-format regular` and CBMC's
+# `--verbosity 9` here, plus the `warning: ignoring` scan. At dc5da63
+# both runs gave every one of the 154 harnesses, at both quanta, the same
+# property count, failed count and unreachable count (66,579 properties
+# a quantum). The check stays in CI as the fast presubmit half; kani-q8
+# is its command at QUANTUM=8. The other verifying checks
 # stay with CI and are not in the package build: isla and emptyasm
 # (isla.yaml), genmc (genmc.yaml), loom and loom-count (lint.yaml),
 # weakmem-stress (weakmem.yaml), perf-budget (perf-budget.yaml), and the
 # tests, Miri and fuzzing.
-VERIFY_TARGETS = verus verus-q8 notcopy-control kani-boolcmp kani kani-q8 kani-regular kani-regular-q8
+VERIFY_TARGETS = verus verus-q8 notcopy-control kani-boolcmp kani-regular-sharded kani-regular-sharded-q8
 VERUS_MODE = verify
 # `--ignore-global-asm` because api/libc.rs and sys/tls.rs hold
 # `global_asm!` that no harness reaches; `-Z stubbing` for `kani::stub`,
@@ -363,6 +374,32 @@ kani-q8: ## make kani at quantum 8
 	$(MAKE) --no-print-directory kani QUANTUM=8
 kani-regular-q8: ## make kani-regular at quantum 8
 	$(MAKE) --no-print-directory kani-regular QUANTUM=8
+
+# kani-regular-sharded is make kani-regular split into
+# KANI_REGULAR_SHARDS shards by ci/kani-weights.txt, as the kani-ignoring
+# check splits it across jobs, with all of them run at once on one
+# machine: every harness, in regular format, failing on `warning:
+# ignoring`, as kani-regular. One at a time a quantum takes 89 min on 16
+# x86_64 vCPUs; in 8 shards at once it takes 23 to 25 min, which is
+# formatter_write_fmt alone, the one harness its weight row marks
+# `alone` (2026-11-22). ci/kani-regular-sharded.sh runs it: each shard in
+# its own copy of the tree, failing on any shard's failure and unless the
+# shards' harnesses add up to the full list.
+#
+# Memory bounds KANI_REGULAR_SHARDS: 8 shards at once peaked at 46.9 GiB
+# in use, and 4 at 32 GiB (a CBMC needs up to 12.4 GiB, on the heaviest
+# harnesses). The 8 fit a 64 GiB package build; a builder with less memory sets
+# KANI_REGULAR_SHARDS lower, or runs kani-regular and kani-regular-q8,
+# one harness at a time in about 12.4 GiB. A shard whose CBMC is killed
+# fails the run. Both quanta's shards at once would not fit (4 shards
+# each, 8 at once, peaked at 61.7 GiB), so kani-regular-sharded-q8 runs
+# after it.
+KANI_REGULAR_SHARDS = 8
+.PHONY: kani-regular-sharded kani-regular-sharded-q8
+kani-regular-sharded: ## make kani-regular at QUANTUM in KANI_REGULAR_SHARDS shards at once (ci/kani-regular-sharded.sh)
+	MAKE='$(MAKE)' sh ci/kani-regular-sharded.sh $(QUANTUM) '$(KANI_REGULAR_SHARDS)'
+kani-regular-sharded-q8: ## make kani-regular-sharded at quantum 8
+	$(MAKE) --no-print-directory kani-regular-sharded QUANTUM=8
 
 # isla runs where it is invoked, not in the dev container: it needs the
 # isla, isla-snapshots, sail, isla-sail, z3 and llvm packages
