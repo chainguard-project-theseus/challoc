@@ -7,7 +7,7 @@ use vstd::map::Map;
 use vstd::prelude::verus;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, int};
+use vstd::prelude::{Ghost, Tracked, int};
 use vstd::raw_ptr::ptr_mut_ref;
 use vstd::resource::set::GhostSingleton;
 
@@ -975,7 +975,11 @@ impl Heap {
 /// it is claimed only past the bit test ([`Shared::set_slot`]), with the
 /// test's record ([`slot_checked`](super::slot_checked)). The push takes its slot
 /// token, and a `None` leaves a token that claims `p` (the held one as it
-/// was, or the live block's), for the cold path.
+/// was, or the live block's), for the cold path. With `Some(c)` the
+/// second result is the token the push took, the one claimed past the
+/// bit test (the held one, if the claim came in held), as it was before
+/// the push: the slot token of `p` in class `c` (`challoc_free_usable`
+/// states its usable size against it, #892).
 ///
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`](super::thread::tls_heap_slot) on this
@@ -991,7 +995,7 @@ pub unsafe fn free_fast_slot(
     p: *mut u8,
     Tracked(claim): Tracked<&mut Claim>,
     Tracked(tls): Tracked<&mut TlsSlot>,
-) -> (r: Option<usize>)
+) -> (r: (Option<usize>, Ghost<Live>))
     requires
         crate::sys::may_abort_corrupt(),
         shared.wf(),
@@ -1001,25 +1005,27 @@ pub unsafe fn free_fast_slot(
         t > TLS_EXITED,
         tp == old(tls).tp(),
     ensures
-        r matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
-        zero_on_free(shared) ==> r is None,
-        r is Some ==> free_target(p),
-        r is None ==> final(claim).claims(p),
-        r is None ==> (old(claim).held matches Some(l) ==> final(claim).held matches Some(m) && m.len() == l.len() && (m == l
-            || l.block(p))),
-        r matches Some(c) ==> (old(claim).held matches Some(l) ==> l.slot_block(p, c as int)),
+        r.0 matches Some(c) ==> c < NCLASSES && process_regions().is_slot(c as int, p@.addr),
+        zero_on_free(shared) ==> r.0 is None,
+        r.0 is Some ==> free_target(p),
+        r.0 is None ==> final(claim).claims(p),
+        r.0 is None ==> (old(claim).held matches Some(l) ==> final(claim).held matches Some(m) && m.len() == l.len() && (m
+            == l || l.block(p))),
+        r.0 matches Some(c) ==> r.1@.slot_block(p, c as int),
+        r.0 is Some ==> (old(claim).held matches Some(l) ==> r.1@ == l),
         final(tls).lent(*old(tls)),
     opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns(), crate::vspec::flags::flags_ns()]
 {
     let tracked mut obs = crate::class::BitLoad::new();
     let Some((class, slab)) = shared.set_slot(p, Tracked(&mut obs)) else {
-        return None;
+        return (None, Ghost(vstd::pervasive::arbitrary()));
     };
     // The bit test passed: claim the block, with the test's record.
     proof {
         claim.settle(p, &obs);
     }
     let tracked mut blk = claim.held.tracked_take();
+    let ghost claimed = blk;
     let flags = shared.free_flags();
     // SAFETY: guaranteed by the caller.
     let r = unsafe {
@@ -1038,7 +1044,7 @@ pub unsafe fn free_fast_slot(
     proof {
         claim.held = Some(blk);
     }
-    r
+    (r, Ghost(claimed))
 }
 
 /// After the bit test: the heap from the slot value `t`, authenticated

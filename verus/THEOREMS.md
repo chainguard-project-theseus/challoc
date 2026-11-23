@@ -2072,7 +2072,7 @@ pub(super) fn malloc_fast(size: usize, blk) -> (r: Option<*mut u8>)   // api/lib
     opens_invariants none
 pub fn alloc_fast(&mut self, class: usize, flags: u8, blk) -> ...    // heap/paths.rs
     opens_invariants none
-pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, blk, tls) -> (r: Option<usize>)   // heap/paths.rs
+pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, blk, tls) -> (r: (Option<usize>, Ghost<Live>))   // heap/paths.rs
     opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns()]
 unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8, flags: u8, t: usize, tp: usize, blk, tls) -> (r: Option<usize>)   // heap/paths.rs
     opens_invariants [crate::class::owner_ns()]
@@ -2748,7 +2748,8 @@ premise below that nothing writes them in between.
   `PUSH_ZERO` (`lemma_free_route_bits`, `heap/paths.rs`, states the
   `PUSH_PAC` and `PUSH_ZERO` bit facts). `free_fast_slot` and
   `free_fast_tail` (`heap/paths.rs`) ensure
-  `zero_on_free(shared) ==> r is None`, where `zero_on_free`
+  `zero_on_free(shared) ==> r is None` (`r.0` for `free_fast_slot`, whose
+  second result is the ghost token the push took), where `zero_on_free`
   (`heap/zero.rs`) is the `PUSH_ZERO` bit of `flags()`, and
   `free_fast_tail` also ensures `flags & PUSH_ZERO != 0 ==> r is None`.
   `Shared::lemma_route_flags` states that the byte's `PUSH_ZERO` bit is
@@ -3915,6 +3916,19 @@ still verifies (R9 and R12 together: 175 verified, 0 errors), and
 `trusted_mint_sites_are_pinned` rejects each, naming the site ("a call
 of `axiom_c_claim(` in `pub fn rallocx(...)`, which is not one of its
 listed sites"), as H7.
+
+`challoc_free_usable`'s claimed token as its core's ghost result
+([#892](https://github.com/chainguard-project-theseus/challoc/issues/892);
+`cargo verus focus`, modules `api::libc` and `heap::paths`, each one
+error; the unmutated control run: 174 verified, 0 errors):
+`free_usable_slow` returning an arbitrary token in place of the
+claimed one on its huge branch only (F1) fails its `r.0 == r.1@.len()
+&& r.1@.block(p)` and held-token postconditions; `free_fast_slot`
+returning an arbitrary token in place of the one the push took (F2)
+fails its `r.1@.slot_block(p, c)` and held-token postconditions;
+`free_usable_slow` stating only `r.1@.block(p)`, without `r.0 ==
+r.1@.len()` (F3), fails `free_usable_block`'s postconditions on its
+slow path.
 
 *(ghost token)*: `api::libc::usable_size` takes a `Tracked<&Live>` that
 its executable code never reads, and is verified for every value of it.
@@ -5206,9 +5220,10 @@ pub proof fn theorem_stored_zero_iff_null(p: *mut u8, size: int, align: int, n: 
 fn usable_size(shared, p, blk)        ensures p@.addr != 0, 0 < r, /* and its U ensures */
 fn sallocx(p, flags), xallocx(p, ..)  ensures p@.addr != 0, 0 < r,
 // api/libc.rs
-fn malloc_usable_size(p), free_usable(p), free_usable_block(p, blk)
+fn malloc_usable_size(p), free_usable(p)
                                       ensures p@.addr != 0 ==> 0 < r,
-fn free_usable_slow(p, blk)           ensures 0 < r,
+fn free_usable_block(p, blk)          ensures p@.addr != 0 ==> 0 < r.0,
+fn free_usable_slow(p, blk)           ensures 0 < r.0,
 
 // api/cxx.rs (new, oom, new_slow, new_block,
 // new_aligned, new_aligned_block)
@@ -10813,8 +10828,9 @@ that the Rust entry point calls with a fresh `Live` token (allocations:
 the token goes to C with the block), with C's token for its pointer
 still unclaimed (`Claim::pending`: the plain frees, `free_usable`,
 `dallocx` and the reallocations, whose cores claim it through
-`axiom_c_claim` only past their check, and the realloc cores return the
-claimed token as a ghost result their `ensures` name), or with the one
+`axiom_c_claim` only past their check, and the realloc cores and
+`free_usable_block` return the claimed token as a ghost result their
+`ensures` name), or with the one
 `axiom_c_claim` gives up front (the sized frees). The tokens are ghost,
 so the core is the entry point's code, and its `ensures` is the
 symbol's contract for those cells.
@@ -10882,7 +10898,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 12 | `challoc_malloc_usable`                     | P | P | . | . | P | . | P |
 | 13 | `challoc_calloc_usable`                     | P | P | P | . | P | . | P |
 | 14 | `challoc_realloc_usable`                    | P | P | . | p | P | p | P |
-| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | p |
+| 15 | `challoc_free_usable`                       | . | . | . | . | P | p | P |
 | 16 | `mallocx`                                   | P | P | P | . | p | p | . |
 | 17 | `rallocx`                                   | P | P | P | p | p | p | . |
 | 18 | `xallocx`                                   | . | . | . | . | . | p | p |
@@ -11028,10 +11044,8 @@ Notes that recur below:
   block's usable bytes, a run token's usable pages included). The
   queries (`malloc_usable_size`, `sallocx`, `xallocx`) take no token, so
   their huge half is not tied to the request: `p` for rows 9, 18 and 19.
-  `challoc_free_usable`'s core states `r == blk.len()` for a token the
-  caller holds, but the export passes C's token down unclaimed and the
-  core does not hand the claimed token back, so its huge half is not
-  tied to a token either: `p` for row 15 too
+  `challoc_free_usable`'s core returns the token its check claimed as a
+  ghost result and states `r == blk.len()` of it, so row 15 is `P`
   ([#892](https://github.com/chainguard-project-theseus/challoc/issues/892)). The allocating `_usable` entry points are
   `.0` of `_stored` twins (`malloc_usable_stored`,
   `realloc_usable_stored`; `calloc_usable_zeroed`'s third result) that
@@ -11194,15 +11208,17 @@ alone):
     the class size from `heap::free_fast_slot` (`heap/paths.rs`),
     which ensures `is_slot(c, p)`, or from `free_usable_slow`'s classification
     (`api/libc.rs`), or `Huge::usable_size` there. The `r == blk.len()` half
-    is the core's for a token the caller holds (`free_usable_block`'s
-    `claim.held matches Some(l) ==> r == l.len()`). At the export C's
-    token goes down unclaimed and is claimed only past the check (#835),
-    and the core does not hand the claimed token back, so this half is
-    not stated there: for a slot `usable_of(p, r)` still fixes `r` as the
-    class size, and for a huge run it states only the shape (whole pages
-    inside the region), not that `r` is the run token's usable pages
-    ([#892](https://github.com/chainguard-project-theseus/challoc/issues/892)
-    tracks returning it). The `usable_of` half needs no token.
+    is the core's (`free_usable_block`'s `r.1@.block(p) && r.0 ==
+    r.1@.len()`), with `blk` the token its check claimed, which it
+    returns as a ghost result: at the export C's token goes down
+    unclaimed and is claimed only past the check (#835), by
+    `free_fast_slot` past the bit test (its own ghost result, the
+    token the push took, as it was before the push) or by
+    `free_usable_slow` past `classify_free` or `Huge::usable_size`.
+    So for a huge run `r` is the run token's usable pages, not only a
+    shape (#892, which took back the `p` #891 left here). For a token
+    the caller holds, the core also ensures `l.block(p) && r == l.len()`.
+    The `usable_of` half needs no token.
     `errno` is preserved as by `free`: `free_usable` and
     `free_usable_block` ensure `final(errno).val() == old(errno).val()`
     (over `free_usable_slow` and `heap::free`).
@@ -11499,8 +11515,7 @@ What each partial or missing cell leaves out, and what it rests on:
   `P` cells (rows 10, 11, 15, 26-28) and the unchanged `errno` of rows
   20 and 21 rest on the premise that no libc call in trusted code on
   their paths leaves `errno` changed (*(errno)*).
-- **U** (rows 9, 15, 18, 19): the huge half of a query, and of
-  `challoc_free_usable`'s result at the export (row 15, #892). `usable_size` with
+- **U** (rows 9, 18, 19): the huge half of a query. `usable_size` with
   the block's run token gives exactly its usable bytes, but the queries
   take no token (giving them one would add an `axiom_c_claim` site for a
   call that frees nothing), so for a huge run their own `ensures` state

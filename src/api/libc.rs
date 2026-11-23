@@ -727,7 +727,7 @@ pub fn free_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tr
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: the slot value of this thread.
-        if unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) }.is_some() {
+        if unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) }.0.is_some() {
             return;
         }
     }
@@ -823,7 +823,7 @@ fn theorem_no_syscall_on_fast_paths(which: u8, size: usize, p: *mut u8, Tracked(
                 let s = unsafe { super::shared_deref(super::shared_base()) };
                 let tracked mut b = Claim::pending(claim);
                 // SAFETY: as in `free_block`.
-                if let Some(c) =unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) } {
+                if let (Some(c), _) = unsafe { heap::free_fast_slot(s, t, tp, p, Tracked(&mut b), Tracked(tls)) } {
                     let _ = class_size(c);
                 }
             }
@@ -2905,18 +2905,21 @@ pub fn free_usable(p: *mut u8, Tracked(c): Tracked<CCall>, Tracked(errno): Track
         p@.addr != 0 ==> usable_of(p, r as int),
         p@.addr != 0 ==> 0 < r,
 {
-    free_usable_block(p, Tracked(Claim::pending(c)), Tracked(errno), Tracked(ord))
+    free_usable_block(p, Tracked(Claim::pending(c)), Tracked(errno), Tracked(ord)).0
 }
 
 /// [`free_usable`] with the caller's token for `p` ([`Claim::claims`]),
 /// held or still the call's, which the free claims past its check and
-/// takes back. For a held token, the token of the live block `p`, whose
-/// usable size is the result. `theorem_no_syscall_on_fast_paths`
+/// takes back. For a non-null `p`, the second result is the token the
+/// free took, as it was before the free: the token of the live block
+/// `p`, whose usable size is the result (C's token, claimed past the
+/// check, for a pending claim). A held token is also the token of the
+/// live block `p`, with the same usable size. `theorem_no_syscall_on_fast_paths`
 /// restates its fast path (its last path);
 /// `api::restated::fast_path_restatements_match_their_bodies` checks
 /// that the two make the same calls.
 #[inline(always)]
-pub fn free_usable_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
+pub fn free_usable_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (usize, Ghost<Live>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -2925,32 +2928,32 @@ pub fn free_usable_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(err
     ensures
         *final(ord) == *old(ord),
         final(errno).val() == old(errno).val(),
-        p@.addr == 0 ==> r == 0,
+        p@.addr == 0 ==> r.0 == 0,
         p@.addr != 0 ==> heap::free_target(p),
-        p@.addr != 0 ==> usable_of(p, r as int),
-        p@.addr != 0 ==> 0 < r,
-        p@.addr != 0 ==> (claim.held matches Some(l) ==> l.block(p) && r == l.len()),
+        p@.addr != 0 ==> usable_of(p, r.0 as int),
+        p@.addr != 0 ==> 0 < r.0,
+        p@.addr != 0 ==> r.1@.block(p) && r.0 == r.1@.len(),
+        p@.addr != 0 ==> (claim.held matches Some(l) ==> l.block(p) && r.0 == l.len()),
 {
-    let ghost c0 = claim;
     let tracked mut blk = claim;
     if p.is_null() {
-        return 0;
+        // No block, so no token: any value.
+        let ghost none = vstd::pervasive::arbitrary();
+        return (0, Ghost(none));
     }
     let tracked tls = crate::sys::tls::TlsSlot::entry();
     if let Some((t, tp)) = heap::tls_heap_slot(Tracked(&*tls)) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_deref(super::shared_base()) };
         // SAFETY: as in `free`.
-        if let Some(class) = unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) } {
+        if let (Some(class), freed) = unsafe { heap::free_fast_slot(shared, t, tp, p, Tracked(&mut blk), Tracked(tls)) } {
             proof {
                 shared.lemma_regions_ok();
                 crate::vspec::usable::lemma_usable_slot(p, class as int, 0);
-                if c0.held is Some {
-                    c0.held->0.lemma_slot_len(p, class as int);
-                }
+                freed@.lemma_slot_len(p, class as int);
                 crate::vspec::class::lemma_class_table_wf(class as int);
             }
-            return class_size(class);
+            return (class_size(class), freed);
         }
     }
     free_usable_slow(p, Tracked(blk), Tracked(errno), Tracked(ord))
@@ -2960,12 +2963,12 @@ pub fn free_usable_block(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(err
 /// the classification `free` makes (its aborts for an invalid, stale or
 /// double free, and the huge table's for a run that is not live), then the
 /// exact `free` (heap creation, a full cache, another arena, the huge
-/// release). For a token the caller holds, the size is its usable size;
-/// a pending claim is claimed past the check, and the size is then
-/// stated only as `p`'s usable size (`usable_of`; #892).
+/// release). The second result is the token the check claimed (the held
+/// one, if the claim came in held), as it was before the free; the size
+/// is its usable size.
 #[cold]
 #[inline(never)]
-fn free_usable_slow(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
+fn free_usable_slow(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: (usize, Ghost<Live>))
     requires
         crate::sys::may_abort(),
         claim.claims(p),
@@ -2975,9 +2978,10 @@ fn free_usable_slow(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): 
         *final(ord) == *old(ord),
         final(errno).val() == old(errno).val(),
         heap::free_target(p),
-        usable_of(p, r as int),
-        claim.held matches Some(l) ==> r == l.len() && l.block(p),
-        0 < r,
+        usable_of(p, r.0 as int),
+        r.0 == r.1@.len() && r.1@.block(p),
+        claim.held matches Some(l) ==> r.1@ == l,
+        0 < r.0,
 {
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     proof {
@@ -3041,11 +3045,12 @@ fn free_usable_slow(p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(errno): 
         },
     };
     let tracked blk = claim.held.tracked_unwrap();
+    let ghost claimed = blk;
     proof {
         blk.lemma_nonnull();
     }
     heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(errno), Tracked(&mut *ord));
-    usable
+    (usable, Ghost(claimed))
 }
 
 /// The class that serves `size` bytes at `align` (a power of two; 1 or
