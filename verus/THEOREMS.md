@@ -127,6 +127,9 @@ leave out (theorem 33). Remaining work is tracked in
   `heap::paths::theorem_exact_sized_free`, `heap/paths.rs`.
 - **Opt-in double-free scan** ([Double-free window under `double_free_scan`](#double-free-window-under-double_free_scan-rests-on-the-slot-state-premise)):
   `heap::slotstate::theorem_double_free_window`, `heap/slotstate.rs`.
+- **Cgroup sample clock** ([The cgroup sample clock never goes back](#the-cgroup-sample-clock-never-goes-back-at-its-invariant)):
+  `sys::cgroup::linux::Cgroup::theorem_sample_clock_monotone`, with
+  `ClockPred`, `sys/cgroup.rs`.
 - **Claims past the check** ([Frees claim C's token only past their check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)):
   `heap::live::Claim::settle` and `settle_run`'s contracts,
   `heap/live.rs`, with `trusted_mint_sites_are_pinned` (`lib.rs`).
@@ -10478,6 +10481,125 @@ heap::tcaches`, each on a copy of the tree):
 **Runtime.** Ghost only: no exec statement changes (`put_back`'s body
 was already ghost; its token argument is erased). The codegen verdict
 should be IDENTICAL.
+
+## The cgroup sample clock never goes back (at its invariant)
+
+`Cgroup::sample` (`sys/cgroup.rs`) rate-limits the cgroup samples to
+one per `SAMPLE_INTERVAL_NS` (10 ms of `CLOCK_MONOTONIC_COARSE`): it
+loads `sampled_at`, returns unless `now` is at least that far past it,
+and moves it to `now` by a compare-exchange, so one thread wins each
+interval. Before chainguard-project-theseus/challoc#940 `sampled_at`
+was a `core` `AtomicU64` with no permission, and nothing stated that
+the stored time only rises; a write of an older `now` would have
+verified.
+
+**Statement.** `sampled_at` is a vstd `PAtomicU64` whose permission is
+in an `AtomicInvariant` (`ClockInv`, namespace `clock_ns`), with a
+`GhostSetAuth<u64>` of the times it has held and a persistent copy of
+that set. `ClockPred` states that the clock holds a time in the set and
+that every time in the set is at most the one it holds. Nothing removes
+a time from the set, so a write below any time it once held breaks the
+invariant. `Cgroup::untracked`, the one constructor, starts it at 0
+with the set `{0}`; `Cgroup::sample`, the one writer, stores `now` only
+over `last` and only when `now - last >= SAMPLE_INTERVAL_NS > 0`, so
+`now` is past every time in the set, and inserts it.
+`Cgroup::clock_seen` returns the time the clock holds and a persistent
+witness (`ClockSeen`) split from the set; `Cgroup::clock_after`, given
+a witness of the same record, returns a read that is at least it.
+
+```rust
+// sys/cgroup.rs
+impl InvariantPredicate<(int, Loc), ClockVal> for ClockPred {
+    open spec fn inv(k: (int, Loc), v: ClockVal) -> bool {
+        &&& v.0.id() == k.0
+        &&& v.1.id() == k.1
+        &&& v.2.id() == k.1
+        &&& v.2@ == v.1@
+        &&& v.1@.contains(v.0.value())
+        &&& forall|t: u64| #[trigger] v.1@.contains(t) ==> t <= v.0.value()
+    }
+}
+
+pub fn clock_after(&self, Tracked(w): Tracked<&ClockSeen>) -> (r: u64)
+    requires
+        w.id() == self.clock_loc(),
+    ensures
+        w@ <= r,
+
+fn theorem_sample_clock_monotone(&self, now: u64)
+    requires
+        crate::sys::may_syscall(),
+{
+    let (before, Tracked(seen)) = self.clock_seen();
+    let _ = self.sample(now);
+    let after = self.clock_after(Tracked(&seen));
+    assert(before <= after);
+}
+```
+
+The witness is persistent and names the record (`clock_loc`), so the
+bound holds whatever ran between the two reads, on any thread: the
+theorem's single `sample` stands for any number of them.
+
+**Premises (seams).**
+
+| seam | kind | what it gives here |
+|---|---|---|
+| vstd `PAtomicU64::load` and `compare_exchange` (vstd's `atomic.rs`, `external_body`) | vstd library, trusted | each operation is one atomic step on the value its permission names; the exchange stores `new` exactly when the value was `current` |
+| vstd `AtomicInvariant` and `resource::set` | vstd library, trusted | the invariant holds at every open, and a persistent singleton's value is in its authority's set (`agree`) |
+| `untracked_in_place` (`sys/cgroup.rs`, `external_body`) | raw pointer (internal); was discharged, now **trusted (partly checked, Kani)** | the deferred discovery's record (the process's record unless init discovered under `thp:always`) is built in place, not by `untracked`, so its ghost clock invariant (`ClockPred` with the set `{0}`, holding the one permission of the zeroed `sampled_at`) comes from this seam, as the rest of the record's value does. Its doc says so. Kani checks the bytes, and `untracked_in_place_is_untracked` now also asserts that the clock is 0. The invariant itself, its identities and the permission inside it, has no bytes a check can see, so the ledger's status names it as not checked |
+
+No seam is added. `untracked_in_place`'s doc gains the ghost sentence,
+and its ledger status goes from discharged to partly checked (the four
+coverage figures stay at the floor). One new hit of the `assume` grep:
+`Tracked::assume_new()` in the Kani harness
+`untracked_in_place_is_untracked` (`cfg(kani)`, outside Verus), to read
+`sampled_at` through vstd's permissioned load.
+
+Why the trusted body cannot hand back only the permission, with
+verified code building the invariant as `untracked` does: the record
+is built in place inside the `Deferred` cell's `MaybeUninit`, so the
+value, `clock_inv` field included, exists as soon as the trusted call
+returns, and Verus takes its type invariant from there. A verified
+step could replace the field afterwards, but the value it replaces
+would still be the seam's, so the trust would move, not go.
+
+**Not covered.** `limits_at` (the limit walk's time) is stored
+unconditionally from the sampler's `now` and is not claimed monotone.
+That `now` itself comes from a monotonic clock is the kernel's
+(`CLOCK_MONOTONIC_COARSE`); the theorem does not need it, since an
+older `now` is refused, not stored. The theorem says nothing about how
+often a sample is taken.
+
+**Mutations** (`cargo verus focus --locked -- --verify-module
+sys::cgroup`, each on the tree at the PR's head):
+
+| id | change | rejected by |
+|---|---|---|
+| M1 | `sample` drops the interval check (`if false`) | assertion (`now > last` before the insert) |
+| M2 | the check reversed: `last.saturating_sub(now) < SAMPLE_INTERVAL_NS` | assertion (`now > last`) |
+| M3 | the exchange stores `now - SAMPLE_INTERVAL_NS` instead of `now` | invariant at the end of the open (the clock holds a time not in the set) |
+
+On main (a208300e) M2 verifies (checked: 100 verified, 0 errors), and
+so would M1 and M3: no contract names `sampled_at` there.
+
+**Runtime.** The atomic's type changes from `core`'s `AtomicU64` to
+vstd's `PAtomicU64`, the same `AtomicU64` inside, and vstd's operations
+are `SeqCst` where the code used `Relaxed`. On x86_64 a `SeqCst` load is
+the same `mov` and the exchange the same `lock cmpxchg`: the codegen
+check finds no x86_64 function changed. On aarch64 the load of `last`
+becomes `ldar` (with one `add` for the address where `ldar` has no
+offset form) in the four functions `Cgroup::sample` is inlined into,
+`purge::on_tick`, `purge::background::main`, `api::print::sample_cgroup`
+and `api::mallctl::cgroup_current`; the check's diff, immediates masked,
+shows no other instruction change. The load comes before the interval
+check, so for a tracked cgroup it runs on every `purge::on_tick` (the
+slow path's periodic hook) and every pass of the background thread's
+loop, whether or not a sample follows: these paths run per call, not a
+bounded number of times per process, so #882's exemption does not
+apply, and the cost is measured by a bench of the changed paths
+(chainguard-project-theseus/challoc#941). The invariant, set and
+witnesses are ghost.
 
 ## Every heap `Heap::destroy` frees comes with its permission (rests on the explicit-cache contract and the slot premise)
 

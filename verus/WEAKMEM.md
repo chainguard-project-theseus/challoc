@@ -20,7 +20,7 @@ and not run.
 
 ## Inventory
 
-375 lines of source carry an `Ordering::` (`grep` over `src/`,
+372 lines of source carry an `Ordering::` (`grep` over `src/`,
 leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
 `src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
 `cfg(challoc_tls_check)`), `src/sync.rs`'s `cfg(loom)` stand-ins for
@@ -28,7 +28,8 @@ vstd's atomics (built only by the loom crate), inline `#[cfg(test)]`
 and `#[cfg(kani)]` modules, and comment lines). The counters behind
 `vspec/count.rs`, the route byte behind `vspec/flags.rs` and the
 arena and explicit-cache table entries behind `vspec/entry.rs` and the
-class bitmap words behind `vspec/word.rs` are vstd atomics, whose
+class bitmap words behind `vspec/word.rs` and the cgroup record's
+sample clock (`sampled_at`, `sys/cgroup.rs`) are vstd atomics, whose
 operations are `SeqCst` with no ordering argument. The count keeps lines in `#[cfg(test)]`
 functions and statements outside those modules: `sys/abort.rs` and
 `sys/pac.rs` have only such lines (test hooks), and several other rows
@@ -45,7 +46,7 @@ a compiler barrier.
 |---|---|---|
 | `purge/background.rs` | 56 | `PRESENT`, `REQUESTED`, `SEQ`; the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
 | `thp.rs` | 45 | init-time configuration and counters |
-| `sys/cgroup.rs` | 40 | sampled cgroup limits and the deferred discovery's phase |
+| `sys/cgroup.rs` | 37 | sampled cgroup limits and the deferred discovery's phase; the sample clock `sampled_at` is a vstd atomic (`SeqCst`) |
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
 | `slab.rs` | 4 | `SlabDesc::live` (state, arena, dirty, `shadow`, and `SlabPages`' `closed` and `stamp` are vstd `PAtomic*`s, `SeqCst`, every operation inside the descriptor's invariant, with no ordering argument) |
