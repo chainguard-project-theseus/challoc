@@ -1057,16 +1057,25 @@ class, `Shared::free_huge` a page index from
   release
   ([#843](https://github.com/chainguard-project-theseus/challoc/issues/843)).
   `check_live`, `bit_word`, `ClassLine::set_slab` and `Shared::set_slot`
-  all ensure the form for whatever record they are given. `Heap::free`'s
-  test sees a slot only when the entry points' fast path declined it
-  (`free_fast_slot`: the bit clear at its load, `zero_on_free`,
-  `PUSH_ZERO`, a fork epoch, or no heap in the TLS slot), so in the
-  default configuration a passing test is almost always the fast
-  path's. Not covered, each a test with an empty record: the fast path
-  (`free_fast_slot` then `set_slot`, which reaches the heap only after
-  the test); `free_direct` (a thread with no heap, or
-  `MALLOCX_TCACHE_NONE`); and the retest after a rehome's flush
-  (`Shared::classify_free` in `heap/mod.rs`). Releases that leave no
+  all ensure the form for whatever record they are given. The entry
+  points' fast path, which runs first and sees almost every passing
+  slot, is covered the same way
+  ([#912](https://github.com/chainguard-project-theseus/challoc/issues/912)):
+  it reaches the heap only after its test, so the thread's slot token
+  carries a copy of the heap's records (`TlsSlot::rels`, made by the
+  trusted `TlsSlot::entry` with the heap's own, `TlsSlot::rels_ok`;
+  each record is a monotone fact, so the copy stays true while the
+  heap's grows), and `free_fast_slot`, which requires `rels_ok`, seeds
+  `set_slot`'s test with the record of the class of `p`'s stride
+  (`set_slot` ensures the class it finds is that one) and asserts the
+  same conclusion of the records of the heap the token lends (through
+  `rels_ok`, so the `requires` is used in the body, not only at the
+  callers). `Heap::free`'s test then sees the slots the fast
+  path declined (the bit clear at its load, `zero_on_free`,
+  `PUSH_ZERO`, a fork epoch, or no heap in the TLS slot). Not covered,
+  each a test with an empty record: `free_direct` (a thread with no
+  heap, or `MALLOCX_TCACHE_NONE`); and the retest after a rehome's
+  flush (`Shared::classify_free` in `heap/mod.rs`). Releases that leave no
   record: `ClassState::release_with` drops its witnesses, so a direct
   release by the same thread is not covered, and a release by another
   thread's heap is ordered against the free only by the program's
@@ -3816,7 +3825,7 @@ and for an error-result row, that a returning call returns that result:
 | `MALLOCX_TCACHE(t)`, `t >= MAX_TCACHES` (1024; the field reaches 4093) | `mallocx`, `dallocx`, `sdallocx` | abort (`invalid_tcache`, or first `hint_mismatch` on `sdallocx`), except a huge `mallocx` with an explicit arena, which never looks the cache up | yes: `tcache_checked`, `!bad_tcache` (the frees' for a live block or a non-block pointer; *(C)* otherwise) |
 | `MALLOCX_TCACHE(t)` of a cache never created | as above | abort, with the same exception | no: existence is a run-time table load, not modelled |
 | `MALLOCX_ARENA(a)` of an arena that does not exist | `mallocx`, `rallocx` | NULL | no: as above |
-| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | a never-allocated slot: at the check, *(load)*: `check_live` and `check_located` return only if the slot's bit was set in some value its bitmap word held (`load_seen`, [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)), which a slot no refill claimed never had. A stale free: in part, *(load)* with *(C)*: a check ordered after the slot's release (`load_after` a `BitLoad::of_release` record) that passes read a later version in which a claim set the bit again (`lemma_claimed_again`, [#850](https://github.com/chainguard-project-theseus/challoc/issues/850)); that the second free's check is ordered after the release is C's, except at the slow path's check after a release by the same heap's flush: `Heap::free` passes the flush's records (`CachePerms::rels`) to `Shared::classify_free_after`, which ensures that a passing check read a newer version than the release left (`SlabTable::claimed_since`); the fast path `free_fast_slot`, which runs first and sees almost every passing slot, `free_direct`, the rehome retest and releases through `ClassState::release_with` carry no record; [#843](https://github.com/chainguard-project-theseus/challoc/issues/843)). These entry points, and `challoc_free_usable`, `dallocx` and the reallocations, take C's token only past this check, with its record (`Claim::settle`, [claims past the check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)), so *(C)* is not used before it |
+| Double free of a slot back in its bitmap (stale), or a free of a never-allocated slot of a handed-out slab | plain frees | abort (`check_live`, `check_located`: `invalid_free`) | a never-allocated slot: at the check, *(load)*: `check_live` and `check_located` return only if the slot's bit was set in some value its bitmap word held (`load_seen`, [#847](https://github.com/chainguard-project-theseus/challoc/issues/847)), which a slot no refill claimed never had. A stale free: in part, *(load)* with *(C)*: a check ordered after the slot's release (`load_after` a `BitLoad::of_release` record) that passes read a later version in which a claim set the bit again (`lemma_claimed_again`, [#850](https://github.com/chainguard-project-theseus/challoc/issues/850)); that the second free's check is ordered after the release is C's, except at the fast and slow paths' checks after a release by the same heap's flush: `Heap::free` passes the flush's records (`CachePerms::rels`) to `Shared::classify_free_after`, which ensures that a passing check read a newer version than the release left (`SlabTable::claimed_since`), and `free_fast_slot` seeds `set_slot`'s check with the slot token's copy of them (`TlsSlot::rels`, `rels_ok`, [#912](https://github.com/chainguard-project-theseus/challoc/issues/912)); `free_direct`, the rehome retest and releases through `ClassState::release_with` carry no record; [#843](https://github.com/chainguard-project-theseus/challoc/issues/843)). These entry points, and `challoc_free_usable`, `dallocx` and the reallocations, take C's token only past this check, with its record (`Claim::settle`, [claims past the check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)), so *(C)* is not used before it |
 | The same | `malloc_usable_size`, `sallocx`, `xallocx` | abort (`check_live`) | as above: a never-allocated slot at the check, *(load)*; a stale one *(C)* |
 | The same, through a sized free | sized frees | abort at the cache flush (`double_free`, `straddling_double_free`); with the opt-in `exact_sized_free` key, at the call (`check_live`) | no: excluded by the C contract, *(C)*; under the key, that the free reaches the test is `theorem_exact_sized_free` |
 | Double free while the first copy is still in a thread cache | every free | with `double_free_scan` enabled (off by default), abort at the call: the slot's state byte (`heap::slotstate`) is not `LIVE`; else abort at the flush, or the slot is handed out twice first, as under jemalloc | no: excluded by the C contract, *(C)* |

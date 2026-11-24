@@ -105,6 +105,13 @@ pub tracked struct TlsSlot {
     pub tracked cell: TlsCell,
     /// The heap loan.
     pub tracked loan: HeapLoan,
+    /// A copy of the release records of the heap the loan holds
+    /// ([`Heap::rels`](crate::heap::Heap::rels)) as the token was made
+    /// (`entry`): each record is a monotone fact (the slot was released at
+    /// that version), so the copy stays true while the heap's own grows.
+    /// The free fast path seeds its bit test with it before it reaches
+    /// the heap.
+    pub tracked rels: crate::bitmap::Rels,
 }
 
 /// Ghost: the slot cell of a [`TlsSlot`]. `value` is what the slot
@@ -284,6 +291,13 @@ impl TlsSlot {
     pub open spec fn lent(self, old: TlsSlot) -> bool {
         &&& self.cell == old.cell
         &&& self.loan.lent(old.loan)
+        &&& self.rels == old.rels
+    }
+
+    /// The token's release records are those of the heap its loan holds
+    /// ([`Heap::rels`](crate::heap::Heap::rels)), when it holds one.
+    pub open spec fn rels_ok(self) -> bool {
+        self.loan.heap() matches Some(hp) ==> self.rels == hp.value().rels()
     }
 
     /// The calling thread's token at a top-level user of the slot, as the
@@ -329,11 +343,17 @@ impl TlsSlot {
     /// this doc together); that a nested user is lent the
     /// outer token, and that a user is done with its token before
     /// another user runs, are not checked.
+    /// The token's release records are a tracked copy of the heap's
+    /// ([`rels_ok`](TlsSlot::rels_ok)): the heap's own records are as the
+    /// last verified writer left them (the premise above), and the copy
+    /// adds no fact the heap's records do not state (a strengthening of
+    /// this seam allowed by Matt Moore, 2026-11-23, #912).
     ///
     /// [`heap::thread::slot_ok`]: crate::heap::slot_ok
     pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
         ensures
             crate::heap::slot_ok(r.cell, r.loan),
+            r.rels_ok(),
             r.cell.creates() == 0,
     ;
 }

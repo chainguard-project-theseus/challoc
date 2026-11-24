@@ -14,24 +14,25 @@ file.
 
 ## `TlsSlot::entry`
 
-src/sys/tls.rs:334. Kind: axiom. Category: allocator invariant.
+src/sys/tls.rs:353. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The calling thread's token at a top-level user of the slot, as the slot's last user left it: what [`heap::thread::slot_ok`] states of the value it holds (a heap value comes with the heap's permission, the heap well formed with its home headers and block at the cast pointer to its address, and nothing else with one), and `tp` this thread's thread pointer.
 
-Hashes: contract 3989910888, body none.
+Hashes: contract 3028045955, body none.
 
 ```rust
 pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
     ensures
         crate::heap::slot_ok(r.cell, r.loan),
+        r.rels_ok(),
         r.cell.creates() == 0,
 ;
 ```
 
 ## `get`
 
-src/sys/tls.rs:363. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:383. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise).
 
 > Read the calling thread's slot.
@@ -47,7 +48,7 @@ pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
 
 ## `get_tp`
 
-src/sys/tls.rs:418. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:438. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset), the TLS slot premise and TlsCell::tp (TPIDR_EL0 is the cell's tp)).
 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
@@ -64,7 +65,7 @@ pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
 
 ## `set`
 
-src/sys/tls.rs:448. Kind: external_body. Category: inline asm.
+src/sys/tls.rs:468. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; not checked: P8 (the GOT entry holds the slot's TLS offset) and the TLS slot premise).
 
 > Write the calling thread's slot.

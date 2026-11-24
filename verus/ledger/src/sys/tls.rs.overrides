@@ -1,5 +1,7 @@
 # The slot premise: each top-level user of the slot gets a token as the
-# slot's last user left it.
+# slot's last user left it. Its `rels_ok` conjunct (a tracked copy of
+# the heap's release records, #912) strengthens that premise and adds no
+# axiom function (allowed by Matt Moore, 2026-11-23).
 TlsSlot::entry	allocator invariant	none (assumption)
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks the
 # memory each reads or writes and the registers it writes against the
