@@ -455,6 +455,7 @@ fn arena_decay_uses_the_periods_of_the_decay_driver() {
         p,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(s.arena0.class(class).stats().empty, 1);
     free_huge_run(s);
