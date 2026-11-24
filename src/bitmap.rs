@@ -1318,6 +1318,7 @@ impl<'a> AtomicBitmap<'a> {
             r.2@.id() == self.spec_slots().hloc,
             r.2@@.0 == self.spec_first() / 64 + i,
             forall|b: u64| b < 64 && #[trigger] has_bit(mask, b) ==> !has_bit(r.2@@.2, (self.spec_first() % 64 + b) as u64),
+            forall|b: int| #[trigger] self.tokens(i as int, mask).contains(b) ==> released(self.spec_slots(), r.2@, b),
             subset(r.0, self.slab_mask()),
             r.1 == (r.0 == self.slab_mask()),
             subset(mask, r.0),
@@ -1428,6 +1429,22 @@ impl<'a> AtomicBitmap<'a> {
             lemma_subset_bits(m, prev);
             assert(subset(mask, (prev & sm) >> s)) by (bit_vector)
                 requires m & !prev == 0u64, m == mask << s, mask & !(sm >> s) == 0u64, (sm >> s) << s == sm, s < 64;
+            // Each released slot's bit `first + 64 * i + t` is bit
+            // `first % 64 + t` of word `first / 64 + i`, the witness's.
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+            let f = self.first@;
+            assert forall|b: int| #[trigger] self.tokens(i as int, mask).contains(b) implies released(self.slots@, wr, b) by {
+                let t = (b - f - 64 * i) as u64;
+                assert(has_bit(mask, t));
+                let su = s as u64;
+                assert(t + su < 64) by (bit_vector)
+                    requires (mask >> t) & 1u64 == 1u64, mask & !(sm >> su) == 0u64, su < 64, t < 64;
+                assert(f % 64 == s as int);
+                assert(b == 64 * (f / 64 + i) + (f % 64 + t)) by (nonlinear_arith)
+                    requires b == f + 64 * i + t, f == 64 * (f / 64) + f % 64;
+                assert(b / 64 == f / 64 + i && b % 64 == f % 64 + t) by (nonlinear_arith)
+                    requires b == 64 * (f / 64 + i) + (f % 64 + t), 0 <= f % 64 + t < 64;
+            }
         }
         ((prev & self.mask) >> self.shift, prev & self.mask == self.mask, Tracked(wr))
     }
@@ -3410,6 +3427,40 @@ pub proof fn lemma_addr_inj(s: Slots, b1: int, b2: int)
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b2, s.sb);
 }
 
+/// The bit of the slot at address `a` (#843): the one real bit whose
+/// address is `a`, when there is one ([`lemma_bit_of`]).
+pub open spec fn bit_of(s: Slots, a: int) -> int {
+    choose|b: int| s.real(b) && s.addr(b) == a
+}
+
+/// A real bit is the bit of its slot's address.
+pub proof fn lemma_bit_of(s: Slots, b: int)
+    requires
+        s.wf(),
+        s.real(b),
+    ensures
+        bit_of(s, s.addr(b)) == b,
+{
+    let c = bit_of(s, s.addr(b));
+    assert(s.real(c) && s.addr(c) == s.addr(b));
+    lemma_addr_inj(s, b, c);
+}
+
+/// A slot of `addrs(s, bits)`, for real `bits`, has its bit in `bits`.
+pub proof fn lemma_bit_of_addrs(s: Slots, bits: Set<int>, a: int)
+    requires
+        s.wf(),
+        forall|x: int| #[trigger] bits.contains(x) ==> s.real(x),
+        addrs(s, bits).contains(a),
+    ensures
+        bits.contains(bit_of(s, a)),
+        s.addr(bit_of(s, a)) == a,
+{
+    broadcast use Set::lemma_map_contains;
+    let b = choose|b: int| bits.contains(b) && s.addr(b) == a;
+    lemma_bit_of(s, b);
+}
+
 /// The addresses of a difference of slot sets are the difference of their
 /// addresses.
 pub proof fn lemma_addrs_difference(s: Slots, a: Set<int>, b: Set<int>)
@@ -3699,6 +3750,204 @@ pub type SeenVals = (GhostISubset<(int, nat, u64)>, GhostPersistentISubset<(int,
 /// A witness of a bitmap word's seen value: the persistent `(j, n, x)`
 /// at the class bitmap's `hloc` (above).
 pub type SeenWitness = GhostPersistentISingleton<(int, nat, u64)>;
+
+/// `w` witnesses a value of the word of class bitmap bit `b` (of `s`) in
+/// which the bit is clear: the record a release of `b`'s slot leaves
+/// ([`AtomicBitmap::release`]), which a later check of the slot is
+/// ordered after (#843).
+pub open spec fn released(s: Slots, w: SeenWitness, b: int) -> bool {
+    released_at(s, (w.id(), w@), b)
+}
+
+/// [`released`] on a witness's location and value, the form a bit test's
+/// record names (`class::BitLoad::seen`).
+pub open spec fn released_at(s: Slots, w: (Loc, (int, nat, u64)), b: int) -> bool {
+    &&& w.0 == s.hloc
+    &&& w.1.0 == b / 64
+    &&& !has_bit(w.1.2, (b % 64) as u64)
+}
+
+/// Every entry of `rel` is a release record of its bit ([`released`]).
+pub open spec fn rel_ok(s: Slots, rel: Map<int, SeenWitness>) -> bool {
+    forall|b: int| #[trigger] rel.contains_key(b) ==> released(s, rel[b], b)
+}
+
+/// A release record of a slot, by class and address (#843): the witness
+/// of the word value its release left, and the geometry of the class
+/// table it was released to (an arena's: bits are relative to it).
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct RelRec {
+    pub tracked w: SeenWitness,
+    pub ghost s: Slots,
+}
+
+/// The geometry of class `c`'s table in the process registry's arena 0,
+/// which every published arena's class state has (`arena::same_tables`)
+/// and which is the `Shared`'s table of the class
+/// (`Shared::lemma_process_slots`).
+pub open(crate) spec fn process_slots(c: int) -> Slots {
+    crate::arena::process_arena0().spec_class_state(c).spec_table().spec_slots()
+}
+
+/// Every entry of `m` is a release record of the slot at its key's
+/// address, made in the process's table of its key's class.
+pub open(crate) spec fn rec_ok(m: Map<(int, int), RelRec>) -> bool {
+    forall|k: (int, int)| #[trigger] m.contains_key(k) ==> m[k].s == process_slots(k.0) && released(m[k].s, m[k].w, bit_of(m[k].s, k.1))
+}
+
+/// Record, under `(c, pa[j])` for each `lo <= j < hi`, a copy of the
+/// witness `bits` (by bit, of class `c`'s process geometry `s`) holds for
+/// its slot's bit.
+pub proof fn lemma_by_addr(tracked out: &mut Map<(int, int), RelRec>, tracked bits: &Map<int, SeenWitness>, c: int, s: Slots, pa: Seq<int>, lo: int, hi: int)
+    requires
+        rec_ok(*old(out)),
+        s == process_slots(c),
+        rel_ok(s, *bits),
+        forall|j: int| lo <= j < hi ==> #[trigger] bits.contains_key(bit_of(s, pa[j])),
+    ensures
+        rec_ok(*final(out)),
+        forall|k: (int, int)| #[trigger] old(out).contains_key(k) ==> final(out).contains_key(k),
+        forall|j: int| lo <= j < hi ==> #[trigger] final(out).contains_key((c, pa[j])),
+    decreases hi - lo,
+{
+    if lo < hi {
+        let ghost o0 = *out;
+        let a = pa[lo];
+        assert(bits.contains_key(bit_of(s, pa[lo])));
+        let tracked w = bits.tracked_borrow(bit_of(s, a)).duplicate();
+        out.tracked_insert((c, a), RelRec { w, s });
+        let ghost mid = *out;
+        assert(rec_ok(mid)) by {
+            assert forall|k: (int, int)| #[trigger] mid.contains_key(k) implies mid[k].s == process_slots(k.0) && released(mid[k].s, mid[k].w, bit_of(mid[k].s, k.1)) by {
+                if k != (c, a) {
+                    assert(o0.contains_key(k));
+                }
+            }
+        }
+        lemma_by_addr(out, bits, c, s, pa, lo + 1, hi);
+        assert forall|j: int| lo <= j < hi implies #[trigger] out.contains_key((c, pa[j])) by {
+            if j == lo {
+                assert(mid.contains_key((c, pa[lo])));
+            } else {
+                assert(lo + 1 <= j < hi);
+            }
+        }
+        assert forall|k: (int, int)| #[trigger] o0.contains_key(k) implies out.contains_key(k) by {
+            assert(mid.contains_key(k));
+        }
+    }
+}
+
+/// A heap's release records (#843), by class and address: every one is a
+/// release record of the slot at its key, in the process's table of its
+/// class ([`rec_ok`]), by the type's invariant, so the heap's invariants
+/// need not carry it.
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub tracked struct Rels {
+    tracked m: Map<(int, int), RelRec>,
+}
+
+impl Rels {
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        rec_ok(self.m)
+    }
+
+    /// The records.
+    pub closed spec fn map(self) -> Map<(int, int), RelRec> {
+        self.m
+    }
+
+    /// No records.
+    pub proof fn tracked_empty() -> (tracked r: Rels)
+        ensures
+            r.map() == Map::<(int, int), RelRec>::empty(),
+    {
+        Rels { m: Map::tracked_empty() }
+    }
+
+    /// The records are release records ([`rec_ok`]).
+    pub proof fn lemma_ok(tracked &self)
+        ensures
+            rec_ok(self.map()),
+    {
+        use_type_invariant(self);
+    }
+
+    /// Add the records of `more`, which replace any of the same key.
+    pub proof fn absorb(tracked &mut self, tracked more: Map<(int, int), RelRec>)
+        requires
+            rec_ok(more),
+        ensures
+            final(self).map() == old(self).map().union_prefer_right(more),
+    {
+        use_type_invariant(&*self);
+        self.m.tracked_union_prefer_right(more);
+        assert(rec_ok(self.m)) by {
+            let m = self.m;
+            assert forall|k: (int, int)| #[trigger] m.contains_key(k) implies m[k].s == process_slots(k.0) && released(m[k].s, m[k].w, bit_of(m[k].s, k.1)) by {
+                if more.contains_key(k) {
+                    assert(m[k] == more[k]);
+                }
+            }
+        }
+    }
+
+    /// The record of the slot at address `a` of class `c`: made in the
+    /// process's table of the class.
+    pub proof fn tracked_get(tracked &self, c: int, a: int) -> (tracked r: &RelRec)
+        requires
+            self.map().contains_key((c, a)),
+        ensures
+            *r == self.map()[(c, a)],
+            r.s == process_slots(c),
+            released(r.s, r.w, bit_of(r.s, a)),
+    {
+        use_type_invariant(self);
+        self.m.tracked_borrow((c, a))
+    }
+}
+
+/// Record a copy of `w` under every bit of `bits` in `rel`, which keeps
+/// its other entries (a release's witness, for each slot it released).
+pub proof fn lemma_record(tracked rel: &mut Map<int, SeenWitness>, tracked w: &SeenWitness, bits: Set<int>)
+    ensures
+        forall|b: int| #[trigger] bits.contains(b) ==> final(rel).contains_key(b) && final(rel)[b].id() == w.id() && final(rel)[b]@ == w@,
+        forall|b: int| !bits.contains(b) && #[trigger] old(rel).contains_key(b) ==> final(rel).contains_key(b) && final(rel)[b] == old(rel)[b],
+        forall|b: int| #[trigger] final(rel).contains_key(b) ==> bits.contains(b) || old(rel).contains_key(b),
+    decreases bits.len(),
+{
+    if bits.len() > 0 {
+        if !(exists|b: int| bits.contains(b)) {
+            assert(bits =~= Set::empty());
+        }
+        let b = choose|b: int| bits.contains(b);
+        let ghost r0 = *rel;
+        let tracked c = w.duplicate();
+        rel.tracked_insert(b, c);
+        let ghost mid = *rel;
+        let ghost rest = bits.remove(b);
+        lemma_record(rel, w, rest);
+        assert(mid.contains_key(b) && !rest.contains(b));
+        assert(rel.contains_key(b) && rel[b] == mid[b]);
+        assert forall|x: int| !bits.contains(x) && #[trigger] r0.contains_key(x) implies rel.contains_key(x) && rel[x] == r0[x] by {
+            assert(mid.contains_key(x) && mid[x] == r0[x]);
+            assert(!rest.contains(x));
+        }
+        assert forall|x: int| #[trigger] bits.contains(x) implies rel.contains_key(x) && rel[x].id() == w.id() && rel[x]@ == w@ by {
+            if x != b {
+                assert(rest.contains(x));
+            }
+        }
+        assert forall|x: int| #[trigger] rel.contains_key(x) implies bits.contains(x) || r0.contains_key(x) by {
+            if !rest.contains(x) && x != b {
+                assert(mid.contains_key(x));
+            }
+        }
+    } else {
+        assert(bits =~= Set::empty());
+    }
+}
 
 /// Word `k.j`'s seen values, as its invariant holds them (`h`) for its
 /// value `x`: both parts at `k.slots.hloc`, every versioned value of the

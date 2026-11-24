@@ -275,8 +275,20 @@ impl Heap {
             shared.lemma_regions_ok();
         }
         let tracked mut claim = claim;
-        match shared.classify_free(p, Tracked(&mut claim)) {
+        // The bit test is ordered after this heap's release of `p`'s slot,
+        // when one of its flushes recorded one (#843).
+        let tracked mut obs = crate::class::BitLoad::new();
+        match shared.classify_free_after(p, Tracked(&mut claim), Tracked(&self.perms.borrow().rels), Tracked(&mut obs)) {
             Ok((class, arena)) => {
+                proof {
+                    // A stale free of a slot this heap released passes only
+                    // if the slot was claimed again since: the test read a
+                    // newer version of its word than the release left.
+                    let k = (class as int, p@.addr as int);
+                    if self.perms@.rels.map().contains_key(k) {
+                        assert(self.perms@.rels.map()[k].w@.1 < obs.seen()->Some_0.1.1);
+                    }
+                }
                 let tracked blk = claim.held.tracked_unwrap();
                 proof {
                     blk.lemma_claimed_block(p);

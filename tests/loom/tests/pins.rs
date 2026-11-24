@@ -1044,12 +1044,9 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
                 "desc.add_live(n);",
                 "self.live.fetch_add(n as u32, Ordering::AcqRel);",
             ),
+            ("fn release_word(", ""),
             (
-                "fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<&mut GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)",
-                "",
-            ),
-            (
-                "let (prev, was_full, _) = bm.release(word, mask, Tracked(tok));",
+                "let (prev, was_full, wit) = bm.release(word, mask, Tracked(tok));",
                 "fn release(&self, mask: u64, relaxed: bool) {",
             ),
             (

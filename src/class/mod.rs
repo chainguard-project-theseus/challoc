@@ -828,6 +828,45 @@ pub open spec fn word_addrs(t: SlabTable, slab: int, word: int, x: u64) -> VSet<
     addrs(t.spec_slots(), mask_bits(t.spec_slots(), slab * t.spec_slots().sb, word, x))
 }
 
+/// The slot at `a` has its release's witness in `rel`, or its token is in
+/// `held`, a batch's scratch words still to be released (#843).
+pub open spec fn rel_or(s: Slots, rel: Map<int, crate::bitmap::SeenWitness>, held: VSet<int>, a: int) -> bool {
+    rel.contains_key(crate::bitmap::bit_of(s, a)) || held.contains(a)
+}
+
+/// Releasing the scratch bits `bits`, whose tokens `held` holds, gives
+/// each of their slots a witness in `post`: every `rel_or` over `held`
+/// holds over the emptied set.
+proof fn lemma_rel_flush(
+    s: Slots,
+    pre: Map<int, crate::bitmap::SeenWitness>,
+    post: Map<int, crate::bitmap::SeenWitness>,
+    held: VSet<int>,
+    held2: VSet<int>,
+    bits: VSet<int>,
+    pa: Seq<int>,
+    n: int,
+)
+    requires
+        s.wf(),
+        held == addrs(s, bits),
+        held2.is_empty(),
+        forall|x: int| #[trigger] bits.contains(x) ==> s.real(x),
+        forall|b: int| #[trigger] bits.contains(b) ==> post.contains_key(b),
+        forall|b: int| #[trigger] pre.contains_key(b) ==> post.contains_key(b),
+        forall|j: int| 0 <= j < n ==> #[trigger] rel_or(s, pre, held, pa[j]),
+    ensures
+        forall|j: int| 0 <= j < n ==> #[trigger] rel_or(s, post, held2, pa[j]),
+{
+    assert forall|j: int| 0 <= j < n implies #[trigger] rel_or(s, post, held2, pa[j]) by {
+        assert(rel_or(s, pre, held, pa[j]));
+        if held.contains(pa[j]) {
+            crate::bitmap::lemma_bit_of_addrs(s, bits, pa[j]);
+        }
+        assert(!held2.contains(pa[j]));
+    }
+}
+
 /// The addresses of a set with one more slot.
 pub proof fn lemma_addrs_insert(s: Slots, a: VSet<int>, b: int)
     ensures
@@ -5582,7 +5621,20 @@ impl ClassState {
     /// (`AtomicBitmap::release`).
     // The extra arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
-    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<&mut GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
+    // Own prover: with the witness record (#843) in the module's shared
+    // Z3 context, `take`'s slab-address assert fails.
+    #[verifier::spinoff_prover]
+    fn release_word(
+        &self,
+        slab: usize,
+        word: usize,
+        mask: u64,
+        reopen: &mut Reopen,
+        Tracked(tok): Tracked<&mut GhostSubset<int>>,
+        Tracked(rel): Tracked<&mut Map<int, crate::bitmap::SeenWitness>>,
+        pubw: Tracked<&'static Published>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
@@ -5602,6 +5654,11 @@ impl ClassState {
             *final(ord) == *old(ord),
             final(tok).id() == old(tok).id(),
             final(tok)@.is_empty(),
+            // Each released slot's bit has the release's witness (#843).
+            crate::bitmap::rel_ok(self.spec_table().spec_slots(), *old(rel)) ==> crate::bitmap::rel_ok(self.spec_table().spec_slots(), *final(rel)),
+            forall|b: int| #[trigger] mask_bits(self.spec_table().spec_slots(), slab * self.spec_table().spec_slots().sb, word as int, mask).contains(b)
+                ==> final(rel).contains_key(b),
+            forall|b: int| #[trigger] old(rel).contains_key(b) ==> final(rel).contains_key(b),
     {
         let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
         proof {
@@ -5620,7 +5677,22 @@ impl ClassState {
                 t.lemma_slot_bit(slab as int, 64 * word + b);
             }
         }
-        let (prev, was_full, _) = bm.release(word, mask, Tracked(tok));
+        // `wit` is read only in the proof below.
+        #[cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
+        let (prev, was_full, wit) = bm.release(word, mask, Tracked(tok));
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+            let ghost r0 = *rel;
+            crate::bitmap::lemma_record(rel, wit.borrow(), bm.tokens(word as int, mask));
+            let sl = self.spec_table().spec_slots();
+            if crate::bitmap::rel_ok(sl, r0) {
+                assert forall|b: int| #[trigger] rel.contains_key(b) implies crate::bitmap::released(sl, rel[b], b) by {
+                    if !bm.tokens(word as int, mask).contains(b) {
+                        assert(r0.contains_key(b));
+                    }
+                }
+            }
+        }
         if prev & mask != mask {
             proof {
                 // The released slots' bits were set: `tok` holds their
@@ -5815,6 +5887,7 @@ impl ClassState {
         count: usize,
         reopen: &mut Reopen,
         Tracked(toks): Tracked<&mut GhostSubset<int>>,
+        Tracked(rel): Tracked<&mut Map<int, crate::bitmap::SeenWitness>>,
         pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     )
@@ -5842,6 +5915,11 @@ impl ClassState {
             *final(ord) == *old(ord),
             final(toks).id() == old(toks).id(),
             final(toks)@.is_empty(),
+            // Each released slot's bit has its release's witness (#843).
+            crate::bitmap::rel_ok(self.spec_table().spec_slots(), *old(rel)) ==> crate::bitmap::rel_ok(self.spec_table().spec_slots(), *final(rel)),
+            forall|b: int| #[trigger] scratch_bits(self.spec_table().spec_slots(), slab * self.spec_table().spec_slots().sb, old(local)@, lo as int, hi as int).contains(b)
+                ==> final(rel).contains_key(b),
+            forall|b: int| #[trigger] old(rel).contains_key(b) ==> final(rel).contains_key(b),
     {
         let ghost s = self.spec_table().spec_slots();
         let ghost f = slab * s.sb;
@@ -5850,6 +5928,9 @@ impl ClassState {
             use_type_invariant(self);
             self.spec_table().lemma_slots_wf();
         }
+        let ghost rel0 = *rel;
+        let ghost l0 = local@;
+        let ghost mut upto: int = lo - 1;
         for w in it: lo..=hi
             invariant
                 crate::sys::may_abort() || crate::sys::valid_aborts(),
@@ -5872,6 +5953,12 @@ impl ClassState {
                 f == slab * s.sb,
                 toks.id() == s.loc,
                 toks@ == addrs(s, scratch_bits(s, f, old(local)@, lo + it.index(), hi as int)),
+                l0 == old(local)@,
+                rel0 == *old(rel),
+                upto == lo + it.index() - 1,
+                crate::bitmap::rel_ok(s, rel0) ==> crate::bitmap::rel_ok(s, *rel),
+                forall|b: int| #[trigger] scratch_bits(s, f, l0, lo as int, upto).contains(b) ==> rel.contains_key(b),
+                forall|b: int| #[trigger] rel0.contains_key(b) ==> rel.contains_key(b),
         {
             let ghost i = lo + it.index();
             proof {
@@ -5885,9 +5972,39 @@ impl ClassState {
             }
             let mask = local[w];
             let tracked mut tok = toks.split(word_addrs(self.spec_table(), slab as int, w as int, mask));
+            let ghost r1 = *rel;
             if mask != 0 {
                 local[w] = 0;
-                self.release_word(slab, w, mask, reopen, Tracked(&mut tok), pubw, Tracked(ord));
+                self.release_word(slab, w, mask, reopen, Tracked(&mut tok), Tracked(rel), pubw, Tracked(ord));
+            } else {
+                proof {
+                    assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+                        assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+                    }
+                }
+            }
+            proof {
+                // Word `i`'s bits are its mask's (`mask_bits`), added to
+                // the words before it.
+                broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+                let a = mask_bits(s, f, i, l0[i]);
+                assert forall|b: int| #[trigger] scratch_bits(s, f, l0, lo as int, i).contains(b)
+                    == (scratch_bits(s, f, l0, lo as int, upto).contains(b) || a.contains(b)) by {
+                    if f + 64 * i <= b < f + 64 * i + 64 {
+                        assert((b - f) / 64 == i);
+                        assert((b - f) % 64 == b - f - 64 * i);
+                    }
+                }
+                assert forall|b: int| #[trigger] scratch_bits(s, f, l0, lo as int, i).contains(b) implies rel.contains_key(b) by {
+                    if !a.contains(b) {
+                        assert(scratch_bits(s, f, l0, lo as int, upto).contains(b));
+                        assert(r1.contains_key(b));
+                    }
+                }
+                assert forall|b: int| #[trigger] rel0.contains_key(b) implies rel.contains_key(b) by {
+                    assert(r1.contains_key(b));
+                }
+                upto = i;
             }
         }
         self.dec_live(slab, count, pubw, Tracked(ord));
@@ -5924,7 +6041,8 @@ impl ClassState {
     {
         broadcast use lemma_aset;
         let tracked mut bag = bag;
-        let n = self.release_owned(ptrs, Tracked(&mut bag), pubw, Tracked(ord));
+        let tracked mut rel: Map<int, crate::bitmap::SeenWitness> = Map::tracked_empty();
+        let n = self.release_owned(ptrs, Tracked(&mut bag), Tracked(&mut rel), pubw, Tracked(ord));
         if n != ptrs.len() {
             proof {
                 // The first slot left is another arena's.
@@ -5966,11 +6084,22 @@ impl ClassState {
     /// batch's tokens both double-free aborts (the scratch bit and the
     /// class bit) are unreachable.
     ///
+    /// The witnesses (#843): `rel` gains, under each released slot's bit,
+    /// the witness of the bitmap word value its release left
+    /// (`release_slab`), and keeps every other entry.
+    ///
     /// [`release_with`]: ClassState::release_with
     // Hot free path: the counter keeps the codegen as measured (and carries
     // a Verus invariant).
     #[allow(clippy::explicit_counter_loop)]
-    pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    pub fn release_owned(
+        &self,
+        ptrs: &[*mut u8],
+        Tracked(bag): Tracked<&mut GhostSubset<int>>,
+        Tracked(rel): Tracked<&mut Map<int, crate::bitmap::SeenWitness>>,
+        pubw: Tracked<&'static Published>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: usize)
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && live_slots(self.spec_class() as int, ptrs@)),
             crate::sys::may_syscall(),
@@ -5988,9 +6117,14 @@ impl ClassState {
             // and the first one left is another arena's.
             forall|i: int| 0 <= i < r ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
             r < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[r as int]@.addr) != self.spec_arena(),
+            // Each released slot's bit has its release's witness (#843).
+            crate::bitmap::rel_ok(self.spec_table().spec_slots(), *old(rel)) ==> crate::bitmap::rel_ok(self.spec_table().spec_slots(), *final(rel)),
+            forall|j: int| 0 <= j < r ==> #[trigger] final(rel).contains_key(crate::bitmap::bit_of(self.spec_table().spec_slots(), ptr_addrs(ptrs@)[j])),
+            forall|b: int| #[trigger] old(rel).contains_key(b) ==> final(rel).contains_key(b),
     {
         broadcast use lemma_aset;
         let ghost bag0 = *bag;
+        let ghost rel0 = *rel;
         let ghost pa = ptr_addrs(ptrs@);
         let mut local = [0u64; MAX_SLAB_WORDS];
         let mut cur_slab = usize::MAX;
@@ -6068,11 +6202,16 @@ impl ClassState {
                 cur_slab != usize::MAX ==> slab_owner(self.spec_class() as int, cur_slab as int) == self.arena,
                 forall|j: int| 0 <= j < i ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[j]@.addr) == self.arena,
                 end < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[end as int]@.addr) != self.arena,
+                rel0 == *old(rel),
+                crate::bitmap::rel_ok(s, rel0) ==> crate::bitmap::rel_ok(s, *rel),
+                forall|b: int| #[trigger] rel0.contains_key(b) ==> rel.contains_key(b),
+                forall|j: int| 0 <= j < i ==> #[trigger] rel_or(s, *rel, ltoks@, pa[j]),
             ensures
                 bag@ == bag0@ - aset(pa, 0, end as int),
                 end <= ptrs@.len(),
                 forall|j: int| 0 <= j < end ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[j]@.addr) == self.arena,
                 end < ptrs@.len() ==> slot_owner(self.spec_class() as int, ptrs@[end as int]@.addr) != self.arena,
+                forall|j: int| 0 <= j < end ==> #[trigger] rel_or(s, *rel, ltoks@, pa[j]),
         {
             proof {
                 // A live slot is a slot start of the class.
@@ -6090,8 +6229,10 @@ impl ClassState {
             if slab != cur_slab {
                 if count != 0 {
                     let ghost pre = local@;
-                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), pubw, Tracked(ord));
+                    let ghost (r1, h1) = (*rel, ltoks@);
+                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), Tracked(&mut *rel), pubw, Tracked(ord));
                     proof {
+                        lemma_rel_flush(s, r1, *rel, h1, ltoks@, scratch_bits(s, cur_slab * s.sb, pre, lo_w as int, hi_w as int), pa, i as int);
                         assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies subset(#[trigger] local@[v], slab_mask_of(sb)) by {
                             let m = slab_mask_of(sb);
                             if lo_w <= v <= hi_w {
@@ -6247,13 +6388,30 @@ impl ClassState {
                 lemma_scratch_insert(s, f, before, local@, lo0 as int, hi0 as int, lo_w as int, hi_w as int, word as int, k, count == 1);
                 _t.lemma_slot_bit(slab as int, slot as int);
                 assert(tok@ == s.addr(b));
+                let ghost h1 = ltoks@;
                 ltoks.combine_singleton(tok);
                 lemma_addrs_insert(s, old_set, b);
+                // The slot's token is now held; the earlier ones stay.
+                assert forall|j: int| 0 <= j < i + 1 implies #[trigger] rel_or(s, *rel, ltoks@, pa[j]) by {
+                    if j < i {
+                        assert(rel_or(s, *rel, h1, pa[j]));
+                    }
+                }
             }
             i += 1;
         }
         if count != 0 {
-            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), pubw, Tracked(ord));
+            let ghost (r1, h1, pre) = (*rel, ltoks@, local@);
+            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(&mut ltoks), Tracked(&mut *rel), pubw, Tracked(ord));
+            proof {
+                lemma_rel_flush(s, r1, *rel, h1, ltoks@, scratch_bits(s, cur_slab * s.sb, pre, lo_w as int, hi_w as int), pa, end as int);
+            }
+        }
+        proof {
+            // No token is left held: every released slot has its witness.
+            assert forall|j: int| 0 <= j < end implies #[trigger] rel.contains_key(crate::bitmap::bit_of(s, pa[j])) by {
+                assert(rel_or(s, *rel, ltoks@, pa[j]));
+            }
         }
         self.reopen(&mut reopen, pubw, Tracked(ord));
         if end != 0 {
