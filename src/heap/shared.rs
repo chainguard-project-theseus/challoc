@@ -209,9 +209,11 @@ proof fn lemma_process_shared()
     ensures
         crate::layout::process_regions() == shared_at(shared_storage()).regions,
         super::pac_mode() == (shared_at(shared_storage()).push_flags & PUSH_PAC != 0),
+        super::zero_mode() == (shared_at(shared_storage()).push_flags & PUSH_ZERO != 0),
 {
     reveal(crate::layout::process_regions);
     reveal(super::pac_mode);
+    reveal(super::zero_mode);
 }
 
 /// The class authorities of the `Shared` in its storage are its tables':
@@ -301,7 +303,8 @@ impl Shared {
     /// table's guard mask, or 0 under `exact_sized_free`; the huge
     /// allocator covers the huge region on the regions' page, with its
     /// records from `meta`; [`PUSH_PAC`] is [`pac_mode`](super::pac_mode),
-    /// set only where pointer authentication is available, and
+    /// set only where pointer authentication is available, [`PUSH_ZERO`]
+    /// is [`zero_mode`](super::zero_mode), and
     /// `free_flags`' bits other than [`FREE_ROUTE`] are `push_flags`'; the
     /// configuration is well formed; `meta`'s live-object records are the
     /// process's ([`process_live_id`](crate::meta::process_live_id));
@@ -319,6 +322,7 @@ impl Shared {
         &&& self.huge.spec_base() == self.regions.huge_base
         &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
         &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
+        &&& (self.push_flags & PUSH_ZERO != 0) == super::zero_mode()
         &&& crate::vspec::flags::fixed(&self.free_flags) == self.push_flags & !FREE_DYN
         &&& super::pac_mode() ==> crate::sys::pac::pac_available()
         &&& self.config.wf()
@@ -2849,6 +2853,7 @@ impl Shared {
             self.arenas.is_process(),
             self.meta.live_id() == crate::meta::process_live_id(),
             (self.push_flags & PUSH_PAC != 0) == super::pac_mode(),
+            (self.push_flags & PUSH_ZERO != 0) == super::zero_mode(),
             super::pac_mode() ==> crate::sys::pac::pac_available(),
             self.arenas.spec_arena0() == self.arena0,
             self.arenas.spec_arena0() == self.spec_arena0(),
@@ -3266,17 +3271,23 @@ impl Shared {
     /// arena. Aborts unless `p` is an allocated slot of `class` in `arena`.
     /// `tok` is the slot's token; it goes back to the slot's bitmap word.
     /// `rel` gains the release record of `p` (#920): the witness of the
-    /// word value the release left, by class and address.
+    /// word value the release left, by class and address. Under
+    /// `zero_on_free`, `z` is the token of the slot's clear: it covers
+    /// the class size from `p` (theorem 12's obligation).
+    // The last four arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
     pub fn free_direct(
         &self,
         arena: u16,
         class: usize,
         p: *mut u8,
         Tracked(tok): Tracked<GhostSingleton<int>>,
+        Tracked(z): Tracked<&crate::vspec::zero::Zeroed>,
         Tracked(rel): Tracked<&mut vstd::map::Map<(int, int), crate::bitmap::RelRec>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     )
         requires
+            super::zero::zero_on_free(self) ==> z.covers(p, class_table()[class as int].size as int),
             crate::bitmap::rec_ok(*old(rel)),
             crate::sys::may_abort() || (crate::sys::valid_aborts() && self.wf() && crate::class::slot_owner(class as int, p@.addr) == arena),
             crate::sys::may_syscall(),
@@ -3689,9 +3700,18 @@ impl Shared {
     /// token ([`Claim::run_claim`]), held or still the call's;
     /// [`Huge::free_run`](crate::huge::Huge::free_run) claims it past its
     /// checks. The second result is the token it claimed (the held one,
-    /// if the claim came in held), as it was before the free.
-    pub fn free_huge(&self, page: usize, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (usize, Ghost<Live>))
+    /// if the claim came in held), as it was before the free. Under
+    /// `zero_on_free`, `z` is the token of the run's clear: the claim is
+    /// held and `z` covers its block (theorem 12's obligation).
+    pub fn free_huge(
+        &self,
+        page: usize,
+        Tracked(claim): Tracked<Claim>,
+        Tracked(z): Tracked<&crate::vspec::zero::Zeroed>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: (usize, Ghost<Live>))
         requires
+            super::zero::zero_on_free(self) ==> (claim.held matches Some(l) && z.addr() == l.addr() as int && z.len() == l.len()),
             crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held is Some),
             crate::sys::may_syscall(),
             old(ord).allows(rank_huge()),
@@ -4272,6 +4292,7 @@ impl Shared {
             (f & PUSH_PAC != 0) == super::pac_mode(),
             (f & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
             (f & PUSH_ZERO != 0) == (self.flags() & PUSH_ZERO != 0),
+            (f & PUSH_ZERO != 0) == super::zero_mode(),
     {
         let pf = self.push_flags;
         assert(f & !24u8 == pf & !24u8 ==> (f & 4u8 == pf & 4u8 && f & 2u8 == pf & 2u8)) by (bit_vector);
@@ -4285,6 +4306,7 @@ impl Shared {
             r == self.flags(),
             self.wf() ==> ((r & PUSH_PAC != 0) == super::pac_mode()),
             self.wf() && (r & PUSH_PAC != 0) ==> crate::sys::pac::pac_available(),
+            self.wf() ==> ((r & PUSH_ZERO != 0) == super::zero_mode()),
         opens_invariants none
     {
         self.push_flags
@@ -4322,6 +4344,7 @@ impl Shared {
     pub fn zero_on_free(&self) -> (r: bool)
         ensures
             r == (self.flags() & PUSH_ZERO != 0),
+            self.wf() ==> r == super::zero_mode(),
         opens_invariants none
     {
         self.push_flags & PUSH_ZERO != 0

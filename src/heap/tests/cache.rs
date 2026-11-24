@@ -685,12 +685,14 @@ fn direct_paths_bypass_the_cache() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert_eq!(live(s, c), 1);
     s.free_direct(
         0,
         c,
         q,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
@@ -767,6 +769,7 @@ fn huge_runs_go_through_the_heap_without_caches() {
             Kind::Huge { page } => page,
             other => panic!("{other:?}"),
         },
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
     );

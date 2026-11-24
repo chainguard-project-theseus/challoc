@@ -321,7 +321,9 @@ covering the bytes the API promises zero
 state records them (`Live::reads_zero`). With `zero_on_free`, every free
 path clears the whole usable size before giving the block up
 (`heap::zero::theorem_zero_on_free`, `theorem_zero_on_free_huge`,
-theorem 12).
+theorem 12): the cache push and the two direct releases
+(`Heap::push_cache`, `Shared::free_direct`, `Shared::free_huge`) require
+the clear's token.
 
 **Premises and limits.** Coverage, not proved contents: the token's
 meaning rests on `zero_raw` (Kani-discharged) and the kernel axioms

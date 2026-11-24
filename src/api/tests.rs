@@ -2305,6 +2305,7 @@ fn background_thread_starts_purges_and_is_absent_after_fork() {
         page,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     // No check that the run is still `Empty` here: with a 1 ms decay
     // the thread can purge it before this thread runs again (seen on
@@ -2505,6 +2506,7 @@ fn lazy_start_waits_for_dirty_memory() {
         (p as usize - s.regions.huge_base) >> s.regions.lg_page,
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
     );
     let t1 = t0 + 3 * AUTO_HOLD_NS;
     purge::on_tick(
@@ -2684,6 +2686,7 @@ fn background_thread_purges_an_empty_from_its_startup() {
             page,
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
         );
         let first = none_before && s.huge.oldest_empty() != 0;
         hook_seen.store(if first { 3 } else { 2 }, Ordering::SeqCst);
@@ -2717,6 +2720,7 @@ fn background_thread_purges_an_empty_from_its_startup() {
     if hook_state.load(Ordering::SeqCst) < 2 {
         s.free_huge(
             page,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );

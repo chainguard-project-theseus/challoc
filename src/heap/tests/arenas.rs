@@ -834,6 +834,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     assert_eq!(a.classes[c].stats().empty, per_refill);
     // Destroying the heap frees the nodes too.
@@ -1589,5 +1590,10 @@ fn a_huge_allocation_in_an_arena_that_does_not_exist_goes_to_arena_0() {
         Kind::Huge { page } => page,
         other => panic!("{other:?}"),
     };
-    s.free_huge(page, Tracked::assume_new(), Tracked::assume_new());
+    s.free_huge(
+        page,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
 }

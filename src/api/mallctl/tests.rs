@@ -399,6 +399,7 @@ fn arena_decay_uses_the_periods_of_the_decay_driver() {
                 page,
                 vstd::prelude::Tracked::assume_new(),
                 vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
             ),
             other => panic!("{other:?}"),
         };
@@ -453,6 +454,7 @@ fn arena_decay_uses_the_periods_of_the_decay_driver() {
         0,
         class,
         p,
+        vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),

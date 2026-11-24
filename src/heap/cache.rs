@@ -731,6 +731,7 @@ impl Heap {
         requires
             (flags & PUSH_PAC != 0) == pac_mode(),
             (flags & PUSH_PAC != 0) ==> pac::pac_available(),
+            super::zero_mode() ==> flags & PUSH_ZERO != 0,
             process_regions().is_slot(class as int, p@.addr),
             class < NCLASSES,
             old(self).wf(),
@@ -783,6 +784,7 @@ impl Heap {
             old(perms).hdrs.contains_key(cache),
             (flags & PUSH_PAC != 0) == pac_mode(),
             (flags & PUSH_PAC != 0) ==> pac::pac_available(),
+            super::zero_mode() ==> flags & PUSH_ZERO != 0,
             regions_ok(),
             process_regions().is_slot(old(perms).cls[cache], p@.addr),
             slot_start(p),
@@ -804,17 +806,20 @@ impl Heap {
             assert(flags == 4 ==> flags & 4 != 0) by (bit_vector);
             assert(flags == 0 ==> flags & 4 == 0) by (bit_vector);
         }
+        // Every push below has `PUSH_ZERO` clear, so `zero_on_free` is off
+        // (the `requires`) and `push_cache` reads no token.
+        let tracked z0 = crate::vspec::zero::Zeroed::empty(0);
         // One byte compare each for the two common configurations: signed
         // pointers alone (opt-in `pac_pointers:true` on an arm64 host with
         // PAC; never set elsewhere, so the compare is compiled out) and no
         // hardening (the default on every host, PAC or not).
         if cfg!(target_arch = "aarch64") && flags == PUSH_PAC {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, true, Tracked(perms), Tracked(tk)) };
+            return unsafe { Self::push_cache(cache, p, true, Tracked(&z0), Tracked(perms), Tracked(tk)) };
         }
         if flags == 0 {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, Tracked(perms), Tracked(tk)) };
+            return unsafe { Self::push_cache(cache, p, false, Tracked(&z0), Tracked(perms), Tracked(tk)) };
         }
         if flags & PUSH_ZERO != 0 || flags & PUSH_STATE != 0 {
             proof {
@@ -825,7 +830,7 @@ impl Heap {
         }
         // SAFETY: guaranteed by the caller.
         unsafe {
-            Self::push_cache(cache, p, flags & PUSH_PAC != 0, Tracked(perms), Tracked(tk))
+            Self::push_cache(cache, p, flags & PUSH_PAC != 0, Tracked(&z0), Tracked(perms), Tracked(tk))
         }
     }
 
@@ -834,6 +839,10 @@ impl Heap {
     /// With `pac` the entry is stored signed with the stack's base address
     /// as the modifier (`pacda`, [`PUSH_PAC`]).
     ///
+    /// Under `zero_on_free` ([`zero_mode`](super::zero_mode)), `z` is the
+    /// token of the slot's clear: it covers the class size from `p`
+    /// (theorem 12's obligation). Otherwise any token, unread.
+    ///
     /// # Safety
     /// `cache` is a header owned by this heap, unused or with a stack.
     #[inline(always)]
@@ -841,10 +850,12 @@ impl Heap {
         cache: *mut CacheHeader,
         p: *mut u8,
         pac: bool,
+        Tracked(z): Tracked<&crate::vspec::zero::Zeroed>,
         Tracked(perms): Tracked<&mut CachePerms>,
         Tracked(tk): Tracked<&mut Map<int, GhostSingleton<int>>>,
     ) -> (r: bool)
         requires
+            super::zero_mode() ==> z.covers(p, crate::layout::class_table()[old(perms).cls[cache]].size as int),
             old(perms).wf(),
             old(perms).tracks(),
             old(perms).zero_ok(),
