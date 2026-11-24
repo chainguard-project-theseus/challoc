@@ -2082,10 +2082,8 @@ inside `abort_fmt`. A fast-path call that returns made no system call.
 
 No function the fast branches of `malloc`, `free` and
 `challoc_free_usable` call can acquire a lock, and each terminates; the
-same holds for the callees of the `free_sized` and `sdallocx` fast branch
-below `free_sized_fast`. `free_sized_fast` and `Shared::sized_slot`
-declare no mask (so `any`): that the sized fast branch itself takes no
-lock is read off those two bodies, not proved. The entry points
+same holds for the `free_sized` and `sdallocx` fast branch,
+`free_sized_fast` and what it calls (#913). The entry points
 themselves are not masked, the slow paths are outside the theorem, and a
 bound on the step count is read off the code, not proved ("Scope: which
 paths", "What stays exempt").
@@ -2126,7 +2124,9 @@ pub unsafe fn free_fast_slot(shared: &Shared, t: usize, tp: usize, p: *mut u8, b
 unsafe fn free_fast_tail(shared: &Shared, class: usize, slab: usize, p: *mut u8, flags: u8, t: usize, tp: usize, blk, tls) -> (r: Option<usize>)   // heap/paths.rs
     opens_invariants [crate::class::owner_ns()]
 pub fn free_sized_fast(...) -> (r: bool)                             // heap/paths.rs
-    // no mask (so `any`)
+    opens_invariants [crate::vspec::flags::flags_ns()]
+pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> (r: Option<usize>)   // Shared, heap/shared.rs
+    opens_invariants none
 pub fn existing_heap(shared: *const Shared) -> ...                   // heap/thread.rs
     opens_invariants none
 pub fn shared_base() -> (r: *const Shared)                          // api/mod.rs
@@ -2204,7 +2204,7 @@ paths, verified unless marked trusted:
 - **Pop:** `Heap::alloc_fast`, `pop_fast`, `cache_ptr`, `home_ptr_at`
   (trusted, partly checked by Kani), `pop_top`, `CacheHeader::slots`.
 - **Push:** `free_fast_slot`, `free_fast_tail`, `Heap::push_fast`,
-  `push_cache_flags`, `push_cache`; `free_sized_fast` has no mask.
+  `push_cache_flags`, `push_cache`, `free_sized_fast`.
 - **Free checks:** `Shared::push_flags`, `Shared::free_flags` (over
   `vspec::flags::load`, verified, which opens the byte's invariant in
   `flags_ns`), `set_slot`, `home_owns`,
@@ -2215,8 +2215,8 @@ paths, verified unless marked trusted:
   `load_owner` (whose load is `vspec::atom::load_u16_at`, trusted and
   partly checked), `class::word_index` (on aarch64 an empty `asm!`,
   discharged by `make emptyasm`; on x86_64 the identity, verified),
-  `ClassLine::guard_word` (trusted, partly checked) and `is_guard`.
-  `Shared::sized_slot` has no mask.
+  `ClassLine::guard_word` (trusted, partly checked) and `is_guard`;
+  the sized check `Shared::sized_slot`.
 - **Layout:** the free function `layout::regions::class_entry` (over the
   trusted `entry_barrier` on x86_64). The class lines hold the geometry
   the free checks use; the sized check's bound is the field
@@ -2235,9 +2235,12 @@ the array reads go through `vspec::slice::array_get_unchecked`. The
 [flags_ns()]`), which
 it loads anyway. The class line's `set_slab` and `owner` are given the
 class's table for its word and owner permissions; the table is not
-loaded from, so the machine code is upstream's. `Shared::sized_slot`
-keeps upstream's `hint?`, so it and its caller `free_sized_fast` carry
-no mask.
+loaded from, so the machine code is upstream's. `Shared::sized_slot`'s
+`hint?` is spelled the same way (#913). The respelling leaves the fast
+branches' machine code unchanged; it moves blocks in three slow-path
+functions (x86_64: `sdallocx_routed`, the explicit-cache route, by 4
+instructions; `free_sized_medium` and `sdallocx_flags`, two tail
+blocks swapped), the cost #913 records.
 
 **Premises beyond the common ones.**
 - **Trusted masks.** Each trusted function's mask is a declaration that
@@ -2319,10 +2322,8 @@ no mask.
 **Where the statement is weaker than the code.**
 - **Composition.** Verus checks the masked functions, not the entry
   points. That `malloc`, `free`, `free_sized` and `sdallocx` call only
-  masked functions on their fast branch is read off their bodies, and so
-  is that the unmasked `free_sized_fast` and `sized_slot` take no lock;
-  their termination is proved (verified, no loop, no
-  `exec_allows_no_decreases_clause`). `malloc`'s branch is an inlined
+  masked functions on their fast branch is read off their bodies.
+  `malloc`'s branch is an inlined
   copy of `malloc_fast`'s calls, not a call to it.
 - **Step count.** Termination is proved; the step bound is not, because
   Verus has no cost model. The bound rests on the closure having no

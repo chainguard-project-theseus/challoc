@@ -4336,6 +4336,9 @@ impl Shared {
     /// [`classify_free`]: Shared::classify_free
     /// [`release_routed`]: Shared::release_routed
     #[inline(always)]
+    // The `let ... else` stands for `?`, whose vstd spec has the default
+    // mask (THEOREMS.md, theorem 9).
+    #[allow(clippy::question_mark)]
     pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> (r: Option<usize>)
         requires
             self.wf(),
@@ -4343,8 +4346,11 @@ impl Shared {
         ensures
             r matches Some(c) ==> hint == Some(c) && crate::layout::process_regions().is_slot(c as int, p@.addr),
             self.exact_sized_free() ==> r is None,
+        opens_invariants none
     {
-        let class = hint?;
+        let Some(class) = hint else {
+            return None;
+        };
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`.
         let line = unsafe { crate::vspec::slice::array_get_unchecked(&self.lines, class) };
