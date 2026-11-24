@@ -20,12 +20,15 @@ and not run.
 
 ## Inventory
 
-372 lines of source carry an `Ordering::` (`grep` over `src/`,
-leaving out `tests.rs`, `linux_tests.rs`, `src/heap/tests/`,
-`src/kani/`, `src/model/`, `src/heap/tlscheck.rs` (built only with
-`cfg(challoc_tls_check)`), `src/sync.rs`'s `cfg(loom)` stand-ins for
-vstd's atomics (built only by the loom crate), inline `#[cfg(test)]`
-and `#[cfg(kani)]` modules, and comment lines). The counters behind
+407 lines of source carry an `Ordering::` (`grep` over `src/`, leaving
+out comment lines and every module under `#[cfg(test)]`, `#[cfg(kani)]`,
+`#[cfg(loom)]` or `#[cfg(challoc_tls_check)]`, inline or in its own files:
+the `tests.rs`, `linux_tests.rs` and other test files, `src/heap/tests/`,
+`src/kani/`, `src/model/`, `src/sync.rs`'s `cfg(loom)` stand-ins for
+vstd's atomics (built only by the loom crate) and `src/heap/tlscheck.rs`).
+`tests/loom/tests/inventory.rs` recounts the total and every row below
+with this rule and fails when one differs, or when a file with such a
+line has no row. The counters behind
 `vspec/count.rs`, the route byte behind `vspec/flags.rs` and the
 arena and explicit-cache table entries behind `vspec/entry.rs` and the
 class bitmap words behind `vspec/word.rs` and the cgroup record's
@@ -34,8 +37,8 @@ operations are `SeqCst` with no ordering argument. The count keeps lines in `#[c
 functions and statements outside those modules: `sys/abort.rs` and
 `sys/pac.rs` have only such lines (test hooks), and several other rows
 include a few.
-Files that pass an ordering through an imported name or a `vspec`
-wrapper argument are not in this count.
+Lines that name an ordering without the `Ordering::` path (an imported
+`Relaxed`), or take one as a variable, are not in this count.
 Most of these lines are `Relaxed` statistics, configuration and
 heuristics. `purge/background.rs` holds the crate's two `fence` calls
 (in `wake` and `start`, P3), and there is no `compiler_fence`.
@@ -44,22 +47,25 @@ a compiler barrier.
 
 | File | Lines | Atomics |
 |---|---|---|
+| `cow.rs` | 69 | fork epochs: `DEPTH`, `IN_FORCE`, `CAP`, `CLAIMED`, `FLUSH_AFTER`, `EPOCHS`, `EXPIRED`, `DEFLECTED` and the drain's `DRAIN_*`, mostly `Relaxed`, with some `Acquire`, `Release` and `AcqRel` operations (no protocol below covers them; #945) |
 | `purge/background.rs` | 56 | `PRESENT`, `REQUESTED`, `SEQ`; the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
-| `thp.rs` | 45 | init-time configuration and counters |
-| `sys/cgroup.rs` | 37 | sampled cgroup limits and the deferred discovery's phase; the sample clock `sampled_at` is a vstd atomic (`SeqCst`) |
+| `thp.rs` | 45 | init-time configuration and counters; `MODE`'s `Release` store publishes the thresholds to its `Acquire` loads, and no protocol below covers it (#946) |
 | `purge.rs` | 37 | flags, counters, `Decayer` |
-| `stats.rs`, `policy.rs` | 26, 24 | statistics and the sampled policy, `Relaxed` |
-| `slab.rs` | 4 | `SlabDesc::live` (state, arena, dirty, `shadow`, and `SlabPages`' `closed` and `stamp` are vstd `PAtomic*`s, `SeqCst`, every operation inside the descriptor's invariant, with no ordering argument) |
-| `arena.rs` | 12 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
-| `api/mod.rs` | 22 | `STATE.line`, `INIT_TID`, `SEALED`, `FORK_SIGMASK`'s store |
+| `sys/cgroup.rs` | 32 | sampled cgroup limits and the deferred discovery's phase; the sample clock `sampled_at` is a vstd atomic (`SeqCst`) |
+| `stats.rs`, `policy.rs` | 28, 24 | statistics and the sampled policy, `Relaxed`; `stats.rs`'s record pool (`mod pool`) hands slots off with `Acquire` and `Release` (`owner`, `rec`), and no protocol below covers it (#946) |
+| `api/mod.rs` | 19 | `INIT_TID`, `SEALED`, the init gate (`INIT_GATE`, `GATE_FORKER`, `FORK_GATED`), `ATFORK_REGISTERED`, `FORK_LOCKED`, the fork slot's store (`FORK_SIGMASK`); the init gate's and `ATFORK_REGISTERED`'s `Acquire`, `Release` and `AcqRel` operations have no protocol below (#946) |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 15 | watermark; owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
-| `lock.rs` | 12 | the lock word; the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` |
-| `heap/slotstate.rs` | 11 | `double_free_scan`'s per-slot state byte |
+| `arena.rs` | 14 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
 | `class/pages.rs` | 8 | `hint_due`, `hint_armed`, `pages_due`, `Relaxed` |
-| `huge/mod.rs`, `huge/free.rs` | 7, 2 | `retain_max`, `purge_on_free`, `mixed_guards`, `Relaxed` |
+| `heap/slotstate.rs` | 8 | `double_free_scan`'s registry: `CLAIMED`, `PAGE` and the arrays' `base` and `class_base`, published with `Release` and `AcqRel` and read with `Acquire`; no protocol below covers it (#946) |
+| `class/cow.rs` | 7 | the per-class fork-epoch floors `cow_floor` and `drain_floor`, `Relaxed` |
+| `lock.rs` | 6 | the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` (the lock word is a vstd `PAtomicU32`, P2) |
+| `huge/mod.rs`, `huge/free.rs`, `huge/grow.rs`, `huge/shrink.rs` | 8, 2, 1, 1 | `retain_max`, `purge_on_free`, `mixed_guards`, `Relaxed` |
+| `slab.rs` | 4 | `SlabDesc::live` (state, arena, dirty, `shadow`, and `SlabPages`' `closed` and `stamp` are vstd `PAtomic*`s, `SeqCst`, every operation inside the descriptor's invariant, with no ordering argument) |
 | `heap/shared.rs` | 2 | test code only: `parts`' watermark read and `set`'s `#[cfg(test)]` exchange (`free_flags` goes through `vspec::flags`, `SeqCst`, with no ordering argument) |
 | `sys/abort.rs`, `sys/pac.rs` | 2, 2 | test hooks only: `REAL_ABORT` and `TEST_OPS`, under `#[cfg(test)]` |
+| `vspec/word.rs` | 1 | the fork slot's load (`load_fork_slot`), ordered by the allocator's locks |
 
 ## Protocols that matter
 
