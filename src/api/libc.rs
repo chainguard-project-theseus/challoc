@@ -1873,7 +1873,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tr
             &&& claim.held matches Some(b) ==> blk == b
             &&& blk.block(p)
             &&& r.0@.addr == 0 ==> *final(out) == blk
-            &&& r.0@.addr != 0 && r.0@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
+            &&& r.0@.addr != 0 ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
             &&& r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))
                 || shrank_in_place(p, size, blk, *final(out))
         },
@@ -2643,7 +2643,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
             &&& claim.held matches Some(b) ==> blk == b
             &&& blk.block(p)
             &&& r.0@.addr == 0 ==> *final(out) == blk
-            &&& r.0@.addr != 0 && r.0@.addr != p@.addr ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
+            &&& r.0@.addr != 0 ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
             &&& r.0@.addr == p@.addr <==> keeps(p, size, 1, blk.len()) || grew_in_place(p, size, blk, *final(out))
                 || shrank_in_place(p, size, blk, *final(out))
         },

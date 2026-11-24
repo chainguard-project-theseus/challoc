@@ -11405,9 +11405,12 @@ alone):
    (`old_size_or_keep`): the class size for a slot, a run token's
    usable pages for a huge `p`. Contents are modelled:
    `realloc_block` (likewise `realloc_usable_stored` and `rallocx_zeroed`)
-   ensures that a moved block's first `min(blk.len(), size)` bytes read
-   as `p`'s did when the copy was made (`Live::copied_from`, over the
-   byte states). The copy's effect on the byte states is the trusted
+   ensures that the block it returns, moved or kept, has its first
+   `min(blk.len(), size)` bytes reading as `p`'s did (`Live::copied_from`,
+   over the byte states; #926): for a move, when the copy was made; for
+   a kept block, the claimed token itself comes back; for a run grown or
+   shrunk in place, `grew_in_place` and `shrank_in_place` carry the
+   kept bytes. The copy's effect on the byte states is the trusted
    `vspec::user::copy_raw` (`vspec/user.rs`, `external_body`,
    discharged by Kani); its safety is
    verified. F:
@@ -11818,14 +11821,28 @@ What each partial or missing cell leaves out, and what it rests on:
   neither stated. Row 34's B is theorem 32's covered reads only, and row
   33's `-` is a verified body with no `ensures`.
 - **C** (rows 3, 4, 14, 17): `p`. The realloc cores (`realloc_block`,
-  `realloc_usable_stored`, `rallocx_zeroed`) ensure that a moved block's
-  first `min(blk.len(), size)` bytes read as `p`'s did
-  (`final(out).copied_from(blk, ..)`, `Live::copied_from`, over the byte
-  states), with `blk` the token their check claimed for `p`, which each
-  returns as a ghost result (C's token at the export, claimed past the
-  check, #835). That rests on `copy_raw`'s trusted effect on the byte states,
-  which Kani checks (row 3). Not stated: that a block kept in place keeps
-  its bytes, and anything beyond the first `min(blk.len(), size)` bytes.
+  `realloc_usable_stored`, `rallocx_zeroed`) ensure that every non-NULL
+  result, moved or kept in place, has its first `min(blk.len(), size)`
+  bytes reading as `p`'s did (`final(out).copied_from(blk, ..)`,
+  `Live::copied_from`, over the byte states; #926), with `blk` the token
+  their check claimed for `p`, which each returns as a ghost result (C's
+  token at the export, claimed past the check, #835). A kept block is the
+  claimed token itself; a run grown or shrunk in place keeps its bytes by
+  `grew_in_place` and `shrank_in_place` (from `Shared::grow_huge` and
+  `Shared::shrink_huge`). A move rests on `copy_raw`'s trusted effect on
+  the byte states, which Kani checks (row 3). Not stated: anything beyond
+  the first `min(blk.len(), size)` bytes. Nor, for a caller whose claim
+  comes in pending (every C entry point: `realloc`, `realloc_usable`,
+  `rallocx`), any link between `blk` and the bytes the caller saw before.
+  Their `ensures` tie `blk` to `p` only by `blk.block(p)` and the keep
+  rule (`claim.held matches Some(b) ==> blk == b` is vacuous for them).
+  In the kept case the conjunct then holds by `copied_from` being
+  reflexive (`blk == *final(out)`), and in the moved case it relates the
+  new block to a token minted in the call. This is the same limit as the
+  U note of row 15. The C exports return only the pointer, and C holds no
+  token for its block (`axiom_c_claim`'s claim is settled inside the
+  call), so the entry points state nothing about contents; the conjunct
+  is for verified callers that pass a held claim.
 - **F**: rows 16 and 17 take the `errno` token but state nothing about
   it (their first call runs init's libc calls); rows 24 and 25 do not
   state the `nothrow_t` forms' NULL beyond `fits`; row 34 states no

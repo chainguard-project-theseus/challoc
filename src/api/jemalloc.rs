@@ -546,7 +546,7 @@ pub fn rallocx_zeroed(
         p@.addr != 0 ==> {
             let blk = r.3@;
             &&& claim.held matches Some(b) ==> blk == b
-            &&& r.0@.addr != 0 && r.0 != p ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
+            &&& r.0@.addr != 0 ==> final(out).copied_from(blk, if blk.len() < size { blk.len() } else { size as int })
             &&& blk.block(p)
             &&& r.0@.addr == 0 ==> *final(out) == blk
             &&& r.0@.addr == p@.addr <==> keeps(p, size, (1usize << ((flags as u32) & 0x3f)), blk.len()) || grew_in_place(
