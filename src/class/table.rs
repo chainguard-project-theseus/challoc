@@ -1996,6 +1996,17 @@ impl SlabTable {
         crate::layout::guard_of(self.lg_slabs_per_page, self.guard_mask, slab)
     }
 
+    /// Whether slab `s` starts a run in a class that commits runs
+    /// ([`starts_run`](SlabTable::starts_run)'s test past its `runs()`):
+    /// the group's first slab, a guard slab, or a multiple of
+    /// [`spec_run_slabs`](SlabTable::spec_run_slabs) not right after a
+    /// guard slab.
+    pub(super) open spec fn spec_run_start(&self, s: usize) -> bool {
+        ||| s & sub(1usize << self.lg_group, 1) == 0
+        ||| self.spec_is_guard(s)
+        ||| (s & sub(self.spec_run_slabs(), 1) == 0 && !self.spec_is_guard(sub(s, 1)))
+    }
+
     /// The slabs a run holds at most ([`run_slabs`](SlabTable::run_slabs)).
     pub closed spec fn spec_run_slabs(&self) -> usize {
         let r = RUN_BYTES >> class_table()[self.class as int].lg_slab;
@@ -2857,6 +2868,54 @@ proof fn lemma_run_slabs(t: SlabTable)
     assert(12 <= lg <= 22 ==> (0x8_0000usize >> lg) <= 0x80
         && ((0x8_0000usize >> lg) == 0 || (0x8_0000usize >> lg) & sub(0x8_0000usize >> lg, 1) == 0)) by (bit_vector);
     assert(1usize & sub(1usize, 1) == 0) by (bit_vector);
+}
+
+/// The run arithmetic of [`SlabTable::run_end`] for `m`, one less than a
+/// power-of-two run length: `every0` is the next multiple of `m + 1`
+/// above `s`, pushed one run further (`bumped`) when `s` is a guard slab
+/// just below it. Then `every` is a multiple of `m + 1`, and the only
+/// multiple strictly between `s` and `every` is `s + 1`, when bumped.
+proof fn lemma_run_slabs_mask(m: usize, s: usize, every0: usize, bumped: bool, every: usize)
+    requires
+        m < 0x80,
+        m & add(m, 1) == 0,
+        s <= 0x400_0000,
+        every0 == (s | m) + 1,
+        bumped ==> every0 == s + 1 && every == every0 + m + 1,
+        !bumped ==> every == every0,
+    ensures
+        s < every,
+        every - s <= m + 1 + (if bumped { 1int } else { 0int }),
+        every & m == 0,
+        forall|g: usize| s < g < every && #[trigger] (g & m) == 0 ==> bumped && g == s + 1,
+{
+    assert(m < 0x80 && m & add(m, 1) == 0 && s <= 0x400_0000 ==> s < add(s | m, 1) && add(s | m, 1) & m == 0 && (s | m) <= add(s, m)) by (bit_vector);
+    if bumped {
+        assert(m < 0x80 && m & add(m, 1) == 0 && s <= 0x400_0000 && add(s | m, 1) == add(s, 1) ==> add(add(add(s, 1), m), 1) & m == 0) by (bit_vector);
+    }
+    assert forall|g: usize| s < g < every && #[trigger] (g & m) == 0 implies bumped && g == s + 1 by {
+        assert(m < 0x80 && m & add(m, 1) == 0 && s <= 0x400_0000 && s < g && g < add(s | m, 1) ==> g & m != 0) by (bit_vector);
+        if bumped {
+            assert(m < 0x80 && m & add(m, 1) == 0 && s <= 0x400_0000 && add(s | m, 1) == add(s, 1) && add(s, 1) < g && g < add(add(add(s, 1), m), 1) ==> g & m != 0) by (bit_vector);
+        }
+    }
+}
+
+/// A slab past `s` and before the end of `s`'s group (of `1 << lg`
+/// slabs) is not the first slab of a group.
+proof fn lemma_inside_group(lg: u8, n: usize, s: usize, g: usize)
+    requires
+        lg < 64,
+        n == 1usize << lg,
+        n <= 0xFFFF_FFFF,
+        s <= 0x400_0000,
+        s < g,
+        g < ((s >> lg) << lg) + n,
+    ensures
+        g & sub(1usize << lg, 1) != 0,
+{
+    assert(lg < 64 && n == 1usize << lg && n <= 0xFFFF_FFFF && s <= 0x400_0000 && s < g && g < ((s >> lg) << lg) + n
+        ==> g & sub(n, 1) != 0) by (bit_vector);
 }
 
 /// `spec_nslabs` is the field, for the rest of `class/`.
@@ -5740,7 +5799,11 @@ impl SlabTable {
     /// a run there ([`commit_run`]): at the group's first slab, at a guard
     /// slab, and every [`run_slabs`] slabs except right after a guard slab
     /// (whose run goes on); every slab, where slabs are committed one by
-    /// one. Any other slab was committed with the run before it.
+    /// one. Any other slab was committed with the run before it: `false`
+    /// only where slabs are committed in runs and `s` is no
+    /// [`spec_run_start`](SlabTable::spec_run_start), so it lies inside
+    /// the run of the last run start below it in its group
+    /// ([`run_end`](SlabTable::run_end) ends a run at the next one).
     ///
     /// [`commit_run`]: SlabTable::commit_run
     /// [`run_slabs`]: SlabTable::run_slabs
@@ -5750,6 +5813,8 @@ impl SlabTable {
             s < self.spec_nslabs(),
         ensures
             !r ==> !self.spec_is_guard(s),
+            self.spec_run_start(s) ==> r,
+            !r ==> self.spec_slabs_per_page() == 1,
     {
         proof {
             use_type_invariant(self);
@@ -5822,6 +5887,7 @@ impl SlabTable {
             self.is_process(),
             crate::sys::may_syscall(),
             s < limit <= self.spec_nslabs(),
+            limit == self.spec_group_range(s >> self.lg_group).1,
             old(ord).allows(rank_table(0)),
         ensures
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
@@ -5867,18 +5933,28 @@ impl SlabTable {
 
     /// The end of the run that starts at slab `s` ([`starts_run`]), for a
     /// class that [`runs`]: the next slab that starts a run, the group's
-    /// end `limit` standing for the next group's first slab.
+    /// end `limit` standing for the next group's first slab. So the runs
+    /// that start at a group's run starts ([`spec_run_start`]) tile it:
+    /// no slab strictly inside a run starts one, and a run that ends
+    /// before the group's end ends at a run start.
     ///
     /// [`starts_run`]: SlabTable::starts_run
     /// [`runs`]: SlabTable::runs
+    /// [`spec_run_start`]: SlabTable::spec_run_start
     #[inline]
     pub(super) fn run_end(&self, s: usize, limit: usize) -> (r: usize)
         requires
             s < limit <= self.spec_nslabs(),
+            limit == self.spec_group_range(s >> self.lg_group).1,
             self.spec_slabs_per_page() == 1,
         ensures
             s < r <= limit,
             forall|g: usize| s < g < r ==> !#[trigger] self.spec_is_guard(g),
+            forall|g: usize| s < g < r ==> !#[trigger] self.spec_run_start(g),
+            r < limit ==> self.spec_run_start(r),
+            // At most `run_slabs` slabs to allocate from, after the guard
+            // slab a run may start with.
+            r - s <= self.spec_run_slabs() + (if self.spec_is_guard(s) { 1int } else { 0int }),
     {
         proof {
             use_type_invariant(self);
@@ -5896,6 +5972,7 @@ impl SlabTable {
         // above `x`.
         let guard = self.is_guard_slab(s);
         let mut every = (s | (self.run_slabs() - 1)) + 1;
+        let ghost every0 = every;
         if guard && every == s + 1 {
             every += self.run_slabs();
         }
@@ -5919,6 +5996,44 @@ impl SlabTable {
                     assert(m & (m >> 1u32) == m >> 1u32 ==> gm & (gm >> 1) == gm >> 1) by (bit_vector)
                         requires gm == m as usize;
                     assert(gm & (gm >> 1) == gm >> 1 && x <= g && g < (x | gm) ==> g & gm != gm) by (bit_vector);
+                }
+            }
+        }
+        proof {
+            // The runs tile the group: no slab inside the run starts one
+            // (not the group's first slab, as `end` is at most the group's
+            // end; no multiple of `run_slabs` but `s + 1` right after a
+            // guard slab `s`), and an `end` before the group's end is a
+            // multiple of `run_slabs` past no guard slab, or a guard slab.
+            let lg = self.lg_group;
+            let m = (self.spec_run_slabs() - 1) as usize;
+            assert((1usize << lg) == self.group as usize);
+            let rs = self.spec_run_slabs();
+            assert(rs >= 1 && rs & sub(rs, 1) == 0 && m == sub(rs, 1) ==> m & add(m, 1) == 0) by (bit_vector);
+            lemma_run_slabs_mask(m, s, every0, guard && every0 == s + 1, every);
+            assert(limit <= ((s >> lg) << lg) + (1usize << lg));
+            assert forall|g: usize| s < g < end implies !#[trigger] self.spec_run_start(g) by {
+                assert(!self.spec_is_guard(g));
+                lemma_inside_group(lg, self.group as usize, s, g);
+                if g & m == 0 {
+                    assert(guard && every0 == s + 1 && g == s + 1);
+                    assert(sub(g, 1) == s);
+                }
+            }
+            if end < limit {
+                if end == every {
+                    assert(end & m == 0);
+                    if sub(end, 1) > s {
+                        assert(!self.spec_is_guard(sub(end, 1)));
+                    } else {
+                        assert(sub(end, 1) == s && !guard);
+                    }
+                } else {
+                    let gm = self.guard_mask as usize;
+                    let x = if guard { (s + 1) as usize } else { s };
+                    assert(self.guard_mask != u32::MAX && end == x | gm);
+                    assert((x | gm) & gm == gm) by (bit_vector);
+                    lemma_guard_test(*self, end);
                 }
             }
         }

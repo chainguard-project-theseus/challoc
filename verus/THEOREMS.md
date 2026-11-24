@@ -1740,12 +1740,28 @@ refused the guard slab stays `PROT_NONE` and only the slabs after it are
 committed. Page groups above a slab and `thp:always` chunks use
 `commit_slab`. The statement is about where blocks lie, and
 `next_fresh_slab` (`class/fresh.rs`) hands out only a slab that is not a
-guard slab. `starts_run` ensures only `!r ==> !spec_is_guard(s)`,
-`run_end` only `s < r <= limit` (with `lemma_run_slabs`); that a run
-holds no guard slab past its first slab and that every slab of a group
-lies in the run of a run-starting slab at or below it are not proved
-(the unit test `runs_tile_every_group`, `class/tests.rs`, checks the run
-arithmetic). Each read-write commit of a class region stays in the
+guard slab. The runs tile their group
+([#930](https://github.com/chainguard-project-theseus/challoc/issues/930)):
+`SlabTable::spec_run_start` is `starts_run`'s test for a class that
+commits runs (the group's first slab, a guard slab, or a multiple of
+`run_slabs` not right after a guard slab); `starts_run` returns true at
+every run start and returns false only where slabs are committed in
+runs (`spec_slabs_per_page() == 1`) and `s` is no run start, besides
+`!r ==> !spec_is_guard(s)`. `run_end(s, limit)`, with `limit` the end of
+`s`'s group (`commit_run` requires the same, and `fresh.rs` passes the
+group's end), ensures `s < r <= limit`, no guard slab and no run start
+strictly between `s` and `r`, that an `r` before `limit` is a run
+start, and that a run holds at most `run_slabs` slabs past the guard
+slab it may start with (`lemma_run_slabs_mask`, `lemma_inside_group`).
+From these, by argument rather than a checked lemma: a slab the cursor
+skips (`starts_run` false) lies inside the run of the last run start
+below it in its group, which `commit_run` committed, provided `runs()`
+gave the same answer at that start (the THP mode is fixed before the
+first allocation; not proved). The skip branch in `class/fresh.rs`
+uses none of these `ensures`. Not proved: that `starts_run` returns
+false inside a run (`runs()` reads the THP mode, which has no spec
+view), so a `true` there would only commit a committed slab again; the
+unit test `runs_tile_every_group` (`class/tests.rs`) still checks that. Each read-write commit of a class region stays in the
 region and spares every guard slab, except a guard slab whose marker the
 same path installed (`theorem_slab_commit_avoids_guards`, through the
 commit wrapper's `requires`; see `verus/RESULTS.md`), so no guard slab
