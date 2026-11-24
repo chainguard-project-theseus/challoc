@@ -231,8 +231,11 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   `Shared::classify_free_after` (`CachePerms::rels`,
   `SlabTable::claimed_since`) and whose copy in the thread's slot token
   `free_fast_slot` seeds its test with (`TlsSlot::rels`,
-  [#912](https://github.com/chainguard-project-theseus/challoc/issues/912)).
-  `free_direct`, the rehome retest and releases through
+  [#912](https://github.com/chainguard-project-theseus/challoc/issues/912)),
+  and to which the retest after a rehome's flush is ordered too
+  (`Heap::rehome_on_free`,
+  [#918](https://github.com/chainguard-project-theseus/challoc/issues/918)).
+  `free_direct` and releases through
   `ClassState::release_with` carry no record. A fact about the load, not C's view. The plain frees (`free`,
   `delete`), `challoc_free_usable`, `dallocx` and the reallocations
   (`realloc`, `challoc_realloc_usable`, `rallocx`) take C's token for a
