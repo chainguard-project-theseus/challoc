@@ -3173,7 +3173,10 @@ impl Heap {
     /// one `free_slow_in` would have run), and after it the exact bit test
     /// runs again on `p`, so a slot the flush just released aborts as
     /// `invalid or double free` instead of being pushed into a cache that
-    /// `malloc` pops (which would hand it out twice).
+    /// `malloc` pops (which would hand it out twice). The retest is
+    /// ordered after the heap's release records, the flush's among them
+    /// (`CachePerms::rels`, [`Shared::classify_free_after`]): a slot this
+    /// heap released passes it only if a claim set its bit again since.
     ///
     /// `blk` is the caller's token for `p`: the push takes it when the
     /// heap moved, and a false leaves it `p`'s token and the heap as `keeps`
@@ -3227,10 +3230,22 @@ impl Heap {
             own.lemma_claims(p);
         }
         let tracked mut claim = Claim::held(own);
-        match shared.classify_free(p, Tracked(&mut claim)) {
+        // The retest is ordered after this heap's release of `p`'s slot,
+        // when one of its flushes (the rehome's among them) recorded one
+        // (#918).
+        let tracked mut obs = crate::class::BitLoad::new();
+        match shared.classify_free_after(p, Tracked(&mut claim), Tracked(&self.perms.borrow().rels), Tracked(&mut obs)) {
             Ok((c, a)) => {
                 proof {
                     crate::vspec::zero::lemma_slot_unique(c as int, class as int, p as usize);
+                    // A stale free of a slot this heap released passes the
+                    // retest only if the slot was claimed again since: the
+                    // test read a newer version of its word than the
+                    // release left.
+                    let k = (c as int, p@.addr as int);
+                    if self.perms@.rels.map().contains_key(k) {
+                        assert(self.perms@.rels.map()[k].w@.1 < obs.seen()->Some_0.1.1);
+                    }
                 }
                 debug_assert!(c == class && a == to)
             },
