@@ -1096,3 +1096,227 @@ fn ascii_digit_is_is_ascii_digit() {
         assert_eq!(ascii_digit(b), b.is_ascii_digit(), "{b}");
     }
 }
+
+/// The raw memory-write primitives (`core::ptr`'s `write_bytes`,
+/// `copy_nonoverlapping`, `copy`, `write`, `write_volatile`,
+/// `write_unaligned`, `swap`, `swap_nonoverlapping` and `replace`, and
+/// the pointer methods that write), and the two wrappers that write user
+/// memory (`vspec::zero::zero_raw` and `vspec::user::copy_raw`), are
+/// used in the shipped sources only in
+/// the functions listed here, each the stated number of times. User
+/// memory, the bytes of a block the program holds, is written only by
+/// `vspec::user`: `zero_user` (through `zero_raw`) and `copy_raw`
+/// (under `copy_user`), each with the block's `UserMem` permission. The
+/// other call sites of these primitives (not every write: see below)
+/// write memory that is not a block's:
+///
+/// - the C caller's own buffers, which the `mallctl` contracts name
+///   (`c_buffer`, `c_writes`): `copy_prefix`, `store`, `store_triple`
+///   and `mib_out`;
+/// - allocator metadata, initialised in place through its permission:
+///   `Arena::put_stats`, `stats::zero_records`,
+///   `cgroup::untracked_in_place`, and `Meta::alloc_zeroed`'s fill of a
+///   metadata bin (`zero_raw` on `Meta`'s own `PointsToRaw`);
+/// - `huge::kernel::write_zero`'s one byte, which its `requires` holds
+///   apart from every live run (`apart_from_runs`);
+/// - the `malloc_message` static, in a `#[cfg(test)]` helper.
+///
+/// So THEOREMS.md's user-block writes ("no other write reaches user
+/// memory") is a checked discipline: a new use of a primitive fails here
+/// until it is listed with the memory it writes. The spellings seen:
+///
+/// - a free function as a path ending in its `ptr` segment, whatever
+///   follows: a call, a turbofish (`ptr::write_bytes::<u8>(`) or the
+///   function as a value (`let f = ptr::write;`); the primitives'
+///   `assume_specification` lines are not uses;
+/// - a pointer method called as a method (`.write(`) or by its
+///   qualified path (`<*mut u8>::write(`, `NonNull::write(`, and so
+///   `swap` and `replace` too);
+/// - the wrappers' names wherever they appear but their declarations.
+///
+/// A bare name is ruled out by rejecting every `use` item (any
+/// visibility, `pub(in ..)` included) that imports a primitive from a
+/// `ptr` path segment by name (`use core::ptr::write;`,
+/// `use core::ptr::{self, copy};`, or `use ptr::{copy, write};` through
+/// an earlier `use core::ptr;`) or by glob (`ptr::*`).
+///
+/// What this does not see: the methods `.swap(` and `.replace(` called
+/// as methods (the names of `Option`'s and the atomics' methods too); a
+/// write through a dereferenced raw pointer that no primitive spells, in
+/// a trusted body: an assignment (`*p = v`), an atomic store
+/// (`(*p).store(..)`, as `vspec::atom::store_usize_at` makes to metadata
+/// words and the test helper `SlabTable::corrupt_owner_word` to an owner
+/// word), or a write to a slice made by `from_raw_parts_mut`; and a use
+/// through a renamed module (`use core::ptr as p;`; a renamed primitive,
+/// `use core::ptr::write as w;`, is rejected) or a macro.
+#[test]
+fn raw_writes_only_at_listed_sites() {
+    // A `use` of `core::ptr` or `std::ptr` that names a primitive, or a
+    // glob, would let a bare call (`write(p, v)`) past the patterns
+    // below. Each `use` item, joined across its lines.
+    let names = [
+        "write",
+        "copy",
+        "write_bytes",
+        "copy_nonoverlapping",
+        "write_volatile",
+        "write_unaligned",
+        "swap",
+        "swap_nonoverlapping",
+        "replace",
+    ];
+    let mut item: Option<(std::string::String, std::string::String)> = None;
+    let mut use_lines = std::collections::BTreeSet::new();
+    for l in shipped_lines() {
+        // A `use` item, after any visibility (`pub`, `pub(crate)`,
+        // `pub(in crate::heap)`).
+        let rest = match l.t.strip_prefix("pub(") {
+            Some(r) => r.split_once(") ").map_or("", |(_, r)| r),
+            None => l.t.strip_prefix("pub ").unwrap_or(&l.t),
+        };
+        let starts = rest.starts_with("use ");
+        let (at, mut text) = match item.take() {
+            Some((at, text)) => (at, text),
+            None if starts => (l.at.clone(), std::string::String::new()),
+            None => continue,
+        };
+        // The scan below skips `use` lines: importing a wrapper
+        // (`zero_raw`) is not a use of it, and a primitive's import is
+        // rejected here.
+        // A `use` item never takes in a `fn` item, so a join that runs
+        // on (a `;` this does not see) cannot hide a body from the scan.
+        assert!(
+            !crate::testutil::fn_item(&l.t),
+            "{}: the `use` item from {at} runs into a `fn` item",
+            l.at
+        );
+        use_lines.insert(l.at.clone());
+        // The line less a trailing comment (`use x::Y; // why`).
+        let code = l.t.split("//").next().unwrap_or("").trim_end();
+        text += code;
+        text += " ";
+        if !code.ends_with(';') {
+            item = Some((at, text));
+            continue;
+        }
+        // The first `ptr` path segment, however reached: `core::ptr::`,
+        // `std::ptr::`, `core::{ptr::..}`, or `ptr::` through an earlier
+        // `use core::ptr;` (not `raw_ptr::`, vstd's module).
+        let seg = text.match_indices("ptr::").find(|&(i, _)| {
+            text[..i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+        });
+        let Some((i, _)) = seg else {
+            continue;
+        };
+        let tail = &text[i + "ptr::".len()..];
+        let words: Vec<&str> = tail
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '*'))
+            .collect();
+        assert!(
+            !words.iter().any(|w| *w == "*" || names.contains(w)),
+            "{at}: `{}` imports a raw write primitive of `ptr` by name or by glob, \
+             which the patterns of this test do not see; call it as `ptr::name(`",
+            text.trim_end()
+        );
+    }
+
+    // Spelled whole: `tests.rs` is not a shipped source, so these lines
+    // are not scanned. The pointer methods that write.
+    let methods = [
+        "write",
+        "write_bytes",
+        "write_volatile",
+        "write_unaligned",
+        "copy_to",
+        "copy_from",
+        "copy_to_nonoverlapping",
+        "copy_from_nonoverlapping",
+        "swap_nonoverlapping",
+    ];
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // The occurrences of `pat` in `t` that end a name (no identifier
+    // character right after a `pat` that ends in one) and (when `lead`)
+    // start one.
+    let count = |t: &str, pat: &str, lead: bool| {
+        let open = !pat.ends_with(ident);
+        t.match_indices(pat)
+            .filter(|&(i, _)| !lead || !t[..i].chars().next_back().is_some_and(ident))
+            .filter(|&(i, _)| open || !t[i + pat.len()..].chars().next().is_some_and(ident))
+            .count()
+    };
+    let uses = |t: &str| -> usize {
+        let free: usize = names
+            .iter()
+            .map(|n| count(t, &format!("ptr::{n}"), true))
+            .sum();
+        let called: usize = methods
+            .iter()
+            .map(|m| count(t, &format!(".{m}("), false))
+            .sum();
+        let qualified: usize = methods
+            .iter()
+            .chain(&["swap", "replace"])
+            .map(|m| count(t, &format!(">::{m}"), false) + count(t, &format!("NonNull::{m}"), true))
+            .sum();
+        let wrappers = count(t, "zero_raw", true) + count(t, "copy_raw", true);
+        free + called + qualified + wrappers
+    };
+    let sites: &[(&str, &str, usize)] = &[
+        ("vspec/zero.rs", "pub unsafe fn zero_raw(", 1),
+        ("vspec/user.rs", "pub unsafe fn zero_user(", 1),
+        ("vspec/user.rs", "unsafe fn copy_raw(", 1),
+        ("vspec/user.rs", "pub unsafe fn copy_user(", 1),
+        ("api/mallctl.rs", "unsafe fn copy_prefix<", 1),
+        ("api/mallctl.rs", "unsafe fn store<", 1),
+        ("api/mallctl.rs", "unsafe fn store_triple(", 3),
+        ("api/mallctl.rs", "unsafe fn mib_out(", 2),
+        ("arena.rs", "unsafe fn put_stats(", 1),
+        ("stats.rs", "fn zero_records(", 1),
+        ("sys/cgroup.rs", "pub fn untracked_in_place(", 2),
+        ("meta.rs", "pub fn alloc_zeroed(", 1),
+        ("huge/kernel.rs", "pub(super) fn write_zero(", 1),
+        ("api/jemalloc.rs", "pub fn set_message_hook_for_tests(", 1),
+    ];
+    let mut found: Vec<(std::string::String, std::string::String, usize)> = Vec::new();
+    for l in shipped_lines() {
+        // A declaration of a wrapper is not a use of it, nor is the
+        // `assume_specification` of a primitive (`vspec::ptr`,
+        // `vspec::addr`).
+        if use_lines.contains(&l.at)
+            || l.t.contains("fn zero_raw(")
+            || l.t.contains("fn copy_raw(")
+            || l.t.starts_with("pub assume_specification")
+        {
+            continue;
+        }
+        let n = uses(&l.t);
+        if n == 0 {
+            continue;
+        }
+        assert!(
+            sites
+                .iter()
+                .any(|(file, f, _)| l.rel == *file && l.sig.starts_with(f)),
+            "{}: a raw memory write in `{}`, which is not one of the listed sites. \
+             Name the memory it writes in this test's doc (user memory only through \
+             `vspec::user`) and add the site to its list, in one change.",
+            l.at,
+            l.sig
+        );
+        found.push((l.rel, l.sig, n));
+    }
+    for &(file, f, want) in sites {
+        let n: usize = found
+            .iter()
+            .filter(|(rel, sig, _)| rel == file && sig.starts_with(f))
+            .map(|(_, _, k)| k)
+            .sum();
+        assert_eq!(
+            n, want,
+            "{file} `{f}`: got = {n} raw memory writes, want = {want}"
+        );
+    }
+}
