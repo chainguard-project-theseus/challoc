@@ -1144,17 +1144,40 @@ with page granularity (`huge/`).
   in VmData, against `RLIMIT_DATA` (2) and against a strict overcommit
   limit (`vm.overcommit_memory=2`), as every page below the mark does
   (python-grow4: VmData 562 to 634 MiB, while peak RSS falls from 446 to
-  423 MiB, as fewer moves copy). The exception is
-  `mlockall(MCL_FUTURE)` with `guards:false`: the kernel populates and
-  locks a locked range when it is made writable, so the skipped pages
+  423 MiB, as fewer moves copy). The exception is a locked huge region:
+  `mlockall(MCL_FUTURE)` before challoc reserves the region at init, or
+  an `mlockall` with `MCL_CURRENT` at any time. Linux's
+  `apply_mlockall_flags` locks existing mappings only under
+  `MCL_CURRENT`, and the commit's `mprotect` (`huge/kernel.rs`) keeps a
+  mapping's lock flag rather than applying `MCL_FUTURE`, so an
+  `mlockall(MCL_FUTURE)` alone after init leaves the region unlocked:
+  its gaps are committed but not locked, and guard markers keep
+  working. In a locked region the kernel populates and locks a range
+  when it is made writable, so with `guards:false` the skipped pages
   become resident and locked, as every page below the mark already is
-  in that mode (four buffers grown in turn to 64 MiB: +29 MiB, +6.5% of
-  locked RSS). A move skips at most `GROW_GAP_MAX` (1 GiB), which is
-  then the bound on the locked memory one move adds. With guards on,
-  nothing is added: the kernel refuses a guard marker in a locked range,
-  the first refusal (at the latest, the run a growth move starts from)
-  sets `mixed_guards`, and from then on every move is first fit for the
-  rest of the process, so the gap placement is off. The committed gap
+  (four buffers grown in turn to 64 MiB: +29 MiB, +6.5% of locked RSS).
+  A move skips at most `GROW_GAP_MAX` (1 GiB), which is then the bound
+  on the locked memory one move adds. With guards on, the kernel refuses
+  a guard marker in a locked range, the first refusal of a new run's
+  marker sets `mixed_guards`, and from then on every move is first fit
+  for the rest of the process, so the gap placement is off. A region
+  locked from init refuses the first huge run's marker, so no gap is
+  ever locked. An `MCL_CURRENT` lock after init locks and populates
+  every gap already placed, guards on or off, since each is read-write
+  below the mark. What moves add after the lock depends on the first
+  huge run placed after it. When that run is a plain allocation, its
+  refused marker sets `mixed_guards` and no gap is added. When it is a
+  growth move (of a run placed before the lock), two steps can add
+  locked pages before the refusal that sets `mixed_guards`: the
+  in-place attempt (`Huge::grow_run`), which for a run at the mark
+  commits the pages past the mark up to the new end and, on its refused
+  marker, declines with the mark where it was and those pages left
+  read-write (so locked); and the move, which places a gap and commits
+  from the mark before its own marker is refused (up to
+  `GROW_GAP_MAX`). Where the move lands at the mark its commit covers
+  the attempt's pages; where it lands lower, both count, so the one
+  move can add up to `GROW_GAP_MAX` plus the growth's own pages past
+  the mark. No later move adds any. The committed gap
   is kept by decision rather than leaving the skipped pages uncommitted,
   which would break the rule that every page below the mark is
   committed. Where that charge is refused (the commit or the free-page
@@ -1276,8 +1299,9 @@ shape (`purge.rs`, `purge/curve.rs`, `class/decay.rs`):
   Batched `process_madvise` was prototyped and removed: it measured no
   effect (tag `archive/prototype-2026-09-30`).
 - A discard can fail: `madvise` refuses `MADV_DONTNEED` and `MADV_FREE`
-  with `EINVAL` on a range holding `mlock`ed pages (every range under
-  `mlockall(MCL_FUTURE)`). The memory changes state only after its range
+  with `EINVAL` on a range holding `mlock`ed pages (every range of a
+  region `mlockall` has locked: under `MCL_FUTURE` called before init,
+  or `MCL_CURRENT`; section 7). The memory changes state only after its range
   is discarded, so a refused slab or extent stays `Empty` (dirty, its
   age kept, never assumed zero), as jemalloc keeps an extent dirty when
   its purge hook fails. A refused merged range is issued again page
