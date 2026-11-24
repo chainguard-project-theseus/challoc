@@ -321,7 +321,14 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
         if step % 32 == 0 {
             // Like the defragmenter: a direct copy, the old one freed.
             if !direct.is_null() {
-                s.free_direct(0, c, direct, Tracked::assume_new(), Tracked::assume_new());
+                s.free_direct(
+                    0,
+                    c,
+                    direct,
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                    Tracked::assume_new(),
+                );
             }
             let (p, _, _) = s.alloc_direct(
                 &s.arena0,
@@ -350,7 +357,14 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
         "little compacted: {} of {before} slabs still occupied, bound {bound}",
         occupied(s, c)
     );
-    s.free_direct(0, c, direct, Tracked::assume_new(), Tracked::assume_new());
+    s.free_direct(
+        0,
+        c,
+        direct,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     for p in keep {
         t.free(p);
     }

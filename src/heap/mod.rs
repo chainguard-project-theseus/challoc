@@ -1161,6 +1161,44 @@ impl Heap {
         self.perms@.rels
     }
 
+    /// Keep release records `more` in this heap's ([`CachePerms::rels`]):
+    /// a direct release's (`Heap::free_slow_in`, #920). Nothing else of
+    /// the heap changes.
+    pub proof fn absorb_rels(tracked &mut self, tracked more: Map<(int, int), crate::bitmap::RelRec>)
+        requires
+            old(self).wf(),
+            crate::bitmap::rec_ok(more),
+        ensures
+            final(self).wf(),
+            final(self).keeps(*old(self)),
+            final(self).spec_rehome() == old(self).spec_rehome(),
+            final(self).rels().map() == old(self).rels().map().union_prefer_right(more),
+    {
+        let ghost p0 = self.perms@;
+        self.perms.borrow_mut().rels.absorb(more);
+        // Only `rels` changed: every other field of the permissions, and
+        // so every predicate over them, is `old`'s.
+        let ghost p1 = self.perms@;
+        assert(p1 == (CachePerms { rels: p1.rels, ..p0 }));
+        CachePerms::lemma_zero_same(p0, p1);
+        assert(p1.tracks()) by {
+            assert forall|p: *mut CacheHeader, i: int| #![trigger p1.ent(p, i)] p1.hdrs.contains_key(p) && 0 <= i < p1.hdr(p).cap implies {
+                &&& p1.owner.contains_key(p1.ent(p, i))
+                &&& p1.owner[p1.ent(p, i)] == (p, i)
+                &&& (i < p1.hdr(p).len ==> p1.holds(p1.cls[p], p1.ent(p, i), p1.hdr(p).slots))
+            } by {
+                assert(p0.ent(p, i) == p1.ent(p, i));
+            }
+        }
+        assert(p1.tokened()) by {
+            assert forall|p: *mut CacheHeader, i: int| #![trigger p1.ent(p, i)] p1.hdrs.contains_key(p) && 0 <= i < p1.hdr(p).len implies p1.tok_at(p, i) by {
+                assert(p0.ent(p, i) == p1.ent(p, i));
+                assert(p0.tok_at(p, i));
+            }
+        }
+        CachePerms::lemma_claimed_frame(p0, p1);
+    }
+
     /// `perms` are this heap's cache permissions, lent to a proof
     /// (`heap.perms.borrow_mut()`).
     pub closed spec fn perms_are(&self, perms: CachePerms) -> bool {

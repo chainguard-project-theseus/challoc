@@ -235,8 +235,11 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   and to which the retest after a rehome's flush is ordered too
   (`Heap::rehome_on_free`,
   [#918](https://github.com/chainguard-project-theseus/challoc/issues/918)).
-  `free_direct` and releases through
-  `ClassState::release_with` carry no record. A fact about the load, not C's view. The plain frees (`free`,
+  A heap's direct release (`Heap::free_slow_in`, no cache for the
+  class) is kept as a record the same way
+  ([#920](https://github.com/chainguard-project-theseus/challoc/issues/920)).
+  `heap::free_direct` (no heap, or `MALLOCX_TCACHE_NONE`) carries no
+  record. A fact about the load, not C's view. The plain frees (`free`,
   `delete`), `challoc_free_usable`, `dallocx` and the reallocations
   (`realloc`, `challoc_realloc_usable`, `rallocx`) take C's token for a
   slot start only past this test, with its record:

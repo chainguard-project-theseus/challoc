@@ -3249,8 +3249,19 @@ impl Shared {
     /// Release one slot straight to its slab bitmap through its owning
     /// arena. Aborts unless `p` is an allocated slot of `class` in `arena`.
     /// `tok` is the slot's token; it goes back to the slot's bitmap word.
-    pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>, Tracked(ord): Tracked<&mut LockOrder>)
+    /// `rel` gains the release record of `p` (#920): the witness of the
+    /// word value the release left, by class and address.
+    pub fn free_direct(
+        &self,
+        arena: u16,
+        class: usize,
+        p: *mut u8,
+        Tracked(tok): Tracked<GhostSingleton<int>>,
+        Tracked(rel): Tracked<&mut vstd::map::Map<(int, int), crate::bitmap::RelRec>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
+            crate::bitmap::rec_ok(*old(rel)),
             crate::sys::may_abort() || (crate::sys::valid_aborts() && self.wf() && crate::class::slot_owner(class as int, p@.addr) == arena),
             crate::sys::may_syscall(),
             old(ord).allows(rank_class(0, 0)),
@@ -3264,6 +3275,10 @@ impl Shared {
             // Arena isolation: it returns only if `arena` owns the slot's
             // slab, the arena it released the slot into.
             self.wf() ==> crate::class::slot_owner(class as int, p@.addr) == arena,
+            // The release's record, for the slot's next free (#920).
+            crate::bitmap::rec_ok(*final(rel)),
+            forall|k: (int, int)| #[trigger] old(rel).contains_key(k) ==> final(rel).contains_key(k),
+            final(rel).contains_key((class as int, p@.addr as int)),
     {
         broadcast use crate::class::lemma_aset;
         let tracked bag = tok.subset();
@@ -3283,7 +3298,21 @@ impl Shared {
         proof {
             self.lemma_published_tables(*ow@, *oa);
         }
-        oa.class(class).release_with(&[p], Tracked(bag), ow, Tracked(ord));
+        let tracked mut bits: vstd::map::Map<int, crate::bitmap::SeenWitness> = vstd::map::Map::tracked_empty();
+        let cs = oa.class(class);
+        cs.release_with(&[p], Tracked(bag), Tracked(&mut bits), ow, Tracked(ord));
+        proof {
+            let s = cs.spec_table().spec_slots();
+            let pa = ptr_addrs(seq![p]);
+            // `oa` is published: its table of the class is the process
+            // registry's arena 0's.
+            assert(oa.spec_class_state(class as int).spec_table() == crate::arena::process_arena0().spec_class_state(class as int).spec_table());
+            assert(pa[0] == p@.addr as int);
+            assert(seq![p] =~= [p]@);
+            assert(bits.contains_key(crate::bitmap::bit_of(s, pa[0])));
+            crate::bitmap::lemma_by_addr(rel, &bits, class as int, s, pa, 0, 1);
+            assert(rel.contains_key((class as int, pa[0])));
+        }
     }
 
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab

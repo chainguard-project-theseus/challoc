@@ -678,9 +678,23 @@ fn direct_paths_bypass_the_cache() {
     );
     assert_eq!(q as usize, p as usize + 256);
     assert!(!zero);
-    s.free_direct(0, c, p, Tracked::assume_new(), Tracked::assume_new());
+    s.free_direct(
+        0,
+        c,
+        p,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(live(s, c), 1);
-    s.free_direct(0, c, q, Tracked::assume_new(), Tracked::assume_new());
+    s.free_direct(
+        0,
+        c,
+        q,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(live(s, c), 0);
     assert_eq!(
         s.arena0.classes[c]

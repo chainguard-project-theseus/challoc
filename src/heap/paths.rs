@@ -956,7 +956,14 @@ impl Heap {
             if shared.double_free_scan() {
                 super::slotstate::release(shared, class, p);
             }
-            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut *ord));
+            // The release's record, kept in the heap's `rels` for the
+            // slot's next free (#920).
+            let tracked mut rel: Map<(int, int), crate::bitmap::RelRec> = Map::tracked_empty();
+            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut rel), Tracked(&mut *ord));
+            proof {
+                self.absorb_rels(rel);
+                assert(self.rels().map().contains_key((class as int, p@.addr as int)));
+            }
             self.count_direct_free(class);
             crate::purge::background::note_released(class_size(class) as u64);
             return;
@@ -1497,7 +1504,9 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
                 blk.lemma_mem();
             }
             let tracked tok = blk.take_slot(class as int);
-            shared.free_direct(arena, class, p, Tracked(tok), Tracked(&mut *ord));
+            // No heap keeps the release's record (#920).
+            let tracked mut rel: Map<(int, int), crate::bitmap::RelRec> = Map::tracked_empty();
+            shared.free_direct(arena, class, p, Tracked(tok), Tracked(&mut rel), Tracked(&mut *ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_direct_free(class);
             }

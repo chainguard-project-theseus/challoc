@@ -827,7 +827,14 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     );
     assert_eq!(s.classify_free(d, Tracked::assume_new()), Ok((c, a1)));
     assert_eq!(a.classes[c].desc(s.arena0.classes[c].locate(d).0).live(), 1);
-    s.free_direct(a1, c, d, Tracked::assume_new(), Tracked::assume_new());
+    s.free_direct(
+        a1,
+        c,
+        d,
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(a.classes[c].stats().empty, per_refill);
     // Destroying the heap frees the nodes too.
     let before = s.meta.stats(vstd::prelude::Tracked::assume_new()).allocated;

@@ -6021,10 +6021,19 @@ impl ClassState {
     ///
     /// `bag` holds the slot tokens of the batch, whose addresses are
     /// distinct ([`release_owned`]); the released ones go back to their
-    /// bitmap words.
+    /// bitmap words. `rel` gains, under each released slot's bit, the
+    /// witness of the word value its release left (#920), as
+    /// [`release_owned`]'s does.
     ///
     /// [`release_owned`]: ClassState::release_owned
-    pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>)
+    pub fn release_with(
+        &self,
+        ptrs: &[*mut u8],
+        Tracked(bag): Tracked<GhostSubset<int>>,
+        Tracked(rel): Tracked<&mut Map<int, crate::bitmap::SeenWitness>>,
+        pubw: Tracked<&'static Published>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_abort() || (crate::sys::valid_aborts() && owned_slots(self.spec_class() as int, self.spec_arena(), ptrs@)),
             crate::sys::may_syscall(),
@@ -6038,11 +6047,14 @@ impl ClassState {
             // Arena isolation: it returns only if every slot's slab is
             // this arena's; otherwise `wrong_arena` aborts.
             forall|i: int| 0 <= i < ptrs@.len() ==> #[trigger] slot_owner(self.spec_class() as int, ptrs@[i]@.addr) == self.spec_arena(),
+            // Each slot's bit has its release's witness (#920).
+            crate::bitmap::rel_ok(self.spec_table().spec_slots(), *old(rel)) ==> crate::bitmap::rel_ok(self.spec_table().spec_slots(), *final(rel)),
+            forall|j: int| 0 <= j < ptrs@.len() ==> #[trigger] final(rel).contains_key(crate::bitmap::bit_of(self.spec_table().spec_slots(), ptr_addrs(ptrs@)[j])),
+            forall|b: int| #[trigger] old(rel).contains_key(b) ==> final(rel).contains_key(b),
     {
         broadcast use lemma_aset;
         let tracked mut bag = bag;
-        let tracked mut rel: Map<int, crate::bitmap::SeenWitness> = Map::tracked_empty();
-        let n = self.release_owned(ptrs, Tracked(&mut bag), Tracked(&mut rel), pubw, Tracked(ord));
+        let n = self.release_owned(ptrs, Tracked(&mut bag), Tracked(&mut *rel), pubw, Tracked(ord));
         if n != ptrs.len() {
             proof {
                 // The first slot left is another arena's.
@@ -6529,6 +6541,7 @@ impl ClassState {
     pub(crate) fn release(&self, ptrs: &[*mut u8]) {
         self.release_with(
             ptrs,
+            Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
