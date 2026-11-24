@@ -457,6 +457,9 @@ impl Regions {
         &&& self.huge_base + self.huge_len <= h.addr + h.len
         &&& m.addr <= self.meta_base
         &&& self.meta_base + self.meta_len <= m.addr + m.len
+        // Below the user limit, so a heap's address can be signed
+        // (`heap::slot_ok`, #928).
+        &&& m.addr + m.len <= crate::sys::pac::user_va_limit()
         &&& disjoint(s.addr as int, s.len as int, h.addr as int, h.len as int)
         &&& disjoint(s.addr as int, s.len as int, m.addr as int, m.len as int)
         &&& disjoint(h.addr as int, h.len as int, m.addr as int, m.len as int)
@@ -780,6 +783,9 @@ impl Regions {
             huge.0 + huge.1 <= maps[1].addr + maps[1].len,
             maps[2].addr <= meta.0,
             meta.0 + meta.1 <= maps[2].addr + maps[2].len,
+            // The metadata reservation is below the user limit too
+            // (`try_reserve`), so a heap's address can be signed.
+            maps[2].addr + maps[2].len <= crate::sys::pac::user_va_limit(),
             disjoint(maps[0].addr as int, maps[0].len as int, maps[1].addr as int, maps[1].len as int),
             disjoint(maps[0].addr as int, maps[0].len as int, maps[2].addr as int, maps[2].len as int),
             disjoint(maps[1].addr as int, maps[1].len as int, maps[2].addr as int, maps[2].len as int),

@@ -1369,9 +1369,11 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
 /// `get_defrag_hint` aborts, for every pointer and before init, at most
 /// where a valid program's free can (a resource failure or a pending
 /// free-path check, [`sys::valid_aborts`], both in its cache GC's release,
-/// which does not read the pointer) or at an integrity check
-/// ([`sys::integrity_aborts`]): called with only those capabilities, not
-/// [`sys::may_abort`], it verifies (design 13.5).
+/// which does not read the pointer): called with only those
+/// capabilities, not [`sys::may_abort`] and not
+/// [`sys::integrity_aborts`], it verifies (design 13.5). The thread-heap
+/// lookup authenticates a signed slot value and takes no integrity abort
+/// (#928).
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
@@ -1379,7 +1381,6 @@ fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8, Tracked(ord): Tracked
     requires
         crate::sys::may_syscall(),
         crate::sys::valid_aborts(),
-        crate::sys::integrity_aborts(),
         old(ord).top() == 0,
 {
     let _ = jemalloc::get_defrag_hint(p, Tracked(ord));

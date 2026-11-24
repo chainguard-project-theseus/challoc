@@ -192,9 +192,14 @@ impl TlsCell {
     /// not say which: emptying a slot a nested entry filled, and so losing
     /// that heap, also satisfies `kept`, though no verified writer can
     /// store null over a heap ([`slot_step`](crate::heap::slot_step)).
+    /// A heap value that fills an empty slot is
+    /// [`slot_signed`](crate::heap::slot_signed) (#928): the nested
+    /// writer is `create_heap_for_thread`, which proves it of the value
+    /// it publishes, and `create`'s put-back proves it of what it puts
+    /// back.
     pub open spec fn kept(self, old: TlsCell) -> bool {
         &&& old.value() != 0 ==> self == old
-        &&& old.value() == 0 ==> !crate::heap::reentry_benign(self.value())
+        &&& old.value() == 0 ==> !crate::heap::reentry_benign(self.value()) && crate::heap::slot_signed(self.value(), self.tp())
     }
 
     /// Cells with the same value, `Heap::create` count and thread pointer
@@ -321,7 +326,8 @@ impl TlsSlot {
     /// `create_heap_for_thread` put in the loan (it publishes
     /// `tls_value_for`'s value, `pac::sign` of the heap under PAC, whose
     /// authentication `pac::axiom_auth_sign` gives back for an address below
-    /// the user limit, which is not shown of the metadata region here).
+    /// the user limit, as the metadata region is: `Regions::mapped`, #928
+    /// below).
     /// The users that set a sentinel take the permission out first
     /// ([`HeapLoan::take`]). Also not checked: that
     /// `heap_destructor` stores `TLS_EXITED` before `Heap::destroy` frees
@@ -348,6 +354,29 @@ impl TlsSlot {
     /// last verified writer left them (the premise above), and the copy
     /// adds no fact the heap's records do not state (a strengthening of
     /// this seam allowed by Matt Moore, 2026-11-23, #912).
+    /// Under PAC, `slot_ok` also states that a heap value in the slot
+    /// is [`signed`](crate::sys::pac::signed) with the thread pointer
+    /// ([`slot_signed`](crate::heap::slot_signed), #928). Every verified
+    /// writer of a heap value proves it of the value it stores:
+    /// `create_heap_for_thread` (its `ensures`: `tls_value_for`'s
+    /// `spec_sign` of a heap in the metadata region, whose reservation
+    /// `Regions::mapped` puts below `pac::user_va_limit`), and
+    /// `purge::background::create`'s put-back (its `ensures`
+    /// [`TlsCell::kept`]: the value it parked, or at an empty slot the
+    /// heap value a nested entry stored, which `kept` states signed).
+    /// What stays assumed of it here is only persistence between
+    /// verified writers: the slot holds, at this entry, the value the
+    /// last verified writer stored, under the same thread pointer and
+    /// key. That includes the value seen after `pthread_join` and
+    /// `pthread_create` at an empty slot (their trusted `ensures`
+    /// `kept`): the nested writer is `create_heap_for_thread`, but that
+    /// the outer cell then holds what it stored is this premise (the
+    /// residual premise accepted by Matt Moore, 2026-11-24, #928).
+    /// `heap_from_slot`'s `pac::auth` can still fault where this premise
+    /// fails: a slot value corrupted outside verified code, or a key
+    /// change after the heap was published (a `prctl` that resets or
+    /// disables data key A, `pac::spec_sign`'s doc; K3 in
+    /// `verus/isla/seams.md`).
     ///
     /// [`heap::thread::slot_ok`]: crate::heap::slot_ok
     pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)

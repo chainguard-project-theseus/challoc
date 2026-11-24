@@ -1,7 +1,13 @@
 # The slot premise: each top-level user of the slot gets a token as the
 # slot's last user left it. Its `rels_ok` conjunct (a tracked copy of
 # the heap's release records, #912) strengthens that premise and adds no
-# axiom function (allowed by Matt Moore, 2026-11-23).
+# axiom function (allowed by Matt Moore, 2026-11-23). Its `slot_signed`
+# conjunct (#928) is proved by every verified writer of a heap value
+# (create_heap_for_thread; purge::background::create's put-back, through
+# TlsCell::kept); what stays assumed of it is persistence only: the slot
+# holds, at each entry, the value its last verified writer stored, under
+# the same thread pointer and PAC key, including across pthread_join and
+# pthread_create at an empty slot (accepted by Matt Moore, 2026-11-24).
 TlsSlot::entry	allocator invariant	none (assumption)
 # Inline assembly checked with Isla (verus/ISLA.md): run.sh checks the
 # memory each reads or writes and the registers it writes against the

@@ -2063,9 +2063,10 @@ call would put a system call on every hint. When the read finds the last
 GC at least `DEFRAG_GC_INTERVAL_NS` (100 ms) old, `Heap::gc` runs: it
 releases only the entries that went unused since the last GC. The release is the free path's (`Heap::flush`), so it can abort
 where a valid program's free can: at a failed system call or a pending
-free-path check (`valid_aborts`). With the thread-heap lookup's
-integrity check (`may_abort_corrupt`), those are all the hint requires,
-not `may_abort`: `theorem_defrag_hint_aborts_only_in_its_gc` shows it
+free-path check (`valid_aborts`). The thread-heap lookup takes no
+integrity abort, since it authenticates a signed slot value (#928), so
+those (with `may_syscall`) are all the hint requires, not `may_abort`
+or `may_abort_corrupt`: `theorem_defrag_hint_aborts_only_in_its_gc` shows it
 aborts at most there, for every pointer, and none of those checks reads
 the pointer. It is not among the read-only entry points of
 `theorem_read_only_never_aborts`, which allow only integrity checks. The

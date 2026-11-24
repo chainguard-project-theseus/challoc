@@ -1149,10 +1149,10 @@ pub open spec fn hint_read(p: usize, rd: HintRead, r: c_int) -> bool {
 /// threshold until the periodic GC while the defragmenter rescans. The
 /// GC's release is the free path's and can abort where a valid program's
 /// free can (a failed system call, or one of the pending free-path checks:
-/// `valid_aborts`), and the thread-heap lookup at an integrity check
-/// (`may_abort_corrupt`), so the hint requires those two and nothing
-/// wider; `theorem_defrag_hint_aborts_only_in_its_gc` (`api/mod.rs`)
-/// calls it with only them. It is not among the read-only entry points of
+/// `valid_aborts`), so the hint requires that and nothing wider: the
+/// thread-heap lookup authenticates a signed slot value and takes no
+/// integrity abort (#928); `theorem_defrag_hint_aborts_only_in_its_gc`
+/// (`api/mod.rs`) calls it with only those capabilities. It is not among the read-only entry points of
 /// `theorem_read_only_never_aborts`. Cold: two class-lock acquisitions per
 /// call, as the verbose utilization query, a counter, and now and then a
 /// clock read and a GC pass.
@@ -1162,7 +1162,6 @@ pub open spec fn hint_read(p: usize, rd: HintRead, r: c_int) -> bool {
 pub fn get_defrag_hint(p: *const u8, Tracked(ord): Tracked<&mut LockOrder>) -> (r: c_int)
     requires
         crate::sys::may_abort() || crate::sys::valid_aborts(),
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
