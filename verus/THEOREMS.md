@@ -1305,6 +1305,28 @@ the assumed `Heap::wf` and the huge lock's invariant (`huge::Inner`'s
   primitives `zero_raw` and `copy_nonoverlapping` stay callable on
   any `valid_writes` fact, which has no time (`vspec::ptr::rw_len`), so
   this holds because only `vspec::user` calls them on user memory.
+  `sys::tests::raw_writes_only_at_listed_sites` checks the source for
+  that: every use of a raw write primitive (`core::ptr`'s
+  `write_bytes`, `copy_nonoverlapping`, `copy`, `write`,
+  `write_volatile`, `write_unaligned`, `swap`, `swap_nonoverlapping`
+  and `replace` as a path ending in its `ptr` segment, called, with a
+  turbofish, or as a value; the pointer methods called as methods, but
+  `.swap(` and `.replace(`, or by qualified path, `<*mut u8>::write(`
+  and `NonNull::write(`; and `zero_raw` and `copy_raw`) in the shipped
+  sources is in a listed function, the stated number of times, and the
+  test's doc names the memory each one writes: user memory only in
+  `vspec::user`, the rest the C caller's `mallctl` buffers, metadata
+  initialised in place, and `huge::kernel::write_zero`'s byte apart
+  from every live run. It rejects a `use` item of any visibility that
+  imports a primitive from a `ptr` path segment (`core::ptr::`,
+  `std::ptr::`, or `ptr::` after `use core::ptr;`) by name or by glob,
+  so a bare name cannot slip past. It does not see the methods `.swap(`
+  and `.replace(` called as methods (names `Option` and the atomics
+  share), a write through a dereferenced raw pointer in a trusted body
+  (`*p = v`, an atomic `(*p).store(..)` such as
+  `vspec::atom::store_usize_at`'s to metadata words, or a write to a
+  slice from `from_raw_parts_mut`), or a use through a renamed module
+  (`use core::ptr as p;`) or a macro.
 
 **Not covered.**
 - Thread-local storage: not apart from every block, so not in the
