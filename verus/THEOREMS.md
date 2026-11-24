@@ -866,6 +866,19 @@ the run had).
   (uninterpreted; its one fact is the trusted `AT_HWCAP` reading in
   `sys::auxv`, which `pac::available` turns into its contract), and
   `auth` also requires `may_abort_corrupt() || signed(p, modifier)`.
+  A cache entry is signed by `slot_entry` (`lemma_entry_signed`), and
+  a heap pointer in the TLS slot by `slot_ok`, which the trusted
+  `TlsSlot::entry` ensures, an assumption at each entry. Every verified
+  writer of a heap value proves it of what it stores (`slot_signed`):
+  `create_heap_for_thread` (its `ensures`; the heap is in the metadata
+  region, whose reservation `Regions::mapped` puts below
+  `user_va_limit`), and `purge::background::create`'s put-back (its
+  `ensures` `TlsCell::kept`, which states a heap value a nested entry
+  stored over an empty slot signed). Only persistence stays assumed:
+  that the slot still holds the last verified writer's value at a later
+  entry, including after `pthread_join` / `pthread_create`, whose
+  trusted `ensures` carry the nested store
+  ([#928](https://github.com/chainguard-project-theseus/challoc/issues/928)).
 - Huge results: the huge lock's invariant and frame, which
   `huge::Inner`'s `LockSpec` impl (`huge/mod.rs`) defines and every
   holder outside the tests checks at its `LockGuard::unlock` (common
@@ -6714,7 +6727,6 @@ fn theorem_defrag_hint_aborts_only_in_its_gc(p: *const u8)
     requires
         crate::sys::may_syscall(),
         crate::sys::valid_aborts(),
-        crate::sys::integrity_aborts(),
 
 #[cfg(verus_keep_ghost)]
 fn theorem_mallctl_reads_never_abort(shared: &Shared, name: *const c_char, io: &Io,
@@ -6762,11 +6774,11 @@ as the premises below say), and only `mallinfo`/`mallinfo2` reach one:
   can, at a failed system call or a pending free-path check
   (`valid_aborts()`). Its own witness,
   `theorem_defrag_hint_aborts_only_in_its_gc` (`api/mod.rs`), calls it
-  with `valid_aborts()` and `integrity_aborts()` alone, not
-  `may_abort()`, and verifies: for every `p` and before init it aborts
-  at most at a resource failure or a pending check, both in the GC,
-  which does not read `p`, or at an integrity check (the thread-heap
-  lookup's).
+  with `valid_aborts()` alone, not `may_abort()` and not
+  `integrity_aborts()`, and verifies: for every `p` and before init it
+  aborts at most at a resource failure or a pending check, both in the
+  GC, which does not read `p`. The thread-heap lookup authenticates a
+  signed slot value (`slot_ok`, #928) and so takes no integrity abort.
 - `malloc_usable_size(NULL)` (`api/libc.rs`, `requires may_abort()
   || p@.addr == 0`): returns 0 and never aborts.
 - `nallocx` (`api/jemalloc.rs`) after its `shared()`:
@@ -9250,7 +9262,6 @@ fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tr
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
         crate::sys::pending_aborts(),
-        crate::sys::integrity_aborts(),
         shared.wf(),
         blk.block(p),
         old(ord).top() == 0,
@@ -9308,7 +9319,6 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
         crate::sys::pending_aborts(),
-        crate::sys::integrity_aborts(),
         shared.wf(),
         blk.block(p),
         hint_ok(p, hint),
@@ -9335,13 +9345,22 @@ uninterpreted, granted by nothing, each accepted only by its sink
 (`abort_kernel`, `abort_pending`: `abort_fmt` under the narrower
 `may_abort_kernel()` or `may_abort_pending()`, as `abort_integrity` is
 under `may_abort_corrupt()`). The witnesses hold the two, not
-`may_abort()`, and verify. The two direct-free witnesses
-(`theorem_valid_free_never_aborts`,
-`theorem_valid_sized_direct_free_never_aborts`) also hold
-`integrity_aborts()`: `free_direct` reads the thread's TLS
-slot and requires `may_abort_corrupt()`, so a corrupt slot stays an
-integrity abort there. The other witnesses hold no `integrity_aborts()`:
-theorem 32's integrity checks are on none of their paths.
+`may_abort()`, and verify. None holds `integrity_aborts()`: theorem
+32's integrity checks are on none of their paths. The two direct-free
+witnesses (`theorem_valid_free_never_aborts`,
+`theorem_valid_sized_direct_free_never_aborts`) read the thread's TLS
+slot through `existing_heap`, whose `pac::auth` takes no integrity
+abort because `slot_ok` states the slot value signed with the thread
+pointer under PAC (#928; `TlsSlot::entry` ensures it at each entry;
+every verified writer of a heap value proves it of what it stores,
+`create_heap_for_thread` and `purge::background::create`'s put-back
+through `TlsCell::kept`, and only persistence between them is
+assumed). Not covered, where that premise fails: a slot value corrupted
+outside verified code, or data key A reset or disabled after the heap
+was published (the fixed-key premise, `pac::spec_sign`'s doc; K3 in
+`verus/isla/seams.md`). There `autda` faults (FEAT_FPAC) or yields a
+poisoned pointer whose dereference faults; only the
+`challoc_tls_check` build tests it (`tlscheck::on_use`). G13 in #397.
 Every function on the covered paths requires `may_abort()` or, in its
 place, one of: `valid_aborts()` with what a live block gives it
 (`may_abort() || (valid_aborts() && blk.block(p))`, and the forms with
@@ -11752,12 +11771,12 @@ alone):
     in its body, 1 exactly when the design 13.5 rule holds over its reads
     (section "Utilization and defrag hint are exact"; the `ensures`
     exports it existentially). B: no pointer makes it abort, before init
-    included (theorem 32). It requires `may_abort() || valid_aborts()`
-    and `may_abort_corrupt()`, not `may_abort()`: the calling thread's
+    included (theorem 32). It requires `may_abort() || valid_aborts()`,
+    not `may_abort()`: the calling thread's
     cache GC (`Heap::gc_for_defrag`, design 13.5) may abort where a valid
     program's free can (a failed system call, a pending free-path check),
-    and it does not read `p`; the thread-heap lookup may abort at an
-    integrity check. `theorem_defrag_hint_aborts_only_in_its_gc`
+    and it does not read `p`; the thread-heap lookup takes no integrity
+    abort (a signed slot value, #928). `theorem_defrag_hint_aborts_only_in_its_gc`
     (`api/mod.rs`) calls it with only those capabilities. The body is
     verified.
 36. `challoc_version` (`api/mod.rs`), `challoc_features`:

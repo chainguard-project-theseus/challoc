@@ -16,7 +16,7 @@ file.
 
 ## `Reserved`
 
-src/layout/regions.rs:2275. Kind: external_body type. Category: platform/kernel fact.
+src/layout/regions.rs:2281. Kind: external_body type. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted (partly checked, const assert: `Reserved` in src/vspec/notcopy.rs; not checked: that each token stands for a live mapping of its own at its `addr` and `len`, the kernel's `mmap` contract, which `try_reserve` (the one place that makes a token), `Reserved::is_disjoint` and `Reserved::is_apart_from_static` assume).
 
 > Ghost ownership of one live reservation, `len()` bytes from `addr()`, that [`try_reserve`] obtained from the kernel.
@@ -29,7 +29,7 @@ pub tracked struct Reserved
 
 ## `Reserved::is_apart_from_static`
 
-src/layout/regions.rs:2292. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2298. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): a live reservation does not overlap the process's `Shared` static ([`shared_static_addr`]).
@@ -46,7 +46,7 @@ pub proof fn is_apart_from_static(tracked &self)
 
 ## `Reserved::is_disjoint`
 
-src/layout/regions.rs:2309. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2315. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
@@ -65,7 +65,7 @@ pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
 
 ## `Reserved::into_unbacked`
 
-src/layout/regions.rs:2328. Kind: external_body proof. Category: platform/kernel fact.
+src/layout/regions.rs:2334. Kind: external_body proof. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > The reservation as uncommitted address space this process owns, for the one owner that commits it piece by piece (`Meta`, for the metadata region).
@@ -81,12 +81,12 @@ pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
 
 ## `try_reserve`
 
-src/layout/regions.rs:2348. Kind: external_body. Category: FFI/syscall.
+src/layout/regions.rs:2354. Kind: external_body. Category: FFI/syscall.
 Tool: none (assumption). Status: trusted.
 
 > Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on success, the address and the token for the `len` bytes there.
 
-Body mints Tracked at line 2365.
+Body mints Tracked at line 2371.
 
 Hashes: contract 3469794050, body 1440593640.
 
@@ -100,7 +100,7 @@ fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
 
 ## `entry_barrier`
 
-src/layout/regions.rs:3353. Kind: external_body. Category: inline asm.
+src/layout/regions.rs:3359. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: entry_barrier in src/layout/regions.rs; not checked: the pointer's provenance, the check shows only that no instruction is emitted).
 
 > [`class_entry`]'s barrier on x86_64: `p`, through an empty `asm!`.

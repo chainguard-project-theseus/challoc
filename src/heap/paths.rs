@@ -1033,7 +1033,6 @@ pub unsafe fn free_fast_slot(
     Tracked(tls): Tracked<&mut TlsSlot>,
 ) -> (r: (Option<usize>, Ghost<Live>))
     requires
-        crate::sys::may_abort_corrupt(),
         shared.wf(),
         old(claim).claims(p),
         slot_ok(old(tls).cell, old(tls).loan),
@@ -1142,7 +1141,6 @@ unsafe fn free_fast_tail(
     Tracked(tls): Tracked<&mut TlsSlot>,
 ) -> (r: Option<usize>)
     requires
-        crate::sys::may_abort_corrupt(),
         shared.wf(),
         class < NCLASSES,
         process_regions().is_slot(class as int, p@.addr),
@@ -1455,7 +1453,6 @@ pub fn free(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked
 /// `claim` as for [`free`], and so is the result.
 pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: Ghost<Live>)
     requires
-        crate::sys::may_abort_corrupt(),
         crate::sys::may_abort() || (crate::sys::valid_aborts() && claim.held_block(p)),
         crate::sys::may_syscall(),
         shared.wf(),
@@ -1552,12 +1549,18 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
 /// the block's token, reaches none of its not-an-allocation,
 /// invalid-free or double-free checks. It verifies without
 /// [`crate::sys::may_abort`], with only [`crate::sys::valid_aborts`]' two
-/// capabilities (a resource failure, and the pending checks) and
-/// [`crate::sys::integrity_aborts`]. The premise is there because
-/// [`free_direct`] counts the free in the thread's heap, found through
-/// its TLS slot by [`existing_heap`], which requires `may_abort_corrupt`:
-/// under PAC a corrupt slot value faults in `pac::auth`, an integrity
-/// abort, as a corrupt cache entry does ([`Heap::alloc_fast`]).
+/// capabilities (a resource failure, and the pending checks), and
+/// without [`crate::sys::integrity_aborts`]: [`free_direct`] counts the
+/// free in the thread's heap, found through its TLS slot by
+/// [`existing_heap`], whose `pac::auth` takes a signed slot value
+/// ([`slot_ok`], #928, assumed by `TlsSlot::entry`) and so no integrity
+/// abort. Not covered: where that premise fails, under PAC, `autda`
+/// faults (FEAT_FPAC) or yields a poisoned pointer whose dereference
+/// faults (tested only in the `challoc_tls_check` build). It fails for
+/// a slot value corrupted outside verified code, and for a program that
+/// resets or disables data key A after its heap was published (the
+/// fixed-key premise, `pac::spec_sign`'s doc; K3 in
+/// `verus/isla/seams.md`).
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
@@ -1566,7 +1569,6 @@ fn theorem_valid_free_never_aborts(shared: &Shared, p: *mut u8, Tracked(blk): Tr
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
         crate::sys::pending_aborts(),
-        crate::sys::integrity_aborts(),
         shared.wf(),
         blk.block(p),
         old(ord).top() == 0,
@@ -1700,9 +1702,8 @@ fn theorem_valid_sized_free_never_aborts(shared: &Shared, h: &mut Heap, p: *mut 
 /// cache (a thread with no heap, `MALLOCX_TCACHE_NONE`), as for
 /// [`theorem_valid_free_never_aborts`]: the check of the hint, then
 /// [`free_direct`], reaches none of its not-an-allocation, invalid-free
-/// or double-free checks. It assumes [`crate::sys::integrity_aborts`]
-/// for the same reason: [`free_direct`] counts the free through
-/// [`existing_heap`], which requires `may_abort_corrupt`.
+/// or double-free checks. Like it, it holds without
+/// [`crate::sys::integrity_aborts`] (#928).
 ///
 /// Verification only (`cfg(verus_keep_ghost)`): the build has no such function.
 #[cfg(verus_keep_ghost)]
@@ -1711,7 +1712,6 @@ fn theorem_valid_sized_direct_free_never_aborts(shared: &Shared, p: *mut u8, siz
         crate::sys::may_syscall(),
         crate::sys::kernel_aborts(),
         crate::sys::pending_aborts(),
-        crate::sys::integrity_aborts(),
         shared.wf(),
         blk.block(p),
         hint_ok(p, hint),

@@ -658,7 +658,9 @@ verus! {
 /// That path (`create_heap_for_thread`) parks the slot on `TLS_CREATING`
 /// only while it registers the heap and leaves it empty or holding the
 /// heap, never a sentinel, and so does a nested `create`, which puts back
-/// what it parks ([`TlsCell::kept`]). `kani_join` checks the calls on
+/// what it parks ([`TlsCell::kept`]). A heap value it stores is signed
+/// under PAC, as its `ensures` proves (`slot_signed`, which `kept` states
+/// of a filled slot, #928). `kani_join` checks the calls on
 /// premises C9 and C15 of `verus/kani/premises.md`; the `ensures` rests on
 /// those nested frees (the slot premise), and the call on the `# Safety`
 /// clause.

@@ -95,7 +95,7 @@ pub use theorems::*;
 pub use thread::{HeapPerm, TLS_CREATING, TLS_EXITED, fast_flags};
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 #[cfg(verus_keep_ghost)]
-pub use thread::{reentry_benign, slot_ok, slot_step};
+pub use thread::{reentry_benign, slot_ok, slot_signed, slot_step};
 
 use core::alloc::Layout;
 use core::ptr;
@@ -2465,6 +2465,7 @@ impl Heap {
                 && s.bound() && heap_head(r.0, s.head()) && heap_claim(r.0, s.claim()) && s.shared() == Shared::storage() as *const Shared),
             r.0@.addr != 0 ==> r.0@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
             r.0@.addr != 0 ==> r.0 == cast_heap(r.0@.addr),
+            r.0@.addr != 0 ==> process_regions().in_meta(r.0@.addr as int, 1),
             *final(ord) == *old(ord),
     {
         proof {
@@ -2512,6 +2513,7 @@ impl Heap {
                 && st.shared() == Shared::storage() as *const Shared),
             r.0@.addr != 0 ==> r.0@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
             r.0@.addr != 0 ==> r.0 == cast_heap(r.0@.addr),
+            r.0@.addr != 0 ==> process_regions().in_meta(r.0@.addr as int, 1),
             *final(ord) == *old(ord),
     {
         proof {

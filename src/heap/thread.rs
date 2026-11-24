@@ -49,6 +49,17 @@ pub open spec fn reentry_benign(v: usize) -> bool {
     v == TLS_CREATING || v == TLS_EXITED
 }
 
+/// With heap pointers signed ([`super::pac_mode`]), a slot value `v`
+/// above the sentinels is [`signed`](crate::sys::pac::signed) with the
+/// thread pointer `tp`, as [`tls_value_for`] stores it (#928): what
+/// [`slot_ok`] states of the value, and what every verified writer of
+/// a heap value proves of the value it stores (`create_heap_for_thread`,
+/// and `purge::background::create`'s put-back, through
+/// [`TlsCell::kept`](crate::sys::tls::TlsCell::kept)).
+pub open spec fn slot_signed(v: usize, tp: usize) -> bool {
+    v > TLS_EXITED && super::pac_mode() ==> crate::sys::pac::signed(v, tp)
+}
+
 /// The phase of a thread's TLS slot value: no heap yet (null), creation
 /// in progress ([`TLS_CREATING`]), a heap (any value above the
 /// sentinels: the heap pointer, signed under PAC), or the destructor
@@ -196,13 +207,18 @@ pub open spec fn slot_heap(v: usize, tp: usize) -> usize {
 /// the pointer `heap_destructor` destroys the heap through);
 /// at or below them (null, [`TLS_CREATING`], [`TLS_EXITED`]), no heap
 /// permission; and the thread pointer is as `get_tp` returns it
-/// ([`tp_ok`](crate::sys::tls::tp_ok)). [`create_heap_for_thread`]
+/// ([`tp_ok`](crate::sys::tls::tp_ok)). With heap pointers signed
+/// ([`super::pac_mode`]), a value above the sentinels is
+/// [`signed`](crate::sys::pac::signed) with the thread pointer, as
+/// [`tls_value_for`] stores it, so [`heap_from_slot`]'s `pac::auth`
+/// takes no integrity abort on it. [`create_heap_for_thread`]
 /// publishes a heap with its permission in the loan; `TlsSlot::entry`
 /// assumes this of the token it makes.
 pub open spec fn slot_ok(cell: TlsCell, loan: HeapLoan) -> bool {
     &&& cell.value() > TLS_EXITED ==> (loan.heap() matches Some(hp) && hp.addr() == slot_heap(cell.value(), cell.tp())
         && hp.addr() != 0 && hp.value().wf() && hp.value().home_at(super::cast_heap(hp.addr())))
     &&& cell.value() <= TLS_EXITED ==> loan.heap() is None
+    &&& slot_signed(cell.value(), cell.tp())
     &&& crate::sys::tls::tp_ok(cell.tp())
 }
 
@@ -396,10 +412,17 @@ pub fn heap_for_thread_in<'a>(shared: &'a Shared, Tracked(cell): Tracked<&mut Tl
 }
 
 /// The slot value for heap `h` on the calling thread: `h` signed with the
-/// thread pointer when `shared.pac()`, else `h` itself.
-fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(cell): Tracked<&TlsCell>) -> *mut c_void
+/// thread pointer when `shared.pac()`, else `h` itself. Under PAC this
+/// is the form of the [`signed`](crate::sys::pac::signed) word
+/// [`slot_ok`] states of a slot that holds a heap; [`create_heap_for_thread`]
+/// adds the bound `signed` needs (its heap is in the metadata region,
+/// below `pac::user_va_limit`) and ensures the stored value `signed`.
+fn tls_value_for(shared: &Shared, h: *mut Heap, Tracked(cell): Tracked<&TlsCell>) -> (r: *mut c_void)
     requires
         shared.wf(),
+    ensures
+        super::pac_mode() && crate::sys::tls::tp_ok(cell.tp()) ==> r@.addr == crate::sys::pac::spec_sign(h@.addr, cell.tp()),
+        !super::pac_mode() ==> r@.addr == h@.addr,
 {
     if shared.pac() {
         let (_, tp) = crate::sys::tls::get_tp(Tracked(cell));
@@ -440,6 +463,9 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
         slot != 0 ==> r is None && *final(cell) == *old(cell) && *final(loan) == *old(loan),
         slot == 0 ==> final(cell).creates() == old(cell).creates() + 1,
         slot == 0 && r is None ==> final(cell).value() == 0,
+        // The slot value it publishes is signed under PAC, as `slot_ok`
+        // states (#928).
+        r is Some && super::pac_mode() ==> crate::sys::pac::signed(final(cell).value(), final(cell).tp()),
         *final(ord) == *old(ord),
 {
     if slot != 0 {
@@ -479,7 +505,21 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
     // handler that allocates in between never finds the heap unregistered.
     #[cfg(challoc_tls_check)]
     super::tlscheck::on_publish(h);
-    crate::sys::tls::set(tls_value_for(shared, h, Tracked(&*cell)), Tracked(&mut *cell));
+    let ghost before = *cell;
+    let v = tls_value_for(shared, h, Tracked(&*cell));
+    crate::sys::tls::set(v, Tracked(&mut *cell));
+    proof {
+        // The heap is in the metadata region, below the user limit
+        // (`Shared::lemma_meta_below_user_va`), so its signed form is
+        // `signed`.
+        shared.lemma_wf();
+        shared.lemma_meta_below_user_va();
+        if super::pac_mode() {
+            assert(cell.value() == v as usize && cell.tp() == before.tp());
+            assert(h@.addr < crate::sys::pac::user_va_limit());
+            assert(v@.addr == crate::sys::pac::spec_sign(h@.addr, cell.tp()));
+        }
+    }
     let tracked (homed, stored) = fresh.tracked_unwrap();
     // SAFETY: freshly created and owned by this thread.
     let heap = unsafe { heap_new(h, Tracked(stored), Tracked(&perms), Tracked(loan)) };
@@ -540,7 +580,6 @@ proof fn install_fresh(tracked heap: &mut Heap, h: *mut Heap, tracked perms: sup
 #[inline(always)]
 pub fn existing_heap(shared: *const Shared) -> (r: Option<&'static mut Heap>)
     requires
-        crate::sys::may_abort_corrupt(),
         shared == Shared::storage() as *const Shared,
     ensures
         r matches Some(h) ==> h.wf(),
@@ -562,7 +601,6 @@ pub fn existing_heap(shared: *const Shared) -> (r: Option<&'static mut Heap>)
 #[allow(clippy::question_mark)]
 pub fn existing_heap_in<'a>(shared: *const Shared, Tracked(tls): Tracked<&'a mut TlsSlot>) -> (r: Option<&'a mut Heap>)
     requires
-        crate::sys::may_abort_corrupt(),
         slot_ok(old(tls).cell, old(tls).loan),
         shared == Shared::storage() as *const Shared,
     ensures
@@ -673,10 +711,13 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 /// pointer when `pac` ([`PUSH_PAC`]), the value itself otherwise
 /// ([`slot_heap`]), borrowed from the heap loan `loan`, which holds its
 /// permission ([`slot_ok`] of it with the slot cell `cell`) and is lent for as long as the reference
-/// lives. With `pac`, a corrupt slot value faults in `pac::auth`
-/// (FEAT_FPAC), an integrity abort, so the caller holds
-/// `sys::may_abort_corrupt`, as [`existing_heap`] and
-/// [`heap_for_thread`] do.
+/// lives. With `pac`, the value is signed ([`slot_ok`], assumed by
+/// `TlsSlot::entry`), so `pac::auth` takes no integrity abort. Where that
+/// premise fails (a slot value corrupted outside verified code, or data
+/// key A reset or disabled after the heap was published) `autda` faults
+/// (FEAT_FPAC); without FEAT_FPAC the pointer comes out poisoned, which
+/// only the `challoc_tls_check` build tests (`tlscheck::on_use`), and
+/// otherwise the dereference faults.
 ///
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`] on this thread, and `pac` is the
@@ -685,7 +726,6 @@ pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
 #[allow(clippy::needless_lifetimes)]
 pub unsafe fn heap_from_slot<'a>(t: usize, tp: usize, pac: bool, Tracked(cell): Tracked<&TlsCell>, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: &'a mut Heap)
     requires
-        crate::sys::may_abort_corrupt(),
         pac == super::pac_mode(),
         pac ==> crate::sys::pac::pac_available(),
         slot_ok(*cell, *old(loan)),

@@ -2854,6 +2854,19 @@ impl Shared {
         self.arenas.lemma_process_arena0();
     }
 
+    /// The process's metadata region ends below `sys::pac::user_va_limit`
+    /// (its reservation's bound, `Regions::mapped`), so a heap in it has
+    /// an address `pac::sign` can sign and `pac::auth` give back (#928).
+    pub(crate) proof fn lemma_meta_below_user_va(&self)
+        requires
+            self.wf(),
+        ensures
+            crate::layout::process_regions().meta_base + crate::layout::process_regions().meta_len
+                <= crate::sys::pac::user_va_limit(),
+    {
+        reveal(crate::layout::Regions::fenced);
+    }
+
     /// The memory cgroup record, `None` until discovery has run
     /// (`sys::cgroup::Deferred`). For the samplers and the policy.
     #[inline]
