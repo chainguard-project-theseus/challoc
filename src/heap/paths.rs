@@ -1266,6 +1266,7 @@ pub fn free_sized_fast(
         !r ==> final(blk).claims(p) && final(blk).len() == old(blk).len(),
         !r ==> *final(blk) == *old(blk) || old(blk).block(p),
         r ==> old(blk).block(p),
+    opens_invariants [crate::vspec::flags::flags_ns()]
 {
     // `flags` (`push_flags`) is the bits the push gets; the byte read for
     // the push carries them, and the dynamic ones (`lemma_route_flags`).
