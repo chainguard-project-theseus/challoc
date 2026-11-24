@@ -588,7 +588,10 @@ pub fn key() -> Key {
 
 /// What the commit path of a class with `slab_size`-byte slabs does:
 /// `Off`, `Folios` (advise the group in `take_group`) or `Chunks` (commit
-/// and advise the PMD chunk in `commit_slab`).
+/// and advise the PMD chunk in `commit_slab`). Read once per class, by
+/// `SlabTable::new`, which keeps it (or `Off` when `Shared::init` forces
+/// `never`, before [`force_never`] stores that), so the commit path
+/// reads a field fixed for the table's life.
 #[inline]
 pub fn class_mode(slab_size: usize) -> Mode {
     let mode = Mode::from_u8(MODE.load(Ordering::Acquire));

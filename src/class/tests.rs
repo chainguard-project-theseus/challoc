@@ -101,12 +101,19 @@ impl Env {
     }
 
     fn table(&self, c: usize, guard_interval: u32) -> &'static SlabTable {
+        self.table_thp(c, guard_interval, false)
+    }
+
+    /// [`Env::table`] with `SlabTable::new`'s `thp_off` argument (true
+    /// when `Shared::init` forces `never` under a cgroup limit).
+    fn table_thp(&self, c: usize, guard_interval: u32, thp_off: bool) -> &'static SlabTable {
         std::boxed::Box::leak(std::boxed::Box::new(
             SlabTable::new(
                 &self.meta,
                 &self.regions,
                 c,
                 guard_interval,
+                thp_off,
                 Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
@@ -1277,6 +1284,7 @@ fn metadata_exhaustion_is_reported_not_fatal() {
             &regions,
             0,
             0,
+            false,
             Tracked::assume_new(),
             Tracked::assume_new(),
             Tracked::assume_new(),
@@ -2209,6 +2217,41 @@ fn slabs_are_committed_a_run_at_a_time() {
     );
     // Slabs 0..=8 were handed out, less the guard slab 7 with guards on.
     assert_eq!(cs.stats().committed, if guards { 8 } else { 9 });
+}
+
+/// `SlabTable::new` with `thp_off` keeps the table's mode `Off` under a
+/// stored decision that gives the class `Chunks`: the route `Shared::init`
+/// takes for `thp:always` under a cgroup limit below 1 GiB, which builds
+/// the tables before `force_never` stores `Off`. The same class without
+/// `thp_off` commits in PMD chunks and takes no runs.
+#[test]
+fn thp_off_overrides_a_chunks_decision() {
+    crate::testutil::in_fork_child("thp_off table", 30_000, || {
+        use crate::sys::thp_host::{Thp, ThpSetting};
+        let mut f = crate::sys::features::Features::probe(true);
+        f.thp = Thp {
+            enabled: Some(ThpSetting::Madvise),
+            lg_pmd: 21,
+            listed: 1 << 21,
+            always: 0,
+            madvise: 1 << 21,
+        };
+        let d = crate::thp::configure(crate::config::Thp::Always, &f);
+        assert_eq!(d.mode, crate::thp::Mode::Chunks);
+        let env = Env::new();
+        let c = (0..NCLASSES)
+            .find(|&c| {
+                let t = env.table(c, 0);
+                t.slabs_per_page() == 1 && t.thp == crate::thp::Mode::Chunks
+            })
+            .expect("a class of page-or-larger slabs in chunk mode");
+        let on = env.table(c, 0);
+        assert!(!on.runs(), "class {c}: a Chunks table takes runs");
+        let off = env.table_thp(c, 0, true);
+        assert_eq!(off.thp, crate::thp::Mode::Off, "class {c}: thp_off ignored");
+        assert!(off.runs(), "class {c}: a thp_off table takes no runs");
+        crate::thp::force_never();
+    });
 }
 
 /// The runs `starts_run` and `run_end` describe tile every group exactly,

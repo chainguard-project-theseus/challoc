@@ -1603,6 +1603,12 @@ struct Inner {
     /// while this lock is held.
     #[allow(dead_code)]
     dirty: Ghost<Map<nat, u64>>,
+    /// Ghost: the end of the run the last `SlabTable::commit_run` of the
+    /// current group committed (the group's end, or the next run start),
+    /// which a slab the cursor skips (`starts_run` false) lies before
+    /// ([`Inner::inv`]). Meaningless at a run start.
+    #[allow(dead_code)]
+    run_to: Ghost<usize>,
     /// Ghost: the arena and the class table this lock value belongs to
     /// (set by `new`, never changed).
     #[allow(dead_code)]
@@ -2188,6 +2194,7 @@ impl Inner {
         &&& self.group_next <= self.group_end <= self.nbits()
         &&& self.group_next < self.group_end
             ==> self.group_end == self.table@.spec_group_range(self.group_next >> self.table@.lg_group).1
+        &&& self.run_covers()
         &&& self.nbits() <= usize::MAX >> 12
         &&& forall|s: nat| #[trigger] self.committed@.contains(s) ==> s < self.nbits()
         &&& forall|s: nat| #[trigger] self.states@.contains_key(s) ==> s < self.nbits()
@@ -2231,6 +2238,18 @@ impl Inner {
     spec fn group_ok(&self, s: nat) -> bool {
         self.group_next <= s < self.group_end ==> self.owns(s) && self.st(s) == State::Fresh
             && !self.committed@.contains(s)
+    }
+
+    /// The runs of the current group: when the cursor is at a slab that
+    /// starts no run in a table that commits runs, it is inside the run
+    /// the last `commit_run` committed, which ends at `run_to`, the
+    /// group's end or a run start (`SlabTable::run_end`). So the skip
+    /// branch of `next_fresh_slab` hands out only slabs of a committed
+    /// run.
+    spec fn run_covers(&self) -> bool {
+        self.group_next < self.group_end && self.table@.spec_runs() && !self.table@.spec_starts(self.group_next)
+            ==> self.group_next < self.run_to@ <= self.group_end
+            && (self.run_to@ < self.group_end ==> self.table@.spec_starts(self.run_to@))
     }
 
     /// The ghost link at slab `s`.
@@ -2294,6 +2313,7 @@ impl Inner {
         &&& self.states == o.states
         &&& self.committed == o.committed
         &&& self.dirty == o.dirty
+        &&& self.run_to == o.run_to
         &&& self.arena == o.arena
         &&& self.table == o.table
         &&& self.inited == o.inited
@@ -2334,6 +2354,7 @@ impl Inner {
         &&& self.states == o.states
         &&& self.committed == o.committed
         &&& self.dirty == o.dirty
+        &&& self.run_to == o.run_to
         &&& self.arena == o.arena
         &&& self.table == o.table
         &&& self.inited == o.inited
@@ -2823,6 +2844,7 @@ impl ClassState {
             states: Ghost(Map::empty()),
             committed: Ghost(vstd::set::Set::empty()),
             dirty: Ghost(Map::empty()),
+            run_to: Ghost(0),
             arena: Ghost(arena),
             table: Ghost(*table),
             inited: Tracked(im),
@@ -3211,6 +3233,7 @@ impl ClassState {
             final(g).stats == old(g).stats,
             final(g).group_next == old(g).group_next,
             final(g).group_end == old(g).group_end,
+            final(g).run_to == old(g).run_to,
             final(g).committed == old(g).committed,
             final(g).dirty == old(g).dirty,
             final(g).arena == old(g).arena,
@@ -3258,6 +3281,7 @@ impl ClassState {
             final(g).stats == old(g).stats,
             final(g).group_next == old(g).group_next,
             final(g).group_end == old(g).group_end,
+            final(g).run_to == old(g).run_to,
             final(g).committed == old(g).committed,
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
@@ -4944,6 +4968,7 @@ impl ClassState {
             final(g).dirty@ == (if old(g).st(slab as nat) == State::Active { old(g).dirty@ } else { old(g).dirty@.insert(slab as nat, 0) }),
             final(g).group_next == old(g).group_next,
             final(g).group_end == old(g).group_end,
+            final(g).run_to == old(g).run_to,
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
             final(g).oauth@.id() == old(g).oauth@.id(),

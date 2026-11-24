@@ -1572,12 +1572,17 @@ anything that allocates. Steps, in the order `api::init` performs them:
    most `MAX_SEALED` = `NCLASSES + 5` calls). A refusal stops the sweep
    without aborting (sealing is a hardening extra, not a heap invariant);
    the report says `Sealed ranges: N of M`.
-6. `Shared::init`: the slab tables, arena 0, the huge allocator, the
-   registries and the thread-exit key.
-7. Inside `Shared::init`, cgroup discovery under `thp:always` only
-   (section 11, `Cgroup::discover`, skipped with `cgroup:false`), then
-   `thp::force_never` if the cgroup rule forced `never`; under any other
-   `thp` key discovery is deferred (`sys::cgroup::Deferred`, section 11).
+6. `Shared::init`, first: cgroup discovery under `thp:always` only
+   (section 11, `Cgroup::discover`, skipped with `cgroup:false`; under
+   any other `thp` key discovery is deferred, `sys::cgroup::Deferred`),
+   and the cgroup rule's decision: under a limit below 1 GiB the stored
+   `thp` becomes `never`. This comes before the slab tables, which fix
+   their class mode when they are built (`SlabTable::new`'s `thp_off`,
+   #933), so a forced `never` reaches every table.
+7. Then, still in `Shared::init`: the slab tables, arena 0, the huge
+   allocator, the registries and the thread-exit key. After
+   `Shared::init` returns, `thp::force_never` if the rule forced
+   `never`, so the published THP decision follows (section 11).
 8. Register the fork handlers (section 9). The feature line for
    `challoc_features()` and `malloc_stats_print` is formatted at its first
    request (`api::feature_line_ready`), not here.

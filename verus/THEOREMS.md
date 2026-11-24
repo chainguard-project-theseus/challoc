@@ -1744,32 +1744,45 @@ guard slab. The runs tile their group
 ([#930](https://github.com/chainguard-project-theseus/challoc/issues/930)):
 `SlabTable::spec_run_start` is `starts_run`'s test for a class that
 commits runs (the group's first slab, a guard slab, or a multiple of
-`run_slabs` not right after a guard slab); `starts_run` returns true at
-every run start and returns false only where slabs are committed in
-runs (`spec_slabs_per_page() == 1`) and `s` is no run start, besides
-`!r ==> !spec_is_guard(s)`. `run_end(s, limit)`, with `limit` the end of
+`run_slabs` not right after a guard slab); `starts_run` ensures
+`r == (!spec_runs() || spec_run_start(s))`, so it returns false exactly
+where the table commits runs and `s` is no run start, besides
+`!r ==> !spec_is_guard(s)`. `SlabTable::runs` ensures
+`r == spec_runs()`, a function of two fields `SlabTable::new` fixed
+(`slabs_per_page`, and `thp`, the class's mode under the final THP
+decision, which `Shared::init` computes after reading the cgroup limit
+that may force `never`;
+[#933](https://github.com/chainguard-project-theseus/challoc/issues/933)),
+so every call on one table gives the same answer. `run_end(s, limit)`, with `limit` the end of
 `s`'s group (`commit_run` requires the same, and `fresh.rs` passes the
 group's end), ensures `s < r <= limit`, no guard slab and no run start
 strictly between `s` and `r`, that an `r` before `limit` is a run
 start, and that a run holds at most `run_slabs` slabs past the guard
 slab it may start with (`lemma_run_slabs_mask`, `lemma_inside_group`).
-From these, by argument rather than a checked lemma: a slab the cursor
-skips (`starts_run` false) lies inside the run of the last run start
-below it in its group, which `commit_run` committed, provided `runs()`
-gave the same answer at that start (the THP mode is fixed before the
-first allocation; not proved). The skip branch in `class/fresh.rs`
-uses none of these `ensures`. Not proved: that `starts_run` returns
-false inside a run (`runs()` reads the THP mode, which has no spec
-view), so a `true` there would only commit a committed slab again; the
-unit test `runs_tile_every_group` (`class/tests.rs`) still checks that. Each read-write commit of a class region stays in the
+`commit_run` hands back that end (a ghost out-argument; ensures, when
+the table commits runs, `s < end <= limit`, an `end` before `limit` is a
+run start, and no run start lies strictly inside), and
+`next_fresh_slab` (`class/fresh.rs`) keeps it in the class state's
+ghost `run_to`. The class state's invariant (`Inner::run_covers`, a
+conjunct of `Inner::base`) says: when the cursor is at a slab that
+starts no run in a table that commits runs, it is below `run_to`, which
+is the group's end or a run start. A fresh group starts at a run start
+(`lemma_fresh_group`), and each step keeps it (a slab past `s` that is
+no run start cannot be `run_to`). So the skip branch's slab lies inside
+the run the last `commit_run` of its group committed: checked, at the
+`assert(s < g.run_to@)` in the skip branch
+([#933](https://github.com/chainguard-project-theseus/challoc/issues/933)).
+That this `commit_run` made the run read-write is the premise below.
+The unit test `runs_tile_every_group` (`class/tests.rs`) checks the
+tiling at run time too. Each read-write commit of a class region stays in the
 region and spares every guard slab, except a guard slab whose marker the
 same path installed (`theorem_slab_commit_avoids_guards`, through the
 commit wrapper's `requires`; see `verus/RESULTS.md`), so no guard slab
 is made read-write by a commit. That a slab handed out without a commit
 is read-write rests on the earlier run's `mprotect` having succeeded
-(the cursor passes a run start only then) and on the `thp` mode, which
-`SlabTable::runs` reads, being fixed after init: premises, as the
-kernel's protections are not modelled. The slabs a run commits ahead of
+(the cursor passes a run start only then): a premise, as the kernel's
+protections are not modelled. The `thp` mode `SlabTable::runs` reads is
+the table's own field, fixed at `new`. The slabs a run commits ahead of
 the cursor are read-write before they are handed out
 (`docs/hardening.md`); they are not guard slabs, so this theorem does
 not cover them.

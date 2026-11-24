@@ -116,6 +116,7 @@ pub(super) proof fn lemma_walk_frame(cs: &ClassState, g0: Inner, g1: Inner)
         g1.stats == g0.stats,
         g1.group_next == g0.group_next,
         g1.group_end == g0.group_end,
+        g1.run_to == g0.run_to,
         g1.states == g0.states,
         g1.committed == g0.committed,
         g1.dirty == g0.dirty,
@@ -158,6 +159,7 @@ impl ClassState {
             final(g).stats == old(g).stats,
             final(g).group_next == old(g).group_next,
             final(g).group_end == old(g).group_end,
+            final(g).run_to == old(g).run_to,
             final(g).committed == old(g).committed,
             final(g).dirty == old(g).dirty,
             final(g).arena == old(g).arena,
@@ -205,6 +207,7 @@ impl ClassState {
             final(g).stats == old(g).stats,
             final(g).group_next == old(g).group_next,
             final(g).group_end == old(g).group_end,
+            final(g).run_to == old(g).run_to,
             final(g).committed == old(g).committed,
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
@@ -436,6 +439,7 @@ impl ClassState {
             final(g).dirty == old(g).dirty,
             final(g).group_next == old(g).group_next,
             final(g).group_end == old(g).group_end,
+            final(g).run_to == old(g).run_to,
             final(g).stats == old(g).stats,
             final(g).zeros == old(g).zeros,
     {
@@ -476,6 +480,7 @@ impl ClassState {
             final(g).committed == old(g).committed,
             final(g).group_next == old(g).group_next,
             final(g).group_end == old(g).group_end,
+            final(g).run_to == old(g).run_to,
     {
         let t = self.table();
         let v0 = t.page_view();
