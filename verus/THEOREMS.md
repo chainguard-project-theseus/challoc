@@ -2562,9 +2562,13 @@ divides by zero. Nothing about `xorshift`'s output is used.
 **Where it applies.** `ClassState::claim_random_zero` (`class/mod.rs`) is the
 only caller outside tests: with `slot_randomize`, `Heap::claim`
 (`heap/flush.rs`) calls it for every refill and run rebuild, and it
-shuffles `out[..n]` right after `claim_with` writes the batch. Inside
-it, a verified assertion states `permutes(out[..n], mid[..n])`: the
-batch handed out is the batch `claim_with` claimed, reordered. The slot
+shuffles `out[..n]` right after `claim_with` writes the batch. Its
+tracked out argument `pre` names that batch and the state the shuffle
+started from (`pre@ == (mid, st)`), and it ensures the batch handed out
+below `n` is `fisher_yates(mid[..n], draws(n, st), n)`, so
+`permutes(out[..n], mid[..n])`: the batch `claim_with` claimed,
+reordered by the draws from `st` and nothing else. `Heap::claim` passes
+`pre` on to its callers (below). The slot
 tokens (theorem 5) and zero tokens (theorem 6) of each entry move with
 it, so `claim_random_zero` ensures the same token postconditions as
 `claim_tokens`. That the batch has no duplicates in the first place
@@ -2611,6 +2615,7 @@ pub(super) fn rng(&mut self) -> (r: &mut u64)   // heap/flush.rs
     ensures
         // ... only `rng` changes ...
         *r != 0,
+        old(self).rng != 0 ==> *r == old(self).rng,
 
 // The start-word draws between `Heap::rng` and the shuffle (#749).
 pub open spec fn xorshift_iter(k: nat, st: u64) -> u64   // k xorshift steps
@@ -2626,11 +2631,39 @@ fn claim_with(&self, .., rng: Option<&mut u64>, ..) -> (r: (Claim, ..))   // Cla
     ensures
         rng matches Some(g) ==> *final(g) != 0,
         rng matches Some(g) ==> exists|k: nat| *final(g) == xorshift_iter(k, *g),
-pub fn claim_random_zero(&self, .., rng: &mut u64, ..) -> (r: (Claim, ..))   // ClassState
+pub fn claim_random_zero(&self, .., rng: &mut u64, ..,
+    Tracked(pre): Tracked<&mut Ghost<(Seq<*mut u8>, u64)>>, ..) -> (r: (Claim, ..))   // ClassState
     requires
         *old(rng) != 0,
     ensures
         *final(rng) != 0,
+        // The pre-shuffle batch `pre@.0` and the shuffle's starting state `pre@.1`
+        // (n is r.0.n; `s[..n]` abbreviates `s.subrange(0, n)`).
+        final(pre)@.0.len() == old(out)@.len(),
+        slots_in(final(pre)@.0, self.spec_class() as int, 0, n),
+        final(out)@[..n] == fisher_yates(final(pre)@.0[..n], draws(n, final(pre)@.1), n),
+        permutes(final(out)@[..n], final(pre)@.0[..n]),
+        final(out)@.subrange(n, old(out)@.len()) == final(pre)@.0.subrange(n, old(out)@.len()),
+        final(pre)@.1 != 0,
+        exists|k: nat| final(pre)@.1 == xorshift_iter(k, *old(rng)),
+        *final(rng) == draws_state(n, final(pre)@.1),
+
+pub(super) fn claim(&mut self, shared: &Shared, .., out: &mut [*mut u8], ..,
+    Tracked(pre): Tracked<&mut Ghost<(Seq<*mut u8>, u64)>>, ..) -> (r: (Claim, ..))   // Heap, heap/flush.rs
+    ensures
+        // ... the claim's token postconditions, as before ...
+        final(pre)@.0.len() == old(out)@.len(),
+        slots_in(final(pre)@.0, cs.spec_class() as int, 0, n),
+        permutes(final(out)@[..n], final(pre)@.0[..n]),
+        final(out)@.subrange(n, old(out)@.len()) == final(pre)@.0.subrange(n, old(out)@.len()),
+        shared.config.slot_randomize ==> final(out)@[..n] == fisher_yates(final(pre)@.0[..n], draws(n, final(pre)@.1), n)
+            && final(pre)@.1 != 0 && final(self).rng == draws_state(n, final(pre)@.1)
+            && (old(self).rng != 0 ==> exists|k: nat| final(pre)@.1 == xorshift_iter(k, old(self).rng)),
+        !shared.config.slot_randomize ==> final(out)@ == final(pre)@.0 && final(self).rng == old(self).rng,
+
+fn slot_randomize(shared: &Shared) -> (r: bool)   // heap/flush.rs
+    ensures
+        r == shared.config.slot_randomize,
 ```
 
 The order a shuffle hands out is a function of the batch and the
@@ -2663,7 +2696,13 @@ non-zero state and ensures one, so the shuffle starts from a non-zero
 state (through the draws, the non-zero conjunct of `claim_with`'s and
 `finish`'s loop invariants, kept by `theorem_xorshift_nonzero` at each
 draw; through the shuffle, `lemma_draws_state_nonzero`). Nothing else touches
-the state.
+the state: `Heap::rng` ensures it hands out a seeded state unchanged, and
+`Heap::claim` ensures that, when the heap's state was seeded before the
+call, the shuffle's starting state (`pre@.1`) is some number of
+`xorshift` steps from it. A state `Heap::rng` seeds in the call (from
+`seed`, which claims nothing about its value) has no name in the
+contract, so for a heap's first randomized refill only `pre@.1 != 0` is
+stated.
 
 **Proof.** The loop names its iterator (`for i in it: (1..len).rev()`)
 so the invariant can say how many entries remain, `k = n - it.index()`:
@@ -2702,6 +2741,12 @@ lender).
 | N2 | an empty pass sets the state to 0 | rejected: the scan loop's invariant (`*g != 0`) at the `continue` |
 | N3 | `claim_random_zero` drops `*old(rng) != 0` | rejected: `claim_with`'s precondition |
 | N4 | `claim_random_zero` passes `None` to `claim_with` (no random start words) | accepted: the contracts say how many draws a randomized claim makes, not that `claim_random_zero` asks for one; the start word changes which slots are claimed, which no contract states |
+| N5 | `claim_random_zero` names the shuffled batch as `pre@.0` | rejected: its `fisher_yates` postcondition |
+| N6 | `claim_random_zero` names the caller's `rng` as `pre@.1` | rejected: its `fisher_yates` and `draws_state` postconditions |
+| N7 | `Heap::claim` seeds the heap's `rng` without `slot_randomize` (`self.rng()` before `claim_tokens`) | rejected (`heap::flush`): its `!slot_randomize ==> rng unchanged` postcondition |
+| N8 | `Heap::claim` hands its caller the shuffled batch as `pre@.0` under `slot_randomize` | rejected (`heap::flush`): its `slot_randomize ==> fisher_yates` postcondition |
+| N9 | `Heap::claim` writes a fixed non-zero constant to the state between `self.rng()` and `claim_random_zero` | rejected (`heap::flush`): its `old(self).rng != 0 ==> xorshift_iter` postcondition |
+| N10 | `Heap::rng` reseeds on every call (`if self.rng == 0 \|\| true`) | rejected (`heap::flush`): its `old(self).rng != 0 ==> *r == old(self).rng` postcondition |
 
 **Scope.**
 - Randomness is out of scope: nothing is claimed about the distribution
@@ -2725,12 +2770,15 @@ lender).
   claims and frees, so the batch is not a function of the state alone.
 
 **Where the statement is weaker than the code.**
-- `permutes` is stated on `shuffle_zero`'s argument and, inside
-  `claim_random_zero`, on the claimed batch; no entry point's `ensures`
-  says the batch was shuffled from `claim_with`'s output, because the
-  pre-shuffle batch has no name outside the function (no ghost return
-  value carries it). Callers see only the
-  token postconditions, which say nothing about order.
+- The pre-shuffle batch is named up to `Heap::claim` (its tracked `pre`
+  argument, #924), not further: its two callers (`Heap::refill` in
+  `heap/flush.rs` and `Heap::rebuild_run` in `heap/compact.rs`)
+  pass a scratch `pre` and use only the token postconditions, so no
+  entry point's `ensures` says anything about the order of the slots a
+  cache hands out.
+- On a heap's first randomized refill `Heap::rng` seeds the state in the
+  call, and `Heap::claim` states only that the shuffle's state is
+  non-zero; the seed's value is unconstrained (`seed`, above).
 - The flush's grouping (`flush::group_by_slab`, verified to permute the
   batch) is a different reordering, not covered here.
 

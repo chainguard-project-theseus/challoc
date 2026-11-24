@@ -596,7 +596,8 @@ impl Heap {
             proof {
                 shared.lemma_published_tables(*ow@, *oa);
             }
-            let (claim, Tracked(mut ztok)) = self.claim(shared, oa.class(class), out, Tracked(&mut toks), ow, Tracked(&mut *ord));
+            let tracked mut pre: Ghost<(Seq<*mut u8>, u64)> = Ghost(arbitrary());
+            let (claim, Tracked(mut ztok)) = self.claim(shared, oa.class(class), out, Tracked(&mut toks), Tracked(&mut pre), ow, Tracked(&mut *ord));
             let ghost claimed = out@;
             let n = claim.n;
             if n == 0 {
