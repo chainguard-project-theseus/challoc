@@ -28,7 +28,7 @@
 //! paths only; the limit walk is repeated at most once per
 //! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
-use crate::sync::patomic::PAtomicU8;
+use crate::sync::patomic::{PAtomicU8, PAtomicU64, PermissionU64};
 use crate::vspec::byte::BytePerm;
 #[cfg(verus_keep_ghost)]
 use crate::vspec::byte::byte_id;
@@ -38,6 +38,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use vstd::cell::CellId;
 use vstd::cell::pcell::{PCell, PointsTo as PCellPerm};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
+use vstd::resource::Loc;
+use vstd::resource::set::{GhostPersistentSingleton, GhostPersistentSubset, GhostSetAuth};
 
 #[cfg(verus_keep_ghost)]
 use super::{after_line, find_byte, lemma_line_step, line_len, opt_view, parse_decimal_spec};
@@ -1043,8 +1045,10 @@ pub struct Cgroup {
     level_current: [AtomicU64; LEVELS],
     /// The last `memory.current` read failed: `current` is older.
     current_stale: AtomicBool,
-    /// Coarse-clock time of the last sample and of the last limit walk.
-    sampled_at: AtomicU64,
+    /// Coarse-clock time of the last sample, whose permission is in
+    /// `clock_inv` ([`ClockPred`]: it never goes back), and of the last
+    /// limit walk.
+    sampled_at: PAtomicU64,
     limits_at: AtomicU64,
     /// Last `memory.events` counters read (all five, [`Events`]), and how
     /// many samples saw `high` and `max` rise (what the policy acts on: a
@@ -1057,7 +1061,47 @@ pub struct Cgroup {
     events_oom_kill: AtomicU64,
     high_rises: AtomicU64,
     max_rises: AtomicU64,
+    /// Ghost (no bytes): the sample clock's invariant ([`ClockPred`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    clock_inv: Tracked<ClockInv>,
 }
+
+/// Namespace of the sample clock's invariant ([`ClockPred`]).
+pub open spec fn clock_ns() -> int {
+    0x636c_6f63
+}
+
+/// What the sample clock's invariant holds: `sampled_at`'s permission, the
+/// authority over the set of the times it has held, and a persistent copy
+/// of that set, from which [`Cgroup::clock_seen`] splits a witness.
+pub type ClockVal = (PermissionU64, GhostSetAuth<u64>, GhostPersistentSubset<u64>);
+
+/// The sample clock's invariant, keyed by `sampled_at`'s identity and the
+/// set's location: the clock holds a time it has held, and every time it
+/// has held is at most the one it holds. So it never goes back: a write
+/// of a time below one in the set would break the second conjunct, and
+/// nothing leaves the set ([`Cgroup::sample`], the one writer, only
+/// inserts).
+pub struct ClockPred;
+
+impl InvariantPredicate<(int, Loc), ClockVal> for ClockPred {
+    open spec fn inv(k: (int, Loc), v: ClockVal) -> bool {
+        &&& v.0.id() == k.0
+        &&& v.1.id() == k.1
+        &&& v.2.id() == k.1
+        &&& v.2@ == v.1@
+        &&& v.1@.contains(v.0.value())
+        &&& forall|t: u64| #[trigger] v.1@.contains(t) ==> t <= v.0.value()
+    }
+}
+
+/// The invariant of the sample clock.
+pub type ClockInv = AtomicInvariant<(int, Loc), ClockVal, ClockPred>;
+
+/// A time the sample clock has held, from [`Cgroup::clock_seen`]: every
+/// later read of the clock is at least this ([`Cgroup::clock_after`]).
+#[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+pub type ClockSeen = GhostPersistentSingleton<u64>;
 
 /// The buffers a discovery scans `/proc/self/cgroup` and
 /// `/proc/self/mountinfo` through, and the mount point it copies out:
@@ -1106,7 +1150,11 @@ fn discovery_scratch(Tracked(won): Tracked<&CellPerm>) -> &'static mut Scratch {
 /// record is about 2.4 KiB; through a value it went by the stack of the
 /// thread that discovers). Trusted: the bytes are the constructor's, an
 /// all-zero record with the state and the `UNLIMITED` limits stored (the
-/// test `untracked_in_place_is_untracked` compares the fields).
+/// test `untracked_in_place_is_untracked` compares the fields). The
+/// record's ghost part, which has no bytes, is taken to be the
+/// constructor's too: the sample clock's invariant ([`ClockPred`]) over a
+/// clock at 0 with the set of times `{0}`, which the zeroed `sampled_at`
+/// meets.
 #[verifier::external_body]
 #[inline(never)]
 pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
@@ -1134,7 +1182,15 @@ impl Cgroup {
     /// the mount is a prefix of it.
     #[verifier::type_invariant]
     spec fn wf(&self) -> bool {
-        self.dir_len as int + FILE_ROOM <= PATH_CAP && self.mount_len <= self.dir_len
+        &&& self.dir_len as int + FILE_ROOM <= PATH_CAP && self.mount_len <= self.dir_len
+        &&& self.clock_inv@.constant().0 == self.sampled_at.id()
+        &&& self.clock_inv@.namespace() == clock_ns()
+    }
+
+    /// The location of the sample clock's set of times ([`ClockPred`]),
+    /// which every [`ClockSeen`] of this record names.
+    pub closed spec fn clock_loc(&self) -> Loc {
+        self.clock_inv@.constant().1
     }
 
     /// The lengths of the directory and of the mount within it.
@@ -1147,6 +1203,12 @@ impl Cgroup {
         ensures
             r.layout() == (0nat, 0nat),
     {
+        // The clock at 0, with its invariant: the set of times held is
+        // {0}.
+        let (sampled_at, Tracked(perm)) = PAtomicU64::new(0);
+        let tracked (auth, sub) = GhostSetAuth::<u64>::new(set![0u64]);
+        let tracked all = sub.persist();
+        let tracked clock_inv = ClockInv::new((sampled_at.id(), auth.id()), (perm, auth, all), clock_ns());
         Cgroup {
             dir: [0; PATH_CAP],
             dir_len: 0,
@@ -1198,7 +1260,7 @@ impl Cgroup {
                 AtomicU64::new(0),
             ],
             current_stale: AtomicBool::new(false),
-            sampled_at: AtomicU64::new(0),
+            sampled_at,
             limits_at: AtomicU64::new(0),
             events_low: AtomicU64::new(0),
             events_high: AtomicU64::new(0),
@@ -1207,6 +1269,7 @@ impl Cgroup {
             events_oom_kill: AtomicU64::new(0),
             high_rises: AtomicU64::new(0),
             max_rises: AtomicU64::new(0),
+            clock_inv: Tracked(clock_inv),
         }
     }
 
@@ -1332,7 +1395,57 @@ impl Cgroup {
     /// Coarse time of the last `memory.current` sample (0 before the first).
     #[cfg(test)]
     pub fn sampled_at(&self) -> u64 {
-        self.sampled_at.load(Ordering::Relaxed)
+        let t;
+        vstd::open_atomic_invariant!(self.clock_inv.borrow() => v => {
+            t = self.sampled_at.load(Tracked(&v.0));
+        });
+        t
+    }
+
+    /// The time the sample clock holds, and a witness that it held it
+    /// ([`ClockSeen`]).
+    #[cfg(verus_keep_ghost)]
+    pub fn clock_seen(&self) -> (r: (u64, Tracked<ClockSeen>))
+        ensures
+            r.1@.id() == self.clock_loc(),
+            r.1@@ == r.0,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let t;
+        let tracked mut d = GhostPersistentSubset::<u64>::dummy();
+        vstd::open_atomic_invariant!(self.clock_inv.borrow() => v => {
+            t = self.sampled_at.load(Tracked(&v.0));
+            proof {
+                d = v.2.duplicate();
+            }
+        });
+        let tracked w = d.split_singleton(t);
+        (t, Tracked(w))
+    }
+
+    /// The time the sample clock holds: at least any time it held before
+    /// (`w`, from [`Cgroup::clock_seen`] on this record), on this thread
+    /// or any other, whatever ran in between.
+    #[cfg(verus_keep_ghost)]
+    pub fn clock_after(&self, Tracked(w): Tracked<&ClockSeen>) -> (r: u64)
+        requires
+            w.id() == self.clock_loc(),
+        ensures
+            w@ <= r,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let t;
+        vstd::open_atomic_invariant!(self.clock_inv.borrow() => v => {
+            t = self.sampled_at.load(Tracked(&v.0));
+            proof {
+                w.agree(&v.1);
+            }
+        });
+        t
     }
 
     /// A tracked cgroup at `mount` joined with `path`, every file present,
@@ -2147,14 +2260,14 @@ mod linux {
                 old(self).layout() == (0nat, 0nat),
         {
             let cg = self;
+            proof {
+                use_type_invariant(&*cg);
+            }
             if !enabled {
                 cg.state = State::Disabled;
                 return;
             }
             cg.state = State::NoUnifiedPath;
-            proof {
-                use_type_invariant(&*cg);
-            }
             let scan = &mut scratch.cgroup_scan;
             let Ok(fd) = sys::open(&PROC_SELF_CGROUP, O_RDONLY) else {
                 return;
@@ -2310,26 +2423,64 @@ mod linux {
         /// A `now` older than the last sample (read before another thread
         /// sampled) is not due, so the window only moves forward. `true`
         /// when this call read the files. Slow paths only.
+        ///
+        /// The one writer of `sampled_at`, inside its invariant
+        /// ([`ClockPred`]): the exchange stores `now` only over `last`,
+        /// and `now` is past `last` (the interval is positive), so past
+        /// every time the clock has held; `now` joins the set. vstd's
+        /// load and exchange are `SeqCst`.
         pub fn sample(&self, now: u64) -> bool
             requires
                 crate::sys::may_syscall(),
         {
+            proof {
+                use_type_invariant(self);
+            }
             if !self.tracked() {
                 return false;
             }
-            let last = self.sampled_at.load(Ordering::Relaxed);
+            let last;
+            vstd::open_atomic_invariant!(self.clock_inv.borrow() => v => {
+                last = self.sampled_at.load(Tracked(&v.0));
+            });
             if now.saturating_sub(last) < SAMPLE_INTERVAL_NS {
                 return false;
             }
-            if self
-                .sampled_at
-                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
-            {
+            let won;
+            vstd::open_atomic_invariant!(self.clock_inv.borrow() => v => {
+                let tracked (mut perm, mut auth, mut all) = v;
+                won = self.sampled_at.compare_exchange(Tracked(&mut perm), last, now);
+                proof {
+                    if won is Ok {
+                        assert(now > last);
+                        let tracked s = auth.insert(now);
+                        all.combine_points_to(s.persist());
+                    }
+                    v = (perm, auth, all);
+                }
+            });
+            if won.is_err() {
                 return false;
             }
             self.sample_now(now);
             true
+        }
+
+        /// The cgroup sample clock never goes back: a read of `sampled_at`
+        /// after a sample is at least the time read before it, whatever
+        /// `now` the sample was given and whatever other threads' samples
+        /// ran in between. It rests on the clock's invariant
+        /// ([`ClockPred`]), which every write to `sampled_at` keeps
+        /// ([`Cgroup::sample`] is the one), not on this thread's order.
+        #[cfg(verus_keep_ghost)]
+        fn theorem_sample_clock_monotone(&self, now: u64)
+            requires
+                crate::sys::may_syscall(),
+        {
+            let (before, Tracked(seen)) = self.clock_seen();
+            let _ = self.sample(now);
+            let after = self.clock_after(Tracked(&seen));
+            assert(before <= after);
         }
     }
 
@@ -2349,6 +2500,7 @@ mod kani_in_place {
     use super::{Cgroup, FILE_ROOM, PATH_CAP, State, UNLIMITED, untracked_in_place};
     use core::mem::{MaybeUninit, size_of};
     use core::sync::atomic::Ordering::Relaxed;
+    use vstd::prelude::Tracked;
 
     /// `untracked_in_place`, `ensures final(slot).mem_contents().is_init()`,
     /// `final(slot).mem_contents().value().layout() == (0, 0)`: for every
@@ -2359,7 +2511,8 @@ mod kani_in_place {
     /// `mount_len` (`layout()`) are 0, and so the type invariant `wf`
     /// holds (`dir_len + FILE_ROOM <= PATH_CAP`, `mount_len <= dir_len`).
     /// Beyond the contract: the state is the one passed, and `limit`,
-    /// `high` and every level's limit are `UNLIMITED`, as
+    /// `high` and every level's limit are `UNLIMITED`, and `sampled_at`
+    /// is 0 (the clock the ghost invariant the doc names is over), as
     /// `Cgroup::untracked` has them.
     #[kani::proof]
     #[kani::unwind(17)]
@@ -2396,6 +2549,7 @@ mod kani_in_place {
         let l: usize = kani::any();
         kani::assume(l < c.level_limit.len());
         assert_eq!(c.level_limit[l].load(Relaxed), UNLIMITED);
+        assert_eq!(c.sampled_at.load(Tracked::assume_new()), 0);
     }
 }
 

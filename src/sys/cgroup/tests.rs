@@ -32,7 +32,7 @@ fn untracked_in_place_is_untracked() {
                 c.high.load(r),
                 c.current.load(r),
                 c.current_stale.load(r) as u64,
-                c.sampled_at.load(r),
+                c.sampled_at(),
                 c.limits_at.load(r),
                 c.events_low.load(r),
                 c.events_high.load(r),

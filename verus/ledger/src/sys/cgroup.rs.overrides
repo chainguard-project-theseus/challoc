@@ -10,5 +10,8 @@ discovery_scratch	allocator invariant	Kani	trusted (partly checked, Kani: sys::c
 # `Cgroup`, then the state and the UNLIMITED stores. The harness runs the
 # body on a slot of arbitrary bytes and checks its writes, the value's
 # validity and the `ensures` (the test `untracked_in_place_is_untracked`
-# compares the fields with `Cgroup::untracked`'s).
-untracked_in_place	raw pointer (internal)	Kani	discharged (Kani: sys::cgroup::kani_in_place::untracked_in_place_is_untracked)	contract 2432176480, body 2334025224
+# compares the fields with `Cgroup::untracked`'s). The record's ghost
+# clock invariant (`ClockPred` over the zeroed `sampled_at`, the set
+# `{0}`) comes with the record and has no bytes; the harness checks the
+# clock is 0, not the invariant's identities.
+untracked_in_place	raw pointer (internal)	Kani	trusted (partly checked, Kani: sys::cgroup::kani_in_place::untracked_in_place_is_untracked; not checked: the record's ghost clock invariant, `ClockPred` with the set `{0}` over the zeroed `sampled_at`, whose identities a check of bytes cannot see)	contract 2432176480, body 2334025224
