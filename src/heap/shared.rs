@@ -2391,6 +2391,45 @@ impl Shared {
                     assert(once::holds(steps0, s));
                 }
             }
+            // Design 11: discovery waits for the first tick `DEFER_NS` into
+            // the process's life (or the first read of the figures), so a
+            // short-lived process never reads the files; `thp:always` needs
+            // the limit now, and `cgroup:false` reads nothing either way.
+            // Before the tables, which keep the class mode of the final
+            // `thp` decision (`SlabTable::new`'s `thp_off`).
+            let cgroup = Shared::put_cgroup(
+                this,
+                if config.cgroup && config.thp == crate::config::Thp::Always {
+                    Deferred::now(Cgroup::discover(true))
+                } else if config.cgroup {
+                    Deferred::later(crate::sys::now_coarse_ns())
+                } else {
+                    Deferred::now(Cgroup::discover(false))
+                },
+                Tracked(&mut parts.cgroup),
+            );
+            // Design 11: under an effective limit below 1 GiB a configured
+            // `thp:always` is forced to `never` in the stored configuration
+            // (`auto` is left alone; the report says so); the policy's
+            // `high` baseline is the count at init. A deferred discovery
+            // leaves no limit, no rises and the `Unlimited` band for now.
+            let cgroup = cgroup.get();
+            let limit = match cgroup {
+                Some(c) => c.limit().min(c.high()),
+                None => crate::sys::cgroup::UNLIMITED,
+            };
+            let rises = match cgroup {
+                Some(c) => c.rises().0,
+                None => 0,
+            };
+            let band = match cgroup {
+                Some(c) => crate::policy::cgroup_band(c),
+                None => crate::policy::Band::Unlimited,
+            };
+            let thp_forced = crate::thp::forced_by_limit(config.thp, limit);
+            if thp_forced {
+                config.thp = crate::config::Thp::Never;
+            }
             for c in 0..NCLASSES
                 invariant
                     crate::sys::may_abort(),
@@ -2409,6 +2448,7 @@ impl Shared {
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval, Tracked(classes)),
+                    thp_forced,
                     Tracked(words_once),
                     Tracked(&mut ord),
                     Tracked(classes),
@@ -2530,43 +2570,6 @@ impl Shared {
                 Tracked(&mut parts.arenas),
                 Tracked(&mut parts.tcaches),
             );
-            // Design 11: discovery waits for the first tick `DEFER_NS` into
-            // the process's life (or the first read of the figures), so a
-            // short-lived process never reads the files; `thp:always` needs
-            // the limit now, and `cgroup:false` reads nothing either way.
-            let cgroup = Shared::put_cgroup(
-                this,
-                if config.cgroup && config.thp == crate::config::Thp::Always {
-                    Deferred::now(Cgroup::discover(true))
-                } else if config.cgroup {
-                    Deferred::later(crate::sys::now_coarse_ns())
-                } else {
-                    Deferred::now(Cgroup::discover(false))
-                },
-                Tracked(&mut parts.cgroup),
-            );
-            // Design 11: under an effective limit below 1 GiB a configured
-            // `thp:always` is forced to `never` in the stored configuration
-            // (`auto` is left alone; the report says so); the policy's
-            // `high` baseline is the count at init. A deferred discovery
-            // leaves no limit, no rises and the `Unlimited` band for now.
-            let cgroup = cgroup.get();
-            let limit = match cgroup {
-                Some(c) => c.limit().min(c.high()),
-                None => crate::sys::cgroup::UNLIMITED,
-            };
-            let rises = match cgroup {
-                Some(c) => c.rises().0,
-                None => 0,
-            };
-            let band = match cgroup {
-                Some(c) => crate::policy::cgroup_band(c),
-                None => crate::policy::Band::Unlimited,
-            };
-            let thp_forced = crate::thp::forced_by_limit(config.thp, limit);
-            if thp_forced {
-                config.thp = crate::config::Thp::Never;
-            }
             let policy = Shared::put_policy(
                 this,
                 crate::policy::Policy::new(rises, thp_forced),

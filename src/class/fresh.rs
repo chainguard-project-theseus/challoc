@@ -327,16 +327,37 @@ impl ClassState {
                 }
             }
             let s = g.group_next;
+            let ghost gs0 = *g;
             let usable = if table.starts_run(s) {
-                table.commit_run(s, g.group_end, Tracked(ord))?
+                let tracked mut run_to = Ghost(0usize);
+                let u = table.commit_run(s, g.group_end, Tracked(&mut run_to), Tracked(ord))?;
+                proof {
+                    g.run_to@ = run_to@;
+                    assert forall|x: nat| #[trigger] g.slab_ok(x) by {
+                        assert(gs0.slab_ok(x));
+                    }
+                }
+                u
             } else {
                 // `s` starts no run (so it is no guard slab): it was
-                // committed with the run of an earlier slab of its group.
+                // committed with the run of an earlier slab of its group,
+                // which ends past it (`Inner::run_covers`).
+                proof {
+                    table.lemma_starts(s);
+                    assert(s < g.run_to@);
+                }
                 true
             };
             let ghost g1 = *g;
             g.group_next = s + 1;
             proof {
+                // The cursor's new slab, if it starts no run, is still
+                // inside the run that ends at `run_to`: that end is past
+                // `s` and is the group's end or a run start, which `s + 1`
+                // is not.
+                table.lemma_starts((s + 1) as usize);
+                table.lemma_starts(g.run_to@);
+                assert(g.run_covers());
                 let t = self.spec_table();
                 let (lg, gs) = (t.lg_group, s >> t.lg_group);
                 assert(g1.slab_ok(s as nat));
@@ -515,6 +536,17 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
             }
         }
         reveal(whole_groups);
+    }
+    // The cursor is at the group's first slab, a run start.
+    assert(g1.run_covers()) by {
+        let t = g1.table@;
+        let lg = t.lg_group;
+        lemma_lg_group(t);
+        assert(start == (start >> lg) << lg);
+        assert(start == (start >> lg) << lg ==> start & sub(1usize << lg, 1) == 0) by (bit_vector)
+            requires lg < 64;
+        assert(t.spec_run_start(start));
+        t.lemma_starts(start);
     }
     assert(g1.base());
     assert forall|x: nat| #[trigger] g1.slab_ok(x) by {

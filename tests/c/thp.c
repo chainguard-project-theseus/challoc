@@ -253,6 +253,12 @@ int main(int argc, char **argv)
               "thp: line does not name the host's global mode `%s`", global);
     }
 
+    /* Under `make test-cgroup-limit` (CHALLOC_EXPECT_CGROUP_LIMIT, 512 MiB)
+     * a limit under 1 GiB must force never (design 11), so the never
+     * checks below run on the tables `Shared::init` built (#933). */
+    const char *want_limit = getenv("CHALLOC_EXPECT_CGROUP_LIMIT");
+    if (want_limit && strtoull(want_limit, NULL, 10) < (1ull << 30) && strcmp(mode, "never") != 0)
+        CHECK(strcmp(opt, "never") == 0, "opt.thp `%s` under a %s-byte cgroup limit (not forced to never)", opt, want_limit);
     if (strcmp(mode, "never") != 0 && strcmp(opt, "never") == 0) {
         printf("thp %s: forced to never by a cgroup limit under 1 GiB; only the never checks apply\n", mode);
         mode = "never";

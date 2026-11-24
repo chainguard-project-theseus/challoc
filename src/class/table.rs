@@ -371,7 +371,14 @@ pub struct SlabTable {
     /// `log2(slabs_per_page)`: the guard test on the sized fast path is a
     /// shift, an add and a mask (`is_guard_slab`).
     pub(super) lg_slabs_per_page: u8,
-    pub(super) _pad: [u8; 2],
+    /// What this class's commit path does under the process's `thp`
+    /// decision (`thp::class_mode` of the slab size), fixed by `new` from
+    /// the final decision: `Off` when `Shared::init` forces `never`
+    /// (design 11), which `thp::force_never` stores only after the
+    /// tables exist. Read by [`runs`](SlabTable::runs), `take_group` and
+    /// `commit_slab`, so every commit of the table takes one path.
+    pub(super) thp: crate::thp::Mode,
+    pub(super) _pad: [u8; 1],
     /// `guard_interval - 1`: every `guard_interval`-th page group is a
     /// guard group and the interval is a power of two, so `(group + 1) &
     /// guard_mask == 0` is the test. With guards off the mask is all ones
@@ -1214,9 +1221,10 @@ fn commit(addr: usize, len: usize, Ghost(c): Ghost<int>, Ghost(chunk): Ghost<boo
 /// Trusted: `mprotect` keeps a guard marker (`MADV_GUARD_INSTALL`), and
 /// nothing removes a class guard's marker. Not claimed: commits of a
 /// `Mode::Chunks` class, which places no guards and commits its guard
-/// slabs read-write; that a class's `thp` mode is fixed before its first
-/// commit (`thp::class_mode`), so such a class never placed a guard, is
-/// read from the code.
+/// slabs read-write. A class's `thp` mode is its table's `thp` field,
+/// which `SlabTable::new` fixes before the first commit, so such a class
+/// never placed a guard; the `commit` wrapper's contract does not carry
+/// the field, so that step is read from the code.
 proof fn theorem_slab_commit_avoids_guards(addr: usize, len: usize, c: int, chunk: bool, r: Result<(), Errno>, g: int)
     requires
         crate::heap::regions_ok(),
@@ -1989,6 +1997,12 @@ impl SlabTable {
         self.slabs_per_page as usize
     }
 
+    /// Whether the table commits runs ([`runs`](SlabTable::runs)): a
+    /// function of fields `new` fixed, so one value per table.
+    pub(super) closed spec fn spec_runs(&self) -> bool {
+        self.slabs_per_page == 1 && self.thp != crate::thp::Mode::Chunks
+    }
+
     /// Whether `slab` is a guard slab ([`is_guard_slab`]).
     ///
     /// [`is_guard_slab`]: SlabTable::is_guard_slab
@@ -2007,6 +2021,21 @@ impl SlabTable {
         ||| (s & sub(self.spec_run_slabs(), 1) == 0 && !self.spec_is_guard(sub(s, 1)))
     }
 
+    /// [`spec_run_start`](SlabTable::spec_run_start), closed: what the
+    /// class state's invariant names (`Inner::run_covers`), so its bit
+    /// arithmetic stays out of every proof that unfolds the invariant;
+    /// [`lemma_starts`](SlabTable::lemma_starts) opens it.
+    pub(super) closed spec fn spec_starts(&self, s: usize) -> bool {
+        self.spec_run_start(s)
+    }
+
+    /// [`spec_starts`](SlabTable::spec_starts) is `spec_run_start`.
+    pub(super) proof fn lemma_starts(&self, s: usize)
+        ensures
+            self.spec_starts(s) == self.spec_run_start(s),
+    {
+    }
+
     /// The slabs a run holds at most ([`run_slabs`](SlabTable::run_slabs)).
     pub closed spec fn spec_run_slabs(&self) -> usize {
         let r = RUN_BYTES >> class_table()[self.class as int].lg_slab;
@@ -2021,7 +2050,11 @@ impl SlabTable {
     /// scales by a power of two), so that the sized fast path's test is a
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
-    /// guard (design 5). `ord` is the caller's lock-order token,
+    /// guard (design 5). `thp_off` is the cgroup's forcing of `never`
+    /// (`thp::forced_by_limit`), which `thp::force_never` stores only
+    /// after `Shared::init`: the table keeps `Off` then, and otherwise
+    /// the stored decision's mode for its slab size (its `thp` field).
+    /// `ord` is the caller's lock-order token,
     /// which the reservations take for the metadata lock. `words_once` is
     /// the one-shot token (ghost, `vspec::once`) of the step that makes the
     /// class's bitmap words' permissions ([`axiom_fresh_words`]). The table
@@ -2039,11 +2072,13 @@ impl SlabTable {
     /// [`Meta::is_process`]), which is what the type invariant and the
     /// tables' claims ([`lazy_ok`]) need.
     #[verifier::spinoff_prover]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         meta: &Meta,
         regions: &Regions,
         class: usize,
         guard_interval: u32,
+        thp_off: bool,
         Tracked(words_once): Tracked<Once>,
         Tracked(ord): Tracked<&mut LockOrder>,
         Tracked(classes): Tracked<&'static PointsTo<[Class; NCLASSES]>>,
@@ -2376,7 +2411,12 @@ impl SlabTable {
             class: class as u16,
             lg_group: crate::layout::trailing_zeros(group) as u8,
             lg_slabs_per_page: crate::layout::trailing_zeros(slabs_per_page) as u8,
-            _pad: [0; 2],
+            thp: if thp_off {
+                crate::thp::Mode::Off
+            } else {
+                crate::thp::class_mode(cls.slab_size())
+            },
+            _pad: [0; 1],
             guard_mask: guard_interval.wrapping_sub(1),
             lg_page: regions.lg_page,
             desc_stride: stride as u32,
@@ -5519,7 +5559,7 @@ impl SlabTable {
         // arena commits from it fault in as folios of the enabled size.
         // Off, and under `always` (whose PMD chunks `commit_slab` advises),
         // this is a load and a compare.
-        if crate::thp::class_mode(cls.slab_size()) == crate::thp::Mode::Folios {
+        if self.thp == crate::thp::Mode::Folios {
             crate::thp::advise_class(self.slab_addr(s), (end - s) << cls.lg_slab, true);
         }
         proof {
@@ -5815,6 +5855,7 @@ impl SlabTable {
             !r ==> !self.spec_is_guard(s),
             self.spec_run_start(s) ==> r,
             !r ==> self.spec_slabs_per_page() == 1,
+            r == (!self.spec_runs() || self.spec_run_start(s)),
     {
         proof {
             use_type_invariant(self);
@@ -5842,20 +5883,20 @@ impl SlabTable {
     /// Whether this class commits runs: one slab per page group (a page
     /// above the slab is only the tests' faked pages) and not the PMD
     /// chunks of `thp:always`, which [`commit_slab`] commits slab by slab.
-    /// The `thp` mode is fixed before the first allocation (`thp::configure`
-    /// and `thp::force_never` run only during init); a mode that changed
-    /// in the middle of a group would make [`starts_run`] skip slabs no run
-    /// committed.
+    /// Both are fields `new` fixed (the mode is the table's `thp`, from
+    /// the final decision), so every call on one table agrees
+    /// ([`spec_runs`](SlabTable::spec_runs)): [`starts_run`] never skips
+    /// a slab that an earlier call, under another mode, left uncommitted.
     ///
     /// [`commit_slab`]: SlabTable::commit_slab
     /// [`starts_run`]: SlabTable::starts_run
     #[inline]
     pub(super) fn runs(&self) -> (r: bool)
         ensures
+            r == self.spec_runs(),
             r ==> self.spec_slabs_per_page() == 1,
     {
-        self.slabs_per_page == 1
-            && crate::thp::class_mode(self.class().slab_size()) != crate::thp::Mode::Chunks
+        self.slabs_per_page == 1 && self.thp != crate::thp::Mode::Chunks
     }
 
     /// Commit the run that starts at slab `s` ([`starts_run`]) of a group
@@ -5882,7 +5923,7 @@ impl SlabTable {
     ///
     /// [`starts_run`]: SlabTable::starts_run
     /// [`run_slabs`]: SlabTable::run_slabs
-    pub(super) fn commit_run(&self, s: usize, limit: usize, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
+    pub(super) fn commit_run(&self, s: usize, limit: usize, Tracked(run_to): Tracked<&mut Ghost<usize>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<bool>)
         requires
             self.is_process(),
             crate::sys::may_syscall(),
@@ -5891,6 +5932,10 @@ impl SlabTable {
             old(ord).allows(rank_table(0)),
         ensures
             r matches Some(usable) ==> usable == !self.spec_is_guard(s),
+            // The run committed ends at `run_to` ([`run_end`]).
+            r is Some && self.spec_runs() ==> s < final(run_to)@ <= limit
+                && (final(run_to)@ < limit ==> self.spec_run_start(final(run_to)@))
+                && forall|x: usize| s < x < final(run_to)@ ==> !#[trigger] self.spec_run_start(x),
             *final(ord) == *old(ord),
     {
         if !self.runs() {
@@ -5902,6 +5947,9 @@ impl SlabTable {
         let cls = self.class();
         let guard = self.is_guard_slab(s);
         let end = self.run_end(s, limit);
+        proof {
+            *run_to = Ghost(end);
+        }
         if !guard {
             proof {
                 lemma_run_commit(*self, s, end, false);
@@ -6072,7 +6120,7 @@ impl SlabTable {
         // of the page group find it committed.
         let spp = self.slabs_per_page as usize;
         let len = cls.slab_size().max(page);
-        let mode = crate::thp::class_mode(cls.slab_size());
+        let mode = self.thp;
         proof {
             let lp = self.lg_page;
             assert((1usize << lp) <= 0x8000_0000_0000_0000usize) by (bit_vector)

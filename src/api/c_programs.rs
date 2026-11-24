@@ -1220,6 +1220,14 @@ ctests! {
     /// nothing enabled the mode is off (a `SKIP` line). Forced to `never`
     /// under a cgroup limit below 1 GiB (a pass with a note).
     c_thp_always => [ CTest { prog: "thp", args: &["always"], conf: Some("thp:always"), ..BASE } ];
+    /// `tests/c/thp.c always` again, named for `make test-cgroup-limit`'s
+    /// `cargo test cgroup` filter so it runs under that target's 512 MiB
+    /// limit: there `CHALLOC_EXPECT_CGROUP_LIMIT` is set, the program
+    /// requires `opt.thp` forced to `never`, and the never checks (no class
+    /// range advised, no `hg`, the `nh` flags) run on the slab tables
+    /// `Shared::init` built with the cgroup's override (#933). Without a
+    /// limit it is `c_thp_always`.
+    c_cgroup_thp_always => [ CTest { prog: "thp", args: &["always"], conf: Some("thp:always"), ..BASE } ];
     /// `tests/c/thp.c auto` under `thp:auto`: active only where the kernel
     /// enables a folio size below the PMD and does not `madvise`-gate the PMD
     /// (needs `hugepages-64kB/enabled=madvise` and `hugepages-2048kB/enabled=
