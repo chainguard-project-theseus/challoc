@@ -49,16 +49,16 @@ a compiler barrier.
 |---|---|---|
 | `cow.rs` | 69 | fork epochs: `DEPTH`, `IN_FORCE`, `CAP`, `CLAIMED`, `FLUSH_AFTER`, `EPOCHS`, `EXPIRED`, `DEFLECTED` and the drain's `DRAIN_*`, mostly `Relaxed`, with some `Acquire`, `Release` and `AcqRel` operations (P7) |
 | `purge/background.rs` | 56 | `PRESENT`, `REQUESTED`, `SEQ`; the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
-| `thp.rs` | 45 | init-time configuration and counters; `MODE`'s `Release` store publishes the thresholds to its `Acquire` loads, and no protocol below covers it (#946) |
+| `thp.rs` | 45 | init-time configuration and counters; `MODE`'s `Release` store publishes the thresholds to its `Acquire` loads (P10) |
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `sys/cgroup.rs` | 32 | sampled cgroup limits and the deferred discovery's phase; the sample clock `sampled_at` is a vstd atomic (`SeqCst`) |
-| `stats.rs`, `policy.rs` | 28, 24 | statistics and the sampled policy, `Relaxed`; `stats.rs`'s record pool (`mod pool`) hands slots off with `Acquire` and `Release` (`owner`, `rec`), and no protocol below covers it (#946) |
-| `api/mod.rs` | 19 | `INIT_TID`, `SEALED`, the init gate (`INIT_GATE`, `GATE_FORKER`, `FORK_GATED`), `ATFORK_REGISTERED`, `FORK_LOCKED`, the fork slot's store (`FORK_SIGMASK`); the init gate's and `ATFORK_REGISTERED`'s `Acquire`, `Release` and `AcqRel` operations have no protocol below (#946) |
+| `stats.rs`, `policy.rs` | 28, 24 | statistics and the sampled policy, `Relaxed`; `stats.rs`'s record pool (`mod pool`) hands slots off with `Acquire` and `Release` (`owner`, `rec`), P11 |
+| `api/mod.rs` | 19 | `INIT_TID`, `SEALED`, the init gate (`INIT_GATE`, `GATE_FORKER`, `FORK_GATED`), `ATFORK_REGISTERED`, `FORK_LOCKED`, the fork slot's store (`FORK_SIGMASK`); the init gate's and `ATFORK_REGISTERED`'s `Acquire`, `Release` and `AcqRel` operations are P8 |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 15 | watermark; owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
 | `arena.rs` | 14 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
 | `class/pages.rs` | 8 | `hint_due`, `hint_armed`, `pages_due`, `Relaxed` |
-| `heap/slotstate.rs` | 8 | `double_free_scan`'s registry: `CLAIMED`, `PAGE` and the arrays' `base` and `class_base`, published with `Release` and `AcqRel` and read with `Acquire`; no protocol below covers it (#946) |
+| `heap/slotstate.rs` | 8 | `double_free_scan`'s registry: `CLAIMED`, `PAGE` and the arrays' `base` and `class_base`, published with `Release` and `AcqRel` and read with `Acquire` (P9) |
 | `class/cow.rs` | 7 | the per-class fork-epoch floors `cow_floor` and `drain_floor`, `Relaxed` |
 | `lock.rs` | 6 | the fork window's record (`FORK_PID`, `FORK_HOLDER`), `Relaxed` (the lock word is a vstd `PAtomicU32`, P2) |
 | `huge/mod.rs`, `huge/free.rs`, `huge/grow.rs`, `huge/shrink.rs` | 8, 2, 1, 1 | `retain_max`, `purge_on_free`, `mixed_guards`, `Relaxed` |
@@ -315,6 +315,132 @@ and no test checks the orderings (**unconfirmed**).
 - Left out: the statistics `EXPIRED`, `DEFLECTED`, `DRAIN_MOVES` and
   `EPOCHS`. A stale value there changes only reports, or, for
   `DRAIN_MOVES`, when a stall is judged.
+
+### P8. The init gate and the atfork registration
+
+Read from the code; no loom model or GenMC harness copies these steps
+(the `init.rs` model leaves the fork gate out), **unconfirmed**.
+
+- `INIT_GATE` (`api/mod.rs`) holds `GATE_IDLE`, `GATE_DONE`,
+  `GATE_FORKING` or the `pthread_self` of a thread whose init is under
+  way. `init_gate_enter` takes it from `GATE_IDLE` with an `AcqRel`
+  compare-exchange (`Acquire` on failure) and spins while another
+  thread holds it. `init_gate_done` moves it from the holder to
+  `GATE_DONE` (`AcqRel`). The fork prepare handler's `fork_gate_enter`
+  loads it with `Acquire` and closes it, `GATE_IDLE` to `GATE_FORKING`,
+  with an `AcqRel` compare-exchange. The parent and child handlers'
+  `fork_gate_exit` opens it with a `Release` store.
+- What rests on it: an init and a `fork`'s prepare handler do not run
+  their critical parts at once, and a waiter goes on only after the
+  holder is done. The read-modify-writes on one word give this for one
+  fork at a time, whatever their ordering. With two threads' forks
+  overlapping it does not hold (`FORK_GATED` and `GATE_FORKER` below). The gate publishes no data of its own.
+  `STATE` and `Shared` are published by P4, which a waiter that goes on
+  then reads with its own `Acquire`.
+- `GATE_FORKER` and `FORK_GATED` are `Relaxed`. `GATE_FORKER` is stored
+  before the `AcqRel` compare-exchange that closes the gate, and cleared
+  before the `Release` store that opens it. `init_gate_enter` reads it
+  only after a failed compare-exchange found `GATE_FORKING` (`Acquire`
+  on failure). That load reads the closing exchange, or a later one, so
+  the reader sees that fork's `GATE_FORKER` and no earlier forker's.
+  That is the value only if no other prepare handler stored to
+  `GATE_FORKER` meanwhile. Two forks that both loaded `GATE_IDLE` both
+  store, and the loser's store can land after the winner's. Nothing
+  rules that out. glibc's `__run_prefork_handlers` releases its atfork
+  lock around each prepare handler, and its postfork dispatcher does the
+  same around each callback, so two threads' handlers can overlap. The
+  "glibc serialises the handlers" premise in `api/mod.rs`'s comments is
+  not established. **Unresolved:** after such an overwrite, the gate's
+  holder can fail to find its own ID. An allocation from a later
+  prepare handler of that fork, which initialises inside the fork, then
+  spins in `init_gate_enter` until the fork's parent handler, which
+  cannot run first (a hang).
+  `FORK_GATED` is one process-wide flag. **Unresolved:**
+  `fork_gate_enter` also returns when it finds another fork's
+  `GATE_FORKING`, and `fork_gate_exit` swaps the flag without checking
+  which thread closed the gate. So thread B's parent handler can reopen
+  thread A's gate, and a thread C can then start an init before A's
+  `_Fork`. A's child then waits at the gate on C, which is absent there
+  (a hang).
+- `ATFORK_REGISTERED`: `atfork_handlers` claims the registration with an
+  `AcqRel` swap, so one thread calls `pthread_atfork`. A failure gives
+  the flag back with a `Release` store so that a later call tries again.
+  Nothing else is published (glibc orders its own atfork list).
+- Left out: termination of the spins (the doc comments say on what it
+  rests), and the gate's interaction with signal handlers (design 9,
+  residuals).
+
+### P9. `double_free_scan`'s registry
+
+Read from the code; no model copies it, **unconfirmed**.
+
+- `heap/slotstate.rs::init`, once per `Shared` with the key on and
+  before any class table hands out a slab, stores `PAGE` (`Relaxed`) and
+  claims an entry of `ARRAYS` with `CLAIMED.fetch_add(1, AcqRel)`. Then,
+  per class, it stores `class_base[c]` (`Relaxed`) and the class's
+  freshly mapped state array `base[c]` (`Release`, the last).
+- `array_of` loads `CLAIMED` with `Acquire` and each entry's `base[c]`
+  with `Acquire`, then `class_base[c]` (`Relaxed`). A non-zero `base[c]`
+  read there brings the `class_base[c]` and `PAGE` stores before it. An
+  entry claimed but not yet published reads `base` 0 and is skipped.
+- What rests on it: the state bytes `commit` makes writable belong to
+  the `Shared` asking. Each caller asks for its own `Shared`, whose
+  `init` happened before that `Shared` was published (P4), so for it the
+  entry is complete whatever these orderings are. The `Release` and
+  `Acquire` pair matters for a reader of another `Shared`'s entry, which
+  `class_base` then makes it skip. The mapping itself is ordered by the
+  kernel, outside the memory model.
+- The state bytes are P1's and `vspec::byte`'s (`slotstate.rs` in the
+  GenMC cases), not this protocol's.
+
+### P10. The THP decision
+
+Read from the code, **unconfirmed**.
+
+- `thp.rs::store` writes the decision's thresholds and reason
+  (`Relaxed`) and then `MODE` (`Release`). `decision`, `class_mode` and
+  `huge_min` load `MODE` with `Acquire` before the thresholds they
+  read, so a reader that sees a mode sees the thresholds stored with it.
+  `meta_folio_size` reads `LG_META` before its `MODE` load, and
+  `pmd_size` reads `LG_PMD` with no `MODE` load, so those two get
+  nothing from the pair and rest on P4 alone (below).
+- `store` runs only during init (`configure`, and `force_never` under a
+  cgroup limit) and in tests, so for every reader after init P4 orders
+  it already. The pair would matter only for a reader on another thread
+  before P4 publishes `Shared`. The code has none (unconfirmed): a
+  concurrent caller waits at the init gate (P8) until init has
+  published. Such a reader would not get a whole decision anyway. Under
+  a cgroup limit init stores twice, `configure` and then `force_never`
+  (`Shared::init`). A reader that `Acquire`-loads the first `MODE` can
+  then read some of the second's later `Relaxed` thresholds, a mix of
+  the two decisions.
+
+### P11. The stats record pool
+
+Read from the code; no model copies it, **unconfirmed**.
+
+- `stats.rs`'s `mod pool` keeps `POOL_SLOTS` slots of a `StatsPair`
+  pointer (`rec`), its holder's thread ID (`owner`, 0 when free) and the
+  holder's stack mark (`mark`).
+- Publishing an object: `reserve` takes an empty slot with an `owner`
+  compare-exchange from 0 (`Acquire`). `fill` stores the mark and then
+  `rec` (`Release`), after the caller built the object. `take` loads
+  `rec` with `Acquire`, so a thread that sees the pointer sees the
+  object's construction.
+- Handing an object on: `release`, `unreserve` and `take`'s return of
+  surplus slots clear `owner` with `Release` after the holder's last use
+  (and after the mark's `Relaxed` reset to `FREE`). `claim` takes it with
+  an `Acquire` compare-exchange that reads that 0, so the holder's
+  writes to the object happen before the next holder's.
+- Left out: a slot whose holder exited without releasing it. `claim`
+  then takes it from the exited thread's ID (`thread_gone`,
+  `leader_exited`), which no `Release` of that thread wrote. That the
+  exited thread's writes to the object come before the new holder's
+  rests on the thread's exit as the kernel reports it, outside the
+  memory model. The `mark` compare-exchanges are `Relaxed`. They order
+  a thread against a signal handler on its own stack, one thread's
+  program order. In a `fork` child, `fork_child`'s `Relaxed` stores run
+  while one thread runs.
 
 ### Out of scope
 
