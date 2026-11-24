@@ -61,7 +61,7 @@ fn conf_ptr() -> (p: *mut [u8; CONF_LEN])
 
 ## `read_slot`
 
-src/config.rs:1810. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1863. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `const char *` at `slot` (a symbol, or an `environ` entry).
@@ -74,7 +74,7 @@ unsafe fn read_slot(slot: *const *const c_char) -> *const c_char
 
 ## `malloc_conf_addr`
 
-src/config.rs:1823. Kind: external_body. Category: inline asm.
+src/config.rs:1876. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the `malloc_conf` global the loader resolved: the program's own definition when it has one, else the library's null slot (`api::jemalloc::malloc_conf`).
@@ -87,7 +87,7 @@ fn malloc_conf_addr() -> *const c_void
 
 ## `je_malloc_conf_addr`
 
-src/config.rs:1848. Kind: external_body. Category: inline asm.
+src/config.rs:1901. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 
 > Address of the weak `je_malloc_conf` global (Redis and Valkey define this one), or null.
@@ -100,7 +100,7 @@ fn je_malloc_conf_addr() -> *const c_void
 
 ## `byte_at`
 
-src/config.rs:1911. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1964. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The byte at `p + n`.
@@ -113,7 +113,7 @@ pub(crate) unsafe fn byte_at(p: *const u8, n: usize) -> u8
 
 ## `bytes_at`
 
-src/config.rs:1923. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1976. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > The `n` bytes at `p` as a slice.
@@ -128,7 +128,7 @@ unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])
 
 ## `environ_array`
 
-src/config.rs:1935. Kind: external_body. Category: raw pointer from C caller.
+src/config.rs:1988. Kind: external_body. Category: raw pointer from C caller.
 Tool: none (assumption). Status: trusted.
 
 > glibc's `environ`, null before libc has set it up.

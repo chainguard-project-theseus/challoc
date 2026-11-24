@@ -1704,6 +1704,11 @@ mod linux {
     /// its own) and the environment is walked in place. The result is well formed: the defaults are
     /// (`Config::lemma_default_wf`) and every source goes through
     /// `Config::parse_source`, which keeps it.
+    ///
+    /// Two steps: [`load_sources`], the sources that read no environment,
+    /// then [`load_env`], the two variables, whose contract says that in a
+    /// secure-execution process it changes neither the `Config` nor the
+    /// issue count ([`theorem_secure_conf`]).
     pub fn load(buf: &mut [u8; CONF_LEN]) -> (r: Config)
         requires
             crate::sys::may_abort(),
@@ -1715,29 +1720,9 @@ mod linux {
         proof {
             Config::lemma_default_wf();
         }
-        let mut issues = 0;
         let mut out = sys::Stderr::new();
-        // `for (name, text) in [...]` over the two symbols and the two
-        // variables, spelled out: Verus does not specify an array's
-        // `IntoIter`. Both symbols are read before either is parsed.
-        let (sym, je_sym) = (malloc_conf_symbol(0), malloc_conf_symbol(1));
-        if let Some((text, cut)) = sym {
-            issues += parse_from(&mut cfg, text, cut, "malloc_conf", &mut out);
-        }
-        if let Some((text, cut)) = je_sym {
-            issues += parse_from(&mut cfg, text, cut, "je_malloc_conf", &mut out);
-        }
-        if let Some((line, cut)) = first_line_of(&CHALLOC_CONF, buf) {
-            issues += parse_from(&mut cfg, line, cut, "/etc/challoc.conf", &mut out);
-        }
-        if getauxval(AT_SECURE) == 0 {
-            if let Some((text, cut)) = env_var(b"MALLOC_CONF") {
-                issues += parse_from(&mut cfg, text, cut, "MALLOC_CONF", &mut out);
-            }
-            if let Some((text, cut)) = env_var(b"CHALLOC_CONF") {
-                issues += parse_from(&mut cfg, text, cut, "CHALLOC_CONF", &mut out);
-            }
-        }
+        let mut issues = load_sources(&mut cfg, buf, &mut out);
+        load_env(&mut cfg, &mut issues, &mut out);
         out.flush();
         if cfg.abort_conf && issues > 0 {
             sys::abort_fmt(format_args!(
@@ -1747,28 +1732,96 @@ mod linux {
         cfg
     }
 
+    /// [`load`]'s first step, over the defaults `load` passes: the
+    /// `malloc_conf` and `je_malloc_conf` symbols, then the first line of
+    /// `/etc/challoc.conf`, returning the number of problems reported.
+    /// None of these reads the environment.
+    #[inline(always)]
+    fn load_sources(cfg: &mut Config, buf: &mut [u8; CONF_LEN], out: &mut sys::Stderr) -> (r: usize)
+        requires
+            crate::sys::may_syscall(),
+            old(cfg).wf(),
+        ensures
+            final(cfg).wf(),
+            r <= 3 * (MAX_TEXT + 1),
+    {
+        let mut issues = 0;
+        // `for (name, text) in [...]` over the two symbols (and, in
+        // `load_env`, the two variables), spelled out: Verus does not
+        // specify an array's `IntoIter`. Both symbols are read before
+        // either is parsed.
+        let (sym, je_sym) = (malloc_conf_symbol(0), malloc_conf_symbol(1));
+        if let Some((text, cut)) = sym {
+            issues += parse_from(cfg, text, cut, "malloc_conf", out);
+        }
+        if let Some((text, cut)) = je_sym {
+            issues += parse_from(cfg, text, cut, "je_malloc_conf", out);
+        }
+        if let Some((line, cut)) = first_line_of(&CHALLOC_CONF, buf) {
+            issues += parse_from(cfg, line, cut, "/etc/challoc.conf", out);
+        }
+        issues
+    }
+
+    /// [`load`]'s second step: `MALLOC_CONF`, then `CHALLOC_CONF`, over
+    /// `cfg`, adding the number of problems reported to `*issues`. In a
+    /// secure-execution process it reads neither variable and leaves
+    /// `cfg` and `*issues` as they were. Each variable is parsed only when
+    /// [`env_var`] finds it, so with neither variable set it does the
+    /// same; that case is read from this body, not from the contract,
+    /// which cannot name `env_var`'s results.
+    #[inline(always)]
+    fn load_env(cfg: &mut Config, issues: &mut usize, out: &mut sys::Stderr)
+        requires
+            old(cfg).wf(),
+            *old(issues) <= 3 * (MAX_TEXT + 1),
+        ensures
+            final(cfg).wf(),
+            *final(issues) <= *old(issues) + 2 * (MAX_TEXT + 1),
+            crate::sys::auxv::secure_exec() ==> *final(cfg) == *old(cfg) && *final(issues) == *old(issues),
+    {
+        if getauxval(AT_SECURE) == 0 {
+            if let Some((text, cut)) = env_var(b"MALLOC_CONF") {
+                *issues += parse_from(cfg, text, cut, "MALLOC_CONF", out);
+            }
+            if let Some((text, cut)) = env_var(b"CHALLOC_CONF") {
+                *issues += parse_from(cfg, text, cut, "CHALLOC_CONF", out);
+            }
+        }
+    }
+
     /// Secure execution ignores the environment, closing the shape of
     /// CVE-2023-4911 (glibc's `GLIBC_TUNABLES`, malloc tunables among them,
     /// parsed by a setuid program's loader): in a process started with
     /// `AT_SECURE` set (`sys::auxv::secure_exec`: setuid, setgid, file
     /// capabilities or an LSM transition), no call of [`env_var`] returns,
     /// whatever its name and result: Verus rejects every verified caller
-    /// that has not established `!secure_exec()`. So [`load`], whose two
-    /// calls meet `env_var`'s precondition only through its
+    /// that has not established `!secure_exec()`. So [`load_env`], whose
+    /// two calls meet `env_var`'s precondition only through its
     /// `getauxval(AT_SECURE) == 0` test, reads neither `MALLOC_CONF` nor
-    /// `CHALLOC_CONF`, and its other sources (the defaults, the
-    /// `malloc_conf` and `je_malloc_conf` symbols, the first line of
-    /// `/etc/challoc.conf`) do not read the environment: the configuration
-    /// is the one the same process would get with neither variable set.
-    /// That last step is not a Verus fact: `Config::parse_source` is
-    /// verified to keep `Config::wf`, not as a function of its text.
+    /// `CHALLOC_CONF`.
+    ///
+    /// The configuration is then the one the same process would get with
+    /// neither variable set, with no functional spec of
+    /// `Config::parse_source`: [`load`] is [`load_sources`] (the defaults,
+    /// the `malloc_conf` and `je_malloc_conf` symbols, the first line of
+    /// `/etc/challoc.conf`) followed by `load_env`, and `load_env`'s
+    /// contract states that in a secure-execution process it returns
+    /// with the `Config` it was given and no problems reported. So the
+    /// result, and the `abort_conf` decision, are `load_sources`'s. With
+    /// neither variable set, `load_env` parses nothing either, read from
+    /// its body (each parse is inside the `Some` of its `env_var` call);
+    /// `env_var` has no spec of the environment it reads, so no contract
+    /// states that case. Not stated either: that `load_sources` reads the
+    /// same in the two processes (the same symbols, the same file).
     ///
     /// Trusted: `getauxval(AT_SECURE)` returns the process's one
     /// `AT_SECURE` word (`sys::auxv::at_secure`, in the `getauxval` seam);
     /// `env_var`'s body is verified against its contract. Checked by a
     /// test, not by Verus: `env_var` is the only reader of `environ`
-    /// (through [`environ_array`]), and outside the tests `load` is its
-    /// only caller (`config::linux_tests::environment_has_one_reader`).
+    /// (through [`environ_array`]), outside the tests `load_env` is its
+    /// only caller, and `load` is `load_env`'s
+    /// (`config::linux_tests::environment_has_one_reader`).
     pub proof fn theorem_secure_conf(name: &[u8], r: Option<(&'static [u8], bool)>)
         requires
             crate::sys::auxv::secure_exec(),

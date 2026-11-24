@@ -65,8 +65,19 @@ leave out (theorem 33). Remaining work is tracked in
   of `env_var` returns, so `config::load` reads neither `MALLOC_CONF`
   nor `CHALLOC_CONF`. That `env_var` is the only reader of the
   environment is a source test (`environment_has_one_reader`,
-  `config/linux_tests.rs`), not Verus. The theorem does not state that
-  the loaded `Config` equals the one with neither variable set.
+  `config/linux_tests.rs`), not Verus. The loaded `Config` is then the
+  one with neither variable set, with no functional spec of
+  `Config::parse_source`: `load` runs `load_sources` (the defaults, the
+  two symbols, the first line of `/etc/challoc.conf`) and then
+  `load_env`, whose contract ensures that with `AT_SECURE` set it
+  leaves the `Config` and the issue count as it was given them. The
+  same source test checks that `load` calls each step once and that
+  `parse_from`, the one shipped caller of `Config::parse_source`, is
+  called only in the two steps; a direct `Config::set` in `load` is not
+  pinned. With neither variable set, `load_env` parsing
+  nothing is read from its body (`env_var` has no spec of the
+  environment). Not stated: that `load_sources` reads the same in the
+  two processes.
 - **Every configuration source leaves a well-formed config**
   (`Config::set`'s contract, `config.rs`): from a well-formed `Config`
   (`Config::wf`: `tcache_nslots_small_max` in `[MIN_CAP, MAX_NSLOTS]`,

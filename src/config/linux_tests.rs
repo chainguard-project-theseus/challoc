@@ -158,9 +158,9 @@ fn load_with_a_clean_environment_gives_the_defaults() {
 /// The environment has one reader, which `theorem_secure_conf`'s
 /// premise names: `environ` (or glibc's `_environ` or `__environ`) is
 /// read only in `environ_array`, which only `env_var`'s body calls, and
-/// `env_var` is called only by `load` (twice, after its `AT_SECURE`
-/// test, which Verus checks against `env_var`'s precondition) and by
-/// the tests above. No code calls `getenv` or `secure_getenv`.
+/// `env_var` is called only by `load_env` (twice, after its `AT_SECURE`
+/// test, which Verus checks against `env_var`'s precondition), which
+/// only `load` calls, and by the tests above. No code calls `getenv` or `secure_getenv`.
 #[test]
 fn environment_has_one_reader() {
     use crate::testutil::grant_sites;
@@ -205,18 +205,57 @@ fn environment_has_one_reader() {
     ]
     .map(|t| std::format!("fn {t}() {{"));
     for (sig, at) in &calls {
-        // `load` and `env_var` itself in config.rs; the two tests in
+        // `load_env` and `env_var` itself in config.rs; the two tests in
         // this file.
         assert!(
             (at.starts_with("config.rs:")
-                && (sig.starts_with("pub fn load(") || sig.starts_with(&def)))
+                && (sig.starts_with("fn load_env(") || sig.starts_with(&def)))
                 || (at.starts_with("config/linux_tests.rs:") && tests.contains(sig)),
             "{at}: `env_var` called in `{sig}`"
         );
     }
     let in_load = calls
         .iter()
-        .filter(|(sig, _)| sig.starts_with("pub fn load("))
+        .filter(|(sig, _)| sig.starts_with("fn load_env("))
         .count();
     assert_eq!(in_load, 2, "{calls:?}");
+    // `load_env` runs once, in `load`, after `load_sources`, and
+    // `parse_from` / `parse_source` run only in the two steps, so
+    // `theorem_secure_conf`'s reading of `load` (its result is
+    // `load_sources`'s when `load_env` changes nothing) cannot lose a
+    // source parsed in `load` itself. A direct `Config::set` there is
+    // not pinned.
+    crate::testutil::assert_only_at(
+        concat!("load_", "env("),
+        &[("config.rs:", "pub fn load(", 1)],
+    );
+    crate::testutil::assert_only_at(
+        concat!("load_", "sources("),
+        &[("config.rs:", "pub fn load(", 1)],
+    );
+    crate::testutil::assert_only_at(
+        concat!("parse_", "from("),
+        &[
+            ("config.rs:", "fn load_sources(", 3),
+            ("config.rs:", "fn load_env(", 2),
+        ],
+    );
+    // `parse_from` is the one shipped caller of `parse_source`; the two
+    // unit tests call it on fixtures.
+    crate::testutil::assert_only_at(
+        concat!("parse_", "source("),
+        &[
+            ("config.rs:", "fn parse_from(", 1),
+            (
+                "config/tests.rs:",
+                "fn parse_source_drops_only_the_pair_at_the_cut(",
+                1,
+            ),
+            (
+                "config/linux_tests.rs:",
+                "fn a_cut_source_drops_the_cut_pair_and_reports_it(",
+                1,
+            ),
+        ],
+    );
 }
