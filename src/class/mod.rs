@@ -97,7 +97,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // build it would reach `tests.rs` through `use super::*`.
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
-use vstd::prelude::{Ghost, Map, Tracked, int, nat, verus};
+use vstd::prelude::{Ghost, Map, Seq, Tracked, int, nat, verus};
 use vstd::raw_ptr::PointsTo;
 #[cfg(verus_keep_ghost)]
 use vstd::resource::Loc;
@@ -716,7 +716,7 @@ pub(crate) fn shuffle_zero(
 
 /// `s` is a permutation of `o`: every pointer occurs in `s` as many
 /// times as in `o`.
-pub(crate) open spec fn permutes(s: Seq<*mut u8>, o: Seq<*mut u8>) -> bool {
+pub open spec fn permutes(s: Seq<*mut u8>, o: Seq<*mut u8>) -> bool {
     s.to_multiset() == o.to_multiset()
 }
 
@@ -3336,7 +3336,8 @@ impl ClassState {
             slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
     {
         let tracked mut toks = SlotToks::empty();
-        self.claim_random_zero(meta, out, rng, Tracked(&mut toks), pubw, Tracked(ord)).0
+        let tracked mut pre: Ghost<(Seq<*mut u8>, u64)> = Ghost(arbitrary());
+        self.claim_random_zero(meta, out, rng, Tracked(&mut toks), Tracked(&mut pre), pubw, Tracked(ord)).0
     }
 }
 
@@ -3404,10 +3405,19 @@ impl ClassState {
     /// ([`claim_zero_ok`]) and their slot tokens, as for [`claim_tokens`],
     /// both shuffled along with the slots.
     ///
+    /// `pre` receives the batch before the shuffle (`pre@.0`, what
+    /// `claim_with` wrote) and the xorshift state the shuffle started from
+    /// (`pre@.1`, reached from `rng` by the claim's start-word draws): the
+    /// batch returned below `n` is [`fisher_yates`] of `pre@.0` below `n`
+    /// with the [`draws`] from that state, so a permutation of it, and the
+    /// entries from `n` on are `pre@.0`'s.
+    ///
     /// [`claim_random`]: ClassState::claim_random
     /// [`claim_tokens`]: ClassState::claim_tokens
+    // The last four arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
     #[verifier::spinoff_prover]
-    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>, Tracked(pre): Tracked<&mut Ghost<(Seq<*mut u8>, u64)>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
@@ -3424,6 +3434,19 @@ impl ClassState {
             final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+            // The pre-shuffle batch and the shuffle's starting state.
+            final(pre)@.0.len() == old(out)@.len(),
+            slots_in(final(pre)@.0, self.spec_class() as int, 0, r.0.n as int),
+            final(out)@.subrange(0, r.0.n as int) == fisher_yates(
+                final(pre)@.0.subrange(0, r.0.n as int),
+                draws(r.0.n as nat, final(pre)@.1),
+                r.0.n as nat,
+            ),
+            permutes(final(out)@.subrange(0, r.0.n as int), final(pre)@.0.subrange(0, r.0.n as int)),
+            final(out)@.subrange(r.0.n as int, old(out)@.len() as int) == final(pre)@.0.subrange(r.0.n as int, old(out)@.len() as int),
+            final(pre)@.1 != 0,
+            exists|k: nat| final(pre)@.1 == #[trigger] xorshift_iter(k, *old(rng)),
+            *final(rng) == draws_state(r.0.n as nat, final(pre)@.1),
     {
         let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
         let (c, Tracked(z)) = self.claim_with(meta, out, Some(&mut *rng), Tracked(toks), Tracked(&mut ex), pubw, Tracked(ord));
@@ -3474,6 +3497,9 @@ impl ClassState {
                     assert(out@.subrange(0, c.n as int)[i] == out@[i]);
                 }
             }
+            // The pre-shuffle batch and the state the shuffle started from
+            // (`out[n..]` is framed by the slice borrow's spec).
+            *pre = Ghost((mid, st));
         }
         (c, Tracked(z))
     }

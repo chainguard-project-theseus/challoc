@@ -36,7 +36,7 @@ use vstd::map::Map;
 use vstd::modes::tracked_swap;
 #[cfg(verus_keep_ghost)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, int, verus};
+use vstd::prelude::{Ghost, Seq, Tracked, int, verus};
 use vstd::raw_ptr::{ptr_mut_ref, ptr_ref};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::set::{GhostSingleton, GhostSubset};
@@ -49,14 +49,24 @@ impl Heap {
     /// (the scan starts at a random bitmap word and the batch is shuffled;
     /// design 4). The key is read from the configuration here, on
     /// the slow path, so the fast paths carry nothing for it.
+    ///
+    /// `pre` receives the batch the claim wrote before any shuffle
+    /// (`pre@.0`) and the xorshift state a shuffle started from (`pre@.1`):
+    /// with `slot_randomize` the batch returned below `n` is
+    /// `fisher_yates` of `pre@.0` below `n` with the draws from that state,
+    /// and the heap's `rng` is the state after them; without it the batch
+    /// is `pre@.0` and `rng` is unchanged.
     #[inline]
     #[allow(clippy::let_and_return, reason = "a proof reads the claim before it is returned")]
+    // The last four arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn claim(
         &mut self,
         shared: &Shared,
         cs: &crate::class::ClassState,
         out: &mut [*mut u8],
         Tracked(toks): Tracked<&mut crate::class::SlotToks>,
+        Tracked(pre): Tracked<&mut Ghost<(Seq<*mut u8>, u64)>>,
         pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: (crate::class::Claim, Tracked<Map<int, Zeroed>>))
@@ -87,6 +97,24 @@ impl Heap {
             crate::class::keyed(final(toks).toks, ptr_addrs(final(out)@.subrange(0, r.0.n as int)), slot_loc(cs.spec_class() as int), 0, r.0.n as int),
             cs.spec_table().spec_slots().loc == slot_loc(cs.spec_class() as int),
             crate::class::claim_zero_ok(r.0, final(out)@, r.1@, cs.spec_class() as int),
+            // The pre-shuffle batch.
+            final(pre)@.0.len() == old(out)@.len(),
+            slots_in(final(pre)@.0, cs.spec_class() as int, 0, r.0.n as int),
+            crate::class::permutes(final(out)@.subrange(0, r.0.n as int), final(pre)@.0.subrange(0, r.0.n as int)),
+            final(out)@.subrange(r.0.n as int, old(out)@.len() as int) == final(pre)@.0.subrange(r.0.n as int, old(out)@.len() as int),
+            shared.config.slot_randomize ==> {
+                &&& final(out)@.subrange(0, r.0.n as int) == crate::class::fisher_yates(
+                    final(pre)@.0.subrange(0, r.0.n as int),
+                    crate::class::draws(r.0.n as nat, final(pre)@.1),
+                    r.0.n as nat,
+                )
+                &&& final(pre)@.1 != 0
+                &&& final(self).rng == crate::class::draws_state(r.0.n as nat, final(pre)@.1)
+                // The shuffle's state is the heap's, past the claim's
+                // start-word draws (a state seeded here has no name).
+                &&& old(self).rng != 0 ==> exists|k: nat| final(pre)@.1 == #[trigger] crate::class::xorshift_iter(k, old(self).rng)
+            },
+            !shared.config.slot_randomize ==> final(out)@ == final(pre)@.0 && final(self).rng == old(self).rng,
     {
         cs.slot_tokens_are_the_class_s();
         proof {
@@ -94,9 +122,14 @@ impl Heap {
         }
         let r = if slot_randomize(shared) {
             let rng = self.rng();
-            cs.claim_random_zero(&shared.meta, out, rng, Tracked(toks), pubw, Tracked(ord))
+            cs.claim_random_zero(&shared.meta, out, rng, Tracked(toks), Tracked(pre), pubw, Tracked(ord))
         } else {
-            cs.claim_tokens(&shared.meta, out, Tracked(toks), pubw, Tracked(ord))
+            let r = cs.claim_tokens(&shared.meta, out, Tracked(toks), pubw, Tracked(ord));
+            proof {
+                *pre = Ghost((out@, 0));
+                assert(out@.subrange(r.0.n as int, out@.len() as int) == pre@.0.subrange(r.0.n as int, out@.len() as int));
+            }
+            r
         };
         proof {
             toks.lemma_owns_keyed(cs.spec_table(), out@, r.0.n as int);
@@ -119,6 +152,8 @@ impl Heap {
         ensures
             *final(self) == (Heap { rng: *final(r), ..*old(self) }),
             *r != 0,
+            // A seeded state is handed out as it is.
+            old(self).rng != 0 ==> *r == old(self).rng,
     {
         if self.rng == 0 {
             let mut seed = seed();
@@ -186,7 +221,8 @@ impl Heap {
             proof {
                 shared.lemma_published_tables(*pubw@, *arena);
             }
-            let (claim, Tracked(mut ztok)) = self.claim(shared, cs, out, Tracked(&mut toks), pubw, Tracked(ord));
+            let tracked mut pre: Ghost<(Seq<*mut u8>, u64)> = Ghost(arbitrary());
+            let (claim, Tracked(mut ztok)) = self.claim(shared, cs, out, Tracked(&mut toks), Tracked(&mut pre), pubw, Tracked(ord));
             let ghost claimed = out@;
             proof {
                 assert(toks.owns(cs.spec_table(), claimed, 0, 0, claim.n as int));
@@ -1890,7 +1926,10 @@ verus! {
 
 /// `Config::slot_randomize` (design 4), read on the slow path.
 #[inline(always)]
-fn slot_randomize(shared: &Shared) -> bool {
+fn slot_randomize(shared: &Shared) -> (r: bool)
+    ensures
+        r == shared.config.slot_randomize,
+{
     shared.config.slot_randomize
 }
 
