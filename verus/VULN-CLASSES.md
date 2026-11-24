@@ -381,9 +381,12 @@ and on the `pthread_join` and `pthread_create` specs; the
 
 **Property.** `config::linux::theorem_secure_conf`: with `AT_SECURE`
 set, no `env_var` call returns, so `config::load` reads neither
-`MALLOC_CONF` nor `CHALLOC_CONF`. It does not prove the loaded `Config`
-equals the default, and trusts `getauxval(AT_SECURE)`; that `env_var`
-is the only reader of the environment is a source test.
+`MALLOC_CONF` nor `CHALLOC_CONF`; `load` is `load_sources` then
+`load_env`, and `load_env`'s contract adds that it then leaves the
+`Config` and the issue count unchanged, so the loaded `Config` is the
+non-environment sources' alone (the one with neither variable set). It
+trusts `getauxval(AT_SECURE)`; that `env_var` is the only reader of the
+environment is a source test.
 
 ## Gaps
 
