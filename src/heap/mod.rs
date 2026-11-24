@@ -236,7 +236,8 @@ impl ThreadStats {
 /// prefixes; `handed` the token of the slot the last pop from inside a
 /// zero prefix handed out; `released` the `(class, address)` pairs this
 /// heap's flushes handed back; `blocks` the metadata claim of each stack,
-/// by its base.
+/// by its base; `rels` the release record of each slot those flushes
+/// released, by class and address (#843).
 #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
 pub tracked struct CachePerms {
     pub tracked hdrs: Map<*mut CacheHeader, PointsTo<CacheHeader>>,
@@ -248,6 +249,7 @@ pub tracked struct CachePerms {
     pub tracked handed: Option<Zeroed>,
     pub ghost released: vstd::seq::Seq<(vstd::prelude::int, vstd::prelude::int)>,
     pub tracked blocks: Map<*mut *mut u8, crate::meta::MetaClaim>,
+    pub tracked rels: crate::bitmap::Rels,
 }
 
 /// One thread's allocator state (design 6.2). Lives in the metadata region;
@@ -1891,6 +1893,7 @@ impl CachePerms {
             handed: None,
             released: Seq::empty(),
             blocks: Map::tracked_empty(),
+            rels: crate::bitmap::Rels::tracked_empty(),
         };
         r.lemma_zero_intro();
         r

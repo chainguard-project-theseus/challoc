@@ -1102,6 +1102,7 @@ fn changed_arena_child() {
         &[p1, p0],
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
     std::eprintln!(
         "release_routed returned (handler ran: {})",

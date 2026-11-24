@@ -43,7 +43,7 @@ use super::zero::{ZeroRaw, Zeroed};
 use crate::api::{ForkHeld, LineCell, LineSeen, LineVal, Published, Seen};
 use crate::api::{Start, StateVal, Statics};
 use crate::arena::{ArenaParts, ArenasParts, Held, Homed, RegVal, SparePerm};
-use crate::bitmap::FullSeen;
+use crate::bitmap::{FullSeen, RelRec, Rels};
 use crate::class::{BitLoad, SlotToks};
 use crate::heap::slotstate::{SlotState, Slots};
 use crate::heap::{Built, CachePerms, Claim, FreshHeap, HeapPerm, HeapUse, Live, NodeHead};
@@ -146,6 +146,14 @@ const _: () = assert!(<ArenasParts as NotCopy<_>>::HOLDS && <ArenasParts as NotC
 
 // `FullSeen` is neither Copy nor Clone: the record of one read.
 const _: () = assert!(<FullSeen as NotCopy<_>>::HOLDS && <FullSeen as NotClone<_>>::HOLDS);
+
+// `RelRec` is neither Copy nor Clone: one slot's release record, with
+// its seen-value witness.
+const _: () = assert!(<RelRec as NotCopy<_>>::HOLDS && <RelRec as NotClone<_>>::HOLDS);
+
+// `Rels` is neither Copy nor Clone: a heap's release records, by class
+// and slot address.
+const _: () = assert!(<Rels as NotCopy<_>>::HOLDS && <Rels as NotClone<_>>::HOLDS);
 
 // `SlotToks` is neither Copy nor Clone: a batch's slot tokens.
 const _: () = assert!(<SlotToks as NotCopy<_>>::HOLDS && <SlotToks as NotClone<_>>::HOLDS);
