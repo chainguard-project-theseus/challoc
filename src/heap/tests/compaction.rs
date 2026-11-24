@@ -328,6 +328,7 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
                     Tracked::assume_new(),
                     Tracked::assume_new(),
                     Tracked::assume_new(),
+                    Tracked::assume_new(),
                 );
             }
             let (p, _, _) = s.alloc_direct(
@@ -361,6 +362,7 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
         0,
         c,
         direct,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),

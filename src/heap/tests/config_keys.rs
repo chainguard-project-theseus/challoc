@@ -37,7 +37,12 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     };
     // A run's `dirty_at` after its free, from the huge allocator's gate.
     let free_at = |s: &Shared, p: *mut u8| {
-        s.free_huge(page_of(s, p), Tracked::assume_new(), Tracked::assume_new());
+        s.free_huge(
+            page_of(s, p),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+            Tracked::assume_new(),
+        );
         s.huge.oldest_empty()
     };
     let size = 300 * 1024;
@@ -182,7 +187,12 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
             Tracked::assume_new(),
         )
         .0;
-    s.free_huge(page_of(s, p), Tracked::assume_new(), Tracked::assume_new());
+    s.free_huge(
+        page_of(s, p),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+        Tracked::assume_new(),
+    );
     assert_eq!(s.huge.oldest_empty(), 0);
     assert_eq!(
         (

@@ -517,17 +517,21 @@ impl Heap {
     {
         let tracked mut claim = claim;
         let ghost mut cleared: Option<Live> = None;
+        // The clear's token, which `Shared::free_huge` requires under
+        // `zero_on_free` (theorem 12); empty and unread otherwise.
+        let tracked mut z = crate::vspec::zero::Zeroed::empty(0);
         if shared.zero_on_free() {
             // The token for the cleared run (`theorem_zero_on_free_huge`).
-            let (Tracked(z), _before) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
+            let (Tracked(z1), _before) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
             proof {
-                super::zero::theorem_zero_on_free_huge(&z, claim.held->0, page as int);
+                super::zero::theorem_zero_on_free_huge(&z1, claim.held->0, page as int);
                 cleared = Some(_before@);
+                z = z1;
             }
         }
         // The run's token goes to `Huge::free_run`, which drops the
         // permission to its bytes with it.
-        let (n, _freed) = shared.free_huge(page, Tracked(claim), Tracked(ord));
+        let (n, _freed) = shared.free_huge(page, Tracked(claim), Tracked(&z), Tracked(ord));
         self.count_uncached_free(n);
         // The token as it was before the clear, when there was one.
         let ghost r = match cleared {
@@ -920,14 +924,18 @@ impl Heap {
         if shared.double_free_scan() {
             super::slotstate::free(shared, class, p, super::slotstate::CACHED);
         }
+        // The clear's token, which the release below requires under
+        // `zero_on_free` (theorem 12); empty and unread otherwise.
+        let tracked mut z = crate::vspec::zero::Zeroed::empty(0);
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check),
             // and `blk` holds the permission to its bytes.
-            let Tracked(z) = unsafe { zero_slot(class, p, Tracked(&mut blk)) };
+            let Tracked(z1) = unsafe { zero_slot(class, p, Tracked(&mut blk)) };
             proof {
                 // `z` covers the slot's whole usable size; the slot is
                 // given up below, with its token.
-                super::zero::theorem_zero_on_free(&z, p, class as int);
+                super::zero::theorem_zero_on_free(&z1, p, class as int);
+                z = z1;
             }
         }
         proof {
@@ -959,7 +967,7 @@ impl Heap {
             // The release's record, kept in the heap's `rels` for the
             // slot's next free (#920).
             let tracked mut rel: Map<(int, int), crate::bitmap::RelRec> = Map::tracked_empty();
-            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&mut rel), Tracked(&mut *ord));
+            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok), Tracked(&z), Tracked(&mut rel), Tracked(&mut *ord));
             proof {
                 self.absorb_rels(rel);
                 assert(self.rels().map().contains_key((class as int, p@.addr as int)));
@@ -993,7 +1001,7 @@ impl Heap {
             proof {
                 tk.tracked_insert(0, tok);
             }
-            if !Self::push_cache(cache, p, shared.pac(), Tracked(self.perms.borrow_mut()), Tracked(&mut tk)) {
+            if !Self::push_cache(cache, p, shared.pac(), Tracked(&z), Tracked(self.perms.borrow_mut()), Tracked(&mut tk)) {
                 unreachable!("heap: cache still full after a flush");
             }
         }
@@ -1485,14 +1493,18 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
                 super::slotstate::free(shared, class, p, super::slotstate::FREE);
             }
             let tracked mut blk = blk;
+            // The clear's token, which `Shared::free_direct` requires under
+            // `zero_on_free` (theorem 12); empty and unread otherwise.
+            let tracked mut z = crate::vspec::zero::Zeroed::empty(0);
             if shared.zero_on_free() {
                 // SAFETY: `classify_free` verified `p` as an allocated slot
                 // of `class`, and `blk` holds the permission to its bytes.
-                let Tracked(z) = unsafe { zero_slot(class, p, Tracked(&mut blk)) };
+                let Tracked(z1) = unsafe { zero_slot(class, p, Tracked(&mut blk)) };
                 proof {
                     // `z` covers the slot's whole usable size; the slot is
                     // given up below, with its token.
-                    super::zero::theorem_zero_on_free(&z, p, class as int);
+                    super::zero::theorem_zero_on_free(&z1, p, class as int);
+                    z = z1;
                 }
             }
             // The freed slot's token, from the block's; the permission to
@@ -1503,7 +1515,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
             let tracked tok = blk.take_slot(class as int);
             // No heap keeps the release's record (#920).
             let tracked mut rel: Map<(int, int), crate::bitmap::RelRec> = Map::tracked_empty();
-            shared.free_direct(arena, class, p, Tracked(tok), Tracked(&mut rel), Tracked(&mut *ord));
+            shared.free_direct(arena, class, p, Tracked(tok), Tracked(&z), Tracked(&mut rel), Tracked(&mut *ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_direct_free(class);
             }
@@ -1520,17 +1532,21 @@ pub fn free_direct(shared: &Shared, p: *mut u8, Tracked(claim): Tracked<Claim>, 
                 }
             }
             let ghost mut cleared: Option<Live> = None;
+            // The clear's token, which `Shared::free_huge` requires under
+            // `zero_on_free` (theorem 12); empty and unread otherwise.
+            let tracked mut z = crate::vspec::zero::Zeroed::empty(0);
             if shared.zero_on_free() {
                 // The token for the cleared run (`theorem_zero_on_free_huge`).
-                let (Tracked(z), _before) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
+                let (Tracked(z1), _before) = shared.zero_huge(page, Tracked(&mut claim), Tracked(&mut *ord));
                 proof {
-                    super::zero::theorem_zero_on_free_huge(&z, claim.held->0, page as int);
+                    super::zero::theorem_zero_on_free_huge(&z1, claim.held->0, page as int);
                     cleared = Some(_before@);
+                    z = z1;
                 }
             }
             // The run's token goes to `Huge::free_run`, which drops the
             // permission to its bytes with it.
-            let (n, _freed) = shared.free_huge(page, Tracked(claim), Tracked(&mut *ord));
+            let (n, _freed) = shared.free_huge(page, Tracked(claim), Tracked(&z), Tracked(&mut *ord));
             if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_uncached_free(n);
             }

@@ -733,6 +733,16 @@ pub open(crate) spec fn pac_mode() -> bool {
     Shared::built_at(Shared::storage()).push_flags & PUSH_PAC != 0
 }
 
+/// Whether freed blocks are cleared before they are given up
+/// (`zero_on_free`): the `Shared` in the process's storage has
+/// [`PUSH_ZERO`] set. One value, as for [`pac_mode`]; opaque, revealed by
+/// `heap::shared`'s `lemma_process_shared`. `Heap::push_cache` requires a
+/// `Zeroed` token for the pushed slot when it holds.
+#[verifier::opaque]
+pub open(crate) spec fn zero_mode() -> bool {
+    Shared::built_at(Shared::storage()).push_flags & PUSH_ZERO != 0
+}
+
 /// A slot start of class `c` has no other class, so the hint `Some(c)`
 /// names its class.
 pub proof fn lemma_hint_ok(p: *mut u8, c: int)

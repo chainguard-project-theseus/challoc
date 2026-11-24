@@ -2867,7 +2867,25 @@ pub(crate) proof fn theorem_zero_on_free_huge(tracked z: &Zeroed, blk: Live, pag
     ensures
         process_regions().is_huge_block(blk.addr(), blk.len()),
         forall|a: int| blk.addr() <= a < blk.addr() + blk.len() ==> #[trigger] z.has(a),
+
+// The obligation, a `requires` of each release (#937):
+pub(super) unsafe fn push_cache(cache, p, pac, Tracked(z): Tracked<&Zeroed>, ..) -> (r: bool)  // Heap
+    requires
+        super::zero_mode() ==> z.covers(p, class_table()[old(perms).cls[cache]].size as int),
+pub fn free_direct(&self, arena, class, p, tok, Tracked(z): Tracked<&Zeroed>, ..)              // Shared
+    requires
+        zero_on_free(self) ==> z.covers(p, class_table()[class as int].size as int),
+pub fn free_huge(&self, page, claim, Tracked(z): Tracked<&Zeroed>, ..) -> (r: (usize, Ghost<Live>))  // Shared
+    requires
+        zero_on_free(self) ==> (claim.held matches Some(l) && z.addr() == l.addr() as int && z.len() == l.len()),
 ```
+
+`zero_mode()` (`heap/theorems.rs`) is the `PUSH_ZERO` bit of the
+process's published `Shared`, as `pac_mode()` is its `PUSH_PAC` bit:
+`Shared::wf` gives `zero_on_free(shared) == zero_mode()`.
+`push_cache_flags` and `push_fast`, whose pushes pass an empty token,
+require `zero_mode() ==> flags & PUSH_ZERO != 0`, and decline on that
+bit before any push.
 
 With `zero_on_free` configured, a free path gives up a freed block only
 while it holds a `Zeroed` token (theorem 6's contents model) for all of
@@ -2883,12 +2901,13 @@ the block's usable bytes:
   size; `Shared::zero_huge` also ensures `huge_run_zero`), at the moment
   `Shared::free_huge` releases it.
 
-The two theorems are the obligations the verifier discharges just
-before each release when `zero_on_free(shared)` holds: their `requires`
-is checked at the call, their `ensures` says what the token means byte
-by byte. Their proofs are small (the slot's class is unique; the run's
-bytes lie in the huge region); the substance is the precondition, met
-from the tokens `zero_slot` and `zero_huge` return.
+The obligation is the `requires` of the three releases above, so a
+release through them that skipped the clear does not verify. The two
+theorems say what a token meeting it means byte by byte; each free path
+calls them just before its release. Their proofs are small (the slot's
+class is unique; the run's bytes lie in the huge region); the substance
+is the precondition, met from the tokens `zero_slot` and `zero_huge`
+return.
 Since nothing hands a slot out without its uniqueness token (theorem 5),
 a freed slot's bytes are zero before it can be handed out again, on the
 premise below that nothing writes them in between.
@@ -2907,9 +2926,12 @@ premise below that nothing writes them in between.
   `zero_huge` before `free_huge`.
 - `Heap::free_huge` (`heap/paths.rs`): `zero_huge` before
   `free_huge`.
-- `Shared::free_direct` and `Shared::free_huge` have no other callers
-  outside tests, and `push_cache` is called only by `push_cache_flags`
-  and `free_slow_in`.
+- `push_cache`, `Shared::free_direct` and `Shared::free_huge` require
+  the token, so each path above is checked to pass one that covers the
+  block. `Shared::free_direct` and `Shared::free_huge` have no other
+  callers outside tests, and `push_cache` is called only by
+  `push_cache_flags` (with an empty token, under its `requires` that
+  `zero_mode()` is off) and `free_slow_in`.
 - Every other free of a slot is a cache push, and every push declines
   under `PUSH_ZERO`: `Heap::push_cache_flags` (`heap/cache.rs`) and
   `push_fast` ensure `flags & PUSH_ZERO != 0 ==> !r`, so
@@ -3000,13 +3022,14 @@ theorem does not follow a token through the cache (see below).
   that a slot freed under `zero_on_free` is zero when it is handed out
   (the code does not rely on it: `calloc` clears anything outside
   a cache's zero prefix).
-- That the listed releases are the only ones is argued from the call
-  graph above, not stated as one Verus fact: the decline of `push_fast`,
-  `push_cache_flags`, `free_sized_fast` and the plain `free` route's
-  `free_fast_slot` is proved, and the slow paths' coverage is by
-  inspection. The obligation is not a `requires` of
-  `Shared::free_direct`, `Shared::free_huge` or `push_cache`, so a
-  release path that skipped it would still verify.
+- The obligation is a `requires` of `push_cache`, `Shared::free_direct`
+  and `Shared::free_huge` (#937). A block given up below them is not
+  under it: `Huge::free_run` called directly (only
+  `Shared::shrink_huge`, proved to release pages only with
+  `zero_on_free` unset, above) and `Shared::release_routed` (the
+  batch release of flushes, GC and cache rebuilds, which release slots
+  already in a cache: see "Paths that move freed slots"). That no other
+  free path calls those two is argued from the call graph.
 - The huge token's length is the free's `Live` token's (`Live::len`, the
   run's pages before the guard), which `zero_huge` ensures
   (`heap/shared.rs`); that this is `huge_usable(size)` of the
