@@ -226,13 +226,14 @@ rows marked *(C)*, interface *(live)* cells). What is proved:
   (`lemma_claimed_again`,
   [#850](https://github.com/chainguard-project-theseus/challoc/issues/850));
   that the second free's check is ordered after the release is C's,
-  except at the slow path's check after a release by the same heap's
-  flush, whose records `Heap::free` passes to
+  except at the fast and slow paths' checks after a release by the same
+  heap's flush, whose records `Heap::free` passes to
   `Shared::classify_free_after` (`CachePerms::rels`,
-  `SlabTable::claimed_since`). The fast path `free_fast_slot`, which
-  runs first and sees almost every passing slot, `free_direct`, the
-  rehome retest and releases through `ClassState::release_with` carry
-  no record. A fact about the load, not C's view. The plain frees (`free`,
+  `SlabTable::claimed_since`) and whose copy in the thread's slot token
+  `free_fast_slot` seeds its test with (`TlsSlot::rels`,
+  [#912](https://github.com/chainguard-project-theseus/challoc/issues/912)).
+  `free_direct`, the rehome retest and releases through
+  `ClassState::release_with` carry no record. A fact about the load, not C's view. The plain frees (`free`,
   `delete`), `challoc_free_usable`, `dallocx` and the reallocations
   (`realloc`, `challoc_realloc_usable`, `rallocx`) take C's token for a
   slot start only past this test, with its record:

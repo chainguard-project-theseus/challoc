@@ -4445,6 +4445,9 @@ impl Shared {
             self.wf(),
         ensures
             r matches Some((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+            // The class is `p`'s stride, known before the test.
+            r matches Some((c, _)) ==> c == p@.addr.wrapping_sub(crate::layout::process_regions().superblock)
+                >> crate::layout::process_regions().lg_stride,
             r matches Some((c, s)) ==> s < self.tables[c as int].spec_nslabs(),
             r matches Some((c, s)) ==> s == p@.addr.wrapping_sub(crate::layout::process_regions().class_base[c as int])
                 >> class_table()[c as int].lg_slab,

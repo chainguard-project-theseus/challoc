@@ -1154,6 +1154,13 @@ impl Heap {
         (if now >= self.gc_clock() { now - self.gc_clock() } else { now + 0x1_0000_0000_0000_0000 - self.gc_clock() }) >= DEFRAG_GC_INTERVAL_NS
     }
 
+    /// The release records of this heap's flushes
+    /// ([`CachePerms::rels`]), which a thread's slot token carries a copy
+    /// of (`sys::tls::TlsSlot::rels_ok`).
+    pub closed spec fn rels(&self) -> crate::bitmap::Rels {
+        self.perms@.rels
+    }
+
     /// `perms` are this heap's cache permissions, lent to a proof
     /// (`heap.perms.borrow_mut()`).
     pub closed spec fn perms_are(&self, perms: CachePerms) -> bool {

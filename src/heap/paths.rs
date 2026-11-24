@@ -1030,6 +1030,8 @@ pub unsafe fn free_fast_slot(
         shared.wf(),
         old(claim).claims(p),
         slot_ok(old(tls).cell, old(tls).loan),
+        // The token's release records are its heap's (#912).
+        old(tls).rels_ok(),
         t == old(tls).value(),
         t > TLS_EXITED,
         tp == old(tls).tp(),
@@ -1045,10 +1047,42 @@ pub unsafe fn free_fast_slot(
         final(tls).lent(*old(tls)),
     opens_invariants [crate::bitmap::word_ns(), crate::class::committed_ns(), crate::class::owner_ns(), crate::vspec::flags::flags_ns()]
 {
+    // The bit test is ordered after the token's release record of `p`'s
+    // slot in the class of `p`'s stride, when it has one (#912): the
+    // records of the heap's flushes, a copy the token carries
+    // (`TlsSlot::rels_ok`), since the heap is reached only after the test.
+    let ghost key = (
+        (p@.addr.wrapping_sub(process_regions().superblock) >> process_regions().lg_stride) as int,
+        p@.addr as int,
+    );
+    let ghost had = tls.rels.map().contains_key(key);
     let tracked mut obs = crate::class::BitLoad::new();
+    proof {
+        if had {
+            let tracked rec = tls.rels.tracked_get(key.0, key.1);
+            obs = crate::class::BitLoad::of_release(rec.w.duplicate());
+        }
+    }
+    let ghost o0 = obs;
     let Some((class, slab)) = shared.set_slot(p, Tracked(&mut obs)) else {
         return (None, Ghost(vstd::pervasive::arbitrary()));
     };
+    proof {
+        // A stale free of a slot this heap released passes only if the
+        // slot was claimed again since: the test read a newer version of
+        // its word than the release left.
+        if had {
+            // The record's geometry is the table's, so its word value is a
+            // release record there.
+            shared.lemma_process_slots(class as int);
+            assert(shared.tables[class as int].claimed_since(p@.addr as int, o0, obs));
+        }
+        // Stated of the records of the heap the token lends (`rels_ok`),
+        // under the class the test found.
+        let k = (class as int, p@.addr as int);
+        assert(old(tls).loan.heap() matches Some(hp) ==> (hp.value().rels().map().contains_key(k) ==> hp.value().rels().map()[k].w@.1
+            < obs.seen()->Some_0.1.1));
+    }
     // The bit test passed: claim the block, with the test's record.
     proof {
         claim.settle(p, &obs);
