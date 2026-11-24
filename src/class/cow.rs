@@ -37,10 +37,13 @@ impl ClassState {
         }
     }
 
-    /// Set this pair's floor to the arena's commit cursor, under the class
-    /// lock, so that a refill in flight either finished before or sees it:
-    /// the start of an epoch (`cow::begin`, before the fork). `ord` is the
-    /// caller's lock-order token (ghost) for the class lock.
+    /// Set this pair's floor to the arena's commit cursor, read under the
+    /// class lock: the start of an epoch (`cow::begin`, before the fork).
+    /// A refill reads the floor before it takes the lock
+    /// ([`ClassState::cow_floor`] in `plan`), so one in flight may still
+    /// use the floor from before this store (`verus/WEAKMEM.md`, P7); it
+    /// takes a valid slot either way. `ord` is the caller's lock-order
+    /// token (ghost) for the class lock.
     pub fn cow_mark(&self, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),

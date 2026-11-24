@@ -47,7 +47,7 @@ a compiler barrier.
 
 | File | Lines | Atomics |
 |---|---|---|
-| `cow.rs` | 69 | fork epochs: `DEPTH`, `IN_FORCE`, `CAP`, `CLAIMED`, `FLUSH_AFTER`, `EPOCHS`, `EXPIRED`, `DEFLECTED` and the drain's `DRAIN_*`, mostly `Relaxed`, with some `Acquire`, `Release` and `AcqRel` operations (no protocol below covers them; #945) |
+| `cow.rs` | 69 | fork epochs: `DEPTH`, `IN_FORCE`, `CAP`, `CLAIMED`, `FLUSH_AFTER`, `EPOCHS`, `EXPIRED`, `DEFLECTED` and the drain's `DRAIN_*`, mostly `Relaxed`, with some `Acquire`, `Release` and `AcqRel` operations (P7) |
 | `purge/background.rs` | 56 | `PRESENT`, `REQUESTED`, `SEQ`; the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
 | `thp.rs` | 45 | init-time configuration and counters; `MODE`'s `Release` store publishes the thresholds to its `Acquire` loads, and no protocol below covers it (#946) |
 | `purge.rs` | 37 | flags, counters, `Decayer` |
@@ -246,6 +246,75 @@ a compiler barrier.
   `PAtomicU32`, through `vspec/count.rs`).
 - Thread heaps are touched only by their own thread; no code walks
   another thread's heap.
+
+### P7. Fork epochs
+
+Read from the code; no loom model or GenMC harness copies these steps,
+and no test checks the orderings (**unconfirmed**).
+
+- What rests on it: only which free slot a refill takes and which cache
+  a free goes to (`cow.rs`, `class/cow.rs`). Slot claims and releases
+  still go through P1 and the class lock (P2), so a stale floor or flag
+  changes page copying after a `fork`, not what the allocator hands
+  out.
+- `DEPTH` is a counter with a `BUSY` bit, changed only by
+  compare-exchanges (`enter`, `leave`, `end_all_drains`) and by stores
+  from the thread that set `BUSY` (`begin`, `end_within`,
+  `end_all_drains`, and `fork_child`, which runs while only the forking
+  thread runs). Exclusion of the outermost transitions comes from the
+  compare-exchanges, whatever their ordering. Edge: a transition's
+  `Relaxed` writes (`IN_FORCE`, `CAP`, `CLAIMED`, `FLUSH_AFTER`,
+  `EPOCHS`, `DRAIN_SEEN`, `DRAIN_ASKS`, `DRAIN_UNTIL`, the floors `cow_floor` and
+  `drain_floor`) come before its `Release` store that clears `BUSY`, and
+  the next `enter` or `leave` reads `DEPTH` with `Acquire`, so it sees
+  them. A nested `begin` that returns 0 has read the outermost's
+  `Release` store of 1, or a later read-modify-write in its release
+  sequence (only the nested `enter`s' and `leave`s' compare-exchanges
+  write `DEPTH` while it is nonzero and `BUSY` is clear), so the floors
+  that epoch set happen before it returns. `IN_FORCE`, `DRAIN_UNTIL`,
+  `DRAIN_ASKS` and `DRAIN_SEEN` are also written outside a transition
+  (below, and `stalled`'s record), so the edge orders only the
+  transition's own writes of them.
+- Floors: `ClassState::cow_mark` stores the floor under the class lock,
+  but a refill reads it before it takes that lock (`ClassState::plan`
+  reads `cow_floor()` and passes it to `plan_at`, which locks), so P2
+  does not order the two. A refill can see `IN_FORCE` set and still
+  read a pair's floor from before its mark: 0 after an `end`, or the
+  parent's floor in a fork child (`fork_child` leaves the floors
+  stored). Either way it takes a valid slot (`plan_epoch` falls back
+  over the whole class), only not the one the epoch wants. The free
+  slow path reads the floor without the lock too
+  (`ClassState::cow_below`, `heap/shared.rs`). A stale floor there
+  changes only which cache the free goes to.
+- `DRAIN_ENDS`: `end_within` resets `DRAIN_SEEN` and `DRAIN_ASKS`, then
+  adds to `DRAIN_ENDS` with `Release`. `draining_pairs` loads it with
+  `Acquire` before `stalled` reads them, so a reader that sees an end's
+  count sees its resets or later values. `end_all_drains` takes `BUSY`
+  with an `Acquire` compare-exchange that reads a `Release` store of 0:
+  the last `end_within`'s, which comes after its count, or a later
+  holder's, which came after that one. So it sees every completed end's
+  count.
+- `DRAIN_SEEN`: `stalled` clears `DRAIN_ASKS`, then publishes a record
+  with a `Release` compare-exchange. A reader loads the record with
+  `Acquire` before it loads `DRAIN_ASKS`, so it judges by queries made
+  since that record.
+- Property: the doc comments on `DEPTH`, `DRAIN_ENDS`, `stalled` and
+  `end_all_drains` state it. A stall ends only the drain of the epoch it
+  was judged by, and no nested epoch returns before its floors are set.
+  Both are liveness and heuristic properties, not safety ones.
+- Writes outside a transition, all `Relaxed`, none ordered by `DEPTH`:
+  - `note_claimed`'s cap check stores `IN_FORCE = false`. A refill that
+    crossed epoch N's cap can make that store after `end` N and `begin`
+    N+1, and so end epoch N+1's floors early. That costs page copying,
+    not correctness.
+  - `draining`'s compare-exchange of `DRAIN_UNTIL` to 0 closes the drain
+    window. It exchanges only the deadline it read, so a later `end`'s
+    deadline stays.
+  - `asked`'s compare-exchange of `DRAIN_ASKS` records the queries. A
+    stale value changes only when a stall is judged.
+- Left out: the statistics `EXPIRED`, `DEFLECTED`, `DRAIN_MOVES` and
+  `EPOCHS`. A stale value there changes only reports, or, for
+  `DRAIN_MOVES`, when a stall is judged.
 
 ### Out of scope
 
