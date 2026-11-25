@@ -48,12 +48,12 @@ in [chainguard-project-theseus/feedback](https://github.com/chainguard-project-t
 
 ## Formal verification
 
-Verus verifies 89.3% of challoc's executable functions and 95.5% of its
+Verus verifies 89.0% of challoc's executable functions and 94.8% of its
 executable lines. Counting also the trusted functions whose seams Kani,
-a constant assertion, Isla or `make emptyasm` discharges gives 93.6% of
-functions and 97.4% of lines. Counting instead the trusted functions
-checked by loom models of the atomic protocol gives 89.7% and 95.7%;
-those functions stay partly checked, not verified (main `f40d08f2`;
+a constant assertion, Isla or `make emptyasm` discharges gives 93.0% of
+functions and 96.5% of lines. Counting instead the trusted functions
+checked by loom models of the atomic protocol gives 89.6% and 95.2%;
+those functions stay partly checked, not verified (main `2351410e`;
 [verus/RESULTS.md](verus/RESULTS.md#headline-figures) has the figures
 and the commands that measure them).
 
