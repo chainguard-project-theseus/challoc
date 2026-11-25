@@ -133,6 +133,10 @@ leave out (theorem 33). Remaining work is tracked in
 - **Claims past the check** ([Frees claim C's token only past their check](#frees-claim-cs-token-only-past-their-check-rests-on-the-c-boundary-assumption-past-the-check)):
   `heap::live::Claim::settle` and `settle_run`'s contracts,
   `heap/live.rs`, with `trusted_mint_sites_are_pinned` (`lib.rs`).
+- **THP advice placement** ([THP advice targets stay inside challoc's reservations](#thp-advice-targets-stay-inside-challocs-reservations-for-the-processs-allocators)):
+  `layout::Regions::theorem_thp_advice_in_reservations`,
+  `layout/regions.rs`, and `heap::theorem_thp_advice_published`,
+  `heap/theorems.rs`, with `thp::madvise_hugepage`'s contract.
 
 ## Configuration
 
@@ -11365,6 +11369,138 @@ huge block.
 | R3 | `theorem_guard_reach` without `guard_geom(c).1 != u32::MAX` | `lemma_guard_near`'s precondition |
 | R4 | `ClassLine::wf` without `mask_shape` | `lemma_process_guard_geom`'s postcondition |
 | R5 | `lemma_guard_near`'s upward bound `m * gs` becomes `(m - 1) * gs` | its postcondition |
+
+## THP advice targets stay inside challoc's reservations (for the process's allocators)
+
+The THP code (`thp.rs`, design 7 and 17) asks the kernel for huge pages
+with `madvise(MADV_HUGEPAGE)` on ranges the allocators pick: a slab group
+under `thp:auto`, a PMD chunk under `thp:always`, a huge run of a PMD or
+more, and a metadata commit. `thp::madvise_hugepage` makes the call for
+all of them. Before chainguard-project-theseus/challoc#959 its SAFETY
+comment said the callers pass ranges inside the allocator's own
+reservations, and nothing verified stated it.
+
+**Statement.**
+
+```rust
+// layout/regions.rs
+pub open spec fn thp_target(self, a: int, len: int) -> bool {
+    let region = (1usize << self.lg_region) as int;
+    ||| exists|c: int|
+        #![trigger self.class_base[c]]
+        0 <= c < NCLASSES && self.class_base[c] <= a && a + len <= self.class_base[c] + region
+    ||| self.huge_base <= a && a + len <= self.huge_base + self.huge_len
+    ||| self.meta_base <= a && a + len <= self.meta_base + self.meta_len
+}
+
+pub proof fn theorem_thp_advice_in_reservations(self, a: int, len: int)
+    requires
+        self.separated(),
+        self.mapped(),
+        0 <= len,
+        self.thp_target(a, len),
+    ensures
+        self.in_mapping(a, len),
+        disjoint(a, len, shared_static_addr(), shared_static_len()),
+
+// heap/theorems.rs: the same, of the process's regions.
+pub proof fn theorem_thp_advice_published(a: int, len: int)
+    requires
+        crate::api::ready(),
+        0 <= len,
+        process_regions().thp_target(a, len),
+    ensures
+        process_regions().in_mapping(a, len),
+        crate::layout::disjoint(a, len, crate::layout::shared_static_addr(), crate::layout::shared_static_len()),
+
+// thp.rs: the one `MADV_HUGEPAGE` call.
+fn madvise_hugepage(addr: usize, len: usize, Ghost(home): Ghost<bool>) -> bool
+    requires
+        crate::sys::may_syscall(),
+        home ==> crate::layout::process_regions().thp_target(addr as int, len as int),
+```
+
+In words: a range inside a class region, the huge region or the metadata
+region lies inside one of challoc's three `mmap` reservations
+(`in_mapping`, theorem 41's) and shares no byte with the `Shared`
+static. `madvise_hugepage` requires that of its range of
+`process_regions()` whenever `home` says its caller is one of the
+process's allocators. `advise`, `advise_huge` and `advise_meta` pass the
+same requirement up to their callers. `advise_class` requires it
+unconditionally and passes `home = true`. `theorem_thp_advice_published`
+composes the two for the process's regions. `shared::lemma_process_padded`
+gives `separated` and `mapped` of `process_regions()` once the
+allocator is published (`api::ready()`).
+
+The six call sites:
+
+| site | range | `home` | how it is proved |
+|---|---|---|---|
+| `SlabTable` group commit (`class/table.rs`, `thp:auto`) | slabs `s..end` of the group | `true` (`advise_class`) | `lemma_commit_thp_target`: `commit_inside` of the class, from `lemma_slab_bytes`; the region's slabs end where the region does (`Regions::lemma_slab_of`) |
+| `SlabTable::commit_page_group` (`thp:always`) | the PMD chunk `lo..hi`, just committed | `true` (`advise_class`) | `lemma_commit_thp_target` from the commit's `ensures` (`commit_inside`) |
+| `Huge::prepare` (`huge/mod.rs`) | the run's usable pages `s..s + usable` | `self.is_process()` | `Huge::lemma_thp_target`: the process's `npages` pages are `huge_len >> lg_page` whole pages of the huge region |
+| the in-place grow (`huge/grow.rs`) | the grown run's usable pages | `self.is_process()` | as above |
+| `meta::Inner::commit_bump_to` | `committed..want`, the chunk just committed | `self.is_process_region()` | `Inner::lemma_thp_target` from `region_wf` and `chunk_end`'s bound |
+| the top-side commit of a lazy table (`meta.rs`) | `addr..addr + len`, inside the region by the two run-time checks before it | `self.is_process_region()` | `Inner::lemma_thp_target` |
+
+`meta::Inner::is_process_region` says the lock value's region is the
+process's metadata region. `Meta::lemma_process_region` proves it of
+every value the lock of a `Meta` with `is_process` admits: the lock's
+frame keeps the region's base and length.
+
+**Premises (seams).**
+
+| seam | kind | what it gives here |
+|---|---|---|
+| `linux::try_reserve`, `Reserved::is_disjoint`, `Reserved::is_apart_from_static` (`layout/regions.rs`) | platform/kernel fact, trusted (as for theorem 41) | the three reservations are live, pairwise disjoint and apart from the loaded object's data, which `Regions::mapped` carries |
+| `sys::raw::syscall3` (under the verified `sys::madvise`) | inline asm, an Isla seam | the kernel receives the range `madvise` is given |
+
+No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- `home` is a ghost flag that each caller chooses. Under `home == false`
+  the requirement says nothing, so a call passing `Ghost(false)` would
+  verify for any range. The source test
+  `thp::tests::thp_advice_home_is_the_callers` pins the four huge and
+  metadata calls to `Ghost(self.is_process())` and
+  `Ghost(self.is_process_region())`. That those hold for the allocators
+  `api::init` builds is `Huge::is_process` and `Meta::is_process`, with
+  `Meta::lemma_process_region` for the lock's values. They are not stated
+  at the call sites, whose functions also serve test allocators.
+- The composed statement is proved under `api::ready()`, the only place
+  `mapped` of `process_regions()` is available. Advice can run before
+  publication: `thp::configure` runs before any region is committed, so
+  `Shared::init`'s metadata and table commits may advise. Those calls
+  still meet `madvise_hugepage`'s `requires`. `thp_target`,
+  `in_mapping` and `disjoint` are facts about the one regions value,
+  which never changes, so the theorem's conclusion is true of their
+  ranges as well. What waits for publication is only the proof of
+  `mapped`.
+- Only containment in a region is stated. A huge range is the run's
+  usable pages, which `prepare` and the grow have just placed, but the
+  statement does not say so, nor that it spares the run's guard.
+  `MADV_HUGEPAGE` sets a VMA flag and changes no contents. The kernel's
+  answer is not modelled; a refusal is counted.
+- `MADV_NOHUGEPAGE` is not covered. `advise_reservation` gives it to the
+  class and metadata mappings themselves (`Regions::reserve_owning`
+  passes the `Mapping` values), and `force_never` gives it to the ranges
+  recorded in `RESERVATIONS`, whose `core` atomics have no value spec.
+- Ghost only: the release library's machine code is unchanged
+  (the new arguments are `Ghost`, erased).
+
+**Mutations** (`cargo verus focus --locked -- --verify-module <m>`, on
+the PR's tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| M1 | group commit advises `(end - s + 1) << lg_slab` | rejected (`advise_class` precondition) | verifies |
+| M2 | PMD chunk advises `hi - lo + pmd` | rejected (precondition, and overflow) | rejected (overflow only) |
+| M3 | `prepare` advises `npages * page` from `s` | rejected (`advise_huge` precondition) | verifies |
+| M4 | the grow advises `npages * ps` from `page` | rejected (precondition) | verifies |
+| M5 | `commit_bump_to` advises `self.len` from `committed` | rejected (`advise_meta` precondition) | verifies |
+| M6 | the top-side commit advises `self.len` from `addr` | rejected (precondition) | verifies |
+| M7 | `prepare` passes `Ghost(false)` (with M3's length) | verifies; the source test fails | n/a |
+| M8 | `Inner`'s lock frame drops `spec_base` | rejected (`Meta::lemma_process_region`'s postcondition, and six existing ones) | n/a |
 
 ## Interface contract
 

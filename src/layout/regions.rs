@@ -476,6 +476,50 @@ impl Regions {
         ||| m.addr <= a && a + len <= m.addr + m.len
     }
 
+    /// A range `thp.rs` may hand `madvise(MADV_HUGEPAGE)`: inside one
+    /// class region, the huge region or the metadata region.
+    /// `thp::madvise_hugepage` requires it of its range when its caller is
+    /// one of the process's allocators, which every call site (`class::table`,
+    /// `huge::Huge::prepare`, `huge/grow.rs`, `meta`) proves, and
+    /// [`Regions::theorem_thp_advice_in_reservations`] puts such a range
+    /// inside challoc's reservations.
+    pub open spec fn thp_target(self, a: int, len: int) -> bool {
+        let region = (1usize << self.lg_region) as int;
+        ||| exists|c: int|
+            #![trigger self.class_base[c]]
+            0 <= c < NCLASSES && self.class_base[c] <= a && a + len <= self.class_base[c] + region
+        ||| self.huge_base <= a && a + len <= self.huge_base + self.huge_len
+        ||| self.meta_base <= a && a + len <= self.meta_base + self.meta_len
+    }
+
+    /// THP advice targets stay inside challoc's reservations (#959): a
+    /// range [`Regions::thp_target`] accepts lies inside one of the three
+    /// `mmap`s challoc reserved ([`Regions::in_mapping`]) and shares no
+    /// byte with the process's `Shared` static. A class region lies in the
+    /// superblock's strides ([`Regions::lemma_class_in_strides`]), and
+    /// [`Regions::mapped`] puts the strides, the huge region and the
+    /// metadata region inside their mappings, each apart from the static.
+    pub proof fn theorem_thp_advice_in_reservations(self, a: int, len: int)
+        requires
+            self.separated(),
+            self.mapped(),
+            0 <= len,
+            self.thp_target(a, len),
+        ensures
+            self.in_mapping(a, len),
+            disjoint(a, len, shared_static_addr(), shared_static_len()),
+    {
+        let region = (1usize << self.lg_region) as int;
+        if exists|c: int|
+            #![trigger self.class_base[c]]
+            0 <= c < NCLASSES && self.class_base[c] <= a && a + len <= self.class_base[c] + region {
+            let c = choose|c: int|
+                #![trigger self.class_base[c]]
+                0 <= c < NCLASSES && self.class_base[c] <= a && a + len <= self.class_base[c] + region;
+            self.lemma_class_in_strides(c);
+        }
+    }
+
     /// A range `seal` may hand `mseal`: non-empty, inside one of challoc's
     /// reservations ([`Regions::in_mapping`]), and sharing no byte with any
     /// class region, the huge region, the metadata region or the process's

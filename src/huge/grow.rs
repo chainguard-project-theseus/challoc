@@ -1376,9 +1376,11 @@ impl Huge {
         // `thp:always`, as `prepare` advises a new run.
         proof {
             self.lemma_pages(usable);
+            // #959: the grown run's usable pages are a THP advice target.
+            self.lemma_thp_target(page as int, usable as int);
         }
         if usable * ps >= crate::thp::huge_min() {
-            crate::thp::advise_huge(self.addr(page), usable * ps);
+            crate::thp::advise_huge(self.addr(page), usable * ps, Ghost(self.is_process()));
         }
         g.unlock();
         (Some((arena, need - n)), Tracked(grown))

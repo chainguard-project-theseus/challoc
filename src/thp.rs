@@ -699,12 +699,21 @@ pub fn chunk(addr: usize, len: usize, lo: usize, hi: usize, pmd: usize) -> (r: (
     (start, end.min(hi))
 }
 
-fn madvise_hugepage(addr: usize, len: usize) -> bool
+/// `MADV_HUGEPAGE` on `[addr, addr + len)`, the one place `thp.rs` asks
+/// for it. `home` says the caller is one of the process's allocators,
+/// whose regions are `process_regions()`'s; the range is then a THP advice
+/// target ([`Regions::thp_target`](crate::layout::Regions::thp_target),
+/// #959), which every caller proves, so
+/// [`Regions::theorem_thp_advice_in_reservations`](crate::layout::Regions::theorem_thp_advice_in_reservations)
+/// puts it inside challoc's reservations.
+fn madvise_hugepage(addr: usize, len: usize, Ghost(home): Ghost<bool>) -> bool
     requires
         crate::sys::may_syscall(),
+        home ==> crate::layout::process_regions().thp_target(addr as int, len as int),
 {
     // SAFETY: the callers pass ranges inside the allocator's own
-    // reservations; `MADV_HUGEPAGE` changes a VMA flag, never contents.
+    // reservations (the `requires`, #959); `MADV_HUGEPAGE` changes a VMA
+    // flag, never contents.
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_HUGEPAGE) }.is_ok()
 }
 
@@ -717,14 +726,15 @@ fn madvise_nohugepage(addr: usize, len: usize) -> bool
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_NOHUGEPAGE) }.is_ok()
 }
 
-fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool
+fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool, Ghost(home): Ghost<bool>) -> bool
     requires
         crate::sys::may_syscall(),
+        home ==> crate::layout::process_regions().thp_target(addr as int, len as int),
 {
     if len == 0 {
         return true;
     }
-    let ok = madvise_hugepage(addr, len);
+    let ok = madvise_hugepage(addr, len, Ghost(home));
     if ok {
         if count {
             ranges.fetch_add(1, Ordering::Relaxed);
@@ -738,11 +748,14 @@ fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool
 /// `MADV_HUGEPAGE` on a class region range (a slab group, or a PMD chunk
 /// from any of its slabs: `count` says whether this call is the one that
 /// starts the range, so the counters see each range once).
+/// The class tables are always the process's (`class::table`'s
+/// `regions_held`), so the range is a THP advice target unconditionally.
 pub fn advise_class(addr: usize, len: usize, count: bool) -> bool
     requires
         crate::sys::may_syscall(),
+        crate::layout::process_regions().thp_target(addr as int, len as int),
 {
-    let ok = advise(addr, len, &CLASS_RANGES, count);
+    let ok = advise(addr, len, &CLASS_RANGES, count, Ghost(true));
     if ok && count {
         CLASS_BYTES.fetch_add(len as u64, Ordering::Relaxed);
         if len >= pmd_size() {
@@ -752,20 +765,26 @@ pub fn advise_class(addr: usize, len: usize, count: bool) -> bool
     ok
 }
 
-/// `MADV_HUGEPAGE` on a huge run.
-pub fn advise_huge(addr: usize, len: usize) -> bool
+/// `MADV_HUGEPAGE` on a huge run. `home`: the caller is the process's
+/// huge allocator (`Huge::is_process`), and the run is then a THP advice
+/// target.
+pub fn advise_huge(addr: usize, len: usize, Ghost(home): Ghost<bool>) -> bool
     requires
         crate::sys::may_syscall(),
+        home ==> crate::layout::process_regions().thp_target(addr as int, len as int),
 {
-    advise(addr, len, &HUGE_RANGES, true)
+    advise(addr, len, &HUGE_RANGES, true, Ghost(home))
 }
 
-/// `MADV_HUGEPAGE` on a metadata commit.
-pub fn advise_meta(addr: usize, len: usize) -> bool
+/// `MADV_HUGEPAGE` on a metadata commit. `home`: the caller's region is
+/// the process's metadata region (`Meta::is_process`), and the range is
+/// then a THP advice target.
+pub fn advise_meta(addr: usize, len: usize, Ghost(home): Ghost<bool>) -> bool
     requires
         crate::sys::may_syscall(),
+        home ==> crate::layout::process_regions().thp_target(addr as int, len as int),
 {
-    advise(addr, len, &META_RANGES, true)
+    advise(addr, len, &META_RANGES, true, Ghost(home))
 }
 
 /// The counters, for the report and `stats.thp.*`.
@@ -1154,5 +1173,39 @@ mod tests {
             release(a, 0x4000);
             release(b, 0x8000);
         });
+    }
+
+    /// #959: every huge and metadata advice call takes its `home` flag
+    /// from the caller's own spec (`Huge::is_process`,
+    /// `meta::Inner::is_process_region`), never a constant: under
+    /// `home == false` the `requires` of `madvise_hugepage` says nothing,
+    /// so a `Ghost(false)` would verify any range.
+    #[test]
+    fn thp_advice_home_is_the_callers() {
+        use crate::testutil::grant_sites;
+        // Spelled in parts, so that this test's own lines match nothing.
+        let calls = [
+            (
+                std::format!("{}{}(", "advise_", "huge"),
+                "Ghost(self.is_process()));",
+            ),
+            (
+                std::format!("{}{}(", "advise_", "meta"),
+                "Ghost(self.is_process_region()));",
+            ),
+        ];
+        for (call, home) in &calls {
+            let sites: std::vec::Vec<_> = grant_sites(call)
+                .into_iter()
+                .filter(|(_, at)| !at.contains("pub fn "))
+                .collect();
+            for (_, at) in &sites {
+                assert!(
+                    at.ends_with(&std::format!("{home}`")),
+                    "{at}: `home` is not the caller's own"
+                );
+            }
+            assert_eq!(sites.len(), 2, "{sites:?}");
+        }
     }
 }

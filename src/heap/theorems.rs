@@ -146,6 +146,30 @@ pub proof fn theorem_overflow_reach(p: *mut u8, size: int, align: int, a: int, b
     r.lemma_overflow_reach(a, b);
 }
 
+/// THP advice targets stay inside challoc's reservations, for the
+/// process's regions (#959): once the allocator is published, a range
+/// `thp::madvise_hugepage` is required to name
+/// ([`Regions::thp_target`](crate::layout::Regions::thp_target) of
+/// [`process_regions`]) lies inside one of the three reservations and
+/// shares no byte with the `Shared` static. The process's regions are
+/// separated and mapped ([`shared::lemma_process_padded`]), which
+/// [`Regions::theorem_thp_advice_in_reservations`](crate::layout::Regions::theorem_thp_advice_in_reservations)
+/// needs. The facts are about the regions value, which does not change,
+/// so they cover the advice `Shared::init` issues before publication too;
+/// only the proof goes through publication.
+pub proof fn theorem_thp_advice_published(a: int, len: int)
+    requires
+        crate::api::ready(),
+        0 <= len,
+        process_regions().thp_target(a, len),
+    ensures
+        process_regions().in_mapping(a, len),
+        crate::layout::disjoint(a, len, crate::layout::shared_static_addr(), crate::layout::shared_static_len()),
+{
+    shared::lemma_process_padded();
+    process_regions().theorem_thp_advice_in_reservations(a, len);
+}
+
 /// The bytes of one page group of class `c`'s region: `1 << glg` slabs
 /// of the class ([`guard_geom`](crate::layout::guard_geom)).
 pub open spec fn guard_group(c: int) -> int {
