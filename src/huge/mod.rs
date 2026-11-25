@@ -3720,6 +3720,49 @@ impl Huge {
         vstd::bits::lemma_usize_shl_is_mul(1, self.lg_page as usize);
     }
 
+    /// Pages `s..s + n` of the region are a THP advice target of the
+    /// process's regions ([`Regions::thp_target`](crate::layout::Regions::thp_target),
+    /// #959) when this is the process's huge allocator: its `npages`
+    /// pages are `huge_len >> lg_page` whole pages of the huge region.
+    proof fn lemma_thp_target(&self, s: int, n: int)
+        requires
+            self.inv(),
+            0 <= s,
+            0 <= n,
+            s + n <= self.npages,
+        ensures
+            self.is_process() ==> crate::layout::process_regions().thp_target(
+                self.base + s * pow2(self.lg_page as nat),
+                n * pow2(self.lg_page as nat),
+            ),
+    {
+        if self.is_process() {
+            let r = crate::layout::process_regions();
+            let p = pow2(self.lg_page as nat) as int;
+            self.lemma_page();
+            assert(r.lg_page < 64);
+            vstd::bits::lemma_usize_shr_is_div(r.huge_len, r.lg_page as usize);
+            vstd::arithmetic::power2::lemma_pow2_pos(r.lg_page as nat);
+            vstd::bits::lemma_usize_pow2_no_overflow(r.lg_page as nat);
+            vstd::bits::lemma_usize_shl_is_mul(1, r.lg_page as usize);
+            assert(p == pow2(r.lg_page as nat));
+            assert(self.npages == r.huge_len as int / p);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(r.huge_len as int, p);
+            assert(s * p + n * p == (s + n) * p) by (nonlinear_arith);
+            assert((s + n) * p <= self.npages * p) by (nonlinear_arith)
+                requires
+                    s + n <= self.npages,
+                    p > 0,
+            ;
+            assert(self.npages * p <= r.huge_len) by (nonlinear_arith)
+                requires
+                    self.npages == r.huge_len as int / p,
+                    r.huge_len as int == p * (r.huge_len as int / p) + r.huge_len as int % p,
+                    0 <= r.huge_len as int % p,
+            ;
+        }
+    }
+
     /// `x` pages of `2^lg_page` fit the region when `x <= npages`.
     proof fn lemma_pages(&self, x: usize)
         requires
@@ -5314,7 +5357,11 @@ impl Huge {
         // advised). A refusal is counted, not an error: the run works
         // with small pages.
         if r.is_ok() && usable * page >= crate::thp::huge_min() {
-            crate::thp::advise_huge(self.addr(s), usable * page);
+            proof {
+                // #959: the run's usable pages are a THP advice target.
+                self.lemma_thp_target(s as int, usable as int);
+            }
+            crate::thp::advise_huge(self.addr(s), usable * page, Ghost(self.is_process()));
         }
         r
     }

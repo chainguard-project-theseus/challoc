@@ -1137,6 +1137,19 @@ impl Meta {
         &&& self.pages_id() == process_pages_id()
         &&& self.page() == process_page()
     }
+
+    /// Every value the lock of the process's `Meta` admits is over the
+    /// process's metadata region ([`Inner::is_process_region`], the flag
+    /// its THP advice passes, #959): the lock's frame keeps the region's
+    /// base and length.
+    pub(crate) proof fn lemma_process_region(&self, v: Inner)
+        requires
+            self.is_process(),
+            self.admits(v),
+        ensures
+            v.is_process_region(),
+    {
+    }
 }
 
 /// The identity of the unclaimed-byte map of the process's `Meta`, the
@@ -2206,6 +2219,27 @@ proof fn join_at(tracked a: PointsToRaw, tracked b: PointsToRaw, lo: int, mid: i
 }
 
 impl Inner {
+    /// The region is the process's metadata region, as it is in every
+    /// value the lock of the process's `Meta` admits
+    /// ([`Meta::lemma_process_region`]).
+    pub(crate) closed spec fn is_process_region(&self) -> bool {
+        &&& self.base == crate::layout::process_regions().meta_base
+        &&& self.len == crate::layout::process_regions().meta_len
+    }
+
+    /// `[a, a + len)` inside the region is a THP advice target of the
+    /// process's regions
+    /// ([`Regions::thp_target`](crate::layout::Regions::thp_target), #959)
+    /// when the region is the process's metadata region.
+    proof fn lemma_thp_target(&self, a: int, len: int)
+        requires
+            self.base <= a,
+            a + len <= self.base + self.len,
+        ensures
+            self.is_process_region() ==> crate::layout::process_regions().thp_target(a, len),
+    {
+    }
+
     /// The region's layout: page-aligned bounds in order, below
     /// [`va_limit`].
     spec fn region_wf(&self) -> bool {
@@ -2538,7 +2572,11 @@ impl Inner {
             // multiple of it (the region base is `MAX_SLAB`-aligned), so
             // the first touch of a heap or cache maps one folio.
             if crate::thp::meta_folio_size() != 0 {
-                crate::thp::advise_meta(self.committed, want - self.committed);
+                proof {
+                    // #959: the newly committed chunk is a THP advice target.
+                    self.lemma_thp_target(self.committed as int, want - self.committed);
+                }
+                crate::thp::advise_meta(self.committed, want - self.committed, Ghost(self.is_process_region()));
             }
             proof {
                 // The pages just committed past `fresh` move from
@@ -3196,7 +3234,11 @@ impl Inner {
         // Metadata THP (`thp.rs`): `Lazy::ensure` rounded the range to the
         // folio; the advice makes the kernel map it as one.
         if crate::thp::meta_folio_size() != 0 {
-            crate::thp::advise_meta(addr, len);
+            proof {
+                // #959: the table's top-side range is a THP advice target.
+                self.lemma_thp_target(addr as int, len as int);
+            }
+            crate::thp::advise_meta(addr, len, Ghost(self.is_process_region()));
         }
         self.top_committed += len;
         self.stats.committed += len;

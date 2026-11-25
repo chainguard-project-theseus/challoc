@@ -1203,6 +1203,29 @@ fn commit(addr: usize, len: usize, Ghost(c): Ghost<int>, Ghost(chunk): Ghost<boo
     unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
 }
 
+/// A range inside class `c`'s committable slabs ([`commit_inside`]) is a
+/// THP advice target of the process's regions
+/// ([`Regions::thp_target`](crate::layout::Regions::thp_target), #959):
+/// the region's slabs end where the region does
+/// ([`Regions::lemma_slab_of`](crate::layout::Regions::lemma_slab_of)).
+proof fn lemma_commit_thp_target(c: int, addr: int, len: int)
+    requires
+        regions_held(),
+        0 <= c < NCLASSES,
+        commit_inside(c, addr, len),
+    ensures
+        process_regions().thp_target(addr, len),
+{
+    reveal(regions_held);
+    let r = process_regions();
+    assert(r.lg_region < 64);
+    vstd::bits::lemma_usize_pow2_no_overflow(r.lg_region as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, r.lg_region as usize);
+    assert(r.in_class(c, r.class_base[c] as int));
+    r.lemma_slab_of(c, r.class_base[c] as int);
+    assert(r.class_base[c] <= addr);
+}
+
 /// Commits keep the class guard slabs inaccessible: every call of
 /// [`commit`] outside a `Mode::Chunks` class (`chunk` false) makes
 /// read-write only bytes of class `c`'s region, and none of any guard
@@ -5560,6 +5583,18 @@ impl SlabTable {
         // Off, and under `always` (whose PMD chunks `commit_slab` advises),
         // this is a load and a compare.
         if self.thp == crate::thp::Mode::Folios {
+            proof {
+                // #959: the group's slabs `s..end` are a THP advice target.
+                use_type_invariant(&*self);
+                let sz = (1usize << class_table()[self.class as int].lg_slab) as int;
+                let n = (end - s) as usize;
+                lemma_slab_bytes(*self, n);
+                lemma_slab_bytes(*self, end);
+                assert(s * sz + n * sz == end * sz) by (nonlinear_arith)
+                    requires
+                        n == end - s,
+                ;
+                lemma_commit_thp_target(self.class as int, self.base + s * sz, n * sz);            }
             crate::thp::advise_class(self.slab_addr(s), (end - s) << cls.lg_slab, true);
         }
         proof {
@@ -6210,6 +6245,11 @@ impl SlabTable {
                 assert(process_regions().spec_nslabs(self.class as int) == self.nslabs);
             }
             if commit(lo, hi - lo, Ghost(self.class as int), Ghost(true)).is_ok() {
+                proof {
+                    // #959: the chunk is a THP advice target.
+                    use_type_invariant(self);
+                    lemma_commit_thp_target(self.class as int, lo as int, hi - lo);
+                }
                 crate::thp::advise_class(lo, hi - lo, addr == lo);
                 return Some(());
             }
