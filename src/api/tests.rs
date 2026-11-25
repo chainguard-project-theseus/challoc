@@ -3015,8 +3015,9 @@ fn fork_handlers_block_signals_while_locked() {
 }
 
 /// Two threads with different masks run the prepare and parent
-/// handlers concurrently (glibc serialises them; the shared
-/// `FORK_SIGMASK` slot must not need it): each gets its own mask back,
+/// handlers concurrently (as glibc may for concurrent forks, #949; the
+/// shared `FORK_SIGMASK` slot must not need serialising): each gets its
+/// own mask back,
 /// because a prepare saves only once it holds every lock, and the
 /// release reads before its first unlock.
 #[test]

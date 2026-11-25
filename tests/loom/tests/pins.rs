@@ -480,6 +480,37 @@ const PINS: &[(&str, &[&str])] = &[
             "let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };",
         ],
     ),
+    // The init/fork gate: init_gate_enter, init_gate_done,
+    // fork_gate_enter and fork_gate_exit (tests/loom/src/forkgate.rs).
+    (
+        "src/api/mod.rs",
+        &[
+            "const GATE_IDLE: usize = 0;",
+            "const GATE_DONE: usize = 1;",
+            "const GATE_FORKING: usize = 2;",
+            "fn init_gate_enter() {",
+            "let g = match INIT_GATE.compare_exchange(GATE_IDLE, me, Ordering::AcqRel, Ordering::Acquire) {",
+            "Ok(_) => return,",
+            "if g == GATE_DONE || g == me || (g == GATE_FORKING && GATE_FORKER.load(Ordering::Relaxed) == me) {",
+            "core::hint::spin_loop();",
+            "fn init_gate_done() {",
+            "let _ = INIT_GATE.compare_exchange(me, GATE_DONE, Ordering::AcqRel, Ordering::Relaxed);",
+            "fn fork_gate_enter() {",
+            "let g = INIT_GATE.load(Ordering::Acquire);",
+            "if g == GATE_DONE || g == me {",
+            "let f = GATE_FORKER.load(Ordering::Relaxed);",
+            "if f == me {",
+            "if g == GATE_IDLE && f == 0 && GATE_FORKER.compare_exchange(0, me, Ordering::Relaxed, Ordering::Relaxed).is_ok() {",
+            "if INIT_GATE.compare_exchange(GATE_IDLE, GATE_FORKING, Ordering::AcqRel, Ordering::Acquire).is_ok() {",
+            "GATE_FORKER.store(0, Ordering::Relaxed);",
+            "core::hint::spin_loop();",
+            "fn fork_gate_exit() {",
+            "if GATE_FORKER.load(Ordering::Relaxed) == me && INIT_GATE.load(Ordering::Relaxed) == GATE_FORKING {",
+            "let open = if shared_if_ready().is_some() { GATE_DONE } else { GATE_IDLE };",
+            "INIT_GATE.store(open, Ordering::Release);",
+            "GATE_FORKER.store(0, Ordering::Relaxed);",
+        ],
+    ),
 ];
 
 /// Lines inside a pinned function that hold an atomic access, a fence or a

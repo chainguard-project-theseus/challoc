@@ -259,11 +259,6 @@ verus! {
 /// constructor, or at init when that did not run first.
 exec static ATFORK_REGISTERED: AtomicBool = AtomicBool::new(false);
 
-/// `fork_prepare` took the allocator's locks for the `fork` under way:
-/// false when challoc was not initialised then, so the parent and child
-/// handlers release nothing.
-exec static FORK_LOCKED: AtomicBool = AtomicBool::new(false);
-
 /// The gate between init and `fork` (design 9): a `fork` never copies an
 /// init under way on another thread, whose child would wait for an
 /// initialising thread it does not have. `GATE_IDLE` until a thread
@@ -283,14 +278,16 @@ exec static INIT_GATE: AtomicUsize = AtomicUsize::new(GATE_IDLE);
 const GATE_IDLE: usize = 0;
 const GATE_DONE: usize = 1;
 const GATE_FORKING: usize = 2;
-/// The forking thread while the gate is `GATE_FORKING`, as
-/// `pthread_self` (`sys::pthread_self`), which the forking thread keeps in
-/// the child, where its kernel thread ID is new: a child handler
-/// registered before challoc's runs before `fork_gate_exit` and may
-/// initialise.
+/// The thread that holds the gate's forker slot, as `pthread_self`
+/// (`sys::pthread_self`), which the forking thread keeps in the child,
+/// where its kernel thread ID is new: a child handler registered before
+/// challoc's runs before `fork_gate_exit` and may initialise. 0 when no
+/// thread holds it. A forking thread claims it (0 to its own) before it
+/// tries to close the gate and keeps it while the gate is `GATE_FORKING`
+/// by its hand, so with the gate at `GATE_FORKING` it names the thread
+/// that closed it: only that thread stores anything else here (#949;
+/// glibc does not serialise the atfork handlers of concurrent forks).
 exec static GATE_FORKER: AtomicUsize = AtomicUsize::new(0);
-/// This `fork`'s prepare handler closed the gate.
-exec static FORK_GATED: AtomicBool = AtomicBool::new(false);
 
 /// Thread id of the initialising thread while the state is `INITIALISING`,
 /// so a re-entrant call from it can be told apart from a concurrent one.
@@ -772,8 +769,9 @@ verus! {
 /// Signal mask of the forking thread, saved by `fork_prepare` and restored by
 /// `fork_release`. One slot suffices because it is only written and read
 /// while the writer holds every allocator lock: a second thread in
-/// `fork_prepare` (glibc serialises fork handlers with its atfork lock, but
-/// the unit tests call them directly) waits on the first class lock before
+/// `fork_prepare` (glibc does not serialise the atfork handlers of
+/// concurrent forks, and the unit tests call them directly) waits on the
+/// first lock before
 /// it can store, and the releaser reads before its first unlock. A handler
 /// cannot nest a fork inside the window because signals are blocked for its
 /// duration. An atomic so that verified code can read and write it: the
@@ -1638,20 +1636,17 @@ fn pthread_atfork_handlers() -> i32
     unsafe { pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) }
 }
 
-/// Record whether `fork_prepare` took the locks (`FORK_LOCKED`): a
-/// relaxed store; the parent and child handlers of the same `fork` run on
-/// the thread that ran the prepare handler (the premise is
-/// [`axiom_fork_resumed_state`]'s, which is called only when it is set).
-#[inline(always)]
-fn set_fork_locked(locked: bool) {
-    FORK_LOCKED.store(locked, Ordering::Relaxed);
-}
-
-/// Whether `fork_prepare` took the locks for this `fork` (`FORK_LOCKED`),
-/// as [`set_fork_locked`].
+/// Whether the calling thread's `fork_prepare` took the locks for the
+/// `fork` under way: it holds the fork window
+/// (`lock::in_fork_window`, the window's holder record, which
+/// `fork_prepare` writes as its last step with every lock held, and the
+/// release clears before its first unlock). The record is per fork, not
+/// a process-wide flag: another thread's prepare can write it only once
+/// it holds every lock, so after this thread's release (#949). Read by
+/// the parent and child handlers before `fork_gate_exit`.
 #[inline(always)]
 fn fork_was_locked() -> bool {
-    FORK_LOCKED.load(Ordering::Relaxed)
+    crate::lock::in_fork_window()
 }
 
 /// Before init's claim: open an init under way as this thread's
@@ -1695,40 +1690,58 @@ fn init_gate_done() {
 /// with this thread's own init under way (a `fork` from a signal handler
 /// that interrupted it), nothing (design 9, residuals); with none
 /// (`GATE_IDLE`), close the gate (`GATE_FORKING`) so that none starts
-/// until the parent and child handlers (`fork_gate_exit`). Initialises
-/// nothing. The wait ends when the other thread's init does (not claimed:
-/// the forking thread holds nothing init takes, since the fork handlers
-/// are registered already, so init's `pthread_atfork` call returns without
-/// glibc's atfork lock).
+/// until the parent and child handlers (`fork_gate_exit`): it claims the
+/// forker slot (`GATE_FORKER`, 0 to its own `pthread_self`) and then
+/// closes the gate, giving the slot back if the close fails. With another
+/// thread's `fork` holding the gate (`GATE_FORKING`, or a claim of the
+/// slot under way), wait until that fork's parent handler opens it: the
+/// atfork handlers of concurrent forks are not serialised by glibc, and
+/// a second fork going on would find an init the first fork's thread did
+/// inside its window, take the locks, and be `_Fork`ed with them by the
+/// first (#949). With the slot this thread's own (a `fork` from a signal
+/// handler that interrupted this thread's prepare handler), nothing, as
+/// for its own init (design 9, residuals). Initialises nothing. The
+/// waits end when the other thread's init or fork does (not claimed: the
+/// forking thread holds nothing either takes, since the fork handlers
+/// are registered already, so init's `pthread_atfork` call returns
+/// without glibc's atfork lock, and glibc does not hold that lock while
+/// a handler runs).
 #[inline(never)]
 #[verifier::exec_allows_no_decreases_clause]
 fn fork_gate_enter() {
     let me = crate::sys::pthread_self();
     loop {
         let g = INIT_GATE.load(Ordering::Acquire);
-        if g == GATE_IDLE {
-            GATE_FORKER.store(me, Ordering::Relaxed);
+        if g == GATE_DONE || g == me {
+            return;
+        }
+        let f = GATE_FORKER.load(Ordering::Relaxed);
+        if f == me {
+            return;
+        }
+        if g == GATE_IDLE && f == 0 && GATE_FORKER.compare_exchange(0, me, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
             if INIT_GATE.compare_exchange(GATE_IDLE, GATE_FORKING, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                FORK_GATED.store(true, Ordering::Relaxed);
                 return;
             }
-        } else if g == GATE_DONE || g == GATE_FORKING || g == me {
-            return;
+            GATE_FORKER.store(0, Ordering::Relaxed);
         } else {
             core::hint::spin_loop();
         }
     }
 }
 
-/// The parent and child handlers: open the gate this `fork`'s prepare
-/// closed, to `GATE_DONE` if the forking thread initialised meanwhile,
-/// else `GATE_IDLE`.
+/// The parent and child handlers: open the gate if this thread's `fork`
+/// closed it (it holds the forker slot and the gate is `GATE_FORKING`),
+/// to `GATE_DONE` if the forking thread initialised meanwhile, else
+/// `GATE_IDLE`, then give the slot back. Another thread's fork, waiting
+/// in `fork_gate_enter`, leaves the gate alone (#949).
 #[inline(never)]
 fn fork_gate_exit() {
-    if FORK_GATED.swap(false, Ordering::Relaxed) {
+    let me = crate::sys::pthread_self();
+    if GATE_FORKER.load(Ordering::Relaxed) == me && INIT_GATE.load(Ordering::Relaxed) == GATE_FORKING {
         let open = if shared_if_ready().is_some() { GATE_DONE } else { GATE_IDLE };
-        GATE_FORKER.store(0, Ordering::Relaxed);
         INIT_GATE.store(open, Ordering::Release);
+        GATE_FORKER.store(0, Ordering::Relaxed);
     }
 }
 
@@ -2177,10 +2190,16 @@ pub(crate) open spec fn fork_holds(s: Shared, held: ForkHeld, state: StateHold) 
 /// [`fork_holds`] (glibc runs them on the forking thread, after
 /// `_Fork`; in the child that thread is the copy of the forking one),
 /// and nothing released a lock in between (the handlers call this only
-/// when `FORK_LOCKED` says this fork's prepare took the locks: glibc
-/// serialises one fork's handlers under its atfork lock and runs them on
-/// the forking thread, so a `true` read there is this fork's; a stale
-/// `true` would mint a hold that does not exist): signals are blocked from the
+/// when `fork_was_locked` says the calling thread holds the fork window:
+/// the window's holder record (`lock::FORK_HOLDER`) is the thread's own
+/// `pthread_self` only from its prepare's last step, with every lock
+/// held, until its release's first step, and no other thread writes it
+/// meanwhile, since another prepare writes it only once it holds every
+/// lock. glibc does not serialise the handlers of concurrent forks (a
+/// process-wide flag read here would be another fork's, #949), but runs
+/// one fork's on its forking thread, so a holder read there of the
+/// calling thread is this fork's; a wrong `true` would mint a hold that
+/// does not exist): signals are blocked from the
 /// prepare handler's first step, and the atfork handlers registered
 /// before ours (whose prepare runs after ours and whose parent and
 /// child handlers run before ours) release none: an allocation of theirs
@@ -2351,12 +2370,11 @@ extern "C" fn fork_prepare() {
     fork_gate_enter();
     // Registered by the library's constructor, before init: until challoc
     // is initialised there is nothing to lock (nor to initialise for a
-    // `fork`).
+    // `fork`). The parent and child handlers then find this thread
+    // outside the fork window and release nothing (`fork_was_locked`).
     if shared_if_ready().is_none() {
-        set_fork_locked(false);
         return;
     }
-    set_fork_locked(true);
     // Premise (lock order): the thread that calls `fork` holds no
     // allocator lock (no allocator code forks; a `fork` from a signal
     // handler that interrupted allocator code holding a lock is outside
@@ -2625,8 +2643,9 @@ fn save_sigmask(
 /// ([`ForkHeld::has_slot`]), which only a holder of every allocator lock
 /// has (required, ghost). The value is still the one this thread's
 /// prepare handler saved: [`save_sigmask`] requires that hold too, so a
-/// second thread's `fork_prepare` (glibc serialises the handlers, the
-/// unit tests do not) stores only after it has taken every lock, so
+/// second thread's `fork_prepare` (glibc does not serialise the handlers
+/// of concurrent forks, nor do the unit tests) stores only after it has
+/// taken every lock, so
 /// after this release's unlocks.
 #[inline(always)]
 fn saved_sigmask(
@@ -2887,8 +2906,13 @@ extern "C" fn fork_parent() {
         crate::sys::grant_syscalls();
         crate::sys::grant_aborts();
     }
+    // Whether this thread's prepare took the locks, read before the gate
+    // opens, after which another thread's fork may go on (the record
+    // names this thread only while it holds the locks, so a later read
+    // would give the same answer; reading first does not rely on that).
+    let locked = fork_was_locked();
     fork_gate_exit();
-    if !fork_was_locked() {
+    if !locked {
         return;
     }
     let l = purge::background::state();
@@ -2906,8 +2930,9 @@ extern "C" fn fork_child() {
     }
     #[cfg(challoc_tls_check)]
     crate::heap::tlscheck::on_fork_child();
+    let locked = fork_was_locked();
     fork_gate_exit();
-    if !fork_was_locked() {
+    if !locked {
         return;
     }
     let l = purge::background::state();

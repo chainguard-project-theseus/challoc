@@ -1519,7 +1519,15 @@ prepare handler, before it looks at the state, waits for an init another
 thread has under way to publish, so the child gets the finished state;
 with none under way it closes the gate (`GATE_FORKING`), so that no init
 starts until the parent and child handlers open it again, and a child
-whose parent was not initialised starts uninitialised. It initialises nothing
+whose parent was not initialised starts uninitialised. glibc does not
+serialise the atfork handlers of concurrent forks, so the gate also
+keeps forks apart (#949): a fork claims the gate's forker slot
+(`GATE_FORKER`) before it closes the gate, another thread's fork waits
+while the gate is closed or the slot held, and only the closing thread
+opens it; and a parent or child handler releases the locks only when
+its own thread holds the fork window (`lock::in_fork_window`, read
+before the gate opens), not on a process-wide flag
+(`tests/c/fork_race.c`). It initialises nothing
 itself, so a process that never allocates stays free of init. The
 forking thread's own init (a handler registered before challoc's that
 allocates, in the parent's prepare or the child's handlers, which run
@@ -1532,6 +1540,18 @@ the preloaded-challoc, linked-pool case); a `fork` from a signal handler
 that interrupted its own thread's init (the gate word names that thread,
 so the parent's prepare does not wait and the parent finishes its init
 when the handler returns), whose child inherits the half-built state;
+a `fork` from a signal handler that interrupted its own thread's prepare
+handler once that thread held the gate's forker slot (the prepare
+returns at once, as for its own init, and if the outer fork had closed
+the gate already the nested fork's parent handler opens it before the
+outer `_Fork`, so an init on another thread may then be copied
+half-built into the outer child; `tests/c/fork_first.c`, argument
+`signal`, runs the uninitialised case); and, while the gate is closed by one
+thread's fork (challoc uninitialised, or initialised inside that
+fork's window), a prepare handler registered before challoc's that
+waits on another thread which is itself forking: that thread's fork
+waits at the gate for the first fork's parent handler (#949; before,
+such a second fork went on, unsafely);
 in a process where challoc is loaded but not initialised and threads
 already run (loaded late by `dlopen`, or never allocated through), a
 prepare handler registered before challoc's that takes a lock L while a

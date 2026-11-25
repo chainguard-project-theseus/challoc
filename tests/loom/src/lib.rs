@@ -57,6 +57,8 @@ mod exit;
 #[cfg(test)]
 mod flags;
 #[cfg(test)]
+mod forkgate;
+#[cfg(test)]
 mod free;
 #[cfg(test)]
 mod futex;
