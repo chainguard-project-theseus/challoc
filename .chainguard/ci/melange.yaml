@@ -18,11 +18,17 @@ checks:
       this tree (challoc, challoc-dev, challoc-jemalloc-compat and
       challoc-jemalloc-compat-dev: the SONAMEs, an LD_PRELOAD run,
       pkg-config links and DT_NEEDED), then the APKs' provides and depends
-      (ci/melange.sh), on x86_64 and aarch64.
+      (ci/melange.sh), on x86_64 and aarch64. The build runs `make verify`
+      (theseus/verify), the Verus proofs and every Kani harness.
+    # The build asks for 16 CPU / 64 GiB (contrib/wolfi/challoc.yaml), for
+    # the Kani shards `make verify` runs at once, which peaked at 47.4 GiB
+    # in use. The whole build measured 55 min on 16 x86_64 vCPUs and 37 min
+    # on 16 aarch64 vCPUs (2026-11-23, with VERIFY_TARGETS' regular-format
+    # Kani runs in shards at once); the timeout leaves room for the slower.
     foreach:
-      - {name: amd64, resources: large-amd64}
-      - {name: arm64, resources: large-arm64}
-    timeout: 40m
+      - {name: amd64, resources: xlarge-amd64}
+      - {name: arm64, resources: xlarge-arm64}
+    timeout: 75m
     environment:
       packages: [busybox, git, melange, bubblewrap, ca-certificates-bundle]
     network:

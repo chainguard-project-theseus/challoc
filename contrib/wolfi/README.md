@@ -44,14 +44,39 @@ that `Cargo.toml`'s version equals `package.version` and that
 `src/api/mallctl.rs`'s `VERSION_STR` starts with `vars.jemalloc-version`
 (5.3.0), so a bump in either place fails the build until the YAML follows.
 
-Toolchain, Wolfi style: `rust-${{vars.rust-version}}` (1.98 today;
-`edition = "2024"` needs 1.85+), `build-base`, `glibc-2.44-dev`,
-`wolfi-base`. melange assembles the build root from these, so the
-`glibc-2.44` stream swap Dockerfile.dev performs on top of `wolfi-base` is
-not needed here: `glibc-2.44-dev` selects the stream. Two `cargo build
---release --locked` runs (`--features quantum16` and, through
-`scripts/jemalloc-compat.sh`, `quantum16,jemalloc-soname` into its own
-target dir), about 8 s each on a 16-vCPU VM.
+Toolchain: `build-base`, `glibc-2.44-dev`, `wolfi-base`, and the packages
+the `theseus/verify` pipeline needs (below), whose `verus` and `kani`
+bring the rust stream the build compiles with (`rust-1.99` today;
+`edition = "2024"` needs 1.85+), so the definition names no rust of its
+own: only one rust stream can be installed. melange assembles the build
+root from these, so the `glibc-2.44` stream swap Dockerfile.dev performs
+on top of `wolfi-base` is not needed here: `glibc-2.44-dev` selects the
+stream. Two `cargo build --release --locked` runs (`--features
+quantum16` and, through `scripts/jemalloc-compat.sh`,
+`quantum16,jemalloc-soname` into its own target dir), about 8 s each on
+a 16-vCPU VM.
+
+Verification: before the library is built, `- uses: theseus/verify`
+runs `make verify VERUS_BASE=none` (the Makefile's `VERIFY_TARGETS`: the
+Verus proofs and counter at both quanta, the not-Copy control, the Kani
+bool-comparison lint, and every Kani harness at both quanta in regular
+format, checked as the kani-ignoring check checks them) on the build's
+own architecture, as the shipped
+package does. `pipelines/theseus/verify.yaml` is a verbatim copy of the
+downstream package build's pipeline. It installs
+the latest `theseus-proved-port`, `verus` and `kani`, which are in
+`apk.cgr.dev/chainguard`, not `packages.wolfi.dev`, so a build needs
+that repository and its keys too (`ci/melange.sh` appends them), and
+fails unless the Makefile's `PROVED_PORT_VERSION` and the `kani~` and
+`cbmc~` pins under `.chainguard/ci` name the installed releases. Hence
+`resources:` 16 CPU / 64 GiB: the regular-format runs go in 8 shards at
+once per quantum (the Makefile's `kani-regular-sharded`), and memory in
+use peaked at 47.4 GiB. Measured on 2026-11-23 at `2e718141` on 16 vCPU
+/ 64 GiB: the build takes 55 min on x86_64 and 37 min on aarch64, most
+of it Kani (about 25 and 16 min per quantum; the proofs and counter take
+about 4 min for both quanta). With the regular-format runs one harness
+at a time, after the terse `make kani` runs at each quantum, it took
+4h 00m and 3h 01m.
 
 ## Building locally
 
@@ -66,9 +91,14 @@ melange.
 `ci/melange.sh` runs the same build and test for `challoc.yaml`, then
 checks each APK's provides and depends. The on-request `melange` check
 (label `ci/run:melange`, `.chainguard/ci/melange.yaml`) runs it on x86_64
-and aarch64, and `make melange` runs it on any Linux host with melange
-and bubblewrap, a development session included (`apk add melange
-bubblewrap`).
+and aarch64, and `make melange` runs it on a Linux host with melange and
+bubblewrap whose `/etc/apk/keys` holds Chainguard's keys
+(`chainguard-*.rsa.pub`) and whose egress reaches
+`apk.cgr.dev/chainguard`, as a development session's do (`apk add
+melange bubblewrap`). The container recipe below predates `theseus/verify`: it
+reaches only `packages.wolfi.dev`, so as written it cannot install the
+verification packages. Use `make melange` in a development session,
+whose `/etc/apk/keys` and egress reach `apk.cgr.dev/chainguard`.
 
 ```sh
 # on the VM: ~/challoc is the synced tree (rsync or scripts/devvm.sh), ~/melange-out the output

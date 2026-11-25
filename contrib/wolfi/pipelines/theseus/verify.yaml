@@ -1,0 +1,115 @@
+# A verbatim copy of the pipeline the downstream challoc package build
+# runs (`- uses: theseus/verify`; os/pipelines/theseus/verify.yaml in the
+# package repository), so that ci/melange.sh builds
+# contrib/wolfi/challoc.yaml as the shipped package is built. Change it
+# there first, then copy it here; this comment is the only difference.
+# Copied on 2026-11-23, with the first step's version extraction that
+# reads every line of `cargo kani --version`. The package repository is
+# not public, so this names no commit of it: diff the next copy against
+# this file.
+name: Verify a proved port's proofs, coverage and Kani harnesses
+
+# A port built from chainguard-project-theseus/rust-port-template holds
+# its proofs, its coverage ratchets and its Kani harnesses in its own
+# Makefile, through the proved-port kit's make targets (theseus-proved-port's
+# /usr/share/proved-port/make/proved-port.mk). The kit's `make verify`
+# runs every target the port lists in VERIFY_TARGETS: by default `verus`
+# (the proofs, then the counter, which holds the shipped crates to
+# verus/FLOOR, the README badge, verus/RLIMIT, verus/REACH and the other
+# gates verus/count.toml turns on) and `kani` (every harness), and in a
+# port like challoc its further proof configurations, its controls and
+# its regular-format Kani run (`make kani-regular`). This runs it in the
+# build, on the source the package ships, on the build's own
+# architecture, so the package holds the bar the port's CI holds.
+# `make verify` needs kit 0.3.1 or later.
+#
+# A package needs only `- uses: theseus/verify`, and the resources its
+# proofs need. The defaults are the bar: the latest kit, verus and kani,
+# with rust the stream verus and kani depend on (the package lists no
+# rust of its own), Verus on every vCPU, and every target VERIFY_TARGETS
+# lists. An input a package passes departs from them, and its line
+# carries a comment saying why and until when:
+#
+#   - uses: theseus/verify
+#     with:
+#       kani-package: kani~0.68.0 # until challoc#NNN moves to 0.69.0: ...
+#
+# A port whose pins lag the latest release fails here, loudly: the kit's
+# make targets fail unless its PROVED_PORT_VERSION names the installed
+# kit, cargo verus refuses a vstd pin that is not the installed verus's,
+# and the first step below fails unless every kani~ and cbmc~ pin under
+# the port's .chainguard/ci names the installed Kani and CBMC (nothing
+# in the port's tree holds those otherwise). The port's dependency
+# update resolves it, or, meanwhile, a commented pin here.
+#
+# Only one rust stream can be installed, so the latest verus and the
+# latest kani must depend on the same one: while one has moved and the
+# other has not, the build does not resolve until a pin holds one back.
+# kani is installed for a port without Kani too (VERIFY_TARGETS =
+# verus), since a pipeline's packages are fixed.
+#
+# There is no base revision at package time (git-checkout fetches the tag
+# alone), so the counter runs with VERUS_BASE=none: the tree is held to
+# its own FLOOR, and the port's CI holds each change to its base.
+
+needs:
+  packages:
+    - build-base
+    - busybox
+    - git
+    - make
+    - ${{inputs.kit-package}}
+    - ${{inputs.verus-package}}
+    - ${{inputs.kani-package}}
+
+# Every input departs from the defaults, and is passed only with a
+# comment on its line saying why and until when.
+inputs:
+  kit-package:
+    description: |
+      The proved-port kit to install: the latest release by default;
+      theseus-proved-port~X.Y.Z holds a port's PROVED_PORT_VERSION back.
+    default: theseus-proved-port
+  verus-package:
+    description: |
+      The verus to install: the latest release by default; verus~X holds
+      back the release a port's vstd pin names.
+    default: verus
+  kani-package:
+    description: |
+      The kani to install: the latest release by default; kani~X.Y.Z holds
+      back the release a port's checks pin.
+    default: kani
+  make-args:
+    description: |
+      Further make arguments, none by default (KANI_JOBS=2 where the
+      resources hold fewer harnesses at once).
+    default: ""
+  dir:
+    description: The port's root, where its Makefile is.
+    default: .
+
+pipeline:
+  - name: the port's kani~ and cbmc~ pins name the installed releases
+    working-directory: ${{inputs.dir}}
+    runs: |
+      # `cargo kani --version` prints `Kani Rust Verifier 0.68.0 (cargo
+      # plugin)` and then CBMC's line, and panics (exit 101) when its stdout
+      # closes early, so awk reads every line and keeps the first one's
+      # version; `cbmc --version` prints `6.11.0 (cbmc-6.11.0)`.
+      kani=$(cargo kani --version | awk 'NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]/) { print $i; break } }')
+      cbmc=$(cbmc --version | awk 'NR == 1 { print $1 }')
+      [ -n "$kani" ] && [ -n "$cbmc" ] || { echo "theseus/verify: no Kani or CBMC version"; exit 1; }
+      for pin in $(grep -rhoE '(kani|cbmc)~[0-9][0-9A-Za-z.]*' .chainguard/ci | sort -u); do
+        case "$pin" in
+          kani~*) want=$kani ;;
+          *) want=$cbmc ;;
+        esac
+        echo "theseus/verify: the port pins $pin; this build runs ${pin%%~*} $want"
+        [ "${pin#*~}" = "$want" ] || exit 1
+      done
+
+  - name: make verify
+    working-directory: ${{inputs.dir}}
+    runs: |
+      make verify VERUS_BASE=none VERUS_THREADS="$(nproc)" ${{inputs.make-args}}

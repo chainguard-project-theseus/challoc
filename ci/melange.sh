@@ -20,9 +20,11 @@
 # something). It builds a copy of the definition at a local epoch above
 # any Wolfi publishes, so melange test cannot install Wolfi's challoc in
 # place of this build, and checks that it did not (below). It needs
-# melange, bubblewrap (user namespaces), git and tar; the melange check's
-# environment has them,
-# and in a development session `apk add melange bubblewrap` does. The test/tw
+# melange, bubblewrap (user namespaces), git and tar, Chainguard's apk keys
+# in /etc/apk/keys and egress to apk.cgr.dev (for theseus/verify's verus,
+# kani and theseus-proved-port, below); the melange check's environment
+# has them, and in a development session `apk add melange bubblewrap`
+# adds the tools. The test/tw
 # and test/pkgconf pipelines are wolfi-dev/os's, fetched at WOLFI_OS_REV.
 # The output goes outside the tree (MELANGE_OUT, default
 # ${TMPDIR:-/tmp}/challoc-melange), since --source-dir copies the whole tree
@@ -99,19 +101,38 @@ if [ -f "$host_ca" ]; then
   echo "CARGO_HTTP_CAINFO=/var/cache/melange/host-ca.crt" >"$out/build.env"
 fi
 
+# theseus/verify (contrib/wolfi/pipelines/, a copy of the downstream
+# package build's) installs
+# verus, kani and theseus-proved-port, which apk.cgr.dev/chainguard
+# carries and packages.wolfi.dev does not. Its signing keys are the
+# host's: a development session or a check guest installs its own
+# packages from it, so its /etc/apk/keys holds them.
+cg_repo=https://apk.cgr.dev/chainguard
+set --
+for key in /etc/apk/keys/chainguard-*.rsa.pub; do
+  [ -f "$key" ] && set -- "$@" --keyring-append "$key"
+done
+if [ "$#" -eq 0 ]; then
+  echo "FAIL melange: no /etc/apk/keys/chainguard-*.rsa.pub to verify $cg_repo with"
+  exit 1
+fi
+
 echo "=== melange build ==="
 melange build "$build_recipe" --arch "$arch" \
   --source-dir "$root" --build-option local-source \
   --cache-dir "$out/cache" --env-file "$out/build.env" \
-  --pipeline-dir "$os/pipelines" \
+  --pipeline-dirs "$os/pipelines,$root/contrib/wolfi/pipelines" \
   --repository-append https://packages.wolfi.dev/os \
   --keyring-append https://packages.wolfi.dev/os/wolfi-signing.rsa.pub \
+  --repository-append "$cg_repo" "$@" \
   --signing-key "$out/melange.rsa" --out-dir "$out/packages" --runner bubblewrap
 
 echo "=== melange test ==="
 rc=0
+# melange test compiles the build pipeline too, theseus/verify included,
+# though it runs only the test pipelines.
 melange test "$build_recipe" --arch "$arch" \
-  --pipeline-dirs "$os/pipelines" \
+  --pipeline-dirs "$os/pipelines,$root/contrib/wolfi/pipelines" \
   --repository-append "$out/packages" --keyring-append "$out/melange.rsa.pub" \
   --repository-append https://packages.wolfi.dev/os \
   --keyring-append https://packages.wolfi.dev/os/wolfi-signing.rsa.pub \
