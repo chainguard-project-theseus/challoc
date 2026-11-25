@@ -30,6 +30,60 @@ verus! {
 
 broadcast use {lemma_spec_nslabs, lemma_spec_class};
 
+/// `s` is the lowest slab of `set` at or above `lo`.
+pub open spec fn lowest_from(set: vstd::set::Set<nat>, lo: int, s: nat) -> bool {
+    &&& set.contains(s)
+    &&& lo <= s
+    &&& forall|x: nat| #[trigger] set.contains(x) && lo <= x ==> s <= x
+}
+
+/// No slab of `set` lies at or above `lo`.
+pub open spec fn none_from(set: vstd::set::Set<nat>, lo: int) -> bool {
+    forall|x: nat| #[trigger] set.contains(x) ==> x < lo
+}
+
+/// The idle slab [`ClassState::next_slab`] returns, over the `Empty` set
+/// `e` and the `Purged` set `p` it read and the fork floor `floor`: the
+/// lowest `Empty` slab from the floor; else the lowest `Purged` one from
+/// the floor, or from 0 (the floor is lifted for `Purged` slabs while no
+/// lazy discard has run, [`purge::purged_is_zero`]); else, with neither
+/// set holding a slab from the floor, a fresh slab in neither. `None`
+/// only with neither set holding a slab from the floor. Opaque:
+/// [`ClassState::plan_at`] inlines `next_slab` and carries it as an atom.
+///
+/// [`purge::purged_is_zero`]: crate::purge::purged_is_zero
+#[verifier::opaque]
+pub open spec fn idle_pick(e: vstd::set::Set<nat>, p: vstd::set::Set<nat>, floor: int, r: Option<usize>) -> bool {
+    match r {
+        Some(s) => lowest_from(e, floor, s as nat)
+            || (none_from(e, floor) && (lowest_from(p, floor, s as nat) || lowest_from(p, 0, s as nat)))
+            || (none_from(e, floor) && none_from(p, floor) && !e.contains(s as nat) && !p.contains(s as nat)),
+        None => none_from(e, floor) && none_from(p, floor),
+    }
+}
+
+/// Theorem: a refill's idle slab is the lowest one, `Empty` before
+/// `Purged` before fresh (THEOREMS.md, "A refill takes the lowest idle
+/// slab"). For what [`ClassState::next_slab`] read and returned
+/// ([`idle_pick`]):
+/// - with an `Empty` slab at or above the floor, it returns the lowest;
+/// - with none, but a `Purged` slab at or above the floor, it returns a
+///   `Purged` slab no higher than any of those;
+/// - a slab in neither set (fresh), or `None`, only when neither set
+///   holds a slab at or above the floor.
+pub proof fn theorem_idle_slab_lowest(e: vstd::set::Set<nat>, p: vstd::set::Set<nat>, floor: int, r: Option<usize>)
+    requires
+        idle_pick(e, p, floor, r),
+    ensures
+        !none_from(e, floor) ==> (r matches Some(s) && lowest_from(e, floor, s as nat)),
+        none_from(e, floor) && !none_from(p, floor) ==> (r matches Some(s) && p.contains(s as nat)
+            && forall|x: nat| #[trigger] p.contains(x) && floor <= x ==> s <= x),
+        r matches Some(s) && !e.contains(s as nat) && !p.contains(s as nat) ==> none_from(e, floor) && none_from(p, floor),
+        r is None ==> none_from(e, floor) && none_from(p, floor),
+{
+    reveal(idle_pick);
+}
+
 impl ClassState {
     /// The slab a refill uses when no partial slab has room (design
     /// section 5): the lowest `Empty` slab, else the lowest `Purged` one,
@@ -76,7 +130,11 @@ impl ClassState {
             r is None && floor == 0 ==> final(g).empty.map@ == vstd::set::Set::<nat>::empty()
                 && final(g).purged.map@ == vstd::set::Set::<nat>::empty()
                 && final(g).partial.map@ == old(g).partial.map@,
+            // The lowest idle slab: `Empty`, then `Purged`, then fresh.
+            idle_pick(old(g).empty.map@, old(g).purged.map@, floor as int, r),
     {
+        let ghost e0 = g.empty.map@;
+        let ghost p0 = g.purged.map@;
         // Spelled out, not `empty_take` and `purged_take`: this runs
         // inlined in `claim_with` (through `plan`), whose machine
         // code the helpers reorder (`scripts/codegen-diff.sh`); the
@@ -101,8 +159,13 @@ impl ClassState {
                 assert forall|x: nat| x != s implies #[trigger] g.slab_ok(x) by {
                     assert(g0.slab_ok(x));
                 }
+                assert(lowest_from(e0, floor as int, s as nat));
+                reveal(idle_pick);
             }
             return Some(s);
+        }
+        proof {
+            assert(none_from(e0, floor as int));
         }
         let purged = if floor == 0 || crate::purge::purged_is_zero() {
             g.purged.map.lowest_set()
@@ -124,8 +187,13 @@ impl ClassState {
                 assert forall|x: nat| x != s implies #[trigger] g.slab_ok(x) by {
                     assert(g0.slab_ok(x));
                 }
+                assert(lowest_from(p0, floor as int, s as nat) || lowest_from(p0, 0, s as nat));
+                reveal(idle_pick);
             }
             return Some(s);
+        }
+        proof {
+            assert(none_from(p0, floor as int));
         }
         let ghost g1 = *g;
         let r = self.next_fresh_slab(g, meta, pubw, Tracked(ord));
@@ -139,6 +207,7 @@ impl ClassState {
                     assert(g.st(s as nat) == g1.st(s as nat));
                 }
             }
+            reveal(idle_pick);
         }
         r
     }
