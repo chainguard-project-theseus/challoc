@@ -69,6 +69,8 @@ impl ClassState {
             final(g).oauth@.id() == old(g).oauth@.id(),
             r is None ==> final(g).inv(),
             r matches Some(s) ==> s < self.spec_nslabs() && final(g).ready(s as nat),
+            // An idle slab leaves the partial set as it was.
+            final(g).partial.map@ == old(g).partial.map@,
             // `None` only once both idle sets are empty, with the partial
             // set as it was (claim completeness).
             r is None && floor == 0 ==> final(g).empty.map@ == vstd::set::Set::<nat>::empty()
