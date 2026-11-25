@@ -18,6 +18,9 @@ Tool: Kani. Status: discharged (Kani: huge::table::kani_table::zero_entry_is_emp
 
 Hashes: contract 384812024, body none.
 
+Specs: `ZeroRaw::is_range` (src/vspec/zero.rs) 3242200845, `Stored::ptr` (src/vspec/usable.rs) 3663496071, `occupied` (src/huge/table.rs) 1097058785.
+Specs unresolved (spec fns of the name): `provenance` (2), `value` (6).
+
 ```rust
 axiom fn axiom_zero_entry(tracked z: ZeroRaw, p: *mut Entry) -> (tracked r: PointsTo<Entry>)
     requires

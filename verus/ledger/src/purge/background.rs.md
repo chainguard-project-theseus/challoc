@@ -35,6 +35,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: purge::background::kani_join:
 
 Hashes: contract 2838171325, body 3874947256.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `reentry_benign` (src/heap/thread.rs) 2245930425.
+Specs unresolved (spec fns of the name): `value` (6), `kept` (2).
+
 ```rust
 unsafe fn pthread_join(t: ::libc::pthread_t, Tracked(cell): Tracked<&mut TlsCell>) -> i32
     requires
@@ -54,6 +57,9 @@ Tool: none (assumption). Status: trusted.
 Body mints Tracked at line 877; mints Tracked at line 885.
 
 Hashes: contract 2847973412, body 1049282638.
+
+Specs: `may_abort_kernel` (src/sys/mod.rs) 2965814979, `may_syscall` (src/sys/mod.rs) 532674254, `reentry_benign` (src/heap/thread.rs) 2245930425.
+Specs unresolved (spec fns of the name): `wf` (33), `value` (6), `kept` (2).
 
 ```rust
 fn spawn(shared: &Shared, base: usize, len: usize, Tracked(cell): Tracked<&mut TlsCell>) -> Option<::libc::pthread_t>
@@ -77,6 +83,8 @@ Tool: none (assumption). Status: trusted.
 > The `Shared` that [`spawn`] passes as the thread's argument.
 
 Hashes: contract 721657616, body 3356801781.
+
+Specs unresolved (spec fns of the name): `wf` (33).
 
 ```rust
 fn shared_arg(arg: *mut c_void) -> (r: &'static Shared)

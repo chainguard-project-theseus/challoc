@@ -4,8 +4,8 @@
 # below is one sed edit of seams.sh that weakens the `loom:` citation
 # rule, the `GenMC:` citation rule, the hash rule, the claims nothing
 # rule, the one-line `const assert:` form, the not-Copy rule for
-# tracked seams or the rule that every tracked type has a not-Copy
-# check; the mutated copy's `--check`
+# tracked seams, the rule that every tracked type has a not-Copy
+# check or the Specs lines; the mutated copy's `--check`
 # must report a self-test failure of that rule. Each tree mutant is one
 # sed edit of a source file in a copy of the tree, followed by `--write`
 # and `--check` there: an edit to a discharged seam's attribute,
@@ -237,6 +237,17 @@ a missing check is accepted|s/^    elif ! { notcopy/    elif false \&\& { notcop
 a gated check is accepted|s/ \&\& assertion "[^"]*"; }; then$/; }; then/
 a second type of a name shares its check|s/d = (n in seen) ? "dup" : ""/d = ""/
 generic arguments are not read|s/g = "(<\[^<>\]\*>)?"/g = ""/
+EOF
+
+# shellcheck disable=SC2016 # sed scripts, not shell expansions
+script 'self-test: specs' <<'EOF'
+no spec fn resolves|s/if (k == 1) {/if (0) {/
+a spec's body is not hashed|s/stext\[nspec\] = norm(ehc\[e\] " " ehb\[e\])/stext[nspec] = norm(ehc[e])/
+a module directory picks nothing|s/index(sfile\[i\], "\/" q "\/") || //
+a module file picks nothing|s/ || substr(sfile\[i\], length(sfile\[i\]) - length(q) - 3) == "\/" q ".rs"//
+a type qualifier picks nothing|s/sname\[i\] == q "::" nm || //
+the Specs lines are not written|s/if (espec\[i\] != "") {/if (0) {/
+attributes are read as calls|s/while (substr(s, 1, 2) == "#\[") {/while (0) {/
 EOF
 
 # The tracked type Unbacked of src/vspec/unbacked.rs, not a seam, and

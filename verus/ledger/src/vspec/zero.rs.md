@@ -20,6 +20,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 416623139, body 1599988647.
 
+Specs unresolved (spec fns of the name): `dom` (2), `has` (2), `provenance` (2).
+
 ```rust
 pub proof fn axiom_new(tracked raw: PointsToRaw, tracked z: Zeroed) -> (tracked r: ZeroRaw)
     requires
@@ -37,6 +39,9 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::zero::zero_word_reads_zero).
 > The eight bytes of `z`, which read as zero, as the `u64` at `p` holding 0: `PointsToRaw::into_typed`, initialised with the value the bytes hold.
 
 Hashes: contract 2062872303, body 1293528070.
+
+Specs: `ZeroRaw::is_range` (src/vspec/zero.rs) 3242200845, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `provenance` (2), `value` (6).
 
 ```rust
 pub proof fn axiom_zero_word(tracked z: ZeroRaw, p: *mut u64) -> (tracked w: PointsTo<u64>)
@@ -61,6 +66,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::zero_raw_fills).
 Body mints Tracked at line 470.
 
 Hashes: contract 1402853565, body 3876720570.
+
+Specs unresolved (spec fns of the name): `provenance` (2), `addr` (6), `len` (5).
 
 ```rust
 pub unsafe fn zero_raw(p: *mut u8, n: usize, Tracked(raw): Tracked<&mut PointsToRaw>) -> (z: Tracked<Zeroed>)

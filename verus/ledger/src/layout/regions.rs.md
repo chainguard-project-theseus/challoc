@@ -36,6 +36,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1021799055, body 1293528070.
 
+Specs: `Reserved::len` (src/layout/regions.rs) 3000774254, `disjoint` (src/layout/regions.rs) 372187667, `Reserved::addr` (src/layout/regions.rs) 1187164523, `shared_static_addr` (src/layout/regions.rs) 4205131757, `shared_static_len` (src/layout/regions.rs) 2961492768.
+
 ```rust
 pub proof fn is_apart_from_static(tracked &self)
     requires
@@ -52,6 +54,9 @@ Tool: none (assumption). Status: trusted.
 > Trusted (the kernel's `mmap` contract): two live mappings do not overlap.
 
 Hashes: contract 1022768161, body 1293528070.
+
+Specs: `disjoint` (src/layout/regions.rs) 372187667.
+Specs unresolved (spec fns of the name): `len` (5), `addr` (6).
 
 ```rust
 pub proof fn is_disjoint(tracked &mut self, tracked other: &Self)
@@ -72,6 +77,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1477004248, body 1293528070.
 
+Specs: `Reserved::addr` (src/layout/regions.rs) 1187164523, `Reserved::len` (src/layout/regions.rs) 3000774254.
+Specs unresolved (spec fns of the name): `addr` (6), `len` (5).
+
 ```rust
 pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
     ensures
@@ -89,6 +97,9 @@ Tool: none (assumption). Status: trusted.
 Body mints Tracked at line 2371.
 
 Hashes: contract 3469794050, body 1440593640.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `user_va_limit` (src/sys/pac.rs) 1678040983.
+Specs unresolved (spec fns of the name): `addr` (6), `len` (5).
 
 ```rust
 fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)

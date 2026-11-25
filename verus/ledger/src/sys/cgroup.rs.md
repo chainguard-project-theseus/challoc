@@ -34,6 +34,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: sys::cgroup::kani_in_place::u
 
 Hashes: contract 2432176480, body 2334025224.
 
+Specs: `Cgroup::layout` (src/sys/cgroup.rs) 2039124099.
+Specs unresolved (spec fns of the name): `value` (6).
+
 ```rust
 pub fn untracked_in_place(slot: &mut MaybeUninit<Cgroup>, state: State)
     ensures
@@ -49,6 +52,9 @@ Tool: none (assumption). Status: trusted.
 > Premise (the fork child's orphaned cell): in the child of a `fork`, a record whose phase the child's reset found `RUNNING` (`before`, the phase's permission just before the reset, and `perm`, just after it, at `PENDING`) was being discovered by a thread of the parent, which holds the cell's permission between its winning exchange and its `DONE` store ([`Deferred::claim`], [`Deferred::publish`]).
 
 Hashes: contract 1324447172, body none.
+
+Specs: `in_fork_child` (src/sys/cgroup.rs) 883783296, `byte_id` (src/vspec/byte.rs) 241462822.
+Specs unresolved (spec fns of the name): `id` (4), `value` (6).
 
 ```rust
 axiom fn axiom_cell_orphaned(d: &Deferred, before: BytePerm, tracked perm: &BytePerm) -> (tracked p: CellPerm)
@@ -71,6 +77,8 @@ Tool: loom/GenMC. Status: trusted.
 > Run discovery if it has not run: `true` when this call ran it, so the caller sets the policy up from the first figures.
 
 Hashes: contract 244421472, body 3886542385.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `Deferred::seen_done` (src/sys/cgroup.rs) 2578310570.
 
 ```rust
 pub fn discover<F: FnOnce(&Cgroup)>(&self, wait: bool, found: F, Tracked(seen): Tracked<&mut CellSeen>) -> bool

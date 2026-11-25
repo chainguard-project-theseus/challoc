@@ -27,6 +27,8 @@ Tool: loom/GenMC. Status: trusted.
 
 Hashes: contract 2735102634, body 1641964192.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `RawLock::is_token` (src/lock.rs) 3350549059.
+
 ```rust
 fn lock_slow(&self) -> (t: Tracked<Option<Unlocked>>)
     requires
@@ -44,6 +46,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1254459947, body none.
 
+Specs: `RawLock::is_token` (src/lock.rs) 3350549059.
+
 ```rust
 axiom fn axiom_window_served(l: RawLock) -> (tracked t: Unlocked)
     ensures
@@ -59,6 +63,9 @@ Tool: none (assumption). Status: trusted.
 > Premise (the fork window, design 9), for a [`Lock`]: an acquisition of `l` that the fork window served ([`RawLock::acquire`] returned no token) holds `l`'s token, as a holder of the cell's permission keeps it (at `true`, [`CellPred`]), and the permission of `l`'s cell, whose value satisfies [`lock_inv`] and keeps [`lock_frame`] of the value the lock was created with.
 
 Hashes: contract 1527327056, body none.
+
+Specs: `Lock::spec_raw` (src/lock.rs) 3232689423, `RawLock::token_loc` (src/lock.rs) 3789922798, `Lock::has_perm` (src/lock.rs) 3822883244, `lock_inv` (src/lock.rs) 1773988829, `lock_frame` (src/lock.rs) 4085415784, `lock_init` (src/lock.rs) 551678868.
+Specs unresolved (spec fns of the name): `id` (4), `value` (6).
 
 ```rust
 axiom fn axiom_window_cell<T: LockSpec>(l: Lock<T>) -> (tracked r: (Unlocked, PointsTo<T>))
@@ -80,6 +87,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 4182211072, body none.
 
+Specs: `LockOrder::top` (src/lock.rs) 1960956790, `LockOrder::root` (src/lock.rs) 227210606.
+
 ```rust
 pub(crate) axiom fn axiom_c_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
@@ -96,6 +105,8 @@ Tool: none (assumption). Status: trusted.
 > Premise (allocator invariant, the lock order at init): `Shared::init`, its one use, holds no allocator lock.
 
 Hashes: contract 1275292168, body none.
+
+Specs: `LockOrder::top` (src/lock.rs) 1960956790, `LockOrder::root` (src/lock.rs) 227210606.
 
 ```rust
 pub(crate) axiom fn axiom_init_entry<'a>() -> (tracked o: LockOrder<'a>)
@@ -114,6 +125,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 413095086, body none.
 
+Specs: `LockOrder::top` (src/lock.rs) 1960956790, `LockOrder::root` (src/lock.rs) 227210606.
+
 ```rust
 pub(crate) axiom fn axiom_thread_entry<'a>() -> (tracked o: LockOrder<'a>)
     ensures
@@ -130,6 +143,8 @@ Tool: none (assumption). Status: trusted.
 > Premise (the fork prepare handler's entry): the calling thread holds no allocator lock, as for [`axiom_c_entry`], and keeps this token for the whole handler, which takes every lock with [`RawLock::lock_held`] and releases none of them before it returns: a root, with no raw hold yet.
 
 Hashes: contract 4194531122, body none.
+
+Specs: `LockOrder::top` (src/lock.rs) 1960956790, `LockOrder::root` (src/lock.rs) 227210606, `LockOrder::ranks` (src/lock.rs) 599442901.
 
 ```rust
 pub(crate) axiom fn axiom_fork_entry<'a>() -> (tracked o: LockOrder<'a>)
@@ -148,6 +163,8 @@ Tool: none (assumption). Status: trusted.
 > Premise (`fork(2)`, `getpid(2)`, glibc's `pthread_self`; design 9): the fork window's record, read back by the thread that opened it, shows that thread in the child of its `fork`.
 
 Hashes: contract 4277114757, body none.
+
+Specs: `in_fork_child` (src/sys/cgroup.rs) 883783296.
 
 ```rust
 axiom fn axiom_child_window(h: usize, me: usize, pid: u32, now: u32)
@@ -168,6 +185,8 @@ Tool: Kani. Status: discharged (Kani: lock::kani_lock::value_ptr_is_the_value_fi
 > The value's address inside the lock at `p`, which the permission `perm` names, for building a large value in place (`Arena::put_stats`).
 
 Hashes: contract 2722103989, body 2553620183.
+
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071.
 
 ```rust
 pub(crate) fn value_ptr(p: *mut Lock<T>, Tracked(perm): Tracked<&vstd::raw_ptr::PointsTo<Lock<T>>>) -> *mut T

@@ -20,6 +20,9 @@ Tool: loom/GenMC. Status: trusted.
 
 Hashes: contract 967227744, body 3357165607.
 
+Specs: `may_abort` (src/sys/mod.rs) 4099677103, `may_syscall` (src/sys/mod.rs) 532674254, `LockOrder::allows` (src/lock.rs) 3944106842, `rank_class` (src/lock.rs) 3172828272, `ClassState::published_by` (src/class/mod.rs) 1904197236, `xorshift_iter` (src/class/mod.rs) 4094812377, `slots_in` (src/layout/regions.rs) 1288072787, `ClassState::spec_class` (src/class/mod.rs) 3035516173, `ClassState::spec_table` (src/class/mod.rs) 1065850696, `claim_zero_ok` (src/class/mod.rs) 1858394033, `ClassState::exhausted` (src/class/mod.rs) 901491849.
+Specs unresolved (spec fns of the name): `is_process` (5), `len` (5), `owns` (3), `frame` (3).
+
 ```rust
 fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>, Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
     requires
@@ -53,6 +56,9 @@ Tool: none (assumption). Status: trusted (requires, checked at its one caller, C
 
 Hashes: contract 1202681164, body none.
 
+Specs: `desc_id` (src/slab.rs) 2830877247, `desc_at` (src/class/table.rs) 113355670, `state_byte` (src/slab.rs) 3267048718, `SlabTable::spec_is_guard` (src/class/table.rs) 3951951368, `prefix_addrs` (src/class/mod.rs) 3312316660, `discard_covers` (src/purge.rs) 2090359300.
+Specs unresolved (spec fns of the name): `id` (4), `state` (2), `spec_nslabs` (3), `spec_slots` (2), `addr` (6), `len` (5).
+
 ```rust
 axiom fn axiom_discarded_slots_zero(
     tracked ticket: StateTicket,
@@ -85,6 +91,9 @@ Tool: none (assumption). Status: trusted.
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
 
 Hashes: contract 260036461, body none.
+
+Specs: `SlabTable::spec_is_guard` (src/class/table.rs) 3951951368, `desc_id` (src/slab.rs) 2830877247, `desc_at` (src/class/table.rs) 113355670, `state_byte` (src/slab.rs) 3267048718, `Inner::st` (src/class/mod.rs) 39860947, `process_regions` (src/layout/regions.rs) 2834135997, `class_table` (src/layout/mod.rs) 307783638, `cast_provenance` (src/vspec/addr.rs) 2449243785.
+Specs unresolved (spec fns of the name): `inv` (44), `spec_nslabs` (3), `id` (4), `state` (2), `owns` (3), `covers` (4), `slot_at` (2), `spec_class` (2), `provenance` (2).
 
 ```rust
 axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)

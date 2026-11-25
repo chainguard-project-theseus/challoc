@@ -25,6 +25,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::core_int::u64_count_ones).
 
 Hashes: contract 2850801986, body none.
 
+Specs: `popcount` (src/vspec/core_int.rs) 930843021.
+
 ```rust
 pub assume_specification[ u64::count_ones ](x: u64) -> (r: u32)
     ensures r as nat == popcount(x),

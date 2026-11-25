@@ -25,6 +25,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_as_ptr).
 
 Hashes: contract 250737599, body none.
 
+Specs unresolved (spec fns of the name): `len` (5).
+
 ```rust
 pub assume_specification<T>[ <[T]>::as_mut_ptr ](s: &mut [T]) -> *mut T
     ensures

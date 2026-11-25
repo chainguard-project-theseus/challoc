@@ -21,6 +21,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3028045955, body none.
 
+Specs: `slot_ok` (src/heap/thread.rs) 2964703851, `TlsSlot::rels_ok` (src/sys/tls.rs) 2686673231, `TlsCell::creates` (src/sys/tls.rs) 2701034563.
+
 ```rust
 pub(crate) axiom fn entry() -> (tracked r: &'static mut TlsSlot)
     ensures
@@ -39,6 +41,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; 
 
 Hashes: contract 584579997, body 90234313.
 
+Specs unresolved (spec fns of the name): `value` (6).
+
 ```rust
 pub fn get(Tracked(slot): Tracked<&TlsCell>) -> (r: *mut c_void)
     ensures
@@ -54,6 +58,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; 
 > Read the calling thread's slot together with the thread pointer (`tpidr_el0`), the modifier the heap pointer is signed with when pointer authentication is on (`sys::pac`, design 6.1): one asm sequence that keeps the thread pointer it loads to reach the slot, so the caller's `autda` costs no extra register move.
 
 Hashes: contract 900674773, body 3050843110.
+
+Specs unresolved (spec fns of the name): `value` (6), `tp` (2).
 
 ```rust
 pub fn get_tp(Tracked(slot): Tracked<&TlsCell>) -> (r: (*mut c_void, usize))
@@ -71,6 +77,9 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Isla: verus/isla/seams.md; 
 > Write the calling thread's slot.
 
 Hashes: contract 2478902706, body 3452213169.
+
+Specs: `slot_step` (src/heap/thread.rs) 316504242, `TlsCell::set_to` (src/sys/tls.rs) 1305355241.
+Specs unresolved (spec fns of the name): `value` (6).
 
 ```rust
 pub fn set(value: *mut c_void, Tracked(slot): Tracked<&mut TlsCell>)

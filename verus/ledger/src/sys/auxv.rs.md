@@ -19,6 +19,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 164231696, body none.
 
+Specs: `is_pow2` (src/meta.rs) 2266108726, `process_regions` (src/layout/regions.rs) 2834135997, `at_secure` (src/sys/auxv.rs) 1783653274.
+
 ```rust
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)
     ensures
@@ -36,6 +38,8 @@ Tool: none (assumption). Status: trusted.
 > As above, and on arm64: an `AT_HWCAP` word with `HWCAP_PACA` and `HWCAP_PACG` set means the process may execute the data-key A instructions ([`crate::sys::pac::pac_available`]).
 
 Hashes: contract 710834691, body none.
+
+Specs: `is_pow2` (src/meta.rs) 2266108726, `process_regions` (src/layout/regions.rs) 2834135997, `at_secure` (src/sys/auxv.rs) 1783653274, `pac_available` (src/sys/pac.rs) 1632048441.
 
 ```rust
 pub assume_specification[ getauxval ](kind: usize) -> (r: usize)

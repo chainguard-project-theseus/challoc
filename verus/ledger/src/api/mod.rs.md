@@ -52,6 +52,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3440922866, body none.
 
+Specs unresolved (spec fns of the name): `ok` (3), `ready` (3).
+
 ```rust
 pub axiom fn axiom_ready(tracked p: &'static Published)
     requires
@@ -70,6 +72,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3862638696, body none.
 
+Specs unresolved (spec fns of the name): `ready` (3), `ok` (3).
+
 ```rust
 pub axiom fn axiom_published() -> (tracked r: &'static Published)
     requires
@@ -87,6 +91,9 @@ Tool: none (assumption). Status: trusted.
 > The process-start token, taken once, by [`STATE`]'s initialiser.
 
 Hashes: contract 2839802111, body none.
+
+Specs: `count_id` (src/vspec/count.rs) 1104713034, `state_word_id` (src/api/mod.rs) 490871401, `byte_id` (src/vspec/byte.rs) 241462822, `line_word_id` (src/api/mod.rs) 160245337, `all_steps` (src/vspec/once.rs) 3632408398, `ready_mark` (src/api/mod.rs) 338574163, `Statics::storage_fresh` (src/api/mod.rs) 494204749, `slot_byte_id` (src/heap/slotstate.rs) 1132155287.
+Specs unresolved (spec fns of the name): `id` (4), `dom` (2), `value` (6).
 
 ```rust
 axiom fn axiom_start(word: &PAtomicU32, line: &PAtomicU8) -> (tracked s: Start)
@@ -111,6 +118,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: api::kani_statics::shared_ptr
 
 Hashes: contract 1380591404, body 29835824.
 
+Specs: `Shared::storage` (src/heap/shared.rs) 1939697436.
+
 ```rust
 pub fn shared_ptr() -> (r: *const Shared)
     ensures
@@ -127,6 +136,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, emptyasm: shared_base in sr
 
 Hashes: contract 534596380, body 2091081502.
 
+Specs: `Shared::storage` (src/heap/shared.rs) 1939697436.
+
 ```rust
 pub fn shared_base() -> (r: *const Shared)
     ensures
@@ -142,6 +153,9 @@ Tool: loom/GenMC. Status: trusted.
 > [`feature_line_ready`] after its `shared()`, whose published permissions (`published`) have the line's invariant: build the line, or wait for the thread building it (termination is not claimed: the wait ends when the other thread's build does).
 
 Hashes: contract 3066523785, body 2868952860.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+Specs unresolved (spec fns of the name): `ok` (3), `built` (2).
 
 ```rust
 fn line_ready(Tracked(published): Tracked<&'static Published>) -> (r: Tracked<&'static LineCell>)
@@ -160,6 +174,9 @@ Tool: loom/GenMC. Status: trusted.
 > Wait for the thread building the line: its permissions, frozen at `LINE_READY`; or `None` when the caller is a fork child's handler in the fork window (`lock::in_child_fork_window`), where that thread is not in the child and the wait would never end: the line is then reset as the child handler would ([`feature_line_fork_child`]), for the caller to build.
 
 Hashes: contract 3027503195, body 4017504348.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+Specs unresolved (spec fns of the name): `ok` (3), `built` (2).
 
 ```rust
 fn wait_line(Tracked(published): Tracked<&'static Published>) -> (r: Option<Tracked<&'static LineCell>>)
@@ -194,6 +211,9 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_ra
 
 Hashes: contract 1867649379, body 574998675.
 
+Specs: `may_abort` (src/sys/mod.rs) 4099677103, `may_syscall` (src/sys/mod.rs) 532674254, `Shared::built_at` (src/heap/shared.rs) 1173621732, `Shared::storage` (src/heap/shared.rs) 1939697436, `marks_ready` (src/api/mod.rs) 1085104621.
+Specs unresolved (spec fns of the name): `wf` (33).
+
 ```rust
 fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
     requires
@@ -214,6 +234,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 Hashes: contract 2098755632, body 507721659.
 
+Specs: `Shared::storage` (src/heap/shared.rs) 1939697436.
+
 ```rust
 fn shared_storage_ptr() -> (p: *mut Shared)
     ensures
@@ -229,6 +251,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 > The storage of [`FEATURES`].
 
 Hashes: contract 2881023278, body 531095909.
+
+Specs: `features_storage` (src/api/mod.rs) 523178302.
 
 ```rust
 fn features_ptr() -> (p: *mut Features)
@@ -246,6 +270,8 @@ Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 Hashes: contract 2262815526, body 756715309.
 
+Specs: `line_storage` (src/api/mod.rs) 3143329144.
+
 ```rust
 fn line_ptr() -> (p: *mut FeatureLine)
     ensures
@@ -261,6 +287,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::kani_atfork::atfork_regis
 > The `pthread_atfork` call itself, which may wait on glibc's atfork lock (a futex).
 
 Hashes: contract 3467618631, body 2331659382.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 fn pthread_atfork_handlers() -> i32
@@ -303,6 +331,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1667645340, body none.
 
+Specs: `rank_state` (src/lock.rs) 731152513.
+Specs unresolved (spec fns of the name): `rank` (3), `wf` (33), `lock` (2).
+
 ```rust
 axiom fn axiom_fork_resumed_state(l: &Lock<State>) -> (tracked state: StateHold)
     requires
@@ -322,6 +353,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 2606020099, body none.
 
+Specs: `SigMask::mask` (src/sys/mod.rs) 1307056632, `all_blocked` (src/sys/mod.rs) 1789603080.
+
 ```rust
 axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
     ensures
@@ -337,6 +370,9 @@ Tool: none (assumption). Status: trusted.
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, the line word's permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
 
 Hashes: contract 2225863648, body none.
+
+Specs: `in_fork_child` (src/sys/cgroup.rs) 883783296, `LineCell::unbuilt` (src/api/mod.rs) 2169325702.
+Specs unresolved (spec fns of the name): `value` (6).
 
 ```rust
 axiom fn axiom_line_orphaned(before: BytePerm, tracked perm: &BytePerm, tracked cell: &Option<LineCell>) -> (tracked c: LineCell)
@@ -358,6 +394,9 @@ Tool: none (assumption). Status: trusted.
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address; passed any other word, it would mint a second permission to it, which is why it is private to this module.
 
 Hashes: contract 2664700982, body none.
+
+Specs: `Shared::built_at` (src/heap/shared.rs) 1173621732, `Shared::storage` (src/heap/shared.rs) 1939697436, `fork_holds` (src/api/mod.rs) 2586269018, `ForkHeld::slot_id` (src/api/mod.rs) 1449470842, `fork_slot_id` (src/vspec/word.rs) 1995057694, `ForkHeld::saved` (src/api/mod.rs) 3231177434, `effective` (src/sys/mod.rs) 2499601117, `LockOrder::root` (src/lock.rs) 227210606, `LockOrder::ranks` (src/lock.rs) 599442901, `ForkHeld::held_ranks` (src/api/mod.rs) 3489978882, `rank_state` (src/lock.rs) 731152513.
+Specs unresolved (spec fns of the name): `wf` (33), `has_slot` (2).
 
 ```rust
 axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &StateHold) -> (tracked r: (ForkHeld, LockOrder<'static>))

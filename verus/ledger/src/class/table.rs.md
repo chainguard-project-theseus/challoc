@@ -22,6 +22,9 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: free::loom_free_after_s
 
 Hashes: contract 516326162, body 3738076363.
 
+Specs: `SlabTable::spec_ngroups` (src/class/table.rs) 3651338232, `owner_ptr_at` (src/class/table.rs) 1294372918, `SlabTable::owner_addr` (src/class/table.rs) 1277397106, `Stored::ptr` (src/vspec/usable.rs) 3663496071, `mark_loc` (src/class/table.rs) 3742797738, `owner_marks` (src/class/table.rs) 79347739, `SlabTable::spec_group_range` (src/class/table.rs) 707086328, `u16_value` (src/vspec/atom.rs) 2048654843, `slab_owner` (src/class/table.rs) 1180009438.
+Specs unresolved (spec fns of the name): `id` (4), `spec_class` (2), `value` (6).
+
 ```rust
 unsafe fn store_owner(
     w: *const AtomicU16,
@@ -73,6 +76,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_desc_
 
 Hashes: contract 3496367819, body none.
 
+Specs: `ZeroRaw::is_range` (src/vspec/zero.rs) 3242200845, `cast_provenance` (src/vspec/addr.rs) 2449243785, `perm_at` (src/class/table.rs) 2621622090, `desc_id` (src/slab.rs) 2830877247, `atoms_for` (src/slab.rs) 1865774151, `pages_ids` (src/class/table.rs) 3270615083, `atoms_vals` (src/slab.rs) 320146550.
+Specs unresolved (spec fns of the name): `provenance` (2), `value` (6), `ids` (2), `pages_id` (3).
+
 ```rust
 axiom fn axiom_zero_desc(tracked z: ZeroRaw, addr: int, piece: int)
     -> (tracked r: (PointsTo<SlabDesc>, DescAtoms, Option<PointsTo<SlabPages>>, Option<PagesAtoms>))
@@ -106,6 +112,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::zero_owner
 
 Hashes: contract 1743940330, body none.
 
+Specs: `ZeroRaw::is_range` (src/vspec/zero.rs) 3242200845, `cast_provenance` (src/vspec/addr.rs) 2449243785, `perm_at` (src/class/table.rs) 2621622090.
+Specs unresolved (spec fns of the name): `provenance` (2).
+
 ```rust
 axiom fn axiom_zero_owner(tracked z: ZeroRaw, addr: int) -> (tracked r: PointsTo<AtomicU16>)
     requires
@@ -127,6 +136,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::zero::fresh_word
 > Trusted: the permissions of the `n` words of the class bitmap at `base`, each holding zero: `z`, the bitmap's reservation from `Meta::reserve_table`, reads as zero over them.
 
 Hashes: contract 4083507132, body none.
+
+Specs: `cast_provenance` (src/vspec/addr.rs) 2449243785, `word_at` (src/vspec/word.rs) 2230608380, `words_perms_ok` (src/class/table.rs) 1374379105.
+Specs unresolved (spec fns of the name): `dom` (2), `provenance` (2), `step` (2), `id` (4), `value` (6).
 
 ```rust
 axiom fn axiom_fresh_words(tracked z: ZeroRaw, base: usize, n: nat, c: int, tracked once: Once)

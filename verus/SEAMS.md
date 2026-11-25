@@ -51,6 +51,26 @@ space (a signature reflowed one parameter per line) changes them, and a
 `/* */` comment counts as code. A method's hashes do not cover its
 `impl` line (the impl's generics and `where` bounds).
 
+An entry whose contract names spec fns of `src/` also has a `Specs:`
+line: each spec fn it names, with its file and the `cksum` CRC of its
+own text (signature, clauses and body, read as the hashes read them).
+An edit to such a spec fn widens or narrows what the seam assumes
+without changing the seam's hashes; it changes the `Specs:` line, so
+`seams.sh --check` fails until `--write`, and the ledger diff shows
+every seam the edit reaches. A call `name(`, `path::name(` or
+`.name(` in the contract names the spec fn whose last segment is
+`name` when only one spec fn has it. When several do, the qualifier
+picks one (`Type::name`, and `Self::name` or `self.name(` in a
+method, by the impl's type; `module::name` by a file `module.rs` or a
+directory `module/`); otherwise the name goes on a `Specs unresolved`
+line with the number of spec fns that have it, and an edit to those
+spec fns shows nowhere. A method call resolves by name only, so a
+vstd method of the same name (`PointsTo::ptr` and `Stored::ptr`)
+counts as naming the crate's: extra lines. The item's attributes are
+not read. Only the spec fns the contract calls are listed: not those
+their bodies name in turn, not a crate `view` the contract reaches
+through `x@` (there is no call to see), and no constants.
+
 ### vstd's contracts
 
 The ledger lists only what `src/` states. A `core` contract that vstd

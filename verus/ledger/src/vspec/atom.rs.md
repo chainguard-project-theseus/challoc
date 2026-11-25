@@ -23,6 +23,9 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 Hashes: contract 3684131722, body 3052065581.
 
+Specs: `usize_id` (src/vspec/atom.rs) 3687383471.
+Specs unresolved (spec fns of the name): `id` (4), `value` (6).
+
 ```rust
 pub fn store_usize(a: &AtomicUsize, v: usize, ordering: Ordering, Tracked(perm): Tracked<&mut UsizePerm>)
     requires
@@ -45,6 +48,9 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 
 Hashes: contract 1353355935, body 3163496896.
 
+Specs: `usize_id` (src/vspec/atom.rs) 3687383471.
+Specs unresolved (spec fns of the name): `id` (4), `value` (6).
+
 ```rust
 pub fn load_usize(a: &AtomicUsize, ordering: Ordering, Tracked(perm): Tracked<&UsizePerm>) -> (r: usize)
     requires
@@ -66,6 +72,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::atom::kani_atom::usize
 
 Hashes: contract 1082442458, body 2711750530.
 
+Specs: `usize_id_at` (src/vspec/atom.rs) 3798075552, `usize_id` (src/vspec/atom.rs) 3687383471.
+
 ```rust
 pub(crate) fn usize_ptr(a: &AtomicUsize) -> (r: *const AtomicUsize)
     ensures
@@ -83,6 +91,9 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 > `(*p).store(v, ordering)` through a pointer to an atomic, with the permission of the atomic it names (it panics for an `Acquire` or `AcqRel` ordering).
 
 Hashes: contract 3281897512, body 2105851067.
+
+Specs: `usize_id_at` (src/vspec/atom.rs) 3798075552.
+Specs unresolved (spec fns of the name): `id` (4), `value` (6).
 
 ```rust
 pub unsafe fn store_usize_at(p: *const AtomicUsize, v: usize, ordering: Ordering, Tracked(perm): Tracked<&mut UsizePerm>)
@@ -108,6 +119,9 @@ Body mints Tracked at line 234.
 
 Hashes: contract 3762602297, body 696989655.
 
+Specs: `usize_id` (src/vspec/atom.rs) 3687383471.
+Specs unresolved (spec fns of the name): `inv` (44), `id` (4), `value` (6).
+
 ```rust
 pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(
     a: &AtomicUsize,
@@ -132,6 +146,9 @@ Tool: loom/GenMC. Status: trusted (partly checked, Kani: kani_proofs::atomic::at
 > `(*p).load(ordering)` through `perm`, the permission to the atomic at `p`: the value the permission holds ([`u16_value`]).
 
 Hashes: contract 741036831, body 1754619584.
+
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071, `u16_value` (src/vspec/atom.rs) 2048654843.
+Specs unresolved (spec fns of the name): `value` (6).
 
 ```rust
 pub(crate) unsafe fn load_u16_at(p: *const AtomicU16, ordering: Ordering, Tracked(perm): Tracked<&PointsTo<AtomicU16>>) -> (r: u16)

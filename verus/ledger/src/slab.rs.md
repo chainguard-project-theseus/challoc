@@ -18,6 +18,8 @@ Tool: Kani. Status: discharged (Kani: slab::kani_desc_stride::desc_stride_reads_
 
 Hashes: contract 921200764, body 3955666860.
 
+Specs: `stride_of` (src/slab.rs) 1767073512.
+
 ```rust
 pub fn desc_stride(class: usize) -> (r: usize)
     requires

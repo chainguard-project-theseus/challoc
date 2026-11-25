@@ -33,6 +33,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::fresh::kani_assemble::w
 
 Hashes: contract 2396629368, body none.
 
+Specs: `heap_head` (src/heap/mod.rs) 3383746058, `FreshHeap::head` (src/heap/fresh.rs) 199656552, `FreshHeap::bound` (src/heap/fresh.rs) 3044020812, `FreshHeap::rehome` (src/heap/fresh.rs) 272783255, `FreshHeap::shared` (src/heap/fresh.rs) 1599279348.
+Specs unresolved (spec fns of the name): `heap` (2), `fresh` (5), `addr` (6), `value` (6), `arena` (2).
+
 ```rust
 pub(super) axiom fn assemble(tracked s: &super::FreshHeap, tracked perms: &super::CachePerms) -> (tracked r: HeapPerm)
     requires
@@ -56,6 +59,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_slot_heap
 > The heap whose permission the heap loan holds, at `h`, as a reference, for as long as the loan is lent.
 
 Hashes: contract 854713595, body 3810982117.
+
+Specs unresolved (spec fns of the name): `heap` (2), `addr` (6), `value` (6).
 
 ```rust
 pub(super) unsafe fn slot_heap_ref<'a>(h: *mut Heap, Tracked(loan): Tracked<&'a mut HeapLoan>) -> (r: &'a mut Heap)

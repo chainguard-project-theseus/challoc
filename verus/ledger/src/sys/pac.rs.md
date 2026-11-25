@@ -22,6 +22,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3922516770, body none.
 
+Specs: `user_va_limit` (src/sys/pac.rs) 1678040983.
+
 ```rust
 pub axiom fn axiom_user_va_limit()
     ensures
@@ -37,6 +39,8 @@ Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 > Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating what signing a plain user address returned, with the same modifier, gives the address back.
 
 Hashes: contract 2618051585, body none.
+
+Specs: `user_va_limit` (src/sys/pac.rs) 1678040983, `spec_auth` (src/sys/pac.rs) 569082419, `spec_sign` (src/sys/pac.rs) 1429173484.
 
 ```rust
 pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
@@ -56,6 +60,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 Hashes: contract 4234608999, body 3950422969.
 
+Specs: `pac_available` (src/sys/pac.rs) 1632048441, `spec_sign` (src/sys/pac.rs) 1429173484.
+
 ```rust
 pub fn sign(p: usize, modifier: usize) -> (r: usize)
     requires
@@ -73,6 +79,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 > Authenticate `p`, signed by [`sign`] with the same `modifier` (`autda`): the plain pointer, or, when the two disagree, a fault or a non-canonical pointer (module doc).
 
 Hashes: contract 361455037, body 4273507842.
+
+Specs: `pac_available` (src/sys/pac.rs) 1632048441, `may_abort_corrupt` (src/sys/mod.rs) 1220350775, `signed` (src/sys/pac.rs) 2952008761, `spec_auth` (src/sys/pac.rs) 569082419, `user_va_limit` (src/sys/pac.rs) 1678040983, `spec_sign` (src/sys/pac.rs) 1429173484.
 
 ```rust
 pub fn auth(p: usize, modifier: usize) -> (r: usize)
@@ -93,6 +101,8 @@ Tool: Islaris/Isla. Status: discharged (Isla: verus/isla/seams.md).
 > Strip the PAC from `p` without authenticating it (`xpacd`): the address a signed or corrupted entry names, for abort messages and tests.
 
 Hashes: contract 2592903648, body 3148561063.
+
+Specs: `pac_available` (src/sys/pac.rs) 1632048441.
 
 ```rust
 pub fn strip(p: usize) -> usize

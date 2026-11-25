@@ -32,6 +32,9 @@ Tool: Kani. Status: discharged on premises (Kani: kani_proofs::slice::slice_from
 
 Hashes: contract 1605428040, body none.
 
+Specs: `r_len` (src/vspec/ptr.rs) 3955647430.
+Specs unresolved (spec fns of the name): `len` (5).
+
 ```rust
 pub assume_specification<'a, T>[ core::slice::from_raw_parts::<'a, T> ](data: *const T, len: usize) -> (r: &'a [T])
     requires
@@ -71,6 +74,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::sli
 > `core::slice::from_raw_parts(p, n)` over `n` initialised `T`s whose permissions `perms` holds from key `j0` on, element `i`'s at key `j0 + i`, at `p`, `p + size_of::<T>()`, ...
 
 Hashes: contract 475554734, body 4015970110.
+
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `len` (5), `value` (6).
 
 ```rust
 pub unsafe fn slice_from_perms<T>(
@@ -136,6 +142,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 
 Hashes: contract 4284393070, body none.
 
+Specs: `array_iter_rest` (src/vspec/slice.rs) 2947885238.
+
 ```rust
 pub assume_specification<T, const N: usize>[ <[T; N] as core::iter::IntoIterator>::into_iter ](a: [T; N]) -> (r: <[
     T;
@@ -154,6 +162,9 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::array_into_iter).
 > `next` hands out the front element, or `None` once every element has been handed out.
 
 Hashes: contract 3944802746, body none.
+
+Specs: `array_iter_rest` (src/vspec/slice.rs) 2947885238.
+Specs unresolved (spec fns of the name): `len` (5).
 
 ```rust
 pub assume_specification<T, const N: usize>[ <core::array::IntoIter<T, N> as core::iter::Iterator>::next ](i: &mut core::array::IntoIter<T, N>) -> (r: Option<
@@ -174,6 +185,9 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::slice::slice_iter_mut).
 > `for e in s` over a mutable slice: `s.iter_mut()`, whose `vstd` specification this repeats (the loop hands out each element once, and each one's final value flows back into `s`).
 
 Hashes: contract 1450471619, body none.
+
+Specs: `ForkHeld::all` (src/api/mod.rs) 3142416980.
+Specs unresolved (spec fns of the name): `len` (5).
 
 ```rust
 pub assume_specification<'a, T>[ <&'a mut [T] as core::iter::IntoIterator>::into_iter ](s: &'a mut [T]) -> (iter: core::slice::IterMut<'a, T>)
@@ -229,6 +243,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::select_pt
 
 Hashes: contract 4181325796, body 2202159842.
 
+Specs unresolved (spec fns of the name): `len` (5).
+
 ```rust
 pub fn select_ptrs(s: &mut [*mut u8], index: usize)
     requires
@@ -247,6 +263,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::select_pt
 > `s.select_nth_unstable_by_key(index, f)` on a slice of raw pointers with a `usize` key, its returned parts dropped: permutes `s`.
 
 Hashes: contract 1032199818, body 1229464848.
+
+Specs unresolved (spec fns of the name): `len` (5).
 
 ```rust
 pub fn select_ptrs_by_key<F: FnMut(&*mut u8) -> usize>(s: &mut [*mut u8], index: usize, f: F)
@@ -267,6 +285,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::slice::kani_perms::sli
 > `core::slice::from_raw_parts_mut(base.add(start), n)` over the elements `start..start + n` of the `T`s at `base`, whose permissions `elems` holds keyed by their pointers, element `i`'s at `base.add(i)`, and no other permission: the slice of those elements, for as long as `elems` stays borrowed.
 
 Hashes: contract 1159167311, body 1608609135.
+
+Specs: `elem_key` (src/vspec/slice.rs) 3272883283, `ptr_add` (src/vspec/ptr.rs) 2826230649, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `len` (5), `dom` (2), `value` (6).
 
 ```rust
 pub unsafe fn slice_mut_elems<'a, T>(
@@ -306,6 +327,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_swa
 
 Hashes: contract 1022712554, body none.
 
+Specs unresolved (spec fns of the name): `len` (5).
+
 ```rust
 pub assume_specification<T>[ <[T]>::swap_with_slice ](a: &mut [T], b: &mut [T])
     requires
@@ -324,6 +347,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::slice::slice_rot
 > `s.rotate_left(mid)`: panics unless `mid <= s.len()`.
 
 Hashes: contract 2862124004, body none.
+
+Specs unresolved (spec fns of the name): `len` (5).
 
 ```rust
 pub assume_specification<T>[ <[T]>::rotate_left ](s: &mut [T], mid: usize)

@@ -56,7 +56,11 @@
 # hashes of the item it checked in a fifth column, `<TAB>contract C, body
 # B`; --check fails when they differ from the item's (its contract or body
 # changed, and --write does not change the overrides), when such a
-# status records none, and when another status records some. A status
+# status records none, and when another status records some. An entry
+# also lists, on a `Specs:` line, the spec fns of src/ its contract
+# names, each with the cksum CRC of its text (especs, below), so an edit
+# to one makes the ledger stale; a name several spec fns share that the
+# call's qualifier does not settle is listed as unresolved. A status
 # `trusted (claims nothing: <why>)`, for an opaque type or an
 # external_body constant whose contract states nothing, records them too,
 # and --check fails when it is on another kind of seam, on an item that
@@ -390,6 +394,10 @@ newfile {
         kind = "axiom"; name = qual(fname)
     } else if (isfn && attrs ~ /exec_allows_no_decreases_clause/) {
         kind = "no_decreases"; name = qual(fname)
+    } else if (isfn && inverus && t ~ /(^|[ \t])spec(\(checked\))? fn /) {
+        # No seam: a spec fn, captured for the Specs lines (specs, below)
+        # and dropped from the entries at END.
+        kind = "spec fn"; name = qual(fname)
     }
     if (isfn) lastfn = qual(fname)
 
@@ -546,8 +554,18 @@ END {
     # that verified `fmt` require `fmt_req`, and every `format_args!` site
     # prove it. One whose trait impl is in another file stays listed; the
     # scan does not match impls across files.
+    # A spec fn is no seam: it moves to the spec table, sname[i] (as
+    # qual gives it), sfile[i] and stext[i] (its contract and body as the
+    # hashes read them), nspec of them, and sbare[NAME], how many have
+    # the last segment NAME.
     m = 0
     for (e = 1; e <= n; e++) {
+        if (ekind[e] == "spec fn") {
+            nspec++; sname[nspec] = ename[e]; sfile[nspec] = efile[e]
+            stext[nspec] = norm(ehc[e] " " ehb[e])
+            s = ename[e]; sub(/^.*::/, "", s); sbare[s]++
+            continue
+        }
         if (efmt[e] != "" && (efile[e] SUBSEP efmt[e]) in verified_impl) continue
         if (++m == e) continue
         efile[m] = efile[e]; eline[m] = eline[e]; ekind[m] = ekind[e]; ename[m] = ename[e]
@@ -639,6 +657,7 @@ END {
             if (s != "") { print "" > out; print "> " s > out }
             if (enote[i] != "") { s = enote[i]; sub(/; $/, ".", s); print "" > out; print "Body " s > out }
             if (ehash[i] != "") { print "" > out; print "Hashes: " ehash[i] "." > out }
+            if (espec[i] != "") { print "" > out; print espec[i] > out }
             print "" > out
             print "```rust" > out
             print econtract[i] > out
@@ -675,10 +694,12 @@ function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, rc, nc, what) {
         f = hashdir "/" e ".c"; printf "%s", norm(ehc[e]) > f; close(f)
         if (norm(ehb[e]) != "") { f = hashdir "/" e ".b"; printf "%s", norm(ehb[e]) > f; close(f) }
     }
+    for (i = 1; i <= nspec; i++) { f = hashdir "/s" i; printf "%s", stext[i] > f; close(f) }
     cmd = "cd '" hashdir "' && cksum *"
     while ((cmd | getline l) > 0) { split(l, h, " "); hv[h[3]] = h[1] }
     close(cmd)
     for (e = 1; e <= n; e++) {
+        especs(e, hv)
         if (!((e ".c") in hv)) { print "seams: cksum gave no hash for " efile[e] ":" eline[e] > "/dev/stderr"; bad = 1 }
         ehash[e] = "contract " hv[e ".c"] ", body " ((e ".b") in hv ? hv[e ".b"] : "none")
         ok = eok[e]; rec = ok != "" ? ohash[ok] : ""
@@ -697,6 +718,59 @@ function hashes(    e, f, l, h, hv, cmd, ok, rec, chk, cn, rc, nc, what) {
     }
     printf "" > drift; close(drift)
     printf "" > (hashdir "/notcopy"); close(hashdir "/notcopy")
+}
+
+# espec[e], entry e's Specs lines: the spec fns of src/ its contract
+# names, each with the cksum CRC of its own text (its contract and body
+# as the hashes read them), so an edit to one changes the ledger and
+# fails --check until --write, though the contract hash stays. A call
+# `name(`, `path::name(` or `.name(` in the contract names the spec fn
+# whose last segment is `name` when only one has it; when several do,
+# the one the qualifier picks (`Type::name` or `Self::name` and
+# `self.name(` in a method, by the impl's type; `module::name` by a
+# file `module.rs` or directory `module/`) if exactly one, and
+# otherwise the name is listed as unresolved. The item's attributes are
+# skipped. Only the specs the contract calls: not those their bodies
+# name in turn, not a `view` reached through `x@` (no call), and no
+# constants.
+function especs(e, hv,    s, tok, pre, nm, q, i, k, hit, out, un, done, self, d) {
+    s = norm(ehc[e]); out = ""; un = ""
+    # The attributes are no calls: `cfg(all(..))` names no spec fn.
+    while (substr(s, 1, 2) == "#[") {
+        d = 0
+        for (i = 2; i <= length(s); i++) {
+            if (substr(s, i, 1) == "[") d++
+            else if (substr(s, i, 1) == "]" && --d == 0) break
+        }
+        s = trim(substr(s, i + 1))
+    }
+    self = ename[e]; if (self ~ /::/) sub(/::[^:]*$/, "", self); else self = ""
+    while (match(s, /(self\.|\.|fn )?[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*(::<[^()]*>)? *\(/)) {
+        tok = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+        if (tok ~ /^fn /) continue
+        pre = tok ~ /^self\./ ? "Self" : ""
+        sub(/^(self)?\./, "", tok); sub(/ *\($/, "", tok); sub(/::<.*$/, "", tok)
+        nm = tok; sub(/^.*::/, "", nm)
+        if (!(nm in sbare)) continue
+        q = tok; if (q ~ /::/) { sub(/::[^:]*$/, "", q); sub(/^.*::/, "", q) } else q = pre
+        if (q == "Self") q = self
+        hit = 0; k = 0
+        for (i = 1; i <= nspec; i++) {
+            if (sname[i] != nm && substr(sname[i], length(sname[i]) - length(nm) - 1) != "::" nm) continue
+            if (sbare[nm] == 1 || (q != "" && (sname[i] == q "::" nm || (sname[i] == nm && (index(sfile[i], "/" q "/") || substr(sfile[i], length(sfile[i]) - length(q) - 3) == "/" q ".rs"))))) { hit = i; k++ }
+        }
+        if (k == 1) {
+            if (("r" hit) in done) continue
+            done["r" hit] = 1
+            out = out (out == "" ? "" : ", ") "`" sname[hit] "` (" sfile[hit] ") " hv["s" hit]
+        } else if (!(("u" nm) in done)) {
+            done["u" nm] = 1
+            un = un (un == "" ? "" : ", ") "`" nm "` (" sbare[nm] ")"
+        }
+    }
+    espec[e] = ""
+    if (out != "") espec[e] = "Specs: " out "."
+    if (un != "") espec[e] = espec[e] (out != "" ? "\n" : "") "Specs unresolved (spec fns of the name): " un "."
 }
 
 # A `tracked` struct or enum whose status cites `const assert: a, b and
@@ -1404,6 +1478,41 @@ case $mode in
     case $r in *'records no hashes'*) ;; *) echo "seams: self-test: hash: a partly checked status with no hashes accepted: $r" >> "$tmp/cites" ;; esac
     r=$(hsrc 'x < 3' 'x + 1' | hs trusted "$hs_h")
     case $r in *'hashes on a status that cites no check'*) ;; *) echo "seams: self-test: hash: hashes on a trusted status accepted: $r" >> "$tmp/cites" ;; esac
+    # Self-test: the Specs lines. A spec fn the contract names, by a
+    # crate-unique name or a path to one of several, is listed with its
+    # hash, which an edit to its body changes while the seam's hashes
+    # stay; a name two spec fns share, unqualified, is listed unresolved;
+    # a spec fn named only in an attribute is not listed.
+    # sps BODY: seam f under `#[cfg(all(unix))]` ensuring s(x), m::t(x),
+    # d::v(x), W::w(x) and u(x), with spec fn s returning BODY, t in
+    # src/m.rs and in src/t.rs, v in src/d/mod.rs and in src/t.rs, w in
+    # src/m.rs and in src/t.rs's impl W, u in src/m.rs and src/t.rs, and
+    # all in src/m.rs; prints f's Specs and Hashes lines.
+    sps() {
+      { printf '\001FILE verus/ledger/src/t.rs.overrides\n'
+        printf 'f\tpanic/abort\tKani\n'
+        printf '\001FILE src/d/mod.rs\n'
+        printf '%s\n' 'verus! {' 'pub open spec fn v(x: u8) -> bool { x > 0 }' '}'
+        printf '\001FILE src/m.rs\n'
+        printf '%s\n' 'verus! {' 'pub open spec fn t(x: u8) -> bool { x > 0 }' 'pub open spec fn u(x: u8) -> bool { x > 0 }' \
+          'pub open spec fn w(x: u8) -> bool { x > 0 }' 'pub open spec fn all(x: u8) -> bool { x > 0 }' '}'
+        printf '\001FILE src/t.rs\n'
+        printf '%s\n' 'verus! {' "pub open spec fn s(x: u8) -> bool { $1 }" 'pub open spec fn t(x: u8) -> bool { x > 1 }' \
+          'pub open spec fn u(x: u8) -> bool { x > 1 }' 'pub open spec fn v(x: u8) -> bool { x > 1 }' \
+          'pub struct W;' 'impl W {' '    pub open spec fn w(x: u8) -> bool { x > 1 }' '}' \
+          '#[cfg(all(unix))]' '#[verifier::external_body]' 'fn f(x: u8) -> (r: u8)' \
+          '    ensures s(x), m::t(x), d::v(x), W::w(x), u(x),' '{' '    x' '}' '}'; } |
+        scan write "$tmp/sp-ledger" "$tmp/sp-hash" > /dev/null 2>&1 || { echo "scan failed"; return 0; }
+      grep -E '^(Specs|Hashes)' "$tmp/sp-ledger/src/t.rs.md"
+    }
+    sp1=$(sps 'x < 3'); sp2=$(sps 'x < 4')
+    # shellcheck disable=SC2016 # backquotes in the ledger text, not expansions
+    case $sp1 in
+      *'Specs: `s` (src/t.rs) '[0-9]*', `t` (src/m.rs) '[0-9]*', `v` (src/d/mod.rs) '[0-9]*', `W::w` (src/t.rs) '[0-9]*.*'Specs unresolved (spec fns of the name): `u` (2).') ;;
+      *) echo "seams: self-test: specs: want s, m::t, d::v and W::w resolved and u unresolved: $sp1" >> "$tmp/cites" ;;
+    esac
+    [ "$(echo "$sp1" | grep '^Hashes')" = "$(echo "$sp2" | grep '^Hashes')" ] && [ "$sp1" != "$sp2" ] ||
+      echo "seams: self-test: specs: an edited spec body left the Specs line, or changed the seam's hashes: $sp1 / $sp2" >> "$tmp/cites"
     # Self-test: a claims nothing status passes on an opaque type (an
     # external type specification or an external_body struct) or an
     # external_body constant with the item's hashes, and fails with none,

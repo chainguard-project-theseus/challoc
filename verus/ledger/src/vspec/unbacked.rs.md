@@ -19,6 +19,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1915317840, body 1293528070.
 
+Specs: `Unbacked::addr` (src/vspec/unbacked.rs) 1839995738, `committed_range` (src/vspec/unbacked.rs) 1660895910, `Unbacked::len` (src/vspec/unbacked.rs) 684312566, `ZeroRaw::is_range` (src/vspec/zero.rs) 3242200845, `cast_provenance` (src/vspec/addr.rs) 2449243785.
+Specs unresolved (spec fns of the name): `provenance` (2), `addr` (6), `len` (5).
+
 ```rust
 pub proof fn commit(tracked self) -> (tracked r: (PointsToRaw, Zeroed))
     requires
@@ -39,6 +42,9 @@ Tool: none (assumption). Status: trusted.
 > The permission to the bytes of a lazily committed table, still uncommitted, and the token that they read as zero.
 
 Hashes: contract 1344647711, body 1293528070.
+
+Specs: `Unbacked::addr` (src/vspec/unbacked.rs) 1839995738, `ZeroRaw::is_range` (src/vspec/zero.rs) 3242200845, `Unbacked::len` (src/vspec/unbacked.rs) 684312566, `cast_provenance` (src/vspec/addr.rs) 2449243785.
+Specs unresolved (spec fns of the name): `provenance` (2), `addr` (6), `len` (5).
 
 ```rust
 pub proof fn into_lazy(tracked self) -> (tracked r: (PointsToRaw, Zeroed))

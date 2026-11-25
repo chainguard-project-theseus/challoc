@@ -44,6 +44,8 @@ Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 Hashes: contract 3755770132, body 3659477090.
 
+Specs: `classes_storage` (src/layout/mod.rs) 4010765398.
+
 ```rust
 fn classes_ptr() -> (p: *mut [Class; NCLASSES])
     ensures

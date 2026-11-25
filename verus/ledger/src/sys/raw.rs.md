@@ -29,6 +29,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 Hashes: contract 2975113020, body 3825585985.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
     requires
@@ -41,6 +43,8 @@ src/sys/raw.rs:52. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 3787461194, body 3050307281.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -55,6 +59,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 Hashes: contract 3919645429, body 3925922127.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
     requires
@@ -67,6 +73,8 @@ src/sys/raw.rs:82. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 1576468672, body 3351063.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `returned3` (src/sys/raw.rs) 2759767653.
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
@@ -83,6 +91,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 Hashes: contract 1269561349, body 2919971514.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
     requires
@@ -95,6 +105,8 @@ src/sys/raw.rs:115. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 3719849767, body 3707998342.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub unsafe fn syscall5(
@@ -115,6 +127,8 @@ src/sys/raw.rs:138. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 878913849, body 276620174.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub unsafe fn syscall6(
@@ -137,6 +151,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 Hashes: contract 2975113020, body 418776006.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub unsafe fn syscall0(nr: usize) -> usize
     requires
@@ -149,6 +165,8 @@ src/sys/raw.rs:186. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 3787461194, body 3699927365.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub unsafe fn syscall1(nr: usize, a0: usize) -> usize
@@ -163,6 +181,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 Hashes: contract 3919645429, body 87303903.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize
     requires
@@ -175,6 +195,8 @@ src/sys/raw.rs:215. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 1576468672, body 2023455942.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `returned3` (src/sys/raw.rs) 2759767653.
 
 ```rust
 pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> (r: usize)
@@ -191,6 +213,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 
 Hashes: contract 1269561349, body 857626010.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize
     requires
@@ -203,6 +227,8 @@ src/sys/raw.rs:247. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 3719849767, body 4277526220.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub unsafe fn syscall5(
@@ -223,6 +249,8 @@ src/sys/raw.rs:269. Kind: external_body. Category: inline asm.
 Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; premises: K1 (the kernel's side of the call)).
 
 Hashes: contract 878913849, body 933880841.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub unsafe fn syscall6(

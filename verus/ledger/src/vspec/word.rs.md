@@ -18,6 +18,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::atomic::word_loa
 
 Hashes: contract 1964652950, body 1486267455.
 
+Specs: `fork_slot_id` (src/vspec/word.rs) 1995057694.
+Specs unresolved (spec fns of the name): `id` (4), `value` (6).
+
 ```rust
 pub fn load_fork_slot(w: &AtomicU64, Tracked(perm): Tracked<&PermissionU64>) -> (r: u64)
     requires
