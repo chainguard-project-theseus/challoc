@@ -137,6 +137,9 @@ leave out (theorem 33). Remaining work is tracked in
   `layout::Regions::theorem_thp_advice_in_reservations`,
   `layout/regions.rs`, and `heap::theorem_thp_advice_published`,
   `heap/theorems.rs`, with `thp::madvise_hugepage`'s contract.
+- **Refill slab order** ([A refill takes partial slabs lowest address first](#a-refill-takes-partial-slabs-lowest-address-first-over-the-values-read)):
+  `class::ClassState::theorem_refill_address_ordered`, `class/mod.rs`,
+  with `ClassState::plan_at`'s contract.
 
 ## Configuration
 
@@ -11501,6 +11504,135 @@ the PR's tree and on main):
 | M6 | the top-side commit advises `self.len` from `addr` | rejected (precondition) | verifies |
 | M7 | `prepare` passes `Ghost(false)` (with M3's length) | verifies; the source test fails | n/a |
 | M8 | `Inner`'s lock frame drops `spec_base` | rejected (`Meta::lemma_process_region`'s postcondition, and six existing ones) | n/a |
+
+## A refill takes partial slabs lowest address first (over the values read)
+
+Design section 5 and docs/proposals/slab-pages.md (3.3) choose
+address-ordered first fit for slabs, as jemalloc does. A refill reserves
+slots in the lowest partial slab with room before any higher one, and
+takes an idle slab (`Empty`, `Purged` or fresh) only when no partial
+slab has room. A defragmenter's moves converge under that policy.
+Theorem 23 proves the huge allocator's lowest fit. Before
+chainguard-project-theseus/challoc#961, `ClassState::plan_at`, the lock
+hold of every refill, said "lowest address first" only in its doc.
+Its `ensures` said nothing about which slabs it picked, except when it
+picked none (theorem 37).
+
+**Statement.**
+
+```rust
+// class/mod.rs
+spec fn picked(p: Seq<Pick>, n: int, x: nat) -> bool {     // opaque
+    exists|j: int| 0 <= j < n && p[j].slab as nat == x
+}
+
+spec fn scan_ordered(&self, p0: Set<nat>, seen: Map<nat, usize>, p: Seq<Pick>,
+    npart: int, lo: int, lim: int) -> bool {               // opaque
+    &&& 0 <= npart <= p.len()
+    &&& lim <= self.spec_nslabs()
+    &&& forall|i| 0 <= i < npart ==> lo <= p[i].slab < lim && p0.contains(p[i].slab as nat)
+    &&& forall|i, j| 0 <= i < j < npart ==> p[i].slab < p[j].slab
+    &&& forall|x: nat| p0.contains(x) && lo <= x < lim ==>
+            picked(p, npart, x) || (seen.contains_key(x) && seen[x] >= nslots)
+}
+
+spec fn refill_ordered(&self, p0, seen, g: Inner, p, npart, np, lo, lim) -> bool {
+    &&& self.scan_ordered(p0, seen, p, npart, lo, lim)
+    &&& npart <= np
+    &&& npart < np ==> lim == self.spec_nslabs()
+    &&& forall|x: nat| g.partial.map@.contains(x) ==> p0.contains(x) || picked(p, np, x)
+}
+
+fn plan_at(&self, floor: usize, .., Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+    Tracked(scan): Tracked<&mut Ghost<(Set<nat>, int, int)>>, ..) -> (np: usize)
+    ensures
+        self.refill_ordered(final(scan)@.0, final(ex)@.1, final(ex)@.0, final(picks)@,
+            final(scan)@.1, np as int, floor as int, final(scan)@.2),
+
+proof fn theorem_refill_address_ordered(&self, p0, seen, g, p, npart, np, lo, lim)
+    requires
+        self.refill_ordered(p0, seen, g, p, npart, np, lo, lim),
+    ensures
+        forall|i, j| 0 <= i < j < npart ==> p[i].slab < p[j].slab,
+        forall|i, x: nat| 0 <= i < npart && p0.contains(x) && lo <= x < p[i].slab ==>
+            picked(p, i, x) || (seen.contains_key(x) && seen[x] >= nslots),
+        npart < np ==> forall|x: nat| p0.contains(x) && lo <= x < self.spec_nslabs() ==>
+            picked(p, npart, x) || (seen.contains_key(x) && seen[x] >= nslots),
+```
+
+In words, for each lock hold of a refill:
+- `p0` is the partial set of the lock value it acquired, and `g` the
+  lock value it released.
+- `seen` holds, for each slab it skipped as busy, its `live` load plus
+  its closed slots.
+- The first `npart` of its `np` picks come from its scan of the partial
+  set, from the fork floor `lo` (0 outside a fork epoch) up to `lim`.
+  They are strictly ascending, so no slab is picked twice.
+- Below each of them, from `lo`, every slab of `p0` is an earlier pick
+  or was read with no open free slot (`live + closed >= nslots`).
+- A later pick, an idle slab from `next_slab`, comes only after the scan
+  reached the end of the class. Every slab of `p0` from `lo` up is then
+  a partial pick or was read with no open free slot.
+- Every partial slab of the released value is one of `p0` or a pick.
+
+The proof carries `scan_ordered` through both loops of `plan_at`:
+- `lemma_scan_start` covers the first `lowest_set`/`lowest_set_from`.
+- `lemma_scan_step` covers each slab the scan takes or skips. Its
+  premises are the scan's frame: the partial set at and above the slab
+  in hand is still `p0`'s. Two new `ensures` give it:
+  - `take` writes the pick for its `slab` and changes the partial set at
+    no other slab;
+  - `next_slab` leaves the partial set unchanged.
+- `lemma_scan_ordered_frame` and `lemma_picked_frame` carry the scan's
+  picks past the idle picks.
+- `lemma_picked_below` turns the ascending order into "picked before".
+
+`scan_ordered` and `picked` are opaque, so `plan_at`'s loops carry them
+as atoms. Opened there, they took `plan_at` past its rlimit.
+
+**Premises (seams).** None beyond the common ones. `TwoLevelBitmap::lowest_set` and
+`lowest_set_from` are verified (`bitmap.rs`). `SlabDesc::live` is a
+relaxed load whose value is in `seen` but has no spec of the
+concurrent slots, as in theorem 37. No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- Over the values read. Slots out in the slab's bitmap without the
+  lock (a concurrent claim's reservation not yet set, or a release not
+  yet subtracted) can make `live` overstate or understate the free slots,
+  as in theorem 37. The statement says that the scan skipped no slab it
+  read as having an open free slot. It does not say the slab had none.
+- `p0` and the other ghost outputs are values `plan_at` hands out. A
+  caller cannot tie `p0` to the lock beyond the last conjunct (every
+  partial slab the hold released is in `p0` or picked). So a slab that
+  the hold left partial and did not pick is in `p0`. If it lies in
+  `[lo, lim)`, the scan read it with no open free slot. A hold that
+  stopped early (its batch full, or `MAX_PICKS` picks) has `lim` at the
+  slab it stopped at, and says nothing above it. `p0` is the acquired value (the body sets it from
+  `g@.partial` right after `lock`), but that is read from the body, not
+  stated: the lock's value is not constrained across acquisitions.
+- One lock hold. `plan` and `plan_epoch` call `plan_at` (`plan_epoch`
+  twice, the second time without the floor when the first found
+  nothing). Neither they nor `claim_with` restate the result, and a
+  refill's later holds start a new scan.
+- Slab order only. Which slots a pick claims inside its slab
+  (`claim_prefix`, the bitmap's own scan, or a shuffled order) is not
+  covered, nor which idle slab `next_slab` returns (its doc says the
+  lowest `Empty`, then the lowest `Purged`, then fresh; its `ensures`
+  says only that the slab is ready).
+- With a fork floor, slabs below it are not scanned: `lo` is the floor,
+  and the statement says nothing below it.
+- Ghost only: the release library's machine code is unchanged (the new
+  argument is `Tracked`, erased, of an `inline(always)` function).
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module class
+--verify-function ClassState::plan_at`, on the PR's tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| M1 | after a pick, the scan goes on from `s + 2` (skips a slab) | rejected (`lemma_scan_step` precondition) | verifies |
+| M2 | after a pick, the scan stops while slots remain (`if np > 0 && remaining > 1 { break; }`), so an idle slab comes next | rejected (the idle loop's invariant `scan_ordered` up to the end of the class) | verifies |
+| M3 | after a pick, a slab with one open free slot is skipped as busy | rejected (`lemma_scan_step` precondition: the read is below `nslots`) | verifies |
+| M4 | under a fork floor, the scan starts at `floor + 1` (saturating) | rejected (`lemma_scan_start` precondition) | verifies |
 
 ## Interface contract
 

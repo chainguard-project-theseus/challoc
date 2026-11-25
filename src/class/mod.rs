@@ -1489,6 +1489,52 @@ spec fn picks_ok(p: Seq<Pick>, np: int, nslabs: usize, nslots: nat) -> bool {
     &&& forall|i: int| #![trigger p[i]] 0 <= i < np ==> (p[i].slab as usize) < nslabs && p[i].n <= nslots
 }
 
+/// Slab `x` is the slab of one of the first `n` picks. Opaque: only the
+/// lemmas about the scan open it.
+#[verifier::opaque]
+spec fn picked(p: Seq<Pick>, n: int, x: nat) -> bool {
+    exists|j: int| #![trigger p[j]] 0 <= j < n && p[j].slab as nat == x
+}
+
+/// Among strictly ascending picks, a slab below pick `i` that is picked at
+/// all is picked before `i`.
+proof fn lemma_picked_below(p: Seq<Pick>, n: int, i: int, x: nat)
+    requires
+        0 <= i < n <= p.len(),
+        x < p[i].slab,
+        forall|a: int, b: int| #![trigger p[a], p[b]] 0 <= a < b < n ==> p[a].slab < p[b].slab,
+        picked(p, n, x),
+    ensures
+        picked(p, i, x),
+{
+    reveal(picked);
+    let j = choose|j: int| #![trigger p[j]] 0 <= j < n && p[j].slab as nat == x;
+    if j > i {
+        assert(p[i].slab < p[j].slab);
+    }
+    assert(j < i);
+}
+
+/// Picks that agree on the first `n` entries pick the same slabs there,
+/// and a slab picked among the first `n` is picked among the first `n + 1`.
+proof fn lemma_picked_frame(a: Seq<Pick>, b: Seq<Pick>, n: int)
+    requires
+        0 <= n,
+        n < b.len(),
+        n <= a.len(),
+        forall|i: int| 0 <= i < n ==> a[i] == b[i],
+    ensures
+        forall|x: nat| #[trigger] picked(a, n, x) ==> picked(b, n, x) && picked(b, n + 1, x),
+        picked(b, n + 1, b[n].slab as nat),
+{
+    reveal(picked);
+    assert forall|x: nat| #[trigger] picked(a, n, x) implies picked(b, n, x) && picked(b, n + 1, x) by {
+        let j = choose|j: int| 0 <= j < n && #[trigger] a[j].slab as nat == x;
+        assert(b[j] == a[j]);
+    }
+    assert(b[n].slab as nat == b[n].slab as nat);
+}
+
 /// `picks_sum` of a prefix depends only on that prefix, and is not negative.
 proof fn lemma_picks_sum(a: Seq<Pick>, b: Seq<Pick>, k: int)
     requires
@@ -4569,6 +4615,208 @@ impl ClassState {
         &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) && x < lim ==> seen[x] >= class_table()[self.spec_class() as int].nslots
     }
 
+    /// The partial-set scan of a refill's lock hold ([`ClassState::plan_at`])
+    /// went in address order over `[lo, lim)` of the partial set `p0`: its
+    /// `npart` picks are slabs of `p0` there, strictly ascending, and every
+    /// slab of `p0` there is one of them or was read with no open free slot
+    /// (its `live` load plus its closed slots, kept in `seen`, at `nslots`
+    /// or more). Opaque: [`ClassState::plan_at`]'s loops carry it, and only
+    /// the lemmas about the scan open it.
+    #[verifier::opaque]
+    spec fn scan_ordered(&self, p0: VSet<nat>, seen: Map<nat, usize>, p: Seq<Pick>, npart: int, lo: int, lim: int) -> bool {
+        &&& 0 <= npart <= p.len()
+        &&& lim <= self.spec_nslabs()
+        &&& forall|i: int| #![trigger p[i]] 0 <= i < npart ==> lo <= p[i].slab < lim && p0.contains(p[i].slab as nat)
+        &&& forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < npart ==> p[i].slab < p[j].slab
+        &&& forall|x: nat| #[trigger] p0.contains(x) && lo <= x < lim ==> picked(p, npart, x) || (seen.contains_key(x)
+            && seen[x] >= class_table()[self.spec_class() as int].nslots)
+    }
+
+    /// A refill's lock hold took slabs in address order
+    /// ([`ClassState::plan_at`], theorem "A refill takes partial slabs
+    /// lowest address first"): `p0` is the partial set of the lock value
+    /// it acquired, `g` the lock value it released and `np` its picks, of
+    /// which the first `npart` came from the partial-set scan over
+    /// `[lo, lim)` ([`ClassState::scan_ordered`]). A pick past those (an
+    /// idle slab: `Empty`, `Purged` or fresh) comes only after the scan
+    /// reached the end of the class, and every partial slab of `g` is one
+    /// of `p0` or a pick.
+    spec fn refill_ordered(&self, p0: VSet<nat>, seen: Map<nat, usize>, g: Inner, p: Seq<Pick>, npart: int, np: int, lo: int, lim: int) -> bool {
+        &&& self.scan_ordered(p0, seen, p, npart, lo, lim)
+        &&& npart <= np
+        &&& npart < np ==> lim == self.spec_nslabs()
+        &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) ==> p0.contains(x) || picked(p, np, x)
+    }
+
+    /// [`ClassState::plan_at`]'s scan before its first slab: no pick yet,
+    /// and `next`, the lowest slab of the partial set `p0` at or above
+    /// `lo`, has none of `p0` below it from `lo`.
+    proof fn lemma_scan_start(&self, p0: VSet<nat>, p: Seq<Pick>, lo: int, next: Option<usize>)
+        requires
+            next matches Some(c) ==> c < self.spec_nslabs() && lo <= c
+                && forall|x: nat| #[trigger] p0.contains(x) && lo <= x ==> c <= x,
+            next is None ==> forall|x: nat| #[trigger] p0.contains(x) ==> x < lo,
+        ensures
+            self.scan_ordered(p0, Map::empty(), p, 0, lo, match next {
+                Some(c) => c as int,
+                None => self.spec_nslabs() as int,
+            }),
+            forall|x: nat| #[trigger] p0.contains(x) ==> p0.contains(x) || picked(p, 0, x),
+    {
+        reveal(ClassState::scan_ordered);
+    }
+
+    /// One step of [`ClassState::plan_at`]'s partial-set scan at slab `s`:
+    /// the slab was read busy (`seen1` adds its read, at `nslots` or more)
+    /// or taken (`b` adds a pick of it), the partial set changed at `s`
+    /// alone (`g0p` to `g1p`), and `next` is the lowest partial slab of
+    /// `g1p` above `s`. The scan is then ordered up to `next`.
+    proof fn lemma_scan_step(
+        &self,
+        p0: VSet<nat>,
+        seen0: Map<nat, usize>,
+        seen1: Map<nat, usize>,
+        a: Seq<Pick>,
+        b: Seq<Pick>,
+        n0: int,
+        n1: int,
+        took: bool,
+        g0p: VSet<nat>,
+        g1p: VSet<nat>,
+        lo: int,
+        s: nat,
+        next: Option<usize>,
+    )
+        requires
+            self.scan_ordered(p0, seen0, a, n0, lo, s as int),
+            lo <= s < self.spec_nslabs(),
+            p0.contains(s),
+            forall|x: nat| s <= x ==> (#[trigger] g0p.contains(x) == p0.contains(x)),
+            forall|x: nat| #[trigger] g0p.contains(x) ==> p0.contains(x) || picked(a, n0, x),
+            forall|x: nat| x != s ==> (#[trigger] g1p.contains(x) == g0p.contains(x)),
+            !took ==> n1 == n0 && b == a && seen1.contains_key(s) && seen1[s] >= class_table()[self.spec_class() as int].nslots
+                && forall|x: nat| x != s ==> seen1.contains_key(x) == seen0.contains_key(x) && seen1[x] == seen0[x],
+            took ==> n1 == n0 + 1 && n0 < b.len() == a.len() && b[n0].slab as nat == s && seen1 == seen0
+                && forall|i: int| 0 <= i < n0 ==> a[i] == b[i],
+            next matches Some(c) ==> c < self.spec_nslabs() && g1p.contains(c as nat) && s < c
+                && forall|x: nat| #[trigger] g1p.contains(x) && s < x ==> c <= x,
+            next is None ==> forall|x: nat| #[trigger] g1p.contains(x) ==> x <= s,
+        ensures
+            self.scan_ordered(p0, seen1, b, n1, lo, match next {
+                Some(c) => c as int,
+                None => self.spec_nslabs() as int,
+            }),
+            next matches Some(c) ==> forall|x: nat| c <= x ==> (#[trigger] g1p.contains(x) == p0.contains(x)),
+            forall|x: nat| #[trigger] g1p.contains(x) ==> p0.contains(x) || picked(b, n1, x),
+    {
+        reveal(ClassState::scan_ordered);
+        reveal(picked);
+        let lim = match next {
+            Some(c) => c as int,
+            None => self.spec_nslabs() as int,
+        };
+        let nslots = class_table()[self.spec_class() as int].nslots;
+        if took {
+            lemma_picked_frame(a, b, n0);
+        }
+        // Earlier picks are below `s`; a new one is `s`.
+        assert forall|i: int| #![trigger b[i]] 0 <= i < n1 implies lo <= b[i].slab < lim && p0.contains(b[i].slab as nat) by {
+            if i < n0 {
+                assert(a[i] == b[i]);
+            }
+        }
+        assert forall|i: int, j: int| #![trigger b[i], b[j]] 0 <= i < j < n1 implies b[i].slab < b[j].slab by {
+            assert(a[i] == b[i]);
+            if j < n0 {
+                assert(a[j] == b[j]);
+            }
+        }
+        assert forall|x: nat| #[trigger] p0.contains(x) && lo <= x < lim implies picked(b, n1, x) || (seen1.contains_key(x)
+            && seen1[x] >= nslots) by {
+            if x < s {
+                if picked(a, n0, x) {
+                    if !took {
+                        assert(picked(b, n1, x));
+                    }
+                } else {
+                    assert(seen0.contains_key(x) && seen0[x] >= nslots);
+                }
+            } else if x > s {
+                // A partial slab of `p0` above `s` is still partial, so
+                // `next` is no higher.
+                assert(g0p.contains(x));
+                assert(g1p.contains(x));
+            }
+        }
+        assert forall|x: nat| #[trigger] g1p.contains(x) implies p0.contains(x) || picked(b, n1, x) by {
+            if x != s {
+                assert(g0p.contains(x));
+                if picked(a, n0, x) && !took {
+                    assert(picked(b, n1, x));
+                }
+            }
+        }
+    }
+
+    /// Theorem: a refill takes partial slabs lowest address first, and an
+    /// idle slab only after them (THEOREMS.md, "A refill takes partial
+    /// slabs lowest address first"). For a lock hold of a refill
+    /// ([`ClassState::plan_at`] ensures [`ClassState::refill_ordered`] of
+    /// what it hands out): its partial picks are strictly ascending; below
+    /// each one, from the floor `lo`, every slab of the acquired partial
+    /// set `p0` is an earlier pick or was read with no open free slot; and
+    /// when it took an idle slab, every slab of `p0` from `lo` up was a
+    /// partial pick or read so.
+    proof fn theorem_refill_address_ordered(
+        &self,
+        p0: VSet<nat>,
+        seen: Map<nat, usize>,
+        g: Inner,
+        p: Seq<Pick>,
+        npart: int,
+        np: int,
+        lo: int,
+        lim: int,
+    )
+        requires
+            self.refill_ordered(p0, seen, g, p, npart, np, lo, lim),
+        ensures
+            forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < npart ==> p[i].slab < p[j].slab,
+            forall|i: int, x: nat| #![trigger p[i], p0.contains(x)] 0 <= i < npart && p0.contains(x) && lo <= x < p[i].slab ==>
+                picked(p, i, x) || (seen.contains_key(x) && seen[x] >= class_table()[self.spec_class() as int].nslots),
+            npart < np ==> forall|x: nat| #[trigger] p0.contains(x) && lo <= x < self.spec_nslabs() ==>
+                picked(p, npart, x) || (seen.contains_key(x) && seen[x] >= class_table()[self.spec_class() as int].nslots),
+    {
+        reveal(ClassState::scan_ordered);
+        assert forall|i: int, x: nat| #![trigger p[i], p0.contains(x)] 0 <= i < npart && p0.contains(x) && lo <= x < p[i].slab implies
+            picked(p, i, x) || (seen.contains_key(x) && seen[x] >= class_table()[self.spec_class() as int].nslots) by {
+            assert(p[i].slab < lim);
+            if picked(p, npart, x) {
+                lemma_picked_below(p, npart, i, x);
+            }
+        }
+    }
+
+    /// [`ClassState::scan_ordered`] depends only on the first `npart` picks.
+    proof fn lemma_scan_ordered_frame(&self, p0: VSet<nat>, seen: Map<nat, usize>, a: Seq<Pick>, b: Seq<Pick>, npart: int, lo: int, lim: int)
+        requires
+            self.scan_ordered(p0, seen, a, npart, lo, lim),
+            npart < b.len(),
+            forall|i: int| 0 <= i < npart ==> a[i] == b[i],
+        ensures
+            self.scan_ordered(p0, seen, b, npart, lo, lim),
+    {
+        reveal(ClassState::scan_ordered);
+        lemma_picked_frame(a, b, npart);
+        assert forall|i: int| #![trigger b[i]] 0 <= i < npart implies lo <= b[i].slab < lim && p0.contains(b[i].slab as nat) by {
+            assert(a[i] == b[i]);
+        }
+        assert forall|i: int, j: int| #![trigger b[i], b[j]] 0 <= i < j < npart implies b[i].slab < b[j].slab by {
+            assert(a[i] == b[i]);
+            assert(a[j] == b[j]);
+        }
+    }
+
     /// In a lock value [`ClassState::exhausted`] describes, every committed
     /// slab is owned, `Active` and not a guard, and a partial one read
     /// `live >= nslots`.
@@ -4629,7 +4877,8 @@ impl ClassState {
         if floor != 0 {
             return self.plan_epoch(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
         }
-        self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord))
+        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int));
+        self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord))
     }
 
     /// [`ClassState::plan`] under a fork epoch's `floor`: above the floor
@@ -4673,9 +4922,10 @@ impl ClassState {
             picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
             picks_sum(final(picks)@, np as int) <= want,
     {
-        let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
+        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int));
+        let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
         if np == 0 && want > 0 {
-            return self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
+            return self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
         }
         let mut slots: u64 = 0;
         let mut i: usize = 0;
@@ -4714,7 +4964,11 @@ impl ClassState {
     /// No picks for a non-zero `want` means the hold ran dry: `ex` is the
     /// lock value it left and the `live` loads of its partial slabs, which
     /// [`ClassState::exhausted`] describes (claim completeness).
-    // The last six arguments are ghost and tracked state.
+    ///
+    /// Address order is proved ([`ClassState::refill_ordered`]): `scan`
+    /// gets the partial set as acquired, how many picks came from the
+    /// partial-set scan and how far the scan reached.
+    // The last seven arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
     // Not isolated: the loops return while the guard borrows `ord`, whose
     // value `Lock::lock` states before them.
@@ -4730,6 +4984,7 @@ impl ClassState {
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
         Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        Tracked(scan): Tracked<&mut Ghost<(vstd::set::Set<nat>, int, int)>>,
         pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (np: usize)
@@ -4742,6 +4997,7 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
             np == 0 && want > 0 && floor == 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
+            self.refill_ordered(final(scan)@.0, final(ex)@.1, final(ex)@.0, final(picks)@, final(scan)@.1, np as int, floor as int, final(scan)@.2),
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
@@ -4767,10 +5023,23 @@ impl ClassState {
             g.partial.map.lowest_set_from(floor)
         };
         let ghost mut seen: Map<nat, usize> = Map::empty();
+        // The partial set as acquired: the scan below goes over it in
+        // address order (`refill_ordered`).
+        let ghost p0 = g@.partial.map@;
+        proof {
+            self.lemma_scan_start(p0, picks@, floor as int, next);
+        }
         while let Some(s) = next
             invariant
                 crate::sys::may_abort(),
                 under.allows(rank_table(0)),
+                self.scan_ordered(p0, seen, picks@, np as int, floor as int, match next {
+                    Some(x) => x as int,
+                    None => self.spec_nslabs() as int,
+                }),
+                next matches Some(c) ==> forall|x: nat| c <= x ==> (#[trigger] g@.partial.map@.contains(x) == p0.contains(x)),
+                next matches Some(c) ==> floor <= c,
+                forall|x: nat| #[trigger] g@.partial.map@.contains(x) ==> p0.contains(x) || picked(picks@, np as int, x),
                 np == 0 && floor == 0 ==> self.seen_below(g@, seen, match next {
                     Some(x) => x as int,
                     None => self.spec_nslabs() as int,
@@ -4800,10 +5069,12 @@ impl ClassState {
             if remaining == 0 || np == MAX_PICKS {
                 proof {
                     *ex = Ghost((g@, seen));
+                    *scan = Ghost((p0, np as int, s as int));
                 }
                 g.unlock();
                 return np;
             }
+            let ghost (g_top, p_top, np_top, seen_top) = (g@, picks@, np, seen);
             let desc = self.desc(s);
             let live = desc.live();
             // Slots of closed pages are clear but not claimable
@@ -4862,8 +5133,14 @@ impl ClassState {
                 }
             }
             next = g.partial.map.lowest_set_from(s + 1);
+            proof {
+                self.lemma_scan_step(p0, seen_top, seen, p_top, picks@, np_top as int, np as int, np != np_top, g_top.partial.map@, g@.partial.map@, floor as int, s as nat, next);
+            }
         }
         let ghost mut dry = false;
+        // The scan reached the end of the class: an idle slab comes only now.
+        let ghost npart = np as int;
+        let ghost part = picks@;
         while remaining > 0 && np < MAX_PICKS
             invariant
                 crate::sys::may_abort(),
@@ -4885,8 +5162,12 @@ impl ClassState {
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
                 picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
                 np == 0 && floor == 0 ==> self.seen_below(g@, seen, self.spec_nslabs() as int),
+                npart <= np,
+                self.scan_ordered(p0, seen, picks@, npart, floor as int, self.spec_nslabs() as int),
+                forall|x: nat| #[trigger] g@.partial.map@.contains(x) ==> p0.contains(x) || picked(picks@, np as int, x),
             decreases MAX_PICKS - np,
         {
+            let ghost g_idle = g@;
             let s = match self.next_slab(&mut g, floor, meta, pubw, Tracked(&mut under)) {
                 Some(s) => s,
                 None => {
@@ -4912,9 +5193,18 @@ impl ClassState {
                         assert(picks@[j] == before[j]);
                     }
                 }
+                // The scan's picks stay, and the idle slab is a pick.
+                self.lemma_scan_ordered_frame(p0, seen, before, picks@, npart, floor as int, self.spec_nslabs() as int);
+                lemma_picked_frame(before, picks@, k as int);
+                assert forall|x: nat| #[trigger] g@.partial.map@.contains(x) implies p0.contains(x) || picked(picks@, np as int, x) by {
+                    if x != s {
+                        assert(g_idle.partial.map@.contains(x));
+                    }
+                }
             }
         }
         proof {
+            *scan = Ghost((p0, npart, self.spec_nslabs() as int));
             lemma_picks_sum(picks@, picks@, np as int);
             // Dry: the scan saw every partial slab and `next_slab` found
             // both idle sets empty.
@@ -4976,6 +5266,9 @@ impl ClassState {
             final(picks)[*old(np) as int].n as int + *final(remaining) == *old(remaining),
             (final(picks)[*old(np) as int].slab as usize) < self.spec_nslabs(),
             final(picks)[*old(np) as int].n <= class_table()[self.spec_class() as int].nslots,
+            // The pick is of `slab`, and the partial set changes at it alone.
+            final(picks)[*old(np) as int].slab as nat == slab as nat,
+            forall|x: nat| x != slab ==> (#[trigger] final(g).partial.map@.contains(x) == old(g).partial.map@.contains(x)),
             forall|i: int| 0 <= i < MAX_PICKS && i != *old(np) ==> final(picks)[i] == old(picks)[i],
             *final(ptoks) == old(ptoks).insert(*old(np) as int, final(ptoks)[*old(np) as int]),
             final(ptoks)[*old(np) as int].id() == self.spec_table().spec_slots().loc,
