@@ -483,6 +483,106 @@ pub proof fn theorem_pressure_never_lengthens_decay(base: u64, limit: u64, c1: u
     lemma_decay_monotone(base, spec_band(limit, c1), spec_band(limit, c2));
 }
 
+/// [`most_severe`]'s result: `b` unless `a` is more severe ([`severity`]).
+pub open spec fn spec_most_severe(a: Band, b: Band) -> Band {
+    if severity(b) >= severity(a) {
+        b
+    } else {
+        a
+    }
+}
+
+/// The most severe [`spec_band`] over `terms` (`(limit, usage)` pairs),
+/// folded in order through [`spec_most_severe`] as [`cgroup_band`] does;
+/// `Unlimited`, the fold's unit (severity 0), for no terms.
+pub open spec fn spec_hier_band(terms: Seq<(u64, u64)>) -> Band
+    decreases terms.len(),
+{
+    if terms.len() == 0 {
+        Band::Unlimited
+    } else {
+        spec_most_severe(spec_hier_band(terms.drop_last()), spec_band(terms.last().0, terms.last().1))
+    }
+}
+
+/// `t2` has the limits of `t1`, term by term, and no lower usage at any.
+pub open spec fn usage_rises(t1: Seq<(u64, u64)>, t2: Seq<(u64, u64)>) -> bool {
+    &&& t1.len() == t2.len()
+    &&& forall|i: int| 0 <= i < t1.len() ==> (#[trigger] t1[i]).0 == t2[i].0 && t1[i].1 <= t2[i].1
+}
+
+/// [`Band::le`] in [`severity`] terms: no more severe, and `Unlimited`
+/// only with itself.
+proof fn lemma_le_severity(a: Band, b: Band)
+    ensures
+        a.le(b) <==> (severity(a) <= severity(b) && (a == Band::Unlimited <==> b == Band::Unlimited)),
+{
+}
+
+/// [`spec_hier_band`] is a well-formed band.
+proof fn lemma_hier_wf(terms: Seq<(u64, u64)>)
+    ensures
+        spec_hier_band(terms).wf(),
+    decreases terms.len(),
+{
+    if terms.len() > 0 {
+        lemma_hier_wf(terms.drop_last());
+        lemma_band_wf(terms.last().0, terms.last().1);
+    }
+}
+
+/// The fold is monotone in the usages at fixed limits: [`Band::le`], in
+/// its [`severity`] form ([`lemma_le_severity`]).
+proof fn lemma_hier_monotone(t1: Seq<(u64, u64)>, t2: Seq<(u64, u64)>)
+    requires
+        usage_rises(t1, t2),
+    ensures
+        severity(spec_hier_band(t1)) <= severity(spec_hier_band(t2)),
+        spec_hier_band(t1) == Band::Unlimited <==> spec_hier_band(t2) == Band::Unlimited,
+    decreases t1.len(),
+{
+    if t1.len() > 0 {
+        let (p1, p2) = (t1.drop_last(), t2.drop_last());
+        assert forall|i: int| 0 <= i < p1.len() implies (#[trigger] p1[i]).0 == p2[i].0 && p1[i].1
+            <= p2[i].1 by {
+            assert(t1[i] == p1[i] && t2[i] == p2[i]);
+        }
+        lemma_hier_monotone(p1, p2);
+        let (x, y) = (t1.last(), t2.last());
+        assert(x == t1[t1.len() - 1] && y == t2[t2.len() - 1]);
+        lemma_band_monotone(x.0, x.1, y.1);
+        lemma_le_severity(spec_band(x.0, x.1), spec_band(y.0, y.1));
+    }
+}
+
+/// Pressure never lengthens decay over the hierarchy: for two term
+/// sequences with the same limits, usage no lower at every level in the
+/// second, the most severe band ([`spec_hier_band`], what [`cgroup_band`]
+/// computes from the terms it reads) is no lower and the effective decay
+/// period for any configured `base` is no longer.
+pub proof fn theorem_hierarchy_pressure_never_lengthens_decay(
+    base: u64,
+    t1: Seq<(u64, u64)>,
+    t2: Seq<(u64, u64)>,
+)
+    requires
+        usage_rises(t1, t2),
+    ensures
+        spec_hier_band(t1).wf(),
+        spec_hier_band(t2).wf(),
+        spec_hier_band(t1).le(spec_hier_band(t2)),
+        spec_effective_decay_ns(base, spec_hier_band(t2)) <= spec_effective_decay_ns(
+            base,
+            spec_hier_band(t1),
+        ),
+{
+    lemma_hier_wf(t1);
+    lemma_hier_wf(t2);
+    lemma_hier_monotone(t1, t2);
+    lemma_le_severity(spec_hier_band(t1), spec_hier_band(t2));
+    lemma_decay_monotone(base, spec_hier_band(t1), spec_hier_band(t2));
+}
+
 /// The row for `limit` (a `min(high, max)`) and `current`.
 pub fn band(limit: u64, current: u64) -> (b: Band)
     ensures
@@ -514,23 +614,44 @@ pub fn band(limit: u64, current: u64) -> (b: Band)
 /// its own against its own usage, since the kernel holds an ancestor to
 /// its limit by the usage of all its children. (`cg.ancestors().fold(..,
 /// |b, (l, c)| b.max(band(l, c)))`, spelled out: one ancestor at a time,
-/// `max` through [`most_severe`].)
+/// `max` through [`most_severe`].) The body asserts in place that the
+/// result is [`spec_hier_band`] of the `LEVELS` `(limit, usage)` pairs it
+/// read, in order (`terms`, ghost, built beside the loads), so
+/// [`theorem_hierarchy_pressure_never_lengthens_decay`] holds of two calls
+/// whose reads saw the same limits. That is not in the `ensures`: the
+/// `Cgroup` loads carry no value spec, so a caller could be given the
+/// terms only existentially, which rules out no well-formed band but
+/// `Scaled(FRAC_ONE)`.
 pub fn cgroup_band(cg: &Cgroup) -> (r: Band)
     ensures
         r.wf(),
 {
-    let mut b = band(cg.limit().min(cg.high()), cg.current());
+    let leaf = cg.limit().min(cg.high());
+    let used = cg.current();
+    let mut b = band(leaf, used);
+    let ghost mut terms = seq![(leaf, used)];
+    assert(terms.drop_last() =~= Seq::<(u64, u64)>::empty());
+    assert(terms.last() == (leaf, used));
+    assert(spec_hier_band(terms.drop_last()) == Band::Unlimited);
     let mut level = 1;
     while level < LEVELS
         invariant
             1 <= level <= LEVELS,
             b.wf(),
+            terms.len() == level,
+            b == spec_hier_band(terms),
         decreases LEVELS - level,
     {
         let (l, c) = cg.ancestor(level);
         b = most_severe(b, band(l, c));
+        proof {
+            let prev = terms;
+            terms = terms.push((l, c));
+            assert(terms.drop_last() =~= prev);
+        }
         level += 1;
     }
+    assert(terms.len() == LEVELS && b == spec_hier_band(terms));
     b
 }
 
@@ -551,6 +672,7 @@ pub open spec fn severity(b: Band) -> int {
 /// Verus does not specify derived orders.
 fn most_severe(a: Band, b: Band) -> (r: Band)
     ensures
+        r == spec_most_severe(a, b),
         r == a || r == b,
         severity(r) >= severity(a),
         severity(r) >= severity(b),

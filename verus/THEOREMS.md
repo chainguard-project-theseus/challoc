@@ -4567,6 +4567,44 @@ specs: a well-formed band is read back as itself, `Scaled(0)` included
 (not as `Low`, so it gets no headroom and no lazy advice), and a position
 past `FRAC_ONE` is read back clamped.
 
+The hierarchy's most severe band is monotone too (`policy.rs`):
+
+```rust
+pub proof fn theorem_hierarchy_pressure_never_lengthens_decay(
+    base: u64,
+    t1: Seq<(u64, u64)>,
+    t2: Seq<(u64, u64)>,
+)
+    requires
+        usage_rises(t1, t2),
+    ensures
+        spec_hier_band(t1).wf(),
+        spec_hier_band(t2).wf(),
+        spec_hier_band(t1).le(spec_hier_band(t2)),
+        spec_effective_decay_ns(base, spec_hier_band(t2)) <= spec_effective_decay_ns(
+            base,
+            spec_hier_band(t1),
+        ),
+```
+
+`spec_hier_band(terms)` folds `spec_band` over `(limit, usage)` pairs in
+order through `spec_most_severe` (`b` unless `a` is more severe, by
+`severity`), with `Unlimited` for no terms; `usage_rises(t1, t2)` is the
+same length, the same limit term by term and no lower usage at any.
+`most_severe` ensures it returns `spec_most_severe(a, b)`, and
+`cgroup_band` asserts in place, in its body, that its result is
+`spec_hier_band` of the `LEVELS` terms it read: the loop keeps a ghost
+sequence of the `(limit, usage)` pairs it loaded (the effective limit
+against the leaf's usage first, then each ancestor's), with
+`b == spec_hier_band(terms)` as an invariant. That link is not in
+`cgroup_band`'s `ensures` (scope, below). The theorem's proof is by induction on the terms: each term's band rises by
+`lemma_band_monotone`, `Band::le` is `severity` order with `Unlimited`
+only beside itself (`lemma_le_severity`), and the fold's severity is the
+maximum of its terms' and is 0 only when every term is `Unlimited`; the
+period then follows by `lemma_decay_monotone`. No executable code
+changes: `cgroup_band` names the leaf's limit and usage in two `let`s,
+in the order it loaded them before.
+
 **Entry points.** None: no C symbol's `ensures` changes. The theorem is
 about two pure functions: `band`, which `cgroup_band` applies to the
 effective limit against the leaf's usage and to each limited ancestor
@@ -4594,14 +4632,22 @@ loaded (scope, below). The common premises are not used either.
 **Scope and where the statement is weaker than the code.**
 - One limit per term. `cgroup_band` takes `min(memory.max,
   memory.high)` up the hierarchy against the leaf's usage, and each
-  ancestor's own limit against its own usage, as sampled; the theorem
-  holds of each term (`band` at one limit), and `most_severe` never
-  returns a less severe band than either argument (its `ensures`), but
-  that the maximum over the terms is monotone in the usages is not
-  stated. When a limit changes between two samples (`docker update`, a
-  write to `memory.high`), the two bands are not comparable by this
-  theorem, and a higher limit at the same usage does lengthen the
-  period, as it should.
+  ancestor's own limit against its own usage, as sampled; the first
+  theorem holds of each term (`band` at one limit), and the hierarchy
+  theorem of the most severe band over the terms, at the same limit at
+  every level in both readings. The `Cgroup` loads (`limit`, `high`,
+  `current`, `ancestor`) are relaxed core atomics with no value spec,
+  so the terms exist only as the values `cgroup_band` read, inside its
+  body: its `ensures` is `r.wf()` alone, and a caller cannot use the
+  link to the reads (an existential over the terms would rule out no
+  well-formed band but `Scaled(FRAC_ONE)`: one free leading term and
+  limit-0 ancestors reach every other one). The link is the in-place
+  assertion and loop invariant above, which the mutants that change a
+  load's use (and not the ghost terms with it) break. Which sample a
+  load sees, and that two calls read the same limits, are not proved. When a limit changes between two samples
+  (`docker update`, a write to `memory.high`), the two bands are not
+  comparable by these theorems, and a higher limit at the same usage
+  does lengthen the period, as it should.
 - The stored band: the encoding and the decoding, not the atomics.
   `Policy::position` reads `scaled16` inside its atomic invariant
   (`FracPred`: at most `FRAC_ONE + 1`), which bounds the value but does
