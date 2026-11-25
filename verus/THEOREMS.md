@@ -4497,9 +4497,10 @@ extent touching the mark, returning it or `None`. Merges of `Empty` and
 As cgroup memory usage rises toward a fixed limit, the decay policy never
 picks a longer decay period. This is a theorem about two pure functions,
 `band` and `effective_decay_ns`, at one fixed limit and one configured
-period. It is not about the stored policy the purge reads (`Policy`'s
-atomics, whose round trip is not proved, below), nor about the purge
-being timely: what the decay walks do with the period is out of scope.
+period. The band `Policy` stores is read back as the band applied (the
+round trip, below), but which store a given read sees is not stated
+(`Policy`'s atomics, below); nor is the purge being timely: what the
+decay walks do with the period is out of scope.
 
 **Statement** (`policy.rs`):
 
@@ -4543,6 +4544,29 @@ so it is the same for both usages, and halving keeps their order
 past `2^43` bytes included. `frac16`'s exact contract (`den <= 2^47`)
 covers `band`'s constant denominator 200 000, and `mul16`'s is exact.
 
+The stored band round-trips (`policy.rs`):
+
+```rust
+pub proof fn theorem_policy_band_round_trip(b: Band)
+    ensures
+        spec_stored(b).0 <= 0x1_0001,
+        b.wf() ==> spec_read_back(spec_stored(b).0, spec_stored(b).1, spec_stored(b).2) == b,
+        !b.wf() ==> spec_read_back(spec_stored(b).0, spec_stored(b).1, spec_stored(b).2)
+            == Band::Scaled(0x1_0000),
+```
+
+`Policy::apply` asserts in place that the three values it stores
+(`scaled16`, one more than the position in the scaled band so that
+`Scaled(0)` at the 70% edge is told from `Low`, 0 outside it;
+`immediate`; `limited`) are `spec_stored(band)`, and each arm of
+`Policy::band` asserts that the band it returns is `spec_read_back` of
+the values it loaded (an arm that loads only `immediate`, or only
+`immediate` and `limited`, returns what `spec_read_back` gives for any
+value of the rest). No executable code changes. The theorem ties the two
+specs: a well-formed band is read back as itself, `Scaled(0)` included
+(not as `Low`, so it gets no headroom and no lazy advice), and a position
+past `FRAC_ONE` is read back clamped.
+
 **Entry points.** None: no C symbol's `ensures` changes. The theorem is
 about two pure functions: `band`, which `cgroup_band` applies to the
 effective limit against the leaf's usage and to each limited ancestor
@@ -4560,8 +4584,12 @@ the decay walks (`purge.rs`), `stats.cgroup.decay_ms`
 
 **Premises beyond the common ones.** None: the proof uses no axiom,
 `external_body` or `assume_specification`; the three functions and
-`frac16`, `mul16` verify in place. The common premises are not used
-either.
+`frac16`, `mul16` verify in place. `apply`'s assertion reads `limited`
+(`band != Band::Unlimited`) through the derived `PartialEq`'s spec, which
+`vspec/misc.rs` gives `Band` as it does five other enums (`eq_spec` is
+structural equality). The round trip's premise is the code: that `apply`
+passes the asserted values to its stores and `band` decoded what it
+loaded (scope, below). The common premises are not used either.
 
 **Scope and where the statement is weaker than the code.**
 - One limit per term. `cgroup_band` takes `min(memory.max,
@@ -4574,20 +4602,17 @@ either.
   write to `memory.high`), the two bands are not comparable by this
   theorem, and a higher limit at the same usage does lengthen the
   period, as it should.
-- Pure functions only. `Policy` stores the band as atomics
-  (`scaled16`, one more than the position in the scaled band so that
-  `Scaled(0)` at the 70% edge is told from `Low`, 0 outside it;
-  `immediate`, `limited`; `Policy::apply`) and `Policy::band` (`policy.rs`)
-  rebuilds it: that round trip is not proved. `Policy::position` reads
-  `scaled16` inside its atomic invariant (`FracPred`: at most
-  `FRAC_ONE + 1`), which bounds the value but does not say which store
-  wrote it; that `apply` stores `Scaled(f)` as `f + 1` and `band` reads
-  it back as `Scaled(f)` (the 70% edge's `Scaled(0)` included, which is
-  not read back as `Low`) is the code, checked by the test
-  `policy::tests::policy_band_round_trips_at_the_scaled_edge`.
-  Concurrent `evaluate` calls or a reader between `apply`'s stores (a
-  torn `limited`/`scaled16`/`immediate` triple) are not covered, nor is
-  what the decay walks do with the period.
+- The stored band: the encoding and the decoding, not the atomics.
+  `Policy::position` reads `scaled16` inside its atomic invariant
+  (`FracPred`: at most `FRAC_ONE + 1`), which bounds the value but does
+  not say which store wrote it, and `immediate` and `limited` are core
+  `AtomicBool`s with no value spec. So the round trip is proved of the
+  values `apply` passes to its stores and the values `band` decodes, not
+  of a particular store and a later load; the test
+  `policy::tests::policy_band_round_trips_at_the_scaled_edge` runs it
+  through the atomics. Concurrent `evaluate` calls or a reader between
+  `apply`'s stores (a torn `limited`/`scaled16`/`immediate` triple) are
+  not covered, nor is what the decay walks do with the period.
 - A 0 limit. `spec_band(0, c)` is `Unlimited` for every usage, as for
   `UNLIMITED` (no limit known), while `thp::forced_by_limit` treats a 0
   limit as a limit below `THP_MIN_LIMIT` (it forces `never` under

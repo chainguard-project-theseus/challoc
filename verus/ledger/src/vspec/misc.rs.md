@@ -13,6 +13,7 @@ file.
 | `PartialEqSpe...e::RunState` | spec_impl | core library | Kani | discharged |
 | `PartialEqSpe...slab::State` | spec_impl | core library | Kani | discharged |
 | `PartialEqSpe...r thp::Mode` | spec_impl | core library | Kani | discharged |
+| `PartialEqSpe...olicy::Band` | spec_impl | core library | Kani | discharged |
 | `fence` | assume_spec | core library | Kani | discharged |
 | `str::as_ptr` | assume_spec | core library | Kani | discharged |
 | `hint::assert_unchecked` | assume_spec | core library | Kani | discharged |
@@ -127,9 +128,28 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::thp::Mode {
 }
 ```
 
+## `PartialEqSpecImpl for policy::Band`
+
+src/vspec/misc.rs:73. Kind: spec_impl. Category: core library.
+Tool: Kani. Status: discharged (Kani: kani_proofs::eq::eq_policy_band).
+
+Hashes: contract 23481595, body none.
+
+```rust
+impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::policy::Band {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
+```
+
 ## `core::sync::atomic::fence`
 
-src/vspec/misc.rs:76. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:87. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::fence).
 
 > `core::sync::atomic::fence`: panics on `Relaxed` only, and has no effect Verus models (Verus's memory model is sequentially consistent; the ordering it adds is checked by the loom models in `tests/loom`, not here).
@@ -147,7 +167,7 @@ pub assume_specification[ core::sync::atomic::fence ](order: core::sync::atomic:
 
 ## `str::as_ptr`
 
-src/vspec/misc.rs:85. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:96. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::str_as_ptr).
 
 > `str::as_ptr`: the address of the first byte; nothing is claimed about it.
@@ -160,7 +180,7 @@ pub assume_specification[ str::as_ptr ](s: &str) -> *const u8;
 
 ## `core::hint::assert_unchecked`
 
-src/vspec/misc.rs:92. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:103. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::hint_assert_unchecked).
 
 > `core::hint::assert_unchecked`: undefined behaviour unless `cond` holds (`core`'s safety contract), which this makes a precondition; it has no effect Verus models.
@@ -178,7 +198,7 @@ pub assume_specification[ core::hint::assert_unchecked ](cond: bool)
 
 ## `core::hint::black_box`
 
-src/vspec/misc.rs:103. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:114. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::hint_black_box).
 
 > `core::hint::black_box`: the identity (`core` guarantees no more; it only keeps the optimizer from seeing through the value).
@@ -196,7 +216,7 @@ pub assume_specification<T>[ core::hint::black_box ](dummy: T) -> (r: T)
 
 ## `core::sync::atomic::Atomic::<u32>::as_ptr`
 
-src/vspec/misc.rs:113. Kind: assume_spec. Category: core library.
+src/vspec/misc.rs:124. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::atomic::atomic_u32_as_ptr).
 
 > `AtomicU32::as_ptr`: the address of the atomic's value, for a futex syscall argument.

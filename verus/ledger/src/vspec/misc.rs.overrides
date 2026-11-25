@@ -6,6 +6,7 @@ PartialEqSpecImpl for sys::thp_host::ThpSetting	core library	Kani	discharged (Ka
 PartialEqSpecImpl for huge::RunState	core library	Kani	discharged (Kani: kani_proofs::eq::eq_run_state)	contract 2030742295, body none
 PartialEqSpecImpl for slab::State	core library	Kani	discharged (Kani: kani_proofs::eq::eq_slab_state)	contract 2375931970, body none
 PartialEqSpecImpl for thp::Mode	core library	Kani	discharged (Kani: kani_proofs::eq::eq_thp_mode)	contract 133759271, body none
+PartialEqSpecImpl for policy::Band	core library	Kani	discharged (Kani: kani_proofs::eq::eq_policy_band)	contract 23481595, body none
 core::sync::atomic::fence	core library	Kani	discharged (Kani: kani_proofs::atomic::fence)	contract 4116312669, body none
 core::hint::assert_unchecked	core library	Kani	discharged (Kani: kani_proofs::misc::hint_assert_unchecked)	contract 661612994, body none
 str::as_ptr	core library	Kani	discharged (Kani: kani_proofs::misc::str_as_ptr)	contract 520286978, body none
