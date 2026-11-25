@@ -36,6 +36,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3303294313, body none.
 
+Specs: `c_errno` (src/vspec/errno.rs) 2588281860.
+Specs unresolved (spec fns of the name): `val` (2).
+
 ```rust
 pub axiom fn axiom_errno_at_return(tracked e: ThreadErrno, failed: bool)
     ensures
@@ -52,6 +55,8 @@ Tool: Kani. Status: discharged on premises (Kani: vspec::errno::kani_errno::set_
 
 Hashes: contract 633168062, body 3907694617.
 
+Specs unresolved (spec fns of the name): `val` (2).
+
 ```rust
 pub fn set_errno(e: c_int, Tracked(errno): Tracked<&mut ThreadErrno>)
     ensures
@@ -66,6 +71,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: vspec::errno::kani_errno::get
 > Trusted: reads the calling thread's `errno` through libc's pointer, and claims the value is the token's ([`ThreadErrno::val`]): challoc's last write through it, or the caller's `errno` before any.
 
 Hashes: contract 1335728985, body 3378553109.
+
+Specs unresolved (spec fns of the name): `val` (2).
 
 ```rust
 pub fn get_errno(Tracked(errno): Tracked<&ThreadErrno>) -> (r: c_int)

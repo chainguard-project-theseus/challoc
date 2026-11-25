@@ -37,6 +37,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::slotstate::kani_byte_at
 
 Hashes: contract 1236057054, body 1964768841.
 
+Specs: `byte_id` (src/vspec/byte.rs) 241462822, `slot_byte_id` (src/heap/slotstate.rs) 1132155287.
+
 ```rust
 unsafe fn byte_at(at: usize) -> (r: &'static PAtomicU8)
     ensures

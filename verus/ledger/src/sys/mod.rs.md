@@ -28,6 +28,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 2374419075, body none.
 
+Specs unresolved (spec fns of the name): `wf` (33).
+
 ```rust
 pub(crate) axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
     ensures
@@ -43,6 +45,8 @@ Tool: none (assumption). Status: trusted.
 > Kernel fact (`getrandom(2)`, Linux's `drivers/char/random.c`): a `getrandom` that does not fail returns the number of bytes it stored, at most `buflen`, unless a ptrace tracer or a seccomp supervisor rewrites the result (assumed absent).
 
 Hashes: contract 446341345, body none.
+
+Specs: `returned3` (src/sys/raw.rs) 2759767653.
 
 ```rust
 pub broadcast axiom fn axiom_getrandom_count(buf: usize, buflen: usize, flags: usize, r: usize)
@@ -62,6 +66,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 68011817, body 2359709396.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno>
     requires
@@ -76,6 +82,8 @@ Tool: none (assumption). Status: trusted.
 > Kernel fact (`read(2)`, Linux's `fs/read_write.c`): a `read` that does not fail returns the number of bytes it stored, at most `count`, unless a ptrace tracer or a seccomp supervisor rewrites the result or a driver returns more than it was asked for (the VFS does not clamp it), all assumed absent.
 
 Hashes: contract 3468075040, body none.
+
+Specs: `returned3` (src/sys/raw.rs) 2759767653.
 
 ```rust
 pub broadcast axiom fn axiom_read_count(fd: usize, buf: usize, count: usize, r: usize)
@@ -95,6 +103,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1624340068, body 1526016834.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+Specs unresolved (spec fns of the name): `len` (5).
+
 ```rust
 pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
     requires
@@ -113,6 +124,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1302063086, body none.
 
+Specs: `returned3` (src/sys/raw.rs) 2759767653.
+
 ```rust
 pub broadcast axiom fn axiom_write_count(fd: usize, buf: usize, count: usize, r: usize)
     requires
@@ -130,6 +143,8 @@ Tool: none (assumption). Status: trusted.
 > Write all of `buf`, retrying short writes and `EINTR`.
 
 Hashes: contract 974240898, body 1595349930.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub fn write_all(fd: i32, buf: &[u8])
@@ -159,6 +174,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 43088889, body 291760688.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `SigMask::mask` (src/sys/mod.rs) 1307056632, `all_blocked` (src/sys/mod.rs) 1789603080.
+
 ```rust
 unsafe fn sigprocmask_block(
     all: &u64,
@@ -182,6 +199,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1589051214, body 3169880791.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `SigMask::mask` (src/sys/mod.rs) 1307056632, `effective` (src/sys/mod.rs) 2499601117.
+
 ```rust
 unsafe fn sigprocmask_setmask(mask: &u64, Tracked(sig): Tracked<&mut SigMask>) -> (r: usize)
     requires
@@ -198,6 +217,8 @@ Tool: Islaris/Isla. Status: discharged on premises (Isla: verus/isla/seams.md; p
 > Architecture trap instruction, for the impossible case where the kernel returns from a terminating syscall.
 
 Hashes: contract 1016438138, body 2141251898.
+
+Specs: `may_abort` (src/sys/mod.rs) 4099677103.
 
 ```rust
 pub fn trap() -> !

@@ -20,6 +20,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1872853538, body 4028365563.
 
+Specs unresolved (spec fns of the name): `addr` (6), `len` (5), `dom` (2), `frame` (3), `reads_zero` (2).
+
 ```rust
 pub proof fn axiom_zeroed_bytes(tracked z: &Zeroed, tracked m: &mut UserMem)
     requires
@@ -38,6 +40,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1614243743, body 4028365563.
 
+Specs: `cast_provenance` (src/vspec/addr.rs) 2449243785.
+Specs unresolved (spec fns of the name): `dom` (2), `wf` (33), `bytes` (6), `provenance` (2).
+
 ```rust
 pub proof fn axiom_cast(tracked m: &mut UserMem)
     ensures
@@ -55,6 +60,9 @@ Tool: Kani. Status: discharged (Kani: vspec::user::kani_copy::copy_raw_copies, v
 > `copy_nonoverlapping(src, dst, n)` for `u8` with the permissions to both ranges, and its effect on `d`'s byte state: `d` reads the `n` bytes from `dst` as `s` reads the `n` bytes from `src`, and its other bytes, its domain, its provenance and its well-formedness are kept.
 
 Hashes: contract 2261514908, body 3828920028.
+
+Specs: `valid_reads` (src/vspec/ptr.rs) 1381899132, `disjoint` (src/layout/regions.rs) 372187667, `UserMem::reads_as` (src/vspec/user.rs) 421262444.
+Specs unresolved (spec fns of the name): `provenance` (2), `dom` (2), `frame` (3).
 
 ```rust
 unsafe fn copy_raw(src: *const u8, dst: *mut u8, n: usize, Tracked(s): Tracked<&UserMem>, Tracked(d): Tracked<&mut UserMem>)

@@ -19,6 +19,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 2116791243, body none.
 
+Specs: `regions_ok` (src/heap/theorems.rs) 2394890249, `process_regions` (src/layout/regions.rs) 2834135997, `Regions::is_huge_block` (src/layout/regions.rs) 2873741982, `Regions::is_slot` (src/layout/regions.rs) 805737697, `class_table` (src/layout/mod.rs) 307783638.
+Specs unresolved (spec fns of the name): `covers` (4), `provenance` (2).
+
 ```rust
 axiom fn axiom_hand_out(p: *mut u8, len: int) -> (tracked m: UserMem)
     requires
@@ -39,6 +42,8 @@ Tool: none (assumption). Status: trusted.
 > Trusted (the C contract of a call that hands a block over, `vspec::cbuf`): the token of the block the C caller hands over through a free or a reallocation ([`CCall::block`]): C holds the token of every block it was given and has not freed, and such a call passes one of them, or null.
 
 Hashes: contract 2106991331, body none.
+
+Specs unresolved (spec fns of the name): `block` (2), `claims` (2).
 
 ```rust
 pub axiom fn axiom_c_claim(tracked c: CCall) -> (tracked r: Live)

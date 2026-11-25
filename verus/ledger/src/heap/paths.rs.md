@@ -18,6 +18,8 @@ Tool: Kani. Status: discharged (Kani: heap::paths::kani_aborts::debug_scheduled_
 
 Hashes: contract 2542313574, body 2337303067.
 
+Specs: `may_abort` (src/sys/mod.rs) 4099677103.
+
 ```rust
 fn debug_scheduled(allocs: u64, mask: u32)
     requires

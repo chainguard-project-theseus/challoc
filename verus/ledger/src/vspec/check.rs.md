@@ -18,6 +18,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::abort::check_returns_only_if_
 
 Hashes: contract 1059086586, body 83114680.
 
+Specs: `may_abort_corrupt` (src/sys/mod.rs) 1220350775.
+
 ```rust
 pub fn check(c: bool, msg: &'static str)
     requires

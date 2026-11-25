@@ -52,6 +52,8 @@ Tool: Kani. Status: discharged (Kani: config::linux::kani_conf_ptr::conf_ptr_is_
 
 Hashes: contract 819829348, body 1918486632.
 
+Specs: `conf_storage` (src/config.rs) 4186876324.
+
 ```rust
 fn conf_ptr() -> (p: *mut [u8; CONF_LEN])
     ensures
@@ -119,6 +121,8 @@ Tool: none (assumption). Status: trusted.
 > The `n` bytes at `p` as a slice.
 
 Hashes: contract 3209775459, body 4015970110.
+
+Specs unresolved (spec fns of the name): `len` (5).
 
 ```rust
 unsafe fn bytes_at(p: *const u8, n: usize) -> (r: &'static [u8])

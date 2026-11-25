@@ -51,6 +51,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3969130002, body none.
 
+Specs unresolved (spec fns of the name): `fresh` (5).
+
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
     requires
@@ -131,6 +133,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 704435470, body none.
 
+Specs: `COut::opt` (src/vspec/cbuf.rs) 1114397528, `c_out_entry` (src/vspec/cbuf.rs) 268728190.
+Specs unresolved (spec fns of the name): `of` (2).
+
 ```rust
 axiom fn axiom_c_out<T>(p: *mut T, nullable: bool) -> (tracked o: COut<T>)
     ensures
@@ -148,6 +153,9 @@ Tool: none (assumption). Status: trusted.
 > Trusted (the C contract of an out-pointer argument, as [`axiom_c_out`]): when an export returns, the `T` its C caller reads at out-pointer `p` ([`c_out`]) is what the export's token for `p` holds after its last use.
 
 Hashes: contract 2332668077, body none.
+
+Specs: `COut::opt` (src/vspec/cbuf.rs) 1114397528, `c_out` (src/vspec/cbuf.rs) 1382814115.
+Specs unresolved (spec fns of the name): `of` (2).
 
 ```rust
 axiom fn axiom_out_at_return<T>(tracked o: COut<T>, p: *mut T)

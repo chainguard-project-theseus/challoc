@@ -43,6 +43,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align,
 
 Hashes: contract 1718855412, body none.
 
+Specs: `layout_size` (src/vspec/layout.rs) 1333605524, `layout_ok` (src/vspec/layout.rs) 1760317318.
+
 ```rust
 pub assume_specification[ Layout::size ](l: &Layout) -> (r: usize)
     ensures
@@ -57,6 +59,8 @@ src/vspec/layout.rs:36. Kind: assume_spec. Category: core library.
 Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align, kani_proofs::misc::layout_new_instances).
 
 Hashes: contract 2111602691, body none.
+
+Specs: `layout_align` (src/vspec/layout.rs) 1984069103, `layout_ok` (src/vspec/layout.rs) 1760317318.
 
 ```rust
 pub assume_specification[ Layout::align ](l: &Layout) -> (r: usize)
@@ -74,6 +78,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_from_size_align)
 > `Ok` exactly when `align` is a power of two and `size` rounded up to it does not exceed `isize::MAX`.
 
 Hashes: contract 3475049326, body none.
+
+Specs: `layout_size` (src/vspec/layout.rs) 1333605524, `layout_align` (src/vspec/layout.rs) 1984069103.
 
 ```rust
 pub assume_specification[ Layout::from_size_align ](size: usize, align: usize) -> (r: Result<
@@ -94,6 +100,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::misc::layout_new_instances).
 > `Layout::new::<T>()`: the size and alignment of `T`.
 
 Hashes: contract 1798870285, body none.
+
+Specs: `layout_size` (src/vspec/layout.rs) 1333605524, `layout_align` (src/vspec/layout.rs) 1984069103.
 
 ```rust
 pub assume_specification<T>[ Layout::new::<T> ]() -> (r: Layout)

@@ -57,6 +57,8 @@ Tool: Kani. Status: discharged (const assert: `axiom_tcaches_layout` in src/heap
 
 Hashes: contract 623019862, body none.
 
+Specs: `field_fits` (src/arena.rs) 1160781729.
+
 ```rust
 axiom fn axiom_tcaches_layout()
     ensures
@@ -81,6 +83,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::tcaches::kani_assemble:
 > The written fields of the `Tcaches` at `p` (`Tcaches::split`'s parts and table entries, every one initialised), as the `Tcaches`: the value of each field is what its permission holds.
 
 Hashes: contract 2226354314, body none.
+
+Specs: `tcaches_pad_covers` (src/heap/tcaches.rs) 287748160, `elems_init` (src/arena.rs) 1251027085, `rank_tcaches` (src/lock.rs) 2515332731, `tcaches_ns` (src/heap/tcaches.rs) 1323049240, `entry_id` (src/vspec/entry.rs) 3056279958, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `at` (7), `table_at` (2), `provenance` (2), `value` (6), `rank` (3), `len` (5).
 
 ```rust
 axiom fn axiom_tcaches_assemble(
@@ -119,6 +124,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3223990889, body none.
 
+Specs: `HeapUse::read` (src/heap/tcaches.rs) 1321541236, `HeapUse::watch` (src/heap/tcaches.rs) 1975627797.
+Specs unresolved (spec fns of the name): `lent` (3).
+
 ```rust
 pub axiom fn axiom_heap_use() -> (tracked u: HeapUse)
     ensures
@@ -136,6 +144,8 @@ Tool: none (assumption). Status: trusted.
 > Premise (the C caller's contract, [`axiom_heap_use`]'s): when [`Tcaches::get`] loads a non-null entry `i`, or [`Tcaches::destroy`] is about to swap one out, entry `i` is not lent out (`lent` in [`TableVal`]).
 
 Hashes: contract 2428459710, body none.
+
+Specs unresolved (spec fns of the name): `entry_ok` (2), `value` (6).
 
 ```rust
 axiom fn axiom_entry_heap(k: TableKey, tracked v: &TableVal, i: int)

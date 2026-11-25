@@ -54,6 +54,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_print::call_b
 
 Hashes: contract 2110597196, body 1036480111.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `LockOrder::top` (src/lock.rs) 1960956790.
+
 ```rust
 fn call_back(
     cb: &WriteCallback,
@@ -76,6 +78,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::disab
 
 Hashes: contract 1116002484, body 1821335431.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub(super) fn cancel_disable() -> i32
     requires
@@ -90,6 +94,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_cancel::resto
 > Give the calling thread back the cancel state `old` that [`cancel_disable`] returned (`pthread_setcancelstate`).
 
 Hashes: contract 4251881114, body 3441625971.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
 
 ```rust
 pub(super) fn cancel_restore(old: i32)
@@ -106,6 +112,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::print::kani_write_file::w
 
 Hashes: contract 931825622, body 3828165736.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `LockOrder::top` (src/lock.rs) 1960956790.
+
 ```rust
 fn write_file(f: *mut libc::FILE, s: &[u8], Tracked(ord): Tracked<&LockOrder>)
     requires
@@ -121,6 +129,8 @@ Tool: none (assumption). Status: trusted.
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names, which C passed under its contract ([`CCall::fresh`]: the string `opts`, of memory of the program's, and its view).
 
 Hashes: contract 1752237532, body none.
+
+Specs unresolved (spec fns of the name): `fresh` (5).
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

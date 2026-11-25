@@ -18,6 +18,9 @@ Tool: RefinedRust. Status: trusted (requires, checked at every caller: the huge 
 
 Hashes: contract 192780428, body 2972789721.
 
+Specs: `held_by` (src/huge/kernel.rs) 2275897590, `committed` (src/vspec/unbacked.rs) 3696541310, `spares_guards` (src/huge/kernel.rs) 1524968682, `apart_from_runs` (src/huge/kernel.rs) 118996588.
+Specs unresolved (spec fns of the name): `value` (6).
+
 ```rust
 pub(super) fn write_zero(addr: usize, Ghost(h): Ghost<Huge>, Tracked(lk): Tracked<&LockPerm<Inner>>)
     requires

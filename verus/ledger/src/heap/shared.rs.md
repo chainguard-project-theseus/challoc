@@ -42,6 +42,8 @@ Tool: Islaris/Isla. Status: trusted (partly checked, Kani: heap::shared::kani_gu
 
 Hashes: contract 33478923, body 434743552.
 
+Specs: `guard_word_of` (src/heap/shared.rs) 2536872462.
+
 ```rust
 fn guard_word(&self) -> (r: u64)
     requires
@@ -60,6 +62,8 @@ Tool: Kani. Status: discharged on premises (Kani: heap::shared::kani_key::create
 
 Hashes: contract 663924478, body 2383684293.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254.
+
 ```rust
 pub fn create() -> ThreadKey
     requires
@@ -74,6 +78,9 @@ Tool: Kani. Status: discharged on premises (Kani: heap::shared::kani_setspecific
 > `pthread_setspecific(3)`: stores `value` for the calling thread under `key` without dereferencing it; 0 on success, an error number otherwise (nothing is claimed about it).
 
 Hashes: contract 2714888459, body 1699412956.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `reentry_benign` (src/heap/thread.rs) 2245930425.
+Specs unresolved (spec fns of the name): `value` (6).
 
 ```rust
 unsafe fn pthread_setspecific(key: libc::pthread_key_t, value: *const c_void, Tracked(tls): Tracked<&mut TlsCell>) -> (r: i32)
@@ -280,6 +287,8 @@ Tool: Kani. Status: discharged (const assert: `axiom_shared_layout` in src/heap/
 
 Hashes: contract 3987711063, body none.
 
+Specs: `field_fits` (src/arena.rs) 1160781729.
+
 ```rust
 axiom fn axiom_shared_layout()
     ensures
@@ -320,6 +329,9 @@ Tool: none (assumption). Status: trusted.
 > The written fields of the `Shared` at `p` (`Shared::split`'s parts and class lines, every one initialised, and the tables), joined into the permission to the whole value, the value [`shared_at`] names, frozen (`&'static`): readers share it, and nothing can write through it.
 
 Hashes: contract 2767038498, body none.
+
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071, `field_ptr` (src/arena.rs) 3291070306, `lines_at` (src/heap/shared.rs) 2670202504, `elems_init` (src/arena.rs) 1251027085, `shared_at` (src/heap/shared.rs) 1237653013.
+Specs unresolved (spec fns of the name): `at` (7), `written` (2), `tables_at` (2), `value` (6).
 
 ```rust
 axiom fn axiom_shared_built(
@@ -371,6 +383,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 506223538, body none.
 
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071, `field_ptr` (src/arena.rs) 3291070306, `shared_at` (src/heap/shared.rs) 1237653013.
+Specs unresolved (spec fns of the name): `value` (6).
+
 ```rust
 axiom fn axiom_shared_regions(tracked pr: &'static PointsTo<Regions>, p: *mut Shared)
     requires
@@ -389,6 +404,9 @@ Tool: none (assumption). Status: trusted.
 > The metadata allocator of the `Shared` at `p` is what the permission to its `meta` field holds, once that permission is frozen (`vstd::modes::tracked_static_ref`, in [`Shared::put_head`], right after it writes the field), as [`axiom_shared_regions`] states of the regions: no verified code can write the field again, so the value is the built one.
 
 Hashes: contract 4083582031, body none.
+
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071, `field_ptr` (src/arena.rs) 3291070306, `shared_at` (src/heap/shared.rs) 1237653013.
+Specs unresolved (spec fns of the name): `value` (6).
 
 ```rust
 axiom fn axiom_shared_meta(tracked pm: &'static PointsTo<Meta>, p: *mut Shared)
@@ -410,6 +428,9 @@ Tool: none (assumption). Status: trusted.
 Body mints Tracked at line 1800.
 
 Hashes: contract 475739801, body 3603367423.
+
+Specs: `shared_storage` (src/heap/shared.rs) 1237007176, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `step` (2).
 
 ```rust
 fn begin(this: *mut Shared, Tracked(once): Tracked<Once>) -> (r: Tracked<PointsTo<Shared>>)

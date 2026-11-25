@@ -21,6 +21,8 @@ Tool: Kani. Status: trusted (partly checked, Kani: kani_proofs::ptr::addr_to_ptr
 
 Hashes: contract 3273012027, body 3586730087.
 
+Specs: `addr_ptr` (src/vspec/addr.rs) 2911292458, `cast_provenance` (src/vspec/addr.rs) 2449243785.
+
 ```rust
 pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
     ensures
@@ -38,6 +40,8 @@ Tool: Kani. Status: discharged (Kani: kani_proofs::ptr::ptr_copy_nonoverlapping)
 > `core::ptr::copy_nonoverlapping`, with the safety contract of the `core` documentation: both pointers are properly aligned and, unless the copy is empty, `src` is valid for reads and `dst` for writes of `count * size_of::<T>()` bytes, and the two ranges do not overlap.
 
 Hashes: contract 3491070697, body none.
+
+Specs: `valid_reads` (src/vspec/ptr.rs) 1381899132, `valid_writes` (src/vspec/ptr.rs) 3899573489, `c_apart` (src/vspec/cbuf.rs) 551332536, `c_writes` (src/vspec/cbuf.rs) 1131078041.
 
 ```rust
 pub assume_specification<T>[ core::ptr::copy_nonoverlapping::<T> ](src: *const T, dst: *mut T, count: usize)

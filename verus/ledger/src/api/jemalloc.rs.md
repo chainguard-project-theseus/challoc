@@ -61,6 +61,8 @@ Tool: Kani. Status: discharged on premises (Kani: api::jemalloc::kani_hook::call
 
 Hashes: contract 4272715841, body 924183077.
 
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `LockOrder::top` (src/lock.rs) 1960956790.
+
 ```rust
 fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
     requires
@@ -77,6 +79,8 @@ Tool: none (assumption). Status: trusted.
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
 
 Hashes: contract 3969130002, body none.
+
+Specs unresolved (spec fns of the name): `fresh` (5).
 
 ```rust
 axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)

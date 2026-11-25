@@ -22,6 +22,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 393713467, body none.
 
+Specs: `c_writes` (src/vspec/cbuf.rs) 1131078041.
+
 ```rust
 axiom fn axiom_c_writes(prov: Provenance)
     ensures
@@ -37,6 +39,9 @@ Tool: none (assumption). Status: trusted.
 > Trusted (the C contract of a string argument): the read permission to byte `i` of the call's string `p`, through `q`, a pointer to it derived from the caller's; shared, for as long as the token is borrowed, and holding the byte the view names ([`CCall::string`]).
 
 Hashes: contract 4101056740, body none.
+
+Specs: `CCall::reads_str` (src/vspec/cbuf.rs) 4120664782, `CCall::string` (src/vspec/cbuf.rs) 555587344, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `bytes` (6), `len` (5), `addr` (6), `prov` (2), `value` (6).
 
 ```rust
 pub axiom fn str_byte<'a>(tracked &'a self, p: *const u8, q: *const u8, i: int) -> (tracked r: &'a PointsTo<u8>)
@@ -61,6 +66,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 4161109090, body none.
 
+Specs: `CCall::reads_str` (src/vspec/cbuf.rs) 4120664782, `CCall::string` (src/vspec/cbuf.rs) 555587344, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `bytes` (6), `len` (5), `addr` (6), `prov` (2), `value` (6).
+
 ```rust
 pub axiom fn str_c_byte<'a>(tracked &'a self, p: *const u8, q: *const core::ffi::c_char, i: int) -> (tracked r: &'a PointsTo<core::ffi::c_char>)
     requires
@@ -84,6 +92,9 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 3555375289, body none.
 
+Specs: `CCall::written` (src/vspec/cbuf.rs) 3240550860, `CCall::has` (src/vspec/cbuf.rs) 2622086058, `Stored::ptr` (src/vspec/usable.rs) 3663496071, `CCall::len` (src/vspec/cbuf.rs) 1020308823, `c_buffer` (src/vspec/cbuf.rs) 3341179392.
+Specs unresolved (spec fns of the name): `value` (6).
+
 ```rust
 pub axiom fn sized<'a>(tracked &'a self, p: *mut u8, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)
     requires
@@ -105,6 +116,9 @@ Tool: none (assumption). Status: trusted.
 > Trusted (the C contract of a counted array): the shared read permission to the call's initialised `size_t` at `lenp`, for as long as the token is borrowed, holding the value the view names ([`CCall::len`]), and the array at `p` it gives the length of, that many `size_t`s ([`c_buffer`]).
 
 Hashes: contract 983555559, body none.
+
+Specs: `CCall::written` (src/vspec/cbuf.rs) 3240550860, `CCall::has` (src/vspec/cbuf.rs) 2622086058, `Stored::ptr` (src/vspec/usable.rs) 3663496071, `CCall::len` (src/vspec/cbuf.rs) 1020308823, `c_buffer` (src/vspec/cbuf.rs) 3341179392.
+Specs unresolved (spec fns of the name): `value` (6).
 
 ```rust
 pub axiom fn counted<'a>(tracked &'a self, p: *mut usize, lenp: *const usize) -> (tracked r: &'a PointsTo<usize>)

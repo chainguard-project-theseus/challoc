@@ -20,6 +20,8 @@ Tool: Kani. Status: discharged (Kani: stats::kani_records::zero_records_zeroes).
 
 Hashes: contract 2902974600, body 1211080738.
 
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+
 ```rust
 fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPair>>)
     requires
@@ -39,6 +41,8 @@ Tool: none (assumption). Status: trusted.
 Body mints Tracked at line 2135.
 
 Hashes: contract 1387577703, body 171475313.
+
+Specs: `may_syscall` (src/sys/mod.rs) 532674254, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
 
 ```rust
 fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<PointsTo<StatsPair>>)>)

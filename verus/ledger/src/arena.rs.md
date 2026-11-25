@@ -147,6 +147,8 @@ Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.
 
 Hashes: contract 3337610579, body none.
 
+Specs: `field_fits` (src/arena.rs) 1160781729.
+
 ```rust
 axiom fn axiom_arena_layout()
     ensures
@@ -177,6 +179,9 @@ Tool: none (assumption). Status: trusted.
 > The written fields of the `Arena` at `p` (`Arena::split`'s parts and class states, every one initialised), as the `Arena`: the value of each field is what its permission holds.
 
 Hashes: contract 1520016682, body none.
+
+Specs: `classes_at` (src/arena.rs) 3824279873, `pad_covers` (src/arena.rs) 1139935517, `elems_init` (src/arena.rs) 1251027085, `Stored::ptr` (src/vspec/usable.rs) 3663496071, `rank_arena_stats` (src/lock.rs) 1171131731, `rank_sets` (src/lock.rs) 2828740158.
+Specs unresolved (spec fns of the name): `at` (7), `provenance` (2), `value` (6), `spec_class` (2), `spec_arena` (2), `rank` (3).
 
 ```rust
 axiom fn axiom_arena_assemble(
@@ -226,6 +231,9 @@ Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_st
 > The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
 
 Hashes: contract 2008592952, body 2682043248.
+
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071, `rank_arena_stats` (src/lock.rs) 1171131731.
+Specs unresolved (spec fns of the name): `value` (6), `rank` (3).
 
 ```rust
 unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)
@@ -345,6 +353,8 @@ Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena
 
 Hashes: contract 3336027594, body none.
 
+Specs: `field_fits` (src/arena.rs) 1160781729.
+
 ```rust
 axiom fn axiom_arenas_layout()
     ensures
@@ -377,6 +387,9 @@ Tool: none (assumption). Status: trusted.
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
 
 Hashes: contract 1034589893, body none.
+
+Specs: `bounds_at` (src/arena.rs) 71488751, `arenas_pad_covers` (src/arena.rs) 2643696279, `elems_init` (src/arena.rs) 1251027085, `rank_arenas` (src/lock.rs) 471950314, `count_id` (src/vspec/count.rs) 1104713034, `entry_id` (src/vspec/entry.rs) 3056279958, `narenas_ns` (src/arena.rs) 2026059371, `lock_init` (src/lock.rs) 551678868, `spare_ns` (src/arena.rs) 207717461, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
+Specs unresolved (spec fns of the name): `at` (7), `tables_at` (2), `provenance` (2), `value` (6), `rank` (3), `id` (4).
 
 ```rust
 axiom fn axiom_arenas_assemble(

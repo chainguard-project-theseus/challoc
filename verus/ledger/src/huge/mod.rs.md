@@ -19,6 +19,8 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 329218549, body none.
 
+Specs unresolved (spec fns of the name): `addr` (6), `len` (5).
+
 ```rust
 pub(crate) axiom fn axiom_fresh_anon_zero(addr: int, len: int) -> (tracked z: Zeroed)
     requires
@@ -37,6 +39,9 @@ Tool: none (assumption). Status: trusted (requires, checked at its one caller, z
 > `madvise(2)`: after `MADV_DONTNEED` on private anonymous memory, reads return zero-fill-on-demand pages (`MADV_FREE` gives no such guarantee: the old contents stay until the kernel reclaims the page).
 
 Hashes: contract 320898273, body none.
+
+Specs: `madvise_ok` (src/sys/mod.rs) 1010771556.
+Specs unresolved (spec fns of the name): `addr` (6), `len` (5).
 
 ```rust
 axiom fn axiom_discarded_zero(addr: int, len: int) -> (tracked z: Zeroed)
