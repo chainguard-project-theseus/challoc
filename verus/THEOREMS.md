@@ -140,6 +140,9 @@ leave out (theorem 33). Remaining work is tracked in
 - **Refill slab order** ([A refill takes partial slabs lowest address first](#a-refill-takes-partial-slabs-lowest-address-first-over-the-values-read)):
   `class::ClassState::theorem_refill_address_ordered`, `class/mod.rs`,
   with `ClassState::plan_at`'s contract.
+- **Idle slab order** ([A refill takes the lowest idle slab](#a-refill-takes-the-lowest-idle-slab-over-the-sets-read)):
+  `class::fresh::theorem_idle_slab_lowest`, `class/fresh.rs`, with
+  `ClassState::next_slab`'s contract.
 
 ## Configuration
 
@@ -11616,9 +11619,8 @@ concurrent slots, as in theorem 37. No seam is added.
   refill's later holds start a new scan.
 - Slab order only. Which slots a pick claims inside its slab
   (`claim_prefix`, the bitmap's own scan, or a shuffled order) is not
-  covered, nor which idle slab `next_slab` returns (its doc says the
-  lowest `Empty`, then the lowest `Purged`, then fresh; its `ensures`
-  says only that the slab is ready).
+  covered. Which idle slab `next_slab` returns is the next section's
+  theorem.
 - With a fork floor, slabs below it are not scanned: `lo` is the floor,
   and the statement says nothing below it.
 - Ghost only: the release library's machine code is unchanged (the new
@@ -11633,6 +11635,99 @@ concurrent slots, as in theorem 37. No seam is added.
 | M2 | after a pick, the scan stops while slots remain (`if np > 0 && remaining > 1 { break; }`), so an idle slab comes next | rejected (the idle loop's invariant `scan_ordered` up to the end of the class) | verifies |
 | M3 | after a pick, a slab with one open free slot is skipped as busy | rejected (`lemma_scan_step` precondition: the read is below `nslots`) | verifies |
 | M4 | under a fork floor, the scan starts at `floor + 1` (saturating) | rejected (`lemma_scan_start` precondition) | verifies |
+
+## A refill takes the lowest idle slab (over the sets read)
+
+Design section 5: once no partial slab has room, a refill takes the
+lowest `Empty` slab, else the lowest `Purged` one, else a fresh slab.
+The previous section proves the partial-slab half of that order.
+Under a fork epoch's floor (design 5, "Fork epochs") the `Empty`
+scan starts at the floor, and so does the `Purged` scan once a lazy
+discard may have left pages in place (`purge::purged_is_zero` false).
+Before chainguard-project-theseus/challoc#963, `ClassState::next_slab`
+said this only in its doc. Its `ensures` said that the slab is ready,
+that the partial set is unchanged, and that `None` without a floor
+leaves both idle sets empty.
+
+**Statement.**
+
+```rust
+// class/fresh.rs
+spec fn lowest_from(set: Set<nat>, lo: int, s: nat) -> bool {
+    &&& set.contains(s)
+    &&& lo <= s
+    &&& forall|x: nat| set.contains(x) && lo <= x ==> s <= x
+}
+
+spec fn none_from(set: Set<nat>, lo: int) -> bool {
+    forall|x: nat| set.contains(x) ==> x < lo
+}
+
+spec fn idle_pick(e: Set<nat>, p: Set<nat>, floor: int, r: Option<usize>) -> bool {  // opaque
+    match r {
+        Some(s) => lowest_from(e, floor, s)
+            || (none_from(e, floor) && (lowest_from(p, floor, s) || lowest_from(p, 0, s)))
+            || (none_from(e, floor) && none_from(p, floor) && !e.contains(s) && !p.contains(s)),
+        None => none_from(e, floor) && none_from(p, floor),
+    }
+}
+
+fn next_slab(&self, g: &mut Inner, floor: usize, ..) -> (r: Option<usize>)
+    ensures
+        idle_pick(old(g).empty.map@, old(g).purged.map@, floor as int, r),
+
+proof fn theorem_idle_slab_lowest(e, p, floor, r)
+    requires
+        idle_pick(e, p, floor, r),
+    ensures
+        !none_from(e, floor) ==> (r matches Some(s) && lowest_from(e, floor, s)),
+        none_from(e, floor) && !none_from(p, floor) ==> (r matches Some(s) && p.contains(s)
+            && forall|x: nat| p.contains(x) && floor <= x ==> s <= x),
+        r matches Some(s) && !e.contains(s) && !p.contains(s) ==> none_from(e, floor) && none_from(p, floor),
+        r is None ==> none_from(e, floor) && none_from(p, floor),
+```
+
+In words, for the `Empty` set `e` and the `Purged` set `p` of the lock
+value `next_slab` was handed, and the fork floor `floor` (0 outside a
+fork epoch):
+- with an `Empty` slab at or above the floor, it returns the lowest;
+- with none, but a `Purged` slab at or above the floor, it returns a
+  `Purged` slab no higher than any of those (the lowest from the floor,
+  or the lowest of all when the floor is lifted for `Purged` slabs);
+- it returns a fresh slab (one in neither set), or `None`, only when
+  neither set holds a slab at or above the floor.
+
+The proof reads the branches of `next_slab`:
+`TwoLevelBitmap::lowest_set` and `lowest_set_from` already ensure the
+lowest member (from `from`) or that none is there, and
+`next_fresh_slab` leaves both idle sets as they were, which `ready`
+says its slab is not in. `idle_pick` is opaque, so that
+`ClassState::plan_at`, which inlines `next_slab` in its idle loop,
+carries it as an atom; `plan_at` verifies within its rlimit as before.
+
+**Premises (seams).** None beyond the common ones. No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- One call, over the sets it read under the class lock. `plan_at`
+  calls `next_slab` once per idle pick and does not restate the result:
+  the order across a refill's idle picks follows from each call's
+  sets, which `plan_at`'s `ensures` does not hand out.
+- Which purged floor applies is not stated. The code lifts it only while
+  `purge::purged_is_zero()` is true, a relaxed load with no spec here;
+  the statement allows either floor (mutant M5 survives).
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures` and proof blocks only).
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module class::fresh`,
+on the PR's tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| M1 | without a floor, the `Empty` scan starts at 1 (`lowest_set_from(1)`) | rejected (assertion behind `idle_pick`) | rejected (the `None` conjunct: slab 0 can stay `Empty`) |
+| M2 | under a floor, the `Purged` scan starts at `floor + 1` (saturating) | rejected (assertion behind `idle_pick`) | verifies |
+| M3 | under a floor, the `Empty` scan ignores it (`lowest_set()`) | rejected (assertion behind `idle_pick`) | verifies |
+| M4 | under a floor, the `Empty` scan finds nothing (`lowest_set_from(usize::MAX)`) | rejected (assertion behind `idle_pick`) | verifies |
+| M5 | the `Purged` floor is always lifted (`if true`) | verifies (stated above) | verifies |
 
 ## Interface contract
 
