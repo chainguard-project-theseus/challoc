@@ -773,6 +773,54 @@ impl InvariantPredicate<int, CountPerm> for FracPred {
 /// The invariant of the position.
 pub type FracInv = AtomicInvariant<int, CountPerm, FracPred>;
 
+/// What [`Policy::apply`] stores for `band`: `scaled16` (one more than
+/// the position in the scaled band, clamped to [`FRAC_ONE`], so that
+/// `Scaled(0)` at the 70% edge is told from `Low`; 0 outside it),
+/// `immediate` and `limited`.
+pub open spec fn spec_stored(band: Band) -> (u32, bool, bool) {
+    match band {
+        Band::Unlimited => (0, false, false),
+        Band::Low => (0, false, true),
+        Band::Scaled(f) => (
+            (if f <= 0x1_0000 {
+                f
+            } else {
+                0x1_0000u32
+            } + 1) as u32,
+            false,
+            true,
+        ),
+        Band::Immediate => (0, true, true),
+    }
+}
+
+/// The band [`Policy::band`] rebuilds from `scaled16`, `immediate` and
+/// `limited`.
+pub open spec fn spec_read_back(scaled: u32, immediate: bool, limited: bool) -> Band {
+    if immediate {
+        Band::Immediate
+    } else if !limited {
+        Band::Unlimited
+    } else if scaled == 0 {
+        Band::Low
+    } else {
+        Band::Scaled((scaled - 1) as u32)
+    }
+}
+
+/// The stored band round-trips: what [`Policy::band`] rebuilds from the
+/// values [`Policy::apply`] stores for a well-formed band is that band,
+/// `Scaled(0)` at the 70% edge included (it is not read back as `Low`).
+/// A position past [`FRAC_ONE`] is read back clamped.
+pub proof fn theorem_policy_band_round_trip(b: Band)
+    ensures
+        spec_stored(b).0 <= 0x1_0001,
+        b.wf() ==> spec_read_back(spec_stored(b).0, spec_stored(b).1, spec_stored(b).2) == b,
+        !b.wf() ==> spec_read_back(spec_stored(b).0, spec_stored(b).1, spec_stored(b).2)
+            == Band::Scaled(0x1_0000),
+{
+}
+
 impl Policy {
     /// Defaults; `high_rises` is the cgroup record's count at init, so a
     /// container whose `memory.events` already showed `high` events does
@@ -830,18 +878,37 @@ impl Policy {
     }
 
     /// The band as last evaluated (`Unlimited` when no limit was seen).
+    /// Each arm returns [`spec_read_back`] of the values it loaded (the
+    /// ones it did not load do not matter there), checked in place;
+    /// [`theorem_policy_band_round_trip`] is that read against
+    /// [`Policy::apply`]'s stores.
     pub fn band(&self) -> (b: Band)
         ensures
             b.wf(),
     {
-        if self.immediate.load(Ordering::Relaxed) {
+        let immediate = self.immediate.load(Ordering::Relaxed);
+        if immediate {
+            proof {
+                assert(Band::Immediate == spec_read_back(0, immediate, true));
+            }
             Band::Immediate
-        } else if !self.limited.load(Ordering::Relaxed) {
-            Band::Unlimited
         } else {
-            match self.position() {
-                0 => Band::Low,
-                f => Band::Scaled(f - 1),
+            let limited = self.limited.load(Ordering::Relaxed);
+            if !limited {
+                proof {
+                    assert(Band::Unlimited == spec_read_back(0, immediate, limited));
+                }
+                Band::Unlimited
+            } else {
+                let scaled = self.position();
+                let b = match scaled {
+                    0 => Band::Low,
+                    f => Band::Scaled(f - 1),
+                };
+                proof {
+                    assert(b == spec_read_back(scaled, immediate, limited));
+                }
+                b
             }
         }
     }
@@ -927,6 +994,13 @@ impl Policy {
             Band::Immediate => (0, true),
         };
         let limited = band != Band::Unlimited;
+        // The three values stored for `band` are [`spec_stored`]'s, what
+        // `band()` reads back ([`theorem_policy_band_round_trip`]).
+        proof {
+            assert(scaled == spec_stored(band).0);
+            assert(immediate == spec_stored(band).1);
+            assert(limited == spec_stored(band).2);
+        }
         let cap = if limited {
             retention_cap(limit)
         } else {

@@ -1,8 +1,8 @@
-//! Specifications of the derived `PartialEq` of five enums verified code
+//! Specifications of the derived `PartialEq` of six enums verified code
 //! compares: `config::Thp` and `sys::thp_host::ThpSetting` (`thp.rs`),
-//! `huge::RunState`, `slab::State` (`class::ClassState::take`) and
+//! `huge::RunState`, `slab::State` (`class::ClassState::take`),
 //! `thp::Mode` (`class::table::SlabTable::commit_slab` and
-//! `commit_page_group`); and of
+//! `commit_page_group`) and `policy::Band` (`policy::Policy::apply`); and of
 //! `fence`, `core::hint::assert_unchecked`, `core::hint::black_box` and
 //! `AtomicU32::as_ptr`; and the type `PhantomPinned` (a field of
 //! `heap::Heap`).
@@ -60,6 +60,17 @@ impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::slab::State {
 }
 
 impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::thp::Mode {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
+
+// `Band::Scaled`'s derived comparison compares the position too.
+impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::policy::Band {
     open spec fn obeys_eq_spec() -> bool {
         true
     }

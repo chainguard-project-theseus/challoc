@@ -3,10 +3,12 @@
 //! describe (`obeys_eq_spec()` and `eq_spec(a, b) == (*a == *b)`, Verus's
 //! structural equality). For an enum without fields, structural equality
 //! is equality of the variant. Each harness checks `==` and `!=` against
-//! that for every pair of values (no bound: the variants are listed).
+//! that for every pair of values (no bound: the variants are listed;
+//! `policy::Band`'s `Scaled` position is symbolic).
 
 use crate::config::{PercpuArena, Thp};
 use crate::huge::RunState;
+use crate::policy::Band;
 use crate::slab;
 use crate::sys::thp_host::ThpSetting;
 use crate::thp::Mode;
@@ -131,6 +133,37 @@ fn eq_thp_mode() {
         assert_eq!(thp_mode_index(*m), i);
     }
     check_variants(&v);
+}
+
+/// A `Band` of a symbolic variant and, for `Scaled`, a symbolic
+/// position, returned with its variant index.
+fn any_band() -> (usize, Band) {
+    let i: usize = kani::any();
+    kani::assume(i < 4);
+    let f: u32 = kani::any();
+    let b = match i {
+        0 => Band::Unlimited,
+        1 => Band::Low,
+        2 => Band::Scaled(f),
+        _ => Band::Immediate,
+    };
+    (i, b)
+}
+
+/// `PartialEqSpecImpl for policy::Band`: structural equality is the same
+/// variant and, for `Scaled`, the same position (every position: no
+/// bound).
+#[kani::proof]
+fn eq_policy_band() {
+    let (i, a) = any_band();
+    let (j, b) = any_band();
+    let same = i == j
+        && match (a, b) {
+            (Band::Scaled(f), Band::Scaled(g)) => f == g,
+            _ => true,
+        };
+    assert_eq!(a == b, same);
+    assert_eq!(a != b, !same);
 }
 
 fn percpu_arena_index(p: PercpuArena) -> usize {
