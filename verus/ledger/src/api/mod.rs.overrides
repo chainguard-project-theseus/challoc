@@ -19,9 +19,12 @@ axiom_start	allocator invariant	none (assumption)
 pthread_atfork_handlers	function pointer	Kani	discharged on premises (Kani: api::kani_atfork::atfork_registers_the_handlers; premises: C8 (glibc's pthread_atfork records the three handlers and returns 0 without calling into challoc))	contract 3467618631, body 2331659382
 # The fork handler handoff: glibc runs the parent and child handlers on the
 # thread whose prepare handler returned holding the locks and the mask.
-# The handlers call axiom_fork_resumed_state only when FORK_LOCKED (verified
-# atomics) says this fork's prepare took the locks: glibc serialises one
-# fork's handlers under its atfork lock, so the flag read is this fork's.
+# The handlers call axiom_fork_resumed_state only when the fork window's
+# holder record (lock::FORK_HOLDER, read by lock::in_fork_window before
+# the gate opens) is the calling thread: its prepare wrote it last, with
+# every lock held, and another prepare writes it only once it holds
+# every lock. glibc does not serialise concurrent forks' handlers (#949),
+# so no process-wide flag would do; one fork's handlers run on its thread.
 # The state hold is of the lock each handler names, `&STATE`: a static is
 # one object, and STATE is the one Lock<State>
 # (purge::tests::state_lock_is_the_one_lock_of_its_type).
@@ -56,4 +59,14 @@ shared_base	inline asm	Islaris/Isla	trusted (partly checked, emptyasm: shared_ba
 # read its own tid (read-after-write coherence) and it would abort. The
 # init models check that no waiter is left spinning and that only the
 # initialising thread takes the re-entry abort, on a copy.
-init_slow	termination	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which no case runs; a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract)	contract 1867649379, body 574998675
+init_slow	termination	loom/GenMC	trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which these cases do not run (the forkgate cases run a copy of it, see `init_gate_enter`); a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract)	contract 1867649379, body 574998675
+# The init/fork gate's waits (#949). A waiter in init_gate_enter read
+# another thread's ID (its init, which ends in init_gate_done) or
+# GATE_FORKING with another thread in the forker slot (that thread's fork,
+# whose parent handler opens the gate); one in fork_gate_enter read either
+# of those or a slot another fork holds (given back when its close fails,
+# or by its fork_gate_exit). The forkgate models check, on a copy pinned by
+# tests/loom/tests/pins.rs, that no thread is left spinning and that no
+# other thread's enter returns while a fork holds the gate.
+init_gate_enter	termination	loom/GenMC	trusted (partly checked, loom: forkgate::loom_forkgate_two_forks, forkgate::loom_forkgate_two_forks_both_allocate and forkgate::loom_forkgate_fork_races_init; not checked: this body, which the models replace with a copy, with the two threads tests/loom/src/forkgate.rs states and one waiter at a time; termination itself, which rests on the other thread's init or fork returning, a fair scheduler and visible stores, as loom models them; a fork from a signal handler (design 9, residuals))	contract 518708444, body 1503277437
+fork_gate_enter	termination	loom/GenMC	trusted (partly checked, loom: forkgate::loom_forkgate_two_forks, forkgate::loom_forkgate_two_forks_both_allocate and forkgate::loom_forkgate_fork_races_init; not checked: this body, which the models replace with a copy, with the two threads tests/loom/src/forkgate.rs states and one waiter at a time; termination itself, which rests on the other thread's init or fork returning, a fair scheduler and visible stores, as loom models them; a prepare handler registered before challoc's that waits on a thread which is itself forking while the gate is closed, and a fork from a signal handler (design 9, residuals))	contract 1749912161, body 2686618528

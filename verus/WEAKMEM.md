@@ -20,7 +20,7 @@ and not run.
 
 ## Inventory
 
-407 lines of source carry an `Ordering::` (`grep` over `src/`, leaving
+406 lines of source carry an `Ordering::` (`grep` over `src/`, leaving
 out comment lines and every module under `#[cfg(test)]`, `#[cfg(kani)]`,
 `#[cfg(loom)]` or `#[cfg(challoc_tls_check)]`, inline or in its own files:
 the `tests.rs`, `linux_tests.rs` and other test files, `src/heap/tests/`,
@@ -53,7 +53,7 @@ a compiler barrier.
 | `purge.rs` | 37 | flags, counters, `Decayer` |
 | `sys/cgroup.rs` | 32 | sampled cgroup limits and the deferred discovery's phase; the sample clock `sampled_at` is a vstd atomic (`SeqCst`) |
 | `stats.rs`, `policy.rs` | 28, 24 | statistics and the sampled policy, `Relaxed`; `stats.rs`'s record pool (`mod pool`) hands slots off with `Acquire` and `Release` (`owner`, `rec`), P11 |
-| `api/mod.rs` | 19 | `INIT_TID`, `SEALED`, the init gate (`INIT_GATE`, `GATE_FORKER`, `FORK_GATED`), `ATFORK_REGISTERED`, `FORK_LOCKED`, the fork slot's store (`FORK_SIGMASK`); the init gate's and `ATFORK_REGISTERED`'s `Acquire`, `Release` and `AcqRel` operations are P8 |
+| `api/mod.rs` | 18 | `INIT_TID`, `SEALED`, the init gate (`INIT_GATE` and its forker slot `GATE_FORKER`), `ATFORK_REGISTERED`, the fork slot's store (`FORK_SIGMASK`); the init gate's and `ATFORK_REGISTERED`'s `Acquire`, `Release` and `AcqRel` operations are P8 |
 | `class/mod.rs` | 16 | per-class statistics counters (`claimed`, `released`, `refilled`, `compacted`, `clamped`, `compact_on`, `compact_off`, `gate_refill`), `Relaxed` |
 | `class/table.rs` | 15 | watermark; owner words; the watermark copy's stores (`vspec::atom::store_usize_at`) |
 | `arena.rs` | 14 | `BUILD_COST` samples, `large`, decay settings, statistics, `Relaxed` |
@@ -318,8 +318,16 @@ and no test checks the orderings (**unconfirmed**).
 
 ### P8. The init gate and the atfork registration
 
-Read from the code; no loom model or GenMC harness copies these steps
-(the `init.rs` model leaves the fork gate out), **unconfirmed**.
+The init gate: a loom model, `tests/loom/src/forkgate.rs` (#949),
+copies `init_gate_enter`, `init_gate_done`, `fork_gate_enter` and
+`fork_gate_exit` (pinned by `tests/loom/tests/pins.rs`) and checks, with
+two threads (two forks, or a fork and an init) and one waiter at a time,
+that no other thread's enter returns while a fork holds the gate, that
+the closer's own init passes, and that no thread is left spinning; two
+controls (a slot claimed by a plain store; a fork going on at another
+fork's `GATE_FORKING`) fail it. No GenMC harness runs it, and the
+`init.rs` models leave the gate out. `ATFORK_REGISTERED`: read from the
+code, **unconfirmed**.
 
 - `INIT_GATE` (`api/mod.rs`) holds `GATE_IDLE`, `GATE_DONE`,
   `GATE_FORKING` or the `pthread_self` of a thread whose init is under
@@ -328,40 +336,42 @@ Read from the code; no loom model or GenMC harness copies these steps
   thread holds it. `init_gate_done` moves it from the holder to
   `GATE_DONE` (`AcqRel`). The fork prepare handler's `fork_gate_enter`
   loads it with `Acquire` and closes it, `GATE_IDLE` to `GATE_FORKING`,
-  with an `AcqRel` compare-exchange. The parent and child handlers'
-  `fork_gate_exit` opens it with a `Release` store.
+  with an `AcqRel` compare-exchange, once it holds the forker slot
+  (below). The parent and child handlers' `fork_gate_exit` opens it
+  with a `Release` store, on the thread that closed it.
 - What rests on it: an init and a `fork`'s prepare handler do not run
-  their critical parts at once, and a waiter goes on only after the
-  holder is done. The read-modify-writes on one word give this for one
-  fork at a time, whatever their ordering. With two threads' forks
-  overlapping it does not hold (`FORK_GATED` and `GATE_FORKER` below). The gate publishes no data of its own.
-  `STATE` and `Shared` are published by P4, which a waiter that goes on
-  then reads with its own `Acquire`.
-- `GATE_FORKER` and `FORK_GATED` are `Relaxed`. `GATE_FORKER` is stored
-  before the `AcqRel` compare-exchange that closes the gate, and cleared
-  before the `Release` store that opens it. `init_gate_enter` reads it
-  only after a failed compare-exchange found `GATE_FORKING` (`Acquire`
-  on failure). That load reads the closing exchange, or a later one, so
-  the reader sees that fork's `GATE_FORKER` and no earlier forker's.
-  That is the value only if no other prepare handler stored to
-  `GATE_FORKER` meanwhile. Two forks that both loaded `GATE_IDLE` both
-  store, and the loser's store can land after the winner's. Nothing
-  rules that out. glibc's `__run_prefork_handlers` releases its atfork
-  lock around each prepare handler, and its postfork dispatcher does the
-  same around each callback, so two threads' handlers can overlap. The
-  "glibc serialises the handlers" premise in `api/mod.rs`'s comments is
-  not established. **Unresolved:** after such an overwrite, the gate's
-  holder can fail to find its own ID. An allocation from a later
-  prepare handler of that fork, which initialises inside the fork, then
-  spins in `init_gate_enter` until the fork's parent handler, which
-  cannot run first (a hang).
-  `FORK_GATED` is one process-wide flag. **Unresolved:**
-  `fork_gate_enter` also returns when it finds another fork's
-  `GATE_FORKING`, and `fork_gate_exit` swaps the flag without checking
-  which thread closed the gate. So thread B's parent handler can reopen
-  thread A's gate, and a thread C can then start an init before A's
-  `_Fork`. A's child then waits at the gate on C, which is absent there
-  (a hang).
+  their critical parts at once, a second thread's `fork` does not go on
+  while the gate is closed by another's, and a waiter goes on only
+  after the holder is done. glibc's `__run_prefork_handlers` releases
+  its atfork lock around each prepare handler, and its postfork
+  dispatcher does the same around each callback, so two threads'
+  handlers can overlap (#949; `tests/c/fork_race.c` shows it on glibc
+  2.44). The gate publishes no data of its own. `STATE` and `Shared`
+  are published by P4, which a waiter that goes on then reads with its
+  own `Acquire`.
+- `GATE_FORKER` (the forker slot) is `Relaxed`. A forking thread claims
+  it, 0 to its own `pthread_self`, with a compare-exchange, and only
+  then tries to close the gate; a failed close gives it back (a store
+  of 0); `fork_gate_exit` gives it back after the store that opens the
+  gate. So only the slot's holder stores to it, and with the gate at
+  `GATE_FORKING` it names the thread that closed the gate: one
+  location's modification order, with no ordering needed of it. A
+  thread reads its own ID there only from its own claim (its relaxed
+  load sees its own latest store or a later one, and nobody else
+  stores its ID). `init_gate_enter` reads it after a failed
+  compare-exchange found `GATE_FORKING`; `fork_gate_enter` waits while
+  the gate is closed or the slot held by another thread, and
+  `fork_gate_exit` opens the gate only when the slot is the caller's
+  and the gate is `GATE_FORKING` (#949, which replaced the earlier
+  process-wide `FORK_GATED` flag and the store before the close that
+  two forks could race on).
+- Whether a parent or child handler releases the locks is the fork
+  window's holder record (`lock::FORK_HOLDER`, `Relaxed`), read through
+  `lock::in_fork_window` before `fork_gate_exit`: the prepare writes it
+  with every lock held and the release clears it before its first
+  unlock, so the lock word's `Acquire`/`Release` order it against any
+  other prepare's write. It replaced the process-wide `FORK_LOCKED`
+  flag, which another fork's prepare could set (#949).
 - `ATFORK_REGISTERED`: `atfork_handlers` claims the registration with an
   `AcqRel` swap, so one thread calls `pthread_atfork`. A failure gives
   the flag back with a `Release` store so that a later call tries again.
@@ -965,8 +975,8 @@ atomics with the
 permissions erased: evidence for the callers' hand-offs under the models
 named, which moves no status (the "status" column marks a copy).
 
-10 seams cite loom, and every one is partly checked
-(`grep -rh 'Status: .*loom:' verus/ledger/src`). `RawLock::lock_slow`
+12 seams cite loom, and every one but `RawLock::lock_slow` is partly
+checked (`grep -rh 'Status: .*loom:' verus/ledger/src`: 11 lines). `RawLock::lock_slow`
 (`lock.rs.md`, tool loom/GenMC) stays trusted: its contract is
 termination, and the lock models show deadlock freedom only. Drepper's
 mutex is not starvation-free, so a woken waiter can lose the word to
@@ -975,6 +985,8 @@ another thread's exchange as often as other threads retake the lock.
 | ledger file (`verus/ledger/src/`) | seam | status |
 |---|---|---|
 | `api/mod.rs.md` | `init_slow` | partly checked (loom, GenMC copy) |
+| `api/mod.rs.md` | `init_gate_enter` | partly checked (loom copy) |
+| `api/mod.rs.md` | `fork_gate_enter` | partly checked (loom copy) |
 | `class/table.rs.md` | `store_owner` | partly checked (loom, GenMC copy) |
 | `lock.rs.md` | `RawLock::lock_slow` | trusted |
 | `lock.rs.md` | `LockGuard::drop` | partly checked (loom) |
@@ -997,6 +1009,12 @@ The arguments, by group (the overrides comments give each in full):
   and `STATE.line` (`vspec/byte.rs`), vstd's `SeqCst`, give the
   release/acquire pairs the init and once-cell models check on copies
   of the steps.
+- `init_gate_enter` and `fork_gate_enter` (the forkgate model, P8):
+  each wait ends when the other thread's init reaches `init_gate_done`
+  or the other thread's fork reaches `fork_gate_exit` (or gives the
+  forker slot back after a failed close), given those return, a fair
+  scheduler and visible stores; the model checks it on a copy, with two
+  threads and one waiter at a time.
 - `background::main` (exit models): it returns after a final
   `request(false)`, given each pass returns and the exit takes the state
   lock.

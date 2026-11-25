@@ -1024,6 +1024,18 @@ ctests! {
     /// the gate knows it by `pthread_self`).
     c_fork_first_prepare => [ CTest { prog: "fork_first", args: &["prepare"], stdout_has: &["fork_first: prepare handler"], ..BASE } ];
     c_fork_first_child => [ CTest { prog: "fork_first", args: &["child"], stdout_has: &["fork_first: child handler"], ..BASE } ];
+    /// The same fork, with its prepare handler raising a signal whose
+    /// handler forks while the outer fork holds the gate with this thread
+    /// in the forker slot: the nested fork's prepare returns rather than
+    /// wait for the outer fork (#949).
+    c_fork_first_signal => [ CTest { prog: "fork_first", args: &["signal"], stdout_has: &["fork_first: signal handler"], ..BASE } ];
+    /// `tests/c/fork_race.c`: a second thread forks while the main
+    /// thread's fork, which closed the init/fork gate and initialised
+    /// challoc from its own prepare handler, is still in its handlers:
+    /// the second fork's prepare waits for the gate, and the first fork's
+    /// parent handler releases nothing it did not take (its thread keeps
+    /// its own signal mask).
+    c_fork_race => [ CTest { prog: "fork_race", stdout_has: &["fork_race: apart", "ok fork_race"], ..BASE } ];
     /// `tests/c/atfork_pool.c`: a thread pool registers, from the
     /// program's first constructor, a prepare handler that stops and joins
     /// its allocating workers: challoc's constructor registered its

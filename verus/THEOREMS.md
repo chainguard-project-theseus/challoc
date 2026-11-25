@@ -3200,9 +3200,13 @@ build a token; the handoff axioms below are the other source.
   release's last, and the atfork handlers registered before ours (whose prepare
   runs after ours and whose parent and child handlers run before ours)
   run allocator code whose releases do nothing (the fork window, below). The handlers call the axioms
-  only when `FORK_LOCKED` says this fork's prepare took the locks
-  (`fork_was_locked`; glibc serialises one fork's handlers and runs them
-  on the forking thread, so a `true` read there is this fork's). `axiom_fork_resumed` also assumes that the saved signal mask lies
+  only when the fork window's holder record is the calling thread
+  (`fork_was_locked`, `lock::in_fork_window`, read before the gate
+  opens): this thread's prepare wrote it with every lock held, and
+  another prepare writes it only once it holds every lock. glibc does
+  not serialise concurrent forks' handlers (#949, `tests/c/fork_race.c`)
+  but runs one fork's on its forking thread, so a holder read there of
+  the calling thread is this fork's. `axiom_fork_resumed` also assumes that the saved signal mask lies
   inside the blockable signals (theorem 39). Each handler calls each axiom once. For
   `axiom_fork_resumed` a second call would prove `false` (the creation
   lock cell's permission it restates is exclusive), and the test
@@ -8510,8 +8514,9 @@ release's hold; each write (`save_sigmask`) and each read
 (`saved_sigmask`) requires that hold, so, with theorem 13's mutex
 premise, a second thread's write happens only after the first thread's
 release has read the slot and unlocked: each release reads its own
-prepare's mask. glibc serialises the handlers with its atfork lock
-anyway; the unit tests do not, and
+prepare's mask. The allocator locks are what order the slot's accesses:
+glibc does not serialise the handlers of concurrent forks (#949), nor do
+the unit tests, and
 `concurrent_fork_handlers_restore_each_threads_mask` (`api/tests.rs`)
 runs two threads with different masks through the prepare and parent
 handlers 200 times each and checks each gets its own mask back;
