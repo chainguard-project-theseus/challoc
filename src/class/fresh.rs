@@ -143,6 +143,17 @@ impl ClassState {
                 },
                 None => old(g).empty.map@,
             },
+            // The slab is `Purged` exactly when it came from that set.
+            r matches Some(s) ==> (final(g).st(s as nat) == State::Purged) == old(g).purged.map@.contains(s as nat),
+            // Only a `Purged` slab it returns leaves the `Purged` set.
+            final(g).purged.map@ == match r {
+                Some(s) => if old(g).purged.map@.contains(s as nat) {
+                    old(g).purged.map@.remove(s as nat)
+                } else {
+                    old(g).purged.map@
+                },
+                None => old(g).purged.map@,
+            },
     {
         let ghost e0 = g.empty.map@;
         let ghost p0 = g.purged.map@;
@@ -171,6 +182,8 @@ impl ClassState {
                     assert(g0.slab_ok(x));
                 }
                 assert(lowest_from(e0, floor as int, s as nat));
+                assert(!p0.contains(s as nat));
+                assert(g.purged.map@ =~= p0);
                 reveal(idle_pick);
             }
             return Some(s);
@@ -199,6 +212,7 @@ impl ClassState {
                     assert(g0.slab_ok(x));
                 }
                 assert(lowest_from(p0, floor as int, s as nat) || lowest_from(p0, 0, s as nat));
+                assert(p0.contains(s as nat));
                 reveal(idle_pick);
             }
             return Some(s);
