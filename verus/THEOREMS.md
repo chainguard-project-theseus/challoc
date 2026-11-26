@@ -31,7 +31,7 @@ groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
 | The C boundary and system calls | 8, 21, 32, 42, 45, 46; secure-exec configuration; interface contract |
 | Zeroing and usable size | 6, 12 |
-| Statistics | 22, 27, 35; stored totals coherence; statistics readers; counted arenas kept |
+| Statistics | 22, 27, 35; stored totals coherence; statistics readers; counted arenas kept; reader stamps |
 
 ## How to read a section
 
@@ -165,6 +165,10 @@ leave out (theorem 33). Remaining work is tracked in
   `StoredSnapshot`'s `LockSpec` impl (`counted_kept`,
   `uncounted_empty`), `stats.rs`, with `Arenas::count_seen`'s and
   `Arenas::get_existing_seen`'s `ensures` and `NarenasPred`, `arena.rs`.
+- **Reader stamps** ([The statistics readers return a stamp of the stored record they read](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into)):
+  `stats::snapshot`'s and `stats::arena_stats_all_into`'s `ensures`
+  (`stamp_ok`, `merged_rec`), `StoredSnapshot`'s `LockSpec` impl
+  (`recorded`) and `stats::lemma_stamps_agree`, `stats.rs`.
 
 ## Configuration
 
@@ -6227,8 +6231,11 @@ for `k <= 256`.
   ([counted arenas kept](#each-epoch-counts-every-arena-the-last-one-counted-and-the-rest-store-zeros-at-the-process-statistics-locks-invariant));
   the epoch-number half is read from the code.
   `snapshot` and `arena_stats_all_into` check their results against it
-  in their bodies, not their `ensures`
-  ([readers](#the-statistics-readers-check-their-figures-against-the-held-authority-snapshot-and-arena_stats_all_into)). A
+  in their bodies
+  ([readers](#the-statistics-readers-check-their-figures-against-the-held-authority-snapshot-and-arena_stats_all_into)),
+  and their `ensures` give the caller a stamp of the coherent stored
+  record each result comes from
+  ([reader stamps](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into)). A
   reader of one arena's `stats.arenas.<i>.*` (`arena_stats`, which does
   not take the process statistics lock) may see it from a newer
   collection than the `stats.*` totals it read before.
@@ -12595,11 +12602,13 @@ outside `verus!` (no seam).
   arena's new figures before the new totals). A reader of `stats.arenas.<i>.*` that does not take it
   (`arena_stats`) may see a newer collection than the `stats.*` totals
   it read before, as theorem 27 says.
-- No reader's `ensures` carries the statement. `snapshot` and
-  `arena_stats_all_into` check their results against the held value in
-  their bodies, and `Arena::add_stats_to` ensures it adds the
-  authority's record
-  ([its own section](#the-statistics-readers-check-their-figures-against-the-held-authority-snapshot-and-arena_stats_all_into));
+- `snapshot` and `arena_stats_all_into` check their results against
+  the held value in their bodies, and `Arena::add_stats_to` ensures it
+  adds the authority's record
+  ([its own section](#the-statistics-readers-check-their-figures-against-the-held-authority-snapshot-and-arena_stats_all_into)).
+  Their `ensures` carry the statement through a stamp of the stored
+  record each result comes from
+  ([reader stamps](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into));
   `Arena::stats_into` (one arena's `stats.arenas.<i>.*`, without the
   process statistics lock) still returns its record with no tie to the
   points-to.
@@ -12629,8 +12638,11 @@ checks the two readers that take that lock against it: what `snapshot`
 returns for `stats.*`, and what `arena_stats_all_into` returns for
 `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`), is checked, inside each
 body before the lock is released, against the held value's authority.
-The readers' `ensures` do not export it (Scope). The exported parts are
-the merge's contracts: `ArenaStats::add` and `Arena::add_stats_to`.
+Here the readers' `ensures` do not export it (Scope); a later section
+does, through a stamp
+([reader stamps](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into)).
+The exported parts here are the merge's contracts: `ArenaStats::add`
+and `Arena::add_stats_to`.
 
 **Statement.** The two exported contracts and the lemma:
 
@@ -12723,16 +12735,16 @@ location, `arena_at`'s location and key) and vstd's
 `GhostPointsTo::agree`.
 
 **Scope and where the statement is weaker than the code.**
-- The readers' `ensures` are unchanged (`snapshot`: `Snapshot::inv`;
-  `arena_stats_all_into`: the result's `index`). The checks above are
+- In this section the readers' `ensures` are unchanged (`snapshot`:
+  `Snapshot::inv`; `arena_stats_all_into`: the result's `index`). The checks above are
   `assert`s on the held lock value, which no caller can name, so they
   constrain the body, not a caller. Stating them in an `ensures` over
   an existential map and index list says almost nothing (any `Totals`
   is `totals_sum` of one suitably chosen record, and any `out` the
-  one-arena merge of itself), so that form is not used. Exporting them
-  needs a ghost the caller holds and can relate to the authority (for
-  example a history of stored epochs); that is left open
-  (chainguard-project-theseus/challoc#981).
+  one-arena merge of itself), so that form is not used. A later
+  section exports them through a ghost the caller holds, a stamp of
+  the lock's history of stored records
+  ([reader stamps](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into)).
 - `found` is the arenas the scan returned. That it includes every
   counted arena, and that a found arena not counted stores zeros, is
   checked in the next section
@@ -12875,10 +12887,9 @@ premises of the two sections above.
 - It is the process statistics lock's invariant, as above: it holds
   whenever that lock is free, not throughout `collect_into`'s critical
   section.
-- No reader's `ensures` carries it; `arena_stats_all_into` checks it in
-  its body, as in the section above
-  (chainguard-project-theseus/challoc#981 stays open for a
-  caller-held ghost).
+- `arena_stats_all_into` checks it in its body, as in the section
+  above; the next section exports it in the readers' `ensures`
+  ([reader stamps](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into)).
 - "All zero" is `ArenaStats::empty_spec` of the index in the
   authority. That the merge's `add` of such a record leaves `out`'s
   figures unchanged is not stated (the bin geometry is taken from it
@@ -12907,6 +12918,133 @@ one skipped would keep nonzero figures outside `counted`
 (`uncounted_empty`). On main each verifies.
 
 Every mutation in the table was run on this tree and on main.
+
+## The statistics readers return a stamp of the stored record they read (`snapshot` and `arena_stats_all_into`)
+
+The two sections above check, inside `snapshot` and
+`arena_stats_all_into`, that their results agree with the held lock
+value. Their `ensures` could not say so: the authority is the lock
+value's ghost, and no caller can name it. This section adds a ghost
+the caller holds: the process statistics lock's value keeps a history
+of stored records, one per generation, and each reader hands back a
+persistent entry of it (a stamp) for the record its result comes from.
+
+**Statement.** `StoredSnapshot` gains three ghost fields: `hist`, an
+authority `GhostMapAuth<nat, StoredRec>` (a `StoredRec` is the
+snapshot, the authority's figures of every arena index and the counted
+arenas); `generation`, the current generation; and `stamp`, the
+history's persistent entry of it. The lock invariant gains `recorded`,
+and the frame keeps `hist`'s location:
+
+```rust
+// stats.rs
+pub type StoredRec = (Snapshot, Map<int, ArenaStats>, Seq<int>);
+pub type Stamp = GhostPersistentPointsTo<nat, StoredRec>;
+
+pub open spec fn recorded(self) -> bool {
+    &&& self.stamp@.id() == self.hist@.id()
+    &&& self.stamp@.key() == self.generation@
+    &&& self.stamp@.value() == (self.s, self.auth@@, self.counted@)
+    &&& forall|k: nat| self.hist@@.contains_key(k) ==> k <= self.generation@
+}
+
+pub open spec fn rec_coherent(r: StoredRec) -> bool {
+    &&& sums_stored(r.0, r.1, r.2)
+    &&& uncounted_empty(r.1, r.2)
+}
+
+pub open spec fn stamp_ok(shared: &Shared, st: Stamp) -> bool {
+    &&& st.id() == stats_hist_loc(shared)   // lock_init(shared.stats).hist@.id()
+    &&& rec_coherent(st.value())
+}
+
+pub fn snapshot(shared: &Shared, Tracked(st): Tracked<&mut Stamp>, ..) -> (r: Snapshot)
+    ensures
+        r.inv(),
+        stamp_ok(shared, *final(st)),
+        final(st).value().0 == r,
+        sum_mapped(stored_of(final(st).value().1, final(st).value().2)) <= usize::MAX
+            ==> r.totals.mapped == sum_mapped(stored_of(final(st).value().1, final(st).value().2)),
+
+pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): Tracked<&mut Stamp>, ..)
+    ensures
+        final(out).index == ARENAS_ALL as u16,
+        stamp_ok(shared, *final(st)),
+        exists|found, steps| merged_rec(final(st).value(), found, steps, *final(out)),
+
+// merged_rec(rec, found, steps, r): merged_stored(rec.1, found, steps, r),
+// every arena rec counts is in found, and each other one found has
+// ArenaStats::empty_spec figures in rec.1.
+
+pub proof fn lemma_stamps_agree(tracked p: &Stamp, tracked q: &Stamp)
+    requires p.id() == q.id(), p.key() == q.key(),
+    ensures p.value() == q.value(),
+```
+
+`Shared::init` mints the history with generation 0's record (the
+initial all-zero value). `collect_into`, when it stores, inserts the
+next generation's record (fresh, since none above the current one is
+recorded), makes it persistent and stores it as the stamp. When it
+does not store, the value is unchanged. The readers duplicate the
+held value's stamp.
+
+In words: the totals `snapshot` returns, and the merge
+`arena_stats_all_into` forms, each come from one record in the
+process statistics lock's history. In that record the totals are the
+counted arenas' figures summed in index order, and every other arena
+index holds zeros. `arena_stats_all_into`'s merge visits every arena
+that record counts, and any other arena it visits adds a zero record.
+Entries of the history are persistent and only the lock's holders
+create them, so a stamp at the history's location names a record that
+some epoch stored (or the initial one). Two stamps of one generation
+name one record.
+
+**Premises (seams).** None added. vstd's `GhostMapAuth` (`new`,
+`insert`) and `GhostPersistentPointsTo` (`persist`, `duplicate`,
+`intersection_agrees`); the premises of the sections above.
+
+**Scope and where the statement is weaker than the code.**
+- A caller that reads `snapshot` and then `arena_stats_all_into` gets
+  two stamps, but nothing says they share a generation: an `epoch` may
+  run between the two calls, and no `ensures` relates the generation
+  to the runtime epoch number (`Snapshot::epoch` wraps at `2^64`; the
+  generation does not). The two results are coherent only when the
+  generations are equal (`lemma_stamps_agree`), which the caller
+  cannot test.
+- A stamp's record is some stored record, not proved to be the latest
+  at the time of the return. The lock is released before the reader
+  returns, so a later one may exist by then.
+- `found` is existential in `arena_stats_all_into`'s `ensures`. The
+  record it ranges over is fixed by the stamp, and `found` must
+  include every counted arena, with every other one found adding all
+  zeros. So the merge is fixed up to zero records. That adding a zero
+  record leaves the figures unchanged is not stated (the bin geometry
+  is taken from it where `out` has none).
+- `Arena::stats_into` (`stats.arenas.<i>.*` for one arena) does not
+  take the process statistics lock and returns no stamp.
+- The mallctl callers drop the stamps. `stats::spare_stamp` mints a
+  stamp of a fresh, unshared history for them to pass in. Nothing
+  proves its location is the lock's, so a reader cannot return it
+  unchanged (S2 below).
+- Machine code: ghost only. The new arguments are `Tracked`, erased
+  in the build.
+
+**Mutations** (`cargo verus focus --locked -- --verify-module stats
+--verify-module heap::shared --verify-module api::mallctl`, on this
+tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| S1 | `collect_into`'s store inserts the next generation but keeps the old stamp | rejected (`recorded` at the store: the stamp's key is not the new generation) | n/a (no history) |
+| S2 | `snapshot` returns `spare_stamp()` instead of the held value's stamp | rejected (`stamp_ok` and `final(st).value().0 == r`) | n/a (no stamp) |
+| S3 | `arena_stats_all_into` clears `out` after its checks, before the unlock | rejected (the `merged_rec` `ensures`) | verifies |
+| S4 | `snapshot` returns its snapshot with `Totals::EMPTY` totals | rejected (`final(st).value().0 == r` and the `mapped` `ensures`) | verifies |
+| S5 | `recorded` drops "no generation above the current one" | rejected (the next generation is not known fresh at `collect_into`'s insert) | n/a (no history) |
+
+S3 and S4 survive on main: there the readers' checks are `assert`s in
+their bodies, and a change after them is constrained only by the
+`ensures` (the result's `index`; `Snapshot::inv`, which all-zero
+totals satisfy).
 
 ## Interface contract
 
