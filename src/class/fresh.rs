@@ -132,6 +132,17 @@ impl ClassState {
                 && final(g).partial.map@ == old(g).partial.map@,
             // The lowest idle slab: `Empty`, then `Purged`, then fresh.
             idle_pick(old(g).empty.map@, old(g).purged.map@, floor as int, r),
+            // The slab is still `Empty` exactly when it came from that set.
+            r matches Some(s) ==> (final(g).st(s as nat) == State::Empty) == lowest_from(old(g).empty.map@, floor as int, s as nat),
+            // Only an `Empty` slab it returns leaves the `Empty` set.
+            final(g).empty.map@ == match r {
+                Some(s) => if lowest_from(old(g).empty.map@, floor as int, s as nat) {
+                    old(g).empty.map@.remove(s as nat)
+                } else {
+                    old(g).empty.map@
+                },
+                None => old(g).empty.map@,
+            },
     {
         let ghost e0 = g.empty.map@;
         let ghost p0 = g.purged.map@;

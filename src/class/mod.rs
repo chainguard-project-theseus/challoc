@@ -1535,6 +1535,212 @@ proof fn lemma_picked_frame(a: Seq<Pick>, b: Seq<Pick>, n: int)
     assert(b[n].slab as nat == b[n].slab as nat);
 }
 
+/// What [`ClassState::plan_at`] hands out about the order of its picks:
+/// the partial set as acquired, how many picks came from the partial-set
+/// scan, how far the scan reached ([`ClassState::refill_ordered`]), the
+/// `Empty` set as the idle picks began and how many of those were `Empty`
+/// slabs ([`idle_ordered`]).
+type PlanOrder = (vstd::set::Set<nat>, int, int, vstd::set::Set<nat>, int);
+
+/// Slab `x` is the slab of one of the picks `[lo, hi)`. Opaque: only the
+/// lemmas about the idle picks open it.
+#[verifier::opaque]
+spec fn taken_in(p: Seq<Pick>, lo: int, hi: int, x: nat) -> bool {
+    exists|j: int| #![trigger p[j]] lo <= j < hi && p[j].slab as nat == x
+}
+
+/// The idle picks of a refill's lock hold ([`ClassState::plan_at`], the
+/// picks `[lo, np)` after its partial-set scan) took `Empty` slabs lowest
+/// first. The scan's picks `[0, lo)` are recorded `Active` (partial
+/// slabs), which pins `lo` by the picks. `e0` is the `Empty` set when the idle picks began and `e1` the
+/// one the hold left; the first `m` idle picks were `Empty` slabs of `e0`
+/// at or above the fork floor, strictly ascending, and none is in `e1`;
+/// they are exactly the idle picks whose recorded `state` is `Empty`;
+/// `e1` is part of `e0`, and its slabs from the floor lie above every one
+/// of those picks; every slab of `e0` from the floor that left the set is
+/// one of them; and an idle pick past them came only once `e1` held no
+/// slab from the floor. Opaque: [`ClassState::plan_at`]'s idle loop
+/// carries it, and only the lemmas about the idle picks open it.
+#[verifier::opaque]
+spec fn idle_ordered(e0: VSet<nat>, e1: VSet<nat>, p: Seq<Pick>, lo: int, m: int, np: int, floor: int) -> bool {
+    &&& 0 <= lo
+    &&& 0 <= m
+    &&& lo + m <= np <= p.len()
+    &&& forall|i: int| #![trigger p[i]] 0 <= i < lo ==> p[i].state == State::Active
+    &&& forall|i: int| #![trigger p[i]] lo <= i < lo + m ==> e0.contains(p[i].slab as nat) && floor <= p[i].slab && !e1.contains(p[i].slab as nat)
+        && p[i].state == State::Empty
+    &&& forall|i: int| #![trigger p[i]] lo + m <= i < np ==> p[i].state != State::Empty
+    &&& forall|i: int, j: int| #![trigger p[i], p[j]] lo <= i < j < lo + m ==> p[i].slab < p[j].slab
+    &&& forall|x: nat| #[trigger] e1.contains(x) ==> e0.contains(x)
+    &&& forall|x: nat, i: int| #![trigger e1.contains(x), p[i]] e1.contains(x) && floor <= x && lo <= i < lo + m ==> p[i].slab < x
+    &&& forall|x: nat| #[trigger] e0.contains(x) && floor <= x && !e1.contains(x) ==> taken_in(p, lo, lo + m, x)
+    &&& lo + m < np ==> fresh::none_from(e1, floor)
+}
+
+/// [`idle_ordered`] before the first idle pick.
+proof fn lemma_idle_start(e: VSet<nat>, p: Seq<Pick>, lo: int, floor: int)
+    requires
+        0 <= lo <= p.len(),
+        picks_active(p, lo),
+    ensures
+        idle_ordered(e, e, p, lo, 0, lo, floor),
+{
+    reveal(idle_ordered);
+}
+
+/// One idle pick of [`ClassState::plan_at`]: `next_slab` returned `s` for
+/// the `Empty` set `ea` and the `Purged` set `pa` ([`fresh::idle_pick`]),
+/// removing it from the `Empty` set (`eb`) only when it was the lowest
+/// `Empty` slab from the floor, and `take` made pick `k` of it. The idle
+/// picks stay ordered, with `m2` of them `Empty`.
+proof fn lemma_idle_step(
+    e0: VSet<nat>,
+    ea: VSet<nat>,
+    eb: VSet<nat>,
+    pa: VSet<nat>,
+    a: Seq<Pick>,
+    b: Seq<Pick>,
+    lo: int,
+    m: int,
+    k: int,
+    floor: int,
+    s: usize,
+) -> (m2: int)
+    requires
+        idle_ordered(e0, ea, a, lo, m, k, floor),
+        fresh::idle_pick(ea, pa, floor, Some(s)),
+        eb == (if fresh::lowest_from(ea, floor, s as nat) { ea.remove(s as nat) } else { ea }),
+        k < b.len() == a.len(),
+        b[k].slab as nat == s as nat,
+        (b[k].state == State::Empty) == fresh::lowest_from(ea, floor, s as nat),
+        forall|i: int| 0 <= i < k ==> a[i] == b[i],
+    ensures
+        idle_ordered(e0, eb, b, lo, m2, k + 1, floor),
+{
+    reveal(idle_ordered);
+    reveal(taken_in);
+    reveal(fresh::idle_pick);
+    // The partial scan's picks stay as recorded.
+    assert forall|i: int| #![trigger b[i]] 0 <= i < lo implies b[i].state == State::Active by {
+        assert(a[i] == b[i]);
+    }
+    if fresh::lowest_from(ea, floor, s as nat) {
+        // An `Empty` slab from the floor was left, so no other idle pick
+        // came yet.
+        if lo + m < k {
+            assert(fresh::none_from(ea, floor));
+            assert(ea.contains(s as nat));
+        }
+        assert(lo + m == k);
+        assert forall|i: int| #![trigger b[i]] lo <= i < lo + m + 1 implies e0.contains(b[i].slab as nat) && floor <= b[i].slab
+            && !eb.contains(b[i].slab as nat) && b[i].state == State::Empty by {
+            if i < k {
+                assert(a[i] == b[i]);
+            }
+        }
+        assert forall|i: int, j: int| #![trigger b[i], b[j]] lo <= i < j < lo + m + 1 implies b[i].slab < b[j].slab by {
+            assert(a[i] == b[i]);
+            if j < k {
+                assert(a[j] == b[j]);
+            } else {
+                assert(ea.contains(s as nat));
+            }
+        }
+        assert forall|x: nat, i: int| #![trigger eb.contains(x), b[i]] eb.contains(x) && floor <= x && lo <= i < lo + m + 1 implies b[i].slab < x by {
+            assert(ea.contains(x));
+            if i < k {
+                assert(a[i] == b[i]);
+            }
+        }
+        assert forall|x: nat| #[trigger] e0.contains(x) && floor <= x && !eb.contains(x) implies taken_in(b, lo, lo + m + 1, x) by {
+            if x == s as nat {
+                assert(b[k].slab as nat == x);
+            } else {
+                assert(!ea.contains(x));
+                let j = choose|j: int| #![trigger a[j]] lo <= j < lo + m && a[j].slab as nat == x;
+                assert(a[j] == b[j]);
+            }
+        }
+        m + 1
+    } else {
+        // Not an `Empty` slab from the floor: there was none left.
+        assert(fresh::none_from(ea, floor));
+        assert forall|i: int| #![trigger b[i]] lo <= i < lo + m implies e0.contains(b[i].slab as nat) && floor <= b[i].slab
+            && !eb.contains(b[i].slab as nat) && b[i].state == State::Empty by {
+            assert(a[i] == b[i]);
+        }
+        assert forall|i: int| #![trigger b[i]] lo + m <= i < k + 1 implies b[i].state != State::Empty by {
+            if i < k {
+                assert(a[i] == b[i]);
+            }
+        }
+        assert forall|i: int, j: int| #![trigger b[i], b[j]] lo <= i < j < lo + m implies b[i].slab < b[j].slab by {
+            assert(a[i] == b[i]);
+            assert(a[j] == b[j]);
+        }
+        assert forall|x: nat, i: int| #![trigger eb.contains(x), b[i]] eb.contains(x) && floor <= x && lo <= i < lo + m implies b[i].slab < x by {
+            assert(a[i] == b[i]);
+        }
+        assert forall|x: nat| #[trigger] e0.contains(x) && floor <= x && !eb.contains(x) implies taken_in(b, lo, lo + m, x) by {
+            let j = choose|j: int| #![trigger a[j]] lo <= j < lo + m && a[j].slab as nat == x;
+            assert(a[j] == b[j]);
+        }
+        m
+    }
+}
+
+/// Theorem: a refill's lock hold takes its `Empty` slabs lowest first,
+/// and all of them from the floor before any other idle slab (THEOREMS.md,
+/// "A refill takes Empty slabs in ascending order"). For the idle picks
+/// [`ClassState::plan_at`] hands out ([`idle_ordered`]), with `e0` the
+/// `Empty` set when they began:
+/// - the picks whose recorded `state` is `Empty` are exactly the first
+///   `m` idle picks: the partial scan's picks before them are recorded
+///   `Active`, and every later idle pick (`Purged` or fresh) is not
+///   `Empty`;
+/// - those are `Empty` slabs of `e0` at or above the floor, strictly
+///   ascending;
+/// - below each of them, from the floor, every slab of `e0` is an earlier
+///   one of them (no `Empty` slab is skipped);
+/// - when an idle pick follows them (a `Purged` or fresh slab), every slab
+///   of `e0` from the floor is one of them.
+///
+/// `e0` is a ghost output of `plan_at` that nothing outside it pins: the
+/// last two items are about the set it names, and hold trivially for an
+/// `e0` with nothing from the floor. The first item, and the floor and
+/// the order in the second, are about the picks alone.
+proof fn theorem_idle_empty_ascending(e0: VSet<nat>, e1: VSet<nat>, p: Seq<Pick>, lo: int, m: int, np: int, floor: int)
+    requires
+        idle_ordered(e0, e1, p, lo, m, np, floor),
+    ensures
+        forall|i: int| #![trigger p[i]] 0 <= i < lo ==> p[i].state == State::Active,
+        forall|i: int| #![trigger p[i]] 0 <= i < np ==> ((p[i].state == State::Empty) == (lo <= i < lo + m)),
+        forall|i: int| #![trigger p[i]] lo <= i < lo + m ==> e0.contains(p[i].slab as nat) && floor <= p[i].slab,
+        forall|i: int, j: int| #![trigger p[i], p[j]] lo <= i < j < lo + m ==> p[i].slab < p[j].slab,
+        forall|i: int, x: nat| #![trigger p[i], e0.contains(x)] lo <= i < lo + m && e0.contains(x) && floor <= x < p[i].slab ==>
+            taken_in(p, lo, i, x),
+        lo + m < np ==> forall|x: nat| #[trigger] e0.contains(x) && floor <= x ==> taken_in(p, lo, lo + m, x),
+{
+    reveal(idle_ordered);
+    assert forall|i: int, x: nat| #![trigger p[i], e0.contains(x)] lo <= i < lo + m && e0.contains(x) && floor <= x < p[i].slab implies
+        taken_in(p, lo, i, x) by {
+        reveal(taken_in);
+        if e1.contains(x) {
+            assert(p[i].slab < x);
+        }
+        let j = choose|j: int| #![trigger p[j]] lo <= j < lo + m && p[j].slab as nat == x;
+        if j > i {
+            assert(p[i].slab < p[j].slab);
+        }
+        assert(j < i);
+    }
+    if lo + m < np {
+        assert forall|x: nat| #[trigger] e0.contains(x) && floor <= x implies taken_in(p, lo, lo + m, x) by {
+            assert(!e1.contains(x));
+        }
+    }
+}
+
 /// `picks_sum` of a prefix depends only on that prefix, and is not negative.
 proof fn lemma_picks_sum(a: Seq<Pick>, b: Seq<Pick>, k: int)
     requires
@@ -4517,6 +4723,13 @@ spec fn picks_owned(c: int, a: u16, p: Seq<Pick>, lo: int, hi: int) -> bool {
     forall|j: int| lo <= j < hi ==> slab_owner(c, (#[trigger] p[j]).slab as int) == a
 }
 
+/// The first `n` picks recorded the state `Active`: [`ClassState::plan_at`]'s
+/// partial-set scan picks only partial slabs, which the lock invariant
+/// makes `Active` (`slab_core`), and `take` records the state it read.
+spec fn picks_active(p: Seq<Pick>, n: int) -> bool {
+    forall|j: int| 0 <= j < n ==> (#[trigger] p[j]).state == State::Active
+}
+
 /// The key in a pick map (`plan`'s `pm`) of pick `j`'s owner-word
 /// witness markers: negative, apart from the pick indices.
 spec fn seen_key(j: int) -> int {
@@ -4877,7 +5090,7 @@ impl ClassState {
         if floor != 0 {
             return self.plan_epoch(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
         }
-        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int));
+        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int));
         self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord))
     }
 
@@ -4922,7 +5135,7 @@ impl ClassState {
             picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
             picks_sum(final(picks)@, np as int) <= want,
     {
-        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int));
+        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int));
         let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
         if np == 0 && want > 0 {
             return self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
@@ -4984,7 +5197,7 @@ impl ClassState {
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
         Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
-        Tracked(scan): Tracked<&mut Ghost<(vstd::set::Set<nat>, int, int)>>,
+        Tracked(scan): Tracked<&mut Ghost<PlanOrder>>,
         pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (np: usize)
@@ -4998,6 +5211,7 @@ impl ClassState {
             *final(ord) == *old(ord),
             np == 0 && want > 0 && floor == 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
             self.refill_ordered(final(scan)@.0, final(ex)@.1, final(ex)@.0, final(picks)@, final(scan)@.1, np as int, floor as int, final(scan)@.2),
+            idle_ordered(final(scan)@.3, final(ex)@.0.empty.map@, final(picks)@, final(scan)@.1, final(scan)@.4, np as int, floor as int),
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
@@ -5059,6 +5273,7 @@ impl ClassState {
                 picks_zero(self.spec_table(), picks@, 0, np as int, *pz),
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
                 picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
+                picks_active(picks@, np as int),
                 next matches Some(x) ==> x < self.spec_nslabs() && g@.partial.map@.contains(x as nat),
             decreases
                 match next {
@@ -5069,7 +5284,8 @@ impl ClassState {
             if remaining == 0 || np == MAX_PICKS {
                 proof {
                     *ex = Ghost((g@, seen));
-                    *scan = Ghost((p0, np as int, s as int));
+                    lemma_idle_start(g@.empty.map@, picks@, np as int, floor as int);
+                    *scan = Ghost((p0, np as int, s as int, g@.empty.map@, 0));
                 }
                 g.unlock();
                 return np;
@@ -5130,6 +5346,12 @@ impl ClassState {
                             assert(picks@[j] == before[j]);
                         }
                     }
+                    // A partial slab is `Active`, the state `take` records.
+                    assert forall|j: int| 0 <= j < k + 1 implies (#[trigger] picks@[j]).state == State::Active by {
+                        if j < k {
+                            assert(picks@[j] == before[j]);
+                        }
+                    }
                 }
             }
             next = g.partial.map.lowest_set_from(s + 1);
@@ -5141,6 +5363,13 @@ impl ClassState {
         // The scan reached the end of the class: an idle slab comes only now.
         let ghost npart = np as int;
         let ghost part = picks@;
+        // The `Empty` set as the idle picks begin: they take it lowest
+        // first (`idle_ordered`), `m` of them so far.
+        let ghost e0 = g@.empty.map@;
+        let ghost mut m: int = 0;
+        proof {
+            lemma_idle_start(e0, picks@, npart, floor as int);
+        }
         while remaining > 0 && np < MAX_PICKS
             invariant
                 crate::sys::may_abort(),
@@ -5165,6 +5394,7 @@ impl ClassState {
                 npart <= np,
                 self.scan_ordered(p0, seen, picks@, npart, floor as int, self.spec_nslabs() as int),
                 forall|x: nat| #[trigger] g@.partial.map@.contains(x) ==> p0.contains(x) || picked(picks@, np as int, x),
+                idle_ordered(e0, g@.empty.map@, picks@, npart, m, np as int, floor as int),
             decreases MAX_PICKS - np,
         {
             let ghost g_idle = g@;
@@ -5193,6 +5423,8 @@ impl ClassState {
                         assert(picks@[j] == before[j]);
                     }
                 }
+                // The `Empty` picks stay lowest first.
+                m = lemma_idle_step(e0, g_idle.empty.map@, g@.empty.map@, g_idle.purged.map@, before, picks@, npart, m, k as int, floor as int, s);
                 // The scan's picks stay, and the idle slab is a pick.
                 self.lemma_scan_ordered_frame(p0, seen, before, picks@, npart, floor as int, self.spec_nslabs() as int);
                 lemma_picked_frame(before, picks@, k as int);
@@ -5204,7 +5436,7 @@ impl ClassState {
             }
         }
         proof {
-            *scan = Ghost((p0, npart, self.spec_nslabs() as int));
+            *scan = Ghost((p0, npart, self.spec_nslabs() as int, e0, m));
             lemma_picks_sum(picks@, picks@, np as int);
             // Dry: the scan saw every partial slab and `next_slab` found
             // both idle sets empty.
@@ -5269,6 +5501,8 @@ impl ClassState {
             // The pick is of `slab`, and the partial set changes at it alone.
             final(picks)[*old(np) as int].slab as nat == slab as nat,
             forall|x: nat| x != slab ==> (#[trigger] final(g).partial.map@.contains(x) == old(g).partial.map@.contains(x)),
+            final(g).empty.map@ == old(g).empty.map@,
+            final(picks)[*old(np) as int].state == old(g).st(slab as nat),
             forall|i: int| 0 <= i < MAX_PICKS && i != *old(np) ==> final(picks)[i] == old(picks)[i],
             *final(ptoks) == old(ptoks).insert(*old(np) as int, final(ptoks)[*old(np) as int]),
             final(ptoks)[*old(np) as int].id() == self.spec_table().spec_slots().loc,

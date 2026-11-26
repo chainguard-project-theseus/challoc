@@ -143,6 +143,9 @@ leave out (theorem 33). Remaining work is tracked in
 - **Idle slab order** ([A refill takes the lowest idle slab](#a-refill-takes-the-lowest-idle-slab-over-the-sets-read)):
   `class::fresh::theorem_idle_slab_lowest`, `class/fresh.rs`, with
   `ClassState::next_slab`'s contract.
+- **Empty slab order in a hold** ([A refill takes Empty slabs in ascending order](#a-refill-takes-empty-slabs-in-ascending-order-over-the-sets-read)):
+  `class::theorem_idle_empty_ascending`, `class/mod.rs`, with
+  `ClassState::plan_at`'s contract.
 
 ## Configuration
 
@@ -11709,9 +11712,8 @@ carries it as an atom; `plan_at` verifies within its rlimit as before.
 
 **Scope and where the statement is weaker than the code.**
 - One call, over the sets it read under the class lock. `plan_at`
-  calls `next_slab` once per idle pick and does not restate the result:
-  the order across a refill's idle picks follows from each call's
-  sets, which `plan_at`'s `ensures` does not hand out.
+  calls `next_slab` once per idle pick; the order of the `Empty` slabs
+  across a hold's idle picks is the next section's theorem.
 - Which purged floor applies is not stated. The code lifts it only while
   `purge::purged_is_zero()` is true, a relaxed load with no spec here;
   the statement allows either floor (mutant M5 survives).
@@ -11728,6 +11730,148 @@ on the PR's tree and on main):
 | M3 | under a floor, the `Empty` scan ignores it (`lowest_set()`) | rejected (assertion behind `idle_pick`) | verifies |
 | M4 | under a floor, the `Empty` scan finds nothing (`lowest_set_from(usize::MAX)`) | rejected (assertion behind `idle_pick`) | verifies |
 | M5 | the `Purged` floor is always lifted (`if true`) | verifies (stated above) | verifies |
+
+## A refill takes Empty slabs in ascending order (over the sets read)
+
+The previous section proves which idle slab one `next_slab` call
+returns. `ClassState::plan_at` calls it once per idle pick of a lock
+hold (up to `MAX_PICKS` picks, while slots remain wanted), so a hold can
+take several idle slabs. Before chainguard-project-theseus/challoc#965,
+nothing said that `next_slab` takes the slab it returns out of the
+`Empty` set, or that `take` leaves that set alone, so the per-call
+statement did not compose: nothing ruled out a hold taking the same
+`Empty` slab twice, or a lower `Empty` slab after a higher one.
+
+**Statement.**
+
+```rust
+// class/mod.rs
+spec fn taken_in(p: Seq<Pick>, lo: int, hi: int, x: nat) -> bool {  // opaque
+    exists|j: int| lo <= j < hi && p[j].slab == x
+}
+
+spec fn idle_ordered(e0: Set<nat>, e1: Set<nat>, p: Seq<Pick>, lo: int, m: int, np: int, floor: int) -> bool {  // opaque
+    &&& 0 <= lo
+    &&& 0 <= m
+    &&& lo + m <= np <= p.len()
+    &&& forall|i: int| 0 <= i < lo ==> p[i].state == State::Active
+    &&& forall|i: int| lo <= i < lo + m ==> e0.contains(p[i].slab) && floor <= p[i].slab && !e1.contains(p[i].slab)
+        && p[i].state == State::Empty
+    &&& forall|i: int| lo + m <= i < np ==> p[i].state != State::Empty
+    &&& forall|i: int, j: int| lo <= i < j < lo + m ==> p[i].slab < p[j].slab
+    &&& forall|x: nat| e1.contains(x) ==> e0.contains(x)
+    &&& forall|x: nat, i: int| e1.contains(x) && floor <= x && lo <= i < lo + m ==> p[i].slab < x
+    &&& forall|x: nat| e0.contains(x) && floor <= x && !e1.contains(x) ==> taken_in(p, lo, lo + m, x)
+    &&& lo + m < np ==> none_from(e1, floor)
+}
+
+fn next_slab(&self, g: &mut Inner, floor: usize, ..) -> (r: Option<usize>)
+    ensures
+        r matches Some(s) ==> (final(g).st(s) == State::Empty) == lowest_from(old(g).empty.map@, floor, s),
+        final(g).empty.map@ == match r {
+            Some(s) => if lowest_from(old(g).empty.map@, floor, s) { old(g).empty.map@.remove(s) } else { old(g).empty.map@ },
+            None => old(g).empty.map@,
+        },
+
+fn take(&self, g: &mut Inner, slab: usize, .., picks: &mut [Pick; MAX_PICKS], np: &mut usize, ..)
+    ensures
+        final(g).empty.map@ == old(g).empty.map@,
+        final(picks)[old(np)].state == old(g).st(slab),
+
+fn plan_at(&self, floor: usize, .., Tracked(scan): Tracked<&mut Ghost<PlanOrder>>, ..) -> (np: usize)
+    ensures
+        idle_ordered(final(scan)@.3, final(ex)@.0.empty.map@, final(picks)@, final(scan)@.1, final(scan)@.4, np as int, floor as int),
+
+proof fn theorem_idle_empty_ascending(e0, e1, p, lo, m, np, floor)
+    requires
+        idle_ordered(e0, e1, p, lo, m, np, floor),
+    ensures
+        forall|i: int| 0 <= i < lo ==> p[i].state == State::Active,
+        forall|i: int| 0 <= i < np ==> ((p[i].state == State::Empty) == (lo <= i < lo + m)),
+        forall|i: int| lo <= i < lo + m ==> e0.contains(p[i].slab) && floor <= p[i].slab,
+        forall|i: int, j: int| lo <= i < j < lo + m ==> p[i].slab < p[j].slab,
+        forall|i: int, x: nat| lo <= i < lo + m && e0.contains(x) && floor <= x < p[i].slab ==> taken_in(p, lo, i, x),
+        lo + m < np ==> forall|x: nat| e0.contains(x) && floor <= x ==> taken_in(p, lo, lo + m, x),
+```
+
+In words, for one lock hold of a refill, with `lo` its partial-scan
+picks (`scan@.1`, the previous-but-one section), `e0` the `Empty` set
+when its idle picks began (`scan@.3`), `m` how many idle picks were
+`Empty` slabs (`scan@.4`) and `e1` the `Empty` set of the lock value it
+released:
+- the partial-scan picks `0 .. lo` are recorded `Active`, and the picks
+  whose recorded `state` (the slab's state when `take` selected it) is
+  `Empty` are exactly `lo .. lo + m`, over all of the hold's picks:
+  every `Empty` pick comes after the scan's and before every `Purged`
+  or fresh one;
+- those picks are slabs of `e0` at or above the fork floor, in strictly
+  ascending order (so no slab twice);
+- below each of them, from the floor, every slab of `e0` is an earlier
+  one of them: no `Empty` slab is skipped;
+- an idle pick after them (a `Purged` or fresh slab) comes only once
+  every slab of `e0` from the floor is one of them.
+
+The proof: `next_slab` now ensures that the `Empty` set loses exactly
+the slab it returns when that slab was the lowest `Empty` one from the
+floor (`clear` of the bitmap), and is otherwise unchanged (the `Purged`
+branch does not touch it, and `next_fresh_slab` already said so), and
+that the slab is still `Empty` exactly when it came from that set (the
+lock invariant ties the `Empty` set to the `Empty` state); `take`
+ensures it leaves the `Empty` set unchanged and records the slab's
+state in its pick (`state_locked`). The partial scan's loop carries
+`picks_active` (every pick so far recorded `Active`: the scan takes only
+partial slabs, which the lock invariant makes `Active`), and
+`lemma_idle_start` turns it into `idle_ordered`'s first clause, which
+pins `lo` by the picks. `plan_at`'s idle loop
+carries `idle_ordered` from `lemma_idle_start` (no idle pick) through
+`lemma_idle_step` (one pick, over `next_slab`'s `idle_pick`), and its
+early return in the partial scan states it with no idle pick. Both
+specs are opaque, so `plan_at` carries them as atoms and verifies within
+its rlimit as before.
+
+**Premises (seams).** None beyond the common ones. No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- One lock hold, over the sets it read under the class lock; a refill's
+  second hold (the retry without a floor in `plan`) starts again.
+- `Empty` slabs only. The order of the `Purged` picks across a hold is
+  not stated: which purged floor a call uses depends on
+  `purge::purged_is_zero()`, which has no spec here (previous section,
+  M5), and a call that lifts it may return a slab below the one an
+  earlier call returned from the floor. That a fresh pick is in neither
+  set holds per call only (previous section).
+- `lo`, `e0` and `m` are ghost outputs. `lo` and `m` are pinned by the
+  picks: the picks before `lo` are recorded `Active`, and the picks
+  recorded `Empty` are exactly `lo .. lo + m`, so a hold whose picks
+  are `[slab 5, slab 2]`, both recorded `Empty`, satisfies the contract
+  for no choice of `lo` and `m` (review of #966: before the `Active`
+  clause, `lo = 1` admitted it). `e0` is
+  pinned by nothing outside `plan_at`'s body: a caller gets that some
+  set `e0` satisfies `idle_ordered`, and the "no `Empty` slab is
+  skipped" and "every slab of `e0` from the floor" items are about that
+  set. They hold trivially for an `e0` with no slab from the floor, so
+  they say nothing beyond the first two items unless the caller knows
+  the `Empty` set the hold read. The first two items (which picks are
+  `Empty`, that they come first, sit at or above the floor and ascend)
+  are about the picks alone. Mutants M1 and M2 die inside `plan_at`'s
+  body (on `lemma_idle_step`'s precondition), where `e0` is the set
+  read.
+- The picks past the first `m` are not stated to be outside `e0`; what
+  is stated is that every slab of `e0` from the floor was already taken
+  by then.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures`, a widened ghost tuple and proof blocks only).
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module class`,
+or `class::fresh` for M3, on the PR's tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| M1 | the idle loop drops the floor once a pick is made (`if np > 0 { 0 } else { floor }`) | rejected (`lemma_idle_step` precondition: `idle_pick` at the hold's floor) | verifies |
+| M2 | the idle loop raises the floor by one once a pick is made (`floor.saturating_add(1)`), skipping an `Empty` slab at the floor | rejected (`lemma_idle_step` precondition) | verifies |
+| M3 | under a floor, `next_slab` leaves the `Empty` slab it returns in the `Empty` set | rejected (the new `Empty`-set `ensures`, and `ready`) | rejected (`ready`) |
+| M4 | `take` records `state: State::Active` in its pick instead of the state it read | rejected (`take`'s new `state` postcondition) | verifies |
+| M5 | `idle_ordered` drops its clause that the picks before `lo` are recorded `Active` (the `[slab 5, slab 2]` case with `lo = 1` from review) | rejected (`theorem_idle_empty_ascending`'s first two postconditions) | not applicable (no such clause) |
 
 ## Interface contract
 
