@@ -31,7 +31,7 @@ groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
 | The C boundary and system calls | 8, 21, 32, 42, 45, 46; secure-exec configuration; interface contract |
 | Zeroing and usable size | 6, 12 |
-| Statistics | 22, 27, 35; stored totals coherence; statistics readers; counted arenas kept; reader stamps |
+| Statistics | 22, 27, 35; stored totals coherence; statistics readers; counted arenas kept; reader stamps; stamp epoch numbers |
 
 ## How to read a section
 
@@ -169,6 +169,10 @@ leave out (theorem 33). Remaining work is tracked in
   `stats::snapshot`'s and `stats::arena_stats_all_into`'s `ensures`
   (`stamp_ok`, `merged_rec`), `StoredSnapshot`'s `LockSpec` impl
   (`recorded`) and `stats::lemma_stamps_agree`, `stats.rs`.
+- **Stamp epoch numbers** ([Statistics stamps name their epoch number, and `epoch` returns one](#statistics-stamps-name-their-epoch-number-and-epoch-returns-one-epoch-snapshot-and-arena_stats_all_into)):
+  `stats::epoch`'s, `stats::snapshot`'s and
+  `stats::arena_stats_all_into`'s `ensures` (`stamp_ok`'s
+  `rec_numbered`, `stamp_not_older`) and `recorded`, `stats.rs`.
 
 ## Configuration
 
@@ -6062,8 +6066,9 @@ retained.
 **Statement.** Two parts; the first is proved, and of the second the
 arenas-and-totals half is proved at the process statistics lock's
 invariant ([its own section](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant))
-and the epoch-number half holds by construction (read from the code,
-not stated as an `ensures`).
+and the epoch-number half is `stats::epoch`'s `ensures` up to the
+mallctl arm, which is read from the code
+([stamp epoch numbers](#statistics-stamps-name-their-epoch-number-and-epoch-returns-one-epoch-snapshot-and-arena_stats_all_into)).
 
 1. **Identities** (proved). Every `ArenaStats` an arena stores, and
    every one `collect_arena`, `collect_into` and `collect_all` compute,
@@ -6129,11 +6134,14 @@ not stated as an `ensures`).
      new collection beside the old totals. The lock order this needs
      (the process statistics lock ranked below the class locks) is
      theorem 33's.
-   - The epoch number (by construction): the
+   - The epoch number (proved up to the mallctl arm): the
      `Epoch` arm of `mallctl::ctl` reads back, on a write, the number
      `stats::epoch` returned, which is the epoch number its own call
-     stored (`collect_into` stores and returns one `Snapshot` under one
-     hold of the snapshot lock), and on a read alone
+     stored: `epoch`'s `ensures` say it is the number in the record
+     that call stored in the process statistics history, at a
+     generation above any stamp the caller held
+     ([stamp epoch numbers](#statistics-stamps-name-their-epoch-number-and-epoch-returns-one-epoch-snapshot-and-arena_stats_all_into));
+     that the arm returns it unchanged is read from the code. On a read alone
      `stats::snapshot(shared).epoch`. The test
      `api::mallctl::tests::concurrent_epoch_writes_read_back_their_own_numbers`
      (four threads, 2000 epoch writes each, every number read back
@@ -6229,7 +6237,9 @@ for `k <= 256`.
   zeros and each epoch counts every arena the last one counted, both
   in the same invariant
   ([counted arenas kept](#each-epoch-counts-every-arena-the-last-one-counted-and-the-rest-store-zeros-at-the-process-statistics-locks-invariant));
-  the epoch-number half is read from the code.
+  the epoch-number half is `stats::epoch`'s `ensures`, with only the
+  mallctl arm's read-back read from the code
+  ([stamp epoch numbers](#statistics-stamps-name-their-epoch-number-and-epoch-returns-one-epoch-snapshot-and-arena_stats_all_into)).
   `snapshot` and `arena_stats_all_into` check their results against it
   in their bodies
   ([readers](#the-statistics-readers-check-their-figures-against-the-held-authority-snapshot-and-arena_stats_all_into)),
@@ -13006,11 +13016,13 @@ name one record.
 **Scope and where the statement is weaker than the code.**
 - A caller that reads `snapshot` and then `arena_stats_all_into` gets
   two stamps, but nothing says they share a generation: an `epoch` may
-  run between the two calls, and no `ensures` relates the generation
-  to the runtime epoch number (`Snapshot::epoch` wraps at `2^64`; the
-  generation does not). The two results are coherent only when the
-  generations are equal (`lemma_stamps_agree`), which the caller
-  cannot test.
+  run between the two calls. In this section no `ensures` relates the
+  generation to the runtime epoch number (`Snapshot::epoch` wraps at
+  `2^64`; the generation does not). The two results are coherent only
+  when the generations are equal (`lemma_stamps_agree`), which the
+  caller cannot test from the numbers alone; the next section ties
+  the number to the generation modulo 2^64
+  ([stamp epoch numbers](#statistics-stamps-name-their-epoch-number-and-epoch-returns-one-epoch-snapshot-and-arena_stats_all_into)).
 - A stamp's record is some stored record, not proved to be the latest
   at the time of the return. The lock is released before the reader
   returns, so a later one may exist by then.
@@ -13045,6 +13057,107 @@ S3 and S4 survive on main: there the readers' checks are `assert`s in
 their bodies, and a change after them is constrained only by the
 `ensures` (the result's `index`; `Snapshot::inv`, which all-zero
 totals satisfy).
+
+## Statistics stamps name their epoch number, and `epoch` returns one (`epoch`, `snapshot` and `arena_stats_all_into`)
+
+The section above gives `snapshot` and `arena_stats_all_into` a stamp
+of the record their result comes from, but no `ensures` ties the
+stamp's generation to the runtime epoch number, and `epoch` returns
+none. This section closes both: every record carries its generation's
+epoch number, `epoch` hands back the stamp of the record it stored,
+and a reader never returns a stamp older than one the caller handed
+in.
+
+**Statement.** `recorded` (the lock invariant) gains
+`rec_numbered(self.generation@, self.stamp@.value())`, and `stamp_ok`
+gains it per stamp:
+
+```rust
+// stats.rs
+pub open spec fn rec_numbered(k: nat, r: StoredRec) -> bool {
+    r.0.epoch as int == k as int % 0x1_0000_0000_0000_0000
+}
+
+pub open spec fn stamp_ok(shared: &Shared, st: Stamp) -> bool {
+    &&& st.id() == stats_hist_loc(shared)
+    &&& rec_coherent(st.value())
+    &&& rec_numbered(st.key(), st.value())
+}
+
+pub open spec fn stamp_not_older(shared: &Shared, old: Stamp, new: Stamp) -> bool {
+    old.id() == stats_hist_loc(shared) ==> old.key() <= new.key()
+}
+
+pub fn epoch(shared: &Shared, Tracked(fx): .., Tracked(st): Tracked<&mut Stamp>, ..) -> (r: Option<u64>)
+    ensures
+        ..,
+        r is Some ==> stamp_ok(shared, *final(st)) && final(st).value().0.epoch == r->Some_0,
+        r is Some ==> (old(st).id() == stats_hist_loc(shared) ==> old(st).key() < final(st).key()),
+        r is None ==> *final(st) == *old(st),
+
+pub fn snapshot(..) -> (r: Snapshot)
+    ensures .., stamp_not_older(shared, *old(st), *final(st)),
+
+pub fn arena_stats_all_into(..)
+    ensures .., stamp_not_older(shared, *old(st), *final(st)),
+```
+
+`collect_into` takes the stamp too: when it stores, it ensures what
+`epoch` does of the snapshot it returns; when it does not (`collect`),
+the stamp is unchanged. Generation 0's record is the initial value,
+whose epoch number is 0. A store moves the generation from `g` to
+`g + 1` and the epoch number with `fig_add64(epoch, 1)`, which is
+`g + 1` modulo 2^64 (the solver discharges this from `fig_sum64`'s
+wrapping definition, visible in `stats.rs`; no lemma is needed). A stamp the caller hands
+in at the history's location is a recorded entry (vstd's
+`GhostPersistentPointsTo::agree` against the history's authority), so
+its generation is at most the current one (`recorded`), and below the
+one a store inserts.
+
+In words: the epoch number `epoch` returns is the number in the
+coherent record that call stored, and that record's generation is
+above every stamp of the history the caller held before. A reader's
+stamp is never older than one the caller held before, and its record's
+epoch number is its generation modulo 2^64. Theorem 27's epoch-number
+half ("`mallctl("epoch")` returns the number its own refresh stored")
+is `epoch`'s `ensures` up to the mallctl arm, which reads back the
+value `epoch` returned.
+
+**Premises (seams).** None added. vstd's `GhostPersistentPointsTo::agree`;
+the premises of the sections above.
+
+**Scope and where the statement is weaker than the code.**
+- The epoch number is the generation modulo 2^64, so two stamps with
+  equal epoch numbers share a generation only if their generations
+  differ by less than 2^64, which nothing bounds. Equal generations
+  still need `lemma_stamps_agree` on the stamps themselves; the
+  runtime number alone does not give it.
+- The ordering holds only along one chain of stamps: a caller that
+  passes each returned stamp into its next call gets nondecreasing
+  generations (strictly increasing across `epoch`s). The mallctl
+  callers do not keep stamps between calls (each passes
+  `spare_stamp()`, which is not at the history's location), so for
+  them the ordering `ensures` is vacuous; distinct numbers across
+  concurrent `mallctl("epoch")` writers stay checked by the test
+  theorem 27 names.
+- `Arena::stats_into` still returns no stamp.
+- Machine code: ghost only. The new arguments are `Tracked`, erased
+  in the build.
+
+**Mutations** (`cargo verus focus --locked -- --verify-module stats`,
+on this tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| E1 | `collect_into`'s store does not hand back the new stamp | rejected (`collect_into`'s `stamp_ok` and `value().0 == r` `ensures`) | n/a (no stamp) |
+| E2 | `collect_into`'s store counts the epoch by 2 | rejected (`recorded` at the store: `rec_numbered`) | verifies |
+| E3 | `epoch` returns `Some(fig_add64(e, 1))` | rejected (`epoch`'s `value().0.epoch == r->Some_0`) | verifies |
+| E4 | `snapshot` skips the `agree` of the caller's stamp | rejected (`stamp_not_older`) | n/a (no stamp) |
+| E5 | `recorded` drops `rec_numbered` | rejected (`stamp_ok` in `snapshot` and `arena_stats_all_into`) | n/a (no history) |
+| E6 | `collect_into`'s store skips the `agree` of the caller's stamp | rejected (the in-body bound on the caller's generation) | n/a (no stamp) |
+
+E2 and E3 survive on main: there nothing states the epoch number's
+value.
 
 ## Interface contract
 
