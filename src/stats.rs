@@ -44,8 +44,9 @@
 //! (`concurrent_epochs_leave_arenas_summing_to_the_totals`).
 
 use crate::arena::Arena;
+use crate::arena::{Floor, Published};
 #[cfg(verus_keep_ghost)]
-use crate::arena::MAX_ARENAS;
+use crate::arena::{MAX_ARENAS, process_floor_loc, process_pub_loc};
 use crate::class::ClassState;
 use crate::heap::Shared;
 use crate::huge::{GUARD_PAGES, HugeStats};
@@ -774,6 +775,14 @@ pub struct StoredSnapshot {
     /// ascending: those the last epoch found.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub counted: Ghost<Seq<int>>,
+    /// Ghost (no bytes): the registry's persistent record of each
+    /// counted arena ([`Published`]), by index.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub pubs: Tracked<Map<int, &'static Published>>,
+    /// Ghost (no bytes): a floor record of the arena count the last epoch
+    /// read ([`Floor`]), none before the first.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub floor: Tracked<Option<&'static Floor>>,
 }
 
 impl StoredSnapshot {
@@ -782,10 +791,38 @@ impl StoredSnapshot {
     /// once, ascending) summed in index order ([`totals_sum`], wrapping as
     /// [`fig_add`] does), each arena's figures as the authority records
     /// them, which are the figures that arena's statistics lock stores
-    /// ([`StoredArena`]'s points-to agrees with it).
+    /// ([`StoredArena`]'s points-to agrees with it). Every counted arena
+    /// has its registry record and is below the count's floor record
+    /// ([`counted_kept`]), so the next epoch counts it again; and every
+    /// other index's figures are all zero ([`uncounted_empty`]).
     pub open spec fn coherent(self) -> bool {
-        sums_stored(self.s, self.auth@@, self.counted@)
+        &&& sums_stored(self.s, self.auth@@, self.counted@)
+        &&& counted_kept(self.pubs@, self.floor@, self.counted@)
+        &&& uncounted_empty(self.auth@@, self.counted@)
     }
+}
+
+/// Every index `counted` names has its arena's persistent record in the
+/// process registry (`p`) and is a key of the count's floor record `f`
+/// (below a count the registry had), which is the process registry's.
+pub open spec fn counted_kept(p: Map<int, &'static Published>, f: Option<&'static Floor>, counted: Seq<int>) -> bool {
+    &&& f matches Some(w) ==> w.id() == process_floor_loc()
+    &&& forall|j: int|
+        0 <= j < counted.len() ==> {
+            &&& p.contains_key(#[trigger] counted[j])
+            &&& p[counted[j]].id() == process_pub_loc()
+            &&& p[counted[j]].key() == counted[j]
+            &&& f matches Some(w) && w@.contains_key(counted[j])
+        }
+}
+
+/// Every arena index that `counted` does not name has the all-zero
+/// figures [`ArenaStats::empty_spec`] in `m`: no epoch stored any.
+pub open spec fn uncounted_empty(m: Map<int, ArenaStats>, counted: Seq<int>) -> bool {
+    forall|k: int|
+        #![trigger m[k]]
+        #![trigger counted.contains(k)]
+        0 <= k < MAX_ARENAS && !counted.contains(k) ==> m.contains_key(k) && m[k] == ArenaStats::empty_spec(k as u16)
 }
 
 /// `counted` names `s.narenas` arena indices, each once, ascending, each
@@ -1182,6 +1219,27 @@ pub(crate) fn arena_at(shared: &Shared, i: usize) -> (r: Option<&Arena>)
     shared.arenas.get_existing(i as u16)
 }
 
+/// [`arena_at`] for the scans that take the process statistics lock, the
+/// same code, with the arena's persistent registry record ([`Published`])
+/// and, given the record of an arena the last epoch counted (`seen`),
+/// that the arena is found: an arena once published stays published
+/// (`Arenas::get_existing_seen`).
+fn arena_seen<'a>(shared: &'a Shared, i: usize, Tracked(seen): Tracked<Option<&'static Published>>) -> (r: Option<(&'a Arena, Tracked<&'static Published>)>)
+    requires
+        i < MAX_ARENAS,
+        shared.wf(),
+        seen matches Some(w) ==> w.id() == process_pub_loc() && w.key() == i,
+    ensures
+        r matches Some((a, w)) ==> a.spec_index() as int == i && w@.id() == process_pub_loc() && w@.key() == i,
+        r matches Some((a, w)) ==> a.spec_stats_loc() == shared.arenas.spec_stats_loc() && a.spec_stats_key() == i,
+        seen is Some ==> r is Some,
+{
+    proof {
+        shared.lemma_stats_loc();
+    }
+    shared.arenas.get_existing_seen(i as u16, Tracked(seen))
+}
+
 /// The current figures of `arena`. `huge` and `meta` are the process-wide
 /// counters the caller read (they are folded into arena 0 only).
 ///
@@ -1426,6 +1484,12 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// snapshot never sees the arenas of a collection whose totals are not
 /// stored yet. It nests outside the class, slab table, huge, metadata and
 /// per-arena statistics locks the collection takes (design 9).
+///
+/// It reads the count with the stored epoch's floor record and scans each
+/// index the stored epoch counted with that arena's registry record, so
+/// it finds and counts every arena that epoch counted
+/// ([`StoredSnapshot::coherent`]'s [`counted_kept`] and
+/// [`uncounted_empty`] hold again when it stores).
 fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),
@@ -1458,12 +1522,23 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
     let meta = shared.meta.stats(Tracked(&mut under));
     let mut totals = Totals::EMPTY;
     let mut narenas: u32 = 0;
-    let n = shared.arenas.count();
+    // The count, no lower than the last epoch's (its floor record): every
+    // arena that epoch counted is below it.
+    let tracked prev: Option<&'static Floor> = *c.floor.borrow();
+    proof {
+        shared.lemma_wf();
+    }
+    let (n, Tracked(fl)) = shared.arenas.count_seen(Tracked(prev));
+    // Ghost: the registry record of each arena this scan finds.
+    let tracked mut npubs: Map<int, &'static Published> = Map::tracked_empty();
     let ghost mut reads = Seq::<ArenaStats>::empty();
     let ghost mut pages = Seq::<int>::empty();
     proof {
         lemma_reads_empty();
         assert(sum_mapped(reads) == 0);
+        assert forall|j: int| 0 <= j < c0.counted@.len() implies #[trigger] c0.counted@[j] < n by {
+            assert(prev matches Some(w) && w@.contains_key(c0.counted@[j]));
+        }
     }
     for i in 0..n as usize
         invariant
@@ -1496,8 +1571,42 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             store ==> forall|j: int|
                 0 <= j < reads.len() ==> c.auth@@.contains_key(#[trigger] reads[j].index as int) && c.auth@@[reads[j].index
                     as int] == reads[j],
+            // And no other index's figures.
+            store ==> same_outside(c.auth@@, c0.auth@@, ids_of(reads)),
+            c.pubs == c0.pubs,
+            c.floor == c0.floor,
+            c0.coherent(),
+            forall|j: int| 0 <= j < c0.counted@.len() ==> #[trigger] c0.counted@[j] < n,
+            shared.arenas.is_process() ==> fl.id() == process_floor_loc(),
+            fl@.dom() == Set::range(0, n as int),
+            // Every arena the last epoch counted below `i` is found again.
+            forall|j: int|
+                0 <= j < c0.counted@.len() && #[trigger] c0.counted@[j] < i ==> ids_of(reads).contains(c0.counted@[j]),
+            // The record of each arena found.
+            forall|j: int|
+                0 <= j < reads.len() ==> {
+                    &&& npubs.contains_key(#[trigger] reads[j].index as int)
+                    &&& npubs[reads[j].index as int].id() == process_pub_loc()
+                    &&& npubs[reads[j].index as int].key() == reads[j].index as int
+                },
     {
-        if let Some(arena) = arena_at(shared, i) {
+        // The record of the arena at `i` if the last epoch counted it.
+        let tracked mut seen: Option<&'static Published> = None;
+        proof {
+            if c0.counted@.contains(i as int) {
+                let j = choose|j: int| 0 <= j < c0.counted@.len() && c0.counted@[j] == i as int;
+                assert(c0.pubs@.contains_key(c0.counted@[j]));
+                seen = Some(*c.pubs.borrow().tracked_borrow(i as int));
+            }
+        }
+        let found = arena_seen(shared, i, Tracked(seen));
+        proof {
+            if found is None {
+                assert(!c0.counted@.contains(i as int));
+            }
+        }
+        if let Some((arena, tw)) = found {
+            let Tracked(w) = tw;
             let tracked mut pg = Ghost(0int);
             collect_arena_with(shared, arena, &huge, &meta, tmp, Tracked(&mut pg), Tracked(&mut under));
             let a: &ArenaStats = tmp;
@@ -1511,9 +1620,31 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             }
             totals.add_arena(a);
             let ghost reads0 = reads;
+            let ghost auth0 = c.auth@@;
             proof {
                 reads = reads.push(*a);
                 pages = pages.push(p);
+                npubs.tracked_insert(i as int, w);
+                lemma_ids_push(reads0, *a);
+                assert forall|j: int| 0 <= j < reads.len() implies {
+                    &&& npubs.contains_key(#[trigger] reads[j].index as int)
+                    &&& npubs[reads[j].index as int].id() == process_pub_loc()
+                    &&& npubs[reads[j].index as int].key() == reads[j].index as int
+                } by {
+                    if j < reads0.len() {
+                        assert(reads[j] == reads0[j]);
+                        assert(reads0[j].index < i);
+                    }
+                }
+                assert forall|j: int| 0 <= j < c0.counted@.len() && #[trigger] c0.counted@[j] < i + 1 implies ids_of(
+                    reads,
+                ).contains(c0.counted@[j]) by {
+                    if c0.counted@[j] < i {
+                        assert(ids_of(reads0).contains(c0.counted@[j]));
+                    } else {
+                        assert(ids_of(reads)[reads0.len() as int] == i);
+                    }
+                }
             }
             narenas += 1;
             if store {
@@ -1526,6 +1657,24 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
                             assert(reads[j] == reads0[j]);
                             assert(reads0[j].index < i);
                         }
+                    }
+                    assert forall|k: int|
+                        0 <= k < MAX_ARENAS && !#[trigger] ids_of(reads).contains(k) implies c.auth@@.contains_key(k)
+                        == c0.auth@@.contains_key(k) && c.auth@@[k] == c0.auth@@[k] by {
+                        assert(ids_of(reads).contains(k) <==> (ids_of(reads0).contains(k) || k == i));
+                        assert(!ids_of(reads0).contains(k));
+                        assert(auth0.contains_key(k) == c0.auth@@.contains_key(k) && auth0[k] == c0.auth@@[k]);
+                    }
+                    assert(same_outside(c.auth@@, c0.auth@@, ids_of(reads)));
+                }
+            }
+        } else {
+            proof {
+                assert forall|j: int| 0 <= j < c0.counted@.len() && #[trigger] c0.counted@[j] < i + 1 implies ids_of(
+                    reads,
+                ).contains(c0.counted@[j]) by {
+                    if c0.counted@[j] == i {
+                        assert(c0.counted@.contains(i as int));
                     }
                 }
             }
@@ -1546,6 +1695,28 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
         c.s.meta = meta;
         proof {
             c.counted = Ghost(ids_of(reads));
+            *c.pubs.borrow_mut() = npubs;
+            *c.floor.borrow_mut() = Some(vstd::modes::tracked_static_ref(fl));
+            assert forall|k: int|
+                0 <= k < MAX_ARENAS && !c.counted@.contains(k) implies c.auth@@.contains_key(k) && #[trigger] c.auth@@[k]
+                == ArenaStats::empty_spec(k as u16) by {
+                if c0.counted@.contains(k) {
+                    let j = choose|j: int| 0 <= j < c0.counted@.len() && c0.counted@[j] == k;
+                    assert(c0.counted@[j] < n);
+                }
+                assert(c.auth@@.contains_key(k) == c0.auth@@.contains_key(k) && c.auth@@[k] == c0.auth@@[k]);
+            }
+            assert forall|j: int| 0 <= j < c.counted@.len() implies {
+                &&& c.pubs@.contains_key(#[trigger] c.counted@[j])
+                &&& c.pubs@[c.counted@[j]].id() == process_pub_loc()
+                &&& c.pubs@[c.counted@[j]].key() == c.counted@[j]
+                &&& c.floor@ matches Some(w) && w@.contains_key(c.counted@[j])
+            } by {
+                assert(c.counted@[j] == reads[j].index as int);
+                assert(fl@.dom().contains(c.counted@[j]));
+            }
+            assert(counted_kept(c.pubs@, c.floor@, c.counted@));
+            assert(uncounted_empty(c.auth@@, c.counted@));
             assert(stored_of(c.auth@@, c.counted@) =~= reads);
             assert(totals_exact(reads, pages, c.s.totals));
             assert(c.coherent());
@@ -1679,8 +1850,11 @@ pub fn arena_stats_into(shared: &Shared, index: u16, out: &mut ArenaStats, Track
 /// The body checks, before it releases the lock, that `out` is the merge,
 /// in index order, of the figures the held value's authority records for
 /// the arenas found ([`merged_stored`]), which are the figures each one's
-/// statistics lock stores when it is read (`Arena::add_stats_to`). The
-/// `ensures` does not export it, as in [`snapshot`].
+/// statistics lock stores when it is read (`Arena::add_stats_to`), and
+/// that the arenas found include every one the stored epoch counted,
+/// each other one with all-zero figures ([`counted_kept`],
+/// [`uncounted_empty`]). The `ensures` does not export it, as in
+/// [`snapshot`].
 pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
@@ -1704,7 +1878,18 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord):
     out.clear(crate::arena::ARENAS_ALL as u16);
     let ghost mut found = Seq::<int>::empty();
     let ghost mut steps = seq![*out];
-    let n = shared.arenas.count();
+    // The count, no lower than the stored epoch's (as in `collect_into`).
+    let tracked prev: Option<&'static Floor> = *c.floor.borrow();
+    proof {
+        shared.lemma_wf();
+        assert(c.coherent());
+    }
+    let (n, _) = shared.arenas.count_seen(Tracked(prev));
+    proof {
+        assert forall|j: int| 0 <= j < c.counted@.len() implies #[trigger] c.counted@[j] < n by {
+            assert(prev matches Some(w) && w@.contains_key(c.counted@[j]));
+        }
+    }
     for i in 0..n as usize
         invariant
             n as usize <= MAX_ARENAS,
@@ -1714,15 +1899,51 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord):
             under.top() == rank_stats(),
             c.auth@.id() == shared.arenas.spec_stats_loc(),
             c.auth@@ == m,
+            c.coherent(),
             merged_stored(m, found, steps, *out),
             forall|j: int| 0 <= j < found.len() ==> #[trigger] found[j] < i,
+            forall|j: int| 0 <= j < c.counted@.len() ==> #[trigger] c.counted@[j] < n,
+            // Every arena the stored epoch counted below `i` is found.
+            forall|j: int| 0 <= j < c.counted@.len() && #[trigger] c.counted@[j] < i ==> found.contains(c.counted@[j]),
     {
-        if let Some(arena) = arena_at(shared, i) {
+        // The record of the arena at `i` if the stored epoch counted it.
+        let tracked mut seen: Option<&'static Published> = None;
+        proof {
+            if c.counted@.contains(i as int) {
+                let j = choose|j: int| 0 <= j < c.counted@.len() && c.counted@[j] == i as int;
+                assert(c.pubs@.contains_key(c.counted@[j]));
+                seen = Some(*c.pubs.borrow().tracked_borrow(i as int));
+            }
+        }
+        let got = arena_seen(shared, i, Tracked(seen));
+        proof {
+            if got is None {
+                assert(!c.counted@.contains(i as int));
+                assert forall|j: int| 0 <= j < c.counted@.len() && #[trigger] c.counted@[j] < i + 1 implies found.contains(
+                    c.counted@[j],
+                ) by {
+                    if c.counted@[j] == i {
+                        assert(c.counted@.contains(i as int));
+                    }
+                }
+            }
+        }
+        if let Some((arena, _)) = got {
             let ghost o0 = *out;
             arena.add_stats_to(out, Tracked(c.auth.borrow()), Tracked(&mut under));
             proof {
                 let (f0, s0) = (found, steps);
                 found = found.push(i as int);
+                assert forall|j: int| 0 <= j < c.counted@.len() && #[trigger] c.counted@[j] < i + 1 implies found.contains(
+                    c.counted@[j],
+                ) by {
+                    if c.counted@[j] < i {
+                        let q = choose|q: int| 0 <= q < f0.len() && f0[q] == c.counted@[j];
+                        assert(found[q] == f0[q]);
+                    } else {
+                        assert(found[f0.len() as int] == i);
+                    }
+                }
                 steps = steps.push(*out);
                 assert forall|j: int| 0 <= j < found.len() implies #[trigger] steps[j].is_plus(
                     m[found[j]],
@@ -1749,6 +1970,13 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord):
     }
     proof {
         assert(merged_stored(m, found, steps, *out));
+        // The arenas found include every one the stored epoch counted,
+        // and each other one found has all-zero figures.
+        assert(forall|j: int| 0 <= j < c.counted@.len() ==> found.contains(#[trigger] c.counted@[j]));
+        assert(forall|j: int|
+            0 <= j < found.len() && !c.counted@.contains(#[trigger] found[j]) ==> m[found[j]] == ArenaStats::empty_spec(
+                found[j] as u16,
+            ));
     }
     published.unlock();
 }
@@ -2025,6 +2253,37 @@ pub open spec fn stored_of(m: Map<int, ArenaStats>, ids: Seq<int>) -> Seq<ArenaS
 /// The arena indices of `reads`, in order.
 pub open spec fn ids_of(reads: Seq<ArenaStats>) -> Seq<int> {
     Seq::new(reads.len(), |j: int| reads[j].index as int)
+}
+
+/// `m` and `m0` agree at every arena index that `ids` does not name.
+pub open spec fn same_outside(m: Map<int, ArenaStats>, m0: Map<int, ArenaStats>, ids: Seq<int>) -> bool {
+    forall|k: int|
+        0 <= k < MAX_ARENAS && !#[trigger] ids.contains(k) ==> m.contains_key(k) == m0.contains_key(k) && m[k] == m0[k]
+}
+
+/// [`ids_of`] one record longer: the indices so far, then the new one's.
+pub proof fn lemma_ids_push(reads: Seq<ArenaStats>, a: ArenaStats)
+    ensures
+        ids_of(reads.push(a)) == ids_of(reads).push(a.index as int),
+        forall|k: int| #[trigger] ids_of(reads.push(a)).contains(k) <==> (ids_of(reads).contains(k) || k == a.index as int),
+{
+    let (s0, s1) = (ids_of(reads), ids_of(reads.push(a)));
+    assert(s1 =~= s0.push(a.index as int));
+    assert forall|k: int| #[trigger] s1.contains(k) <==> (s0.contains(k) || k == a.index as int) by {
+        if s1.contains(k) {
+            let j = choose|j: int| 0 <= j < s1.len() && s1[j] == k;
+            if j < s0.len() {
+                assert(s0[j] == k);
+            }
+        }
+        if s0.contains(k) {
+            let j = choose|j: int| 0 <= j < s0.len() && s0[j] == k;
+            assert(s1[j] == k);
+        }
+        if k == a.index as int {
+            assert(s1[s0.len() as int] == k);
+        }
+    }
 }
 
 /// [`class_bytes`] of naturals is a natural.
