@@ -55,6 +55,9 @@ use crate::sys::thp_host::{Thp as Table, ThpSetting};
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
 use vstd::resource::Loc;
+#[cfg(verus_keep_ghost)]
+use vstd::resource::map::GhostPersistentPointsTo;
+use vstd::resource::map::{GhostMapAuth, GhostPersistentSubmap};
 use vstd::resource::set::{GhostPersistentSingleton, GhostPersistentSubset, GhostSetAuth};
 
 verus! {
@@ -361,10 +364,11 @@ exec static KERNEL_THP: AtomicU8 = AtomicU8::new(0);
 /// The reservations `never` covers, as made so far (`advise_reservation`):
 /// the class superblock and the metadata mapping of
 /// `layout::Regions::reserve_owning` (never the huge one, which follows the host),
-/// so [`force_never`] can advise them after the fact. `(addr, len)`, `len`
-/// 0 when unused. vstd atomics under an invariant ([`ResPred`], #975): a
-/// used slot's address and length are from reservations
-/// [`advise_reservation`] recorded, none of them [`Reservation::Huge`].
+/// so [`force_never`] can advise them after the fact. `(addr, len)`, both
+/// 0 when unused. vstd atomics under an invariant ([`ResPred`], #975,
+/// #977): a used slot was claimed for one reservation
+/// [`advise_reservation`] recorded, none of them [`Reservation::Huge`],
+/// and holds that reservation's address and, once stored, its length.
 pub const MAX_RESERVATIONS: usize = 4;
 exec static RESERVATIONS: Reservations
     ensures
@@ -388,10 +392,10 @@ exec static RESERVATIONS: Reservations
         perms.tracked_insert(3, (pa3, pl3));
     }
     let tracked (log, log_sub) = GhostSetAuth::<Recorded>::new(Set::empty());
-    let tracked (written, written_sub) = GhostSetAuth::<int>::new(Set::empty());
+    let tracked (claims, claims_sub) = GhostMapAuth::<int, Recorded>::new(Map::empty());
     let tracked inv = AtomicInvariant::new(
-        (ids, log.id(), written.id()),
-        (perms, log, log_sub.persist(), written, written_sub.persist()),
+        (ids, log.id(), claims.id()),
+        (perms, log, log_sub.persist(), claims, claims_sub.persist()),
         res_ns(),
     );
     proof {
@@ -419,61 +423,57 @@ pub open spec fn res_ns() -> int {
 }
 
 /// What [`ResPred`] is keyed by: the slots' identities (address, length),
-/// the location of the log of recorded reservations and that of the set
-/// of slots whose address is written.
+/// the location of the log of recorded reservations and that of the map
+/// of claimed slots.
 pub type ResKey = (Seq<(int, int)>, Loc, Loc);
 
 /// What [`RESERVATIONS`]' invariant holds: each slot's two permissions,
 /// the log's authority and a persistent copy of it (from which witnesses
-/// split), and the same pair for the set of slots whose address is
-/// written.
+/// split), and the same pair for the map from each claimed slot to the
+/// recorded reservation it was claimed for.
 pub type ResVal = (
     Map<int, (PermissionUsize, PermissionUsize)>,
     GhostSetAuth<Recorded>,
     GhostPersistentSubset<Recorded>,
-    GhostSetAuth<int>,
-    GhostPersistentSubset<int>,
+    GhostMapAuth<int, Recorded>,
+    GhostPersistentSubmap<int, Recorded>,
 );
 
 /// [`RESERVATIONS`]' invariant: no reservation in the log is
-/// [`Reservation::Huge`]; a slot whose address is written holds the
-/// address of a logged reservation; a slot with a nonzero length has its
-/// address written and holds the length of a logged reservation. Nothing
-/// leaves either set, so a witness split from one stays true.
+/// [`Reservation::Huge`], and each ends at or below
+/// `sys::pac::user_va_limit` (at most 2^48 by the trusted
+/// `axiom_user_va_limit`, so it does not wrap); a slot is claimed exactly when its address is
+/// nonzero, for a logged reservation whose address it holds; a slot with
+/// a nonzero length is claimed and holds the length of the reservation it
+/// was claimed for. Nothing leaves the log or the claims, and a claim
+/// never changes, so a witness split from either stays true.
 pub struct ResPred;
 
-/// A slot whose permissions and written mark are as in `v0` keeps
-/// [`slot_ok`] when the log only grows.
+/// A slot whose permissions and claim are as in `v0` keeps [`slot_ok`]
+/// when the log only grows.
 proof fn lemma_slot_kept(k: ResKey, v0: ResVal, v: ResVal, j: int)
     requires
         slot_ok(k, v0, j),
         v.0.contains_key(j),
         v.0[j] == v0.0[j],
         v0.1@ <= v.1@,
-        v.3@.contains(j) == v0.3@.contains(j),
+        v.3@.contains_key(j) == v0.3@.contains_key(j),
+        v0.3@.contains_key(j) ==> v.3@[j] == v0.3@[j],
     ensures
         slot_ok(k, v, j),
 {
-    if v0.3@.contains(j) {
-        let r = choose|r: Recorded| v0.1@.contains(r) && r.1 == v0.0[j].0.value();
-        assert(v.1@.contains(r));
-    }
-    if v0.0[j].1.value() != 0 {
-        let r = choose|r: Recorded| v0.1@.contains(r) && r.2 == v0.0[j].1.value();
-        assert(v.1@.contains(r));
-    }
 }
 
-/// [`ResPred`] at slot `i`: its permissions are the slot's, its address
-/// is a logged reservation's once written, and a nonzero length is a
-/// logged reservation's, with the address written.
+/// [`ResPred`] at slot `i`: its permissions are the slot's; it is
+/// claimed exactly when its address is nonzero, and then for a logged
+/// reservation with that address; a nonzero length is that reservation's.
 pub open spec fn slot_ok(k: ResKey, v: ResVal, i: int) -> bool {
     &&& v.0.contains_key(i)
     &&& v.0[i].0.id() == k.0[i].0
     &&& v.0[i].1.id() == k.0[i].1
-    &&& (v.3@.contains(i) ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.1 == v.0[i].0.value())
-    &&& (v.0[i].1.value() != 0 ==> v.3@.contains(i))
-    &&& (v.0[i].1.value() != 0 ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.2 == v.0[i].1.value())
+    &&& v.3@.contains_key(i) == (v.0[i].0.value() != 0)
+    &&& (v.3@.contains_key(i) ==> v.1@.contains(v.3@[i]) && v.3@[i].1 == v.0[i].0.value())
+    &&& (v.0[i].1.value() != 0 ==> v.3@.contains_key(i) && v.3@[i].2 == v.0[i].1.value())
 }
 
 impl InvariantPredicate<ResKey, ResVal> for ResPred {
@@ -486,7 +486,8 @@ impl InvariantPredicate<ResKey, ResVal> for ResPred {
         &&& v.3.id() == k.2
         &&& v.4.id() == k.2
         &&& v.4@ == v.3@
-        &&& forall|r: Recorded| #[trigger] v.1@.contains(r) ==> r.0 != Reservation::Huge
+        &&& forall|r: Recorded| #[trigger] v.1@.contains(r) ==>
+            r.0 != Reservation::Huge && r.1 + r.2 <= crate::sys::pac::user_va_limit()
     }
 }
 
@@ -511,12 +512,9 @@ impl Reservations {
             ResPred::inv(self.inv@.constant(), v),
             0 <= i < MAX_RESERVATIONS,
         ensures
-            v.0.contains_key(i),
+            slot_ok(self.inv@.constant(), v, i),
             v.0[i].0.id() == self.slots[i].0.id(),
             v.0[i].1.id() == self.slots[i].1.id(),
-            v.3@.contains(i) ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.1 == v.0[i].0.value(),
-            v.0[i].1.value() != 0 ==> v.3@.contains(i),
-            v.0[i].1.value() != 0 ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.2 == v.0[i].1.value(),
     {
         assert(slot_ok(self.inv@.constant(), v, i));
         assert(self.inv@.constant().0[i] == (self.slots[i].0.id(), self.slots[i].1.id()));
@@ -606,9 +604,9 @@ pub fn forced_by_limit(key: Key, limit: u64) -> (r: bool)
 /// read) and give the class and metadata reservations already made the
 /// `never` advice (the module doc; the huge reservation was never recorded
 /// and stays with the host's policy, as under a configured `never`).
-/// Proved (#975): each slot it advises has the address and length of
-/// reservations [`advise_reservation`] recorded, none of them the huge
-/// one ([`ResPred`]); the loads are vstd's (`SeqCst`).
+/// Proved (#975, #977): each slot it advises holds the address and the
+/// length of one reservation [`advise_reservation`] recorded, never the
+/// huge one ([`ResPred`]); the loads are vstd's (`SeqCst`).
 pub fn force_never()
     requires
         crate::sys::may_syscall(),
@@ -621,54 +619,48 @@ pub fn force_never()
             crate::sys::may_syscall(),
             s.wf(),
     {
-        // The length first: a nonzero one is a logged reservation's, and
-        // its slot's address is written (`ResPred`), which a witness
-        // keeps for the address's load below.
+        // The length first: a nonzero one is that of the reservation its
+        // slot was claimed for (`ResPred`), whose claim a witness keeps
+        // for the address's load below.
         let len;
-        let tracked mut owl: Option<GhostPersistentSingleton<Recorded>> = None;
-        let tracked mut owi: Option<GhostPersistentSingleton<int>> = None;
+        let tracked mut opc: Option<GhostPersistentPointsTo<int, Recorded>> = None;
         vstd::open_atomic_invariant!(s.inv.borrow() => v => {
             proof {
                 s.lemma_slot(v, i as int);
             }
-            let tracked (perms, log, log_all, written, written_all) = v;
+            let tracked (perms, log, log_all, claims, claims_all) = v;
             len = s.slots[i].1.load(Tracked(&perms.tracked_borrow(i as int).1));
             proof {
                 if len != 0 {
-                    let r = choose|r: Recorded| log@.contains(r) && r.2 == len;
-                    let tracked mut c = log_all.duplicate();
-                    let tracked w = c.split_singleton(r);
-                    assert(w@.0 != Reservation::Huge);
-                    owl = Some(w);
-                    let tracked mut d = written_all.duplicate();
-                    owi = Some(d.split_singleton(i as int));
+                    let tracked mut c = claims_all.duplicate();
+                    opc = Some(c.split_points_to(i as int));
                 }
-                v = (perms, log, log_all, written, written_all);
+                v = (perms, log, log_all, claims, claims_all);
             }
         });
         if len != 0 {
-            let tracked wl = owl.tracked_unwrap();
-            let tracked wi = owi.tracked_unwrap();
+            let tracked pc = opc.tracked_unwrap();
             let addr;
-            let tracked mut owa: Option<GhostPersistentSingleton<Recorded>> = None;
+            let tracked mut ow: Option<GhostPersistentSingleton<Recorded>> = None;
             vstd::open_atomic_invariant!(s.inv.borrow() => v => {
                 proof {
                     s.lemma_slot(v, i as int);
                 }
-                let tracked (perms, log, log_all, written, written_all) = v;
+                let tracked (perms, log, log_all, claims, claims_all) = v;
                 addr = s.slots[i].0.load(Tracked(&perms.tracked_borrow(i as int).0));
                 proof {
-                    wi.agree(&written);
-                    let r = choose|r: Recorded| log@.contains(r) && r.1 == addr;
+                    // The claim stands, so the address is its record's.
+                    pc.agree(&claims);
                     let tracked mut c = log_all.duplicate();
-                    let tracked w = c.split_singleton(r);
+                    let tracked w = c.split_singleton(pc.value());
                     assert(w@.0 != Reservation::Huge);
-                    owa = Some(w);
-                    v = (perms, log, log_all, written, written_all);
+                    assert(addr + len <= crate::sys::pac::user_va_limit());
+                    ow = Some(w);
+                    v = (perms, log, log_all, claims, claims_all);
                 }
             });
-            let tracked wa = owa.tracked_unwrap();
-            advise_nohugepage(addr, len, Ghost(s), Tracked(&wa), Tracked(&wl));
+            let tracked w = ow.tracked_unwrap();
+            advise_nohugepage(addr, len, Ghost(s), Tracked(&w));
         }
     }
 }
@@ -704,11 +696,18 @@ impl Reservation {
 /// THP, `MADV_NOHUGEPAGE`d here (the module doc); the huge reservation is
 /// neither (it follows the host's policy). Returns whether the advice was
 /// issued. A class or metadata reservation joins the log of
-/// [`RESERVATIONS`]' invariant ([`ResPred`]) before its slot's address
-/// and then its length are stored (vstd's `SeqCst` stores).
+/// [`RESERVATIONS`]' invariant ([`ResPred`]); then a free slot is
+/// claimed by a compare-and-exchange of its address from 0 to `addr`,
+/// and its claimant stores the length (vstd's `SeqCst` operations). A
+/// slot another recording claimed first is passed over. The address and
+/// the length are nonzero and the range ends below
+/// `sys::pac::user_va_limit`, as for every mapping (`reserved`).
 pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool
     requires
         crate::sys::may_syscall(),
+        addr != 0,
+        len != 0,
+        addr + len <= crate::sys::pac::user_va_limit(),
 {
     if kind.follows_host() {
         return false;
@@ -744,6 +743,8 @@ pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool
             s.wf(),
             w.id() == s.loc(),
             w@ == (kind, addr, len),
+            addr != 0,
+            addr + len <= crate::sys::pac::user_va_limit(),
             kind != Reservation::Huge,
             k == s.inv@.constant(),
         decreases MAX_RESERVATIONS - i,
@@ -756,79 +757,90 @@ pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool
             used = s.slots[i].1.load(Tracked(&v.0.tracked_borrow(i as int).1));
         });
         if used == 0 {
-            // The address, then the slot joins the set of written ones
-            // (`ResPred`), whose witness lets the length's store follow.
-            let tracked mut owi: Option<GhostPersistentSingleton<int>> = None;
+            // Claim the slot: its address from 0 to `addr` (a slot is
+            // claimed exactly when its address is nonzero, `ResPred`).
+            // Only the claimant stores the length, with the claim's
+            // witness, so the pair is one reservation's.
+            let claimed;
+            let tracked mut opc: Option<GhostPersistentPointsTo<int, Recorded>> = None;
             vstd::open_atomic_invariant!(s.inv.borrow() => v => {
                 proof {
                     s.lemma_slot(v, i as int);
                 }
                 let ghost v0 = v;
-                let tracked (mut perms, log, log_all, mut written, mut written_all) = v;
+                let tracked (mut perms, log, log_all, mut claims, mut claims_all) = v;
                 let tracked (mut pa, pl) = perms.tracked_remove(i as int);
-                s.slots[i].0.store(Tracked(&mut pa), addr);
+                claimed = s.slots[i].0.compare_exchange(Tracked(&mut pa), 0, addr);
                 proof {
                     w.agree(&log);
                     perms.tracked_insert(i as int, (pa, pl));
-                    if !written@.contains(i as int) {
-                        let tracked one = written.insert(i as int);
-                        written_all.combine_points_to(one.persist());
+                    if claimed.is_ok() {
+                        let tracked one = claims.insert(i as int, w@);
+                        claims_all.combine_points_to(one.persist());
+                        assert(claims_all@[i as int] == w@);
+                        let tracked mut c = claims_all.duplicate();
+                        let tracked pc = c.split_points_to(i as int);
+                        assert(pc.key() == i as int && pc.value() == w@);
+                        opc = Some(pc);
                     }
-                    let tracked mut c = written_all.duplicate();
-                    owi = Some(c.split_singleton(i as int));
-                    v = (perms, log, log_all, written, written_all);
-                    // Slot `i` now holds `addr`, the logged `w`'s; the
-                    // others are as they were.
+                    v = (perms, log, log_all, claims, claims_all);
+                    // Slot `i` is now claimed for the logged `w` and holds
+                    // its address, or is as it was; the others are as they
+                    // were.
                     assert forall|j: int| 0 <= j < MAX_RESERVATIONS implies #[trigger] slot_ok(k, v, j) by {
                         assert(slot_ok(k, v0, j));
-                        if j == i as int {
-                            assert(v.1@.contains(w@) && w@.1 == v.0[j].0.value());
-                            if v0.0[j].1.value() != 0 {
-                                let r = choose|r: Recorded| v0.1@.contains(r) && r.2 == v0.0[j].1.value();
-                                assert(v.1@.contains(r));
+                        if j != i as int {
+                            lemma_slot_kept(k, v0, v, j);
+                        } else if claimed.is_ok() {
+                            assert(v.0.contains_key(j));
+                            assert(v.0[j].0.id() == k.0[j].0);
+                            assert(v.0[j].1.id() == k.0[j].1);
+                            assert(v.0[j].0.value() == addr);
+                            assert(v.3@.contains_key(j));
+                            assert(v.3@[j] == w@ && v.1@.contains(w@));
+                            assert(v0.0[j].1.value() == 0);
+                        } else {
+                            assert(v.0[j].0.value() == v0.0[j].0.value());
+                            assert(v.0[j].1.value() == v0.0[j].1.value());
+                        }
+                    }
+                }
+            });
+            if claimed.is_ok() {
+                let tracked pc = opc.tracked_unwrap();
+                vstd::open_atomic_invariant!(s.inv.borrow() => v => {
+                    proof {
+                        s.lemma_slot(v, i as int);
+                    }
+                    let ghost v0 = v;
+                    let tracked (mut perms, log, log_all, claims, claims_all) = v;
+                    let tracked (pa, mut pl) = perms.tracked_remove(i as int);
+                    s.slots[i].1.store(Tracked(&mut pl), len);
+                    proof {
+                        pc.agree(&claims);
+                        perms.tracked_insert(i as int, (pa, pl));
+                        v = (perms, log, log_all, claims, claims_all);
+                        // Slot `i` now holds `len`, that of `w`, which it
+                        // is claimed for (`pc`); the others are as they were.
+                        assert forall|j: int| 0 <= j < MAX_RESERVATIONS implies #[trigger] slot_ok(k, v, j) by {
+                            assert(slot_ok(k, v0, j));
+                            if j != i as int {
+                                lemma_slot_kept(k, v0, v, j);
+                            } else {
+                                assert(v.3@[j] == w@ && w@.2 == v.0[j].1.value());
                             }
-                        } else {
-                            lemma_slot_kept(k, v0, v, j);
                         }
                     }
-                }
-            });
-            let tracked wi = owi.tracked_unwrap();
-            vstd::open_atomic_invariant!(s.inv.borrow() => v => {
-                proof {
-                    s.lemma_slot(v, i as int);
-                }
-                let ghost v0 = v;
-                let tracked (mut perms, log, log_all, written, written_all) = v;
-                let tracked (pa, mut pl) = perms.tracked_remove(i as int);
-                s.slots[i].1.store(Tracked(&mut pl), len);
-                proof {
-                    w.agree(&log);
-                    wi.agree(&written);
-                    perms.tracked_insert(i as int, (pa, pl));
-                    v = (perms, log, log_all, written, written_all);
-                    // Slot `i` now holds `len`, the logged `w`'s, and its
-                    // address is written (`wi`); the others are as they were.
-                    assert forall|j: int| 0 <= j < MAX_RESERVATIONS implies #[trigger] slot_ok(k, v, j) by {
-                        assert(slot_ok(k, v0, j));
-                        if j == i as int {
-                            assert(v.1@.contains(w@) && w@.2 == v.0[j].1.value());
-                            let r = choose|r: Recorded| v0.1@.contains(r) && r.1 == v0.0[j].0.value();
-                            assert(v.1@.contains(r));
-                        } else {
-                            lemma_slot_kept(k, v0, v, j);
-                        }
-                    }
-                }
-            });
-            break;
+                });
+                break;
+            }
         }
         i += 1;
     }
     if !is_never() {
         return false;
     }
-    advise_nohugepage(addr, len, Ghost(s), Tracked(&w), Tracked(&w))
+    advise_nohugepage(addr, len, Ghost(s), Tracked(&w))
 }
 
 /// Whether `never` is the policy in force: the key, or `always` forced to
@@ -841,28 +853,26 @@ pub fn is_never() -> bool {
 }
 
 /// `MADV_NOHUGEPAGE` on a reservation, counted; nothing on a kernel
-/// without THP. The witnesses are [`madvise_nohugepage`]'s.
+/// without THP. The witness is [`madvise_nohugepage`]'s.
 fn advise_nohugepage(
     addr: usize,
     len: usize,
     Ghost(s): Ghost<&Reservations>,
-    Tracked(wa): Tracked<&GhostPersistentSingleton<Recorded>>,
-    Tracked(wl): Tracked<&GhostPersistentSingleton<Recorded>>,
+    Tracked(w): Tracked<&GhostPersistentSingleton<Recorded>>,
 ) -> bool
     requires
         crate::sys::may_syscall(),
         s.wf(),
-        wa.id() == s.loc(),
-        wl.id() == s.loc(),
-        wa@.0 != Reservation::Huge,
-        wl@.0 != Reservation::Huge,
-        wa@.1 == addr,
-        wl@.2 == len,
+        w.id() == s.loc(),
+        w@.0 != Reservation::Huge,
+        w@.1 == addr,
+        w@.2 == len,
+        addr + len <= crate::sys::pac::user_va_limit(),
 {
     if len == 0 || KERNEL_THP.load(Ordering::Relaxed) == 0 {
         return false;
     }
-    if madvise_nohugepage(addr, len, Ghost(s), Tracked(wa), Tracked(wl)) {
+    if madvise_nohugepage(addr, len, Ghost(s), Tracked(w)) {
         NOHUGE_RANGES.fetch_add(1, Ordering::Relaxed);
         true
     } else {
@@ -1069,28 +1079,25 @@ fn madvise_hugepage(addr: usize, len: usize, Ghost(home): Ghost<bool>) -> bool
 }
 
 /// `MADV_NOHUGEPAGE` on `[addr, addr + len)`, the one place `thp.rs`
-/// asks for it (#975). `wa` and `wl` are witnesses from the log of
-/// [`RESERVATIONS`]' invariant ([`ResPred`]): the address is that of a
-/// reservation [`advise_reservation`] recorded, the length that of one
-/// (maybe another: the two are not paired, #977), and neither is
-/// [`Reservation::Huge`], so no advice starts at the huge reservation.
-/// The witnesses are ghost.
+/// asks for it (#975, #977). `w` is a witness from the log of
+/// [`RESERVATIONS`]' invariant ([`ResPred`]): the range is exactly one
+/// reservation [`advise_reservation`] recorded, its address and its
+/// length, and that reservation is not [`Reservation::Huge`], so the
+/// advice is a whole class or metadata reservation. The witness is ghost.
 fn madvise_nohugepage(
     addr: usize,
     len: usize,
     Ghost(s): Ghost<&Reservations>,
-    Tracked(wa): Tracked<&GhostPersistentSingleton<Recorded>>,
-    Tracked(wl): Tracked<&GhostPersistentSingleton<Recorded>>,
+    Tracked(w): Tracked<&GhostPersistentSingleton<Recorded>>,
 ) -> bool
     requires
         crate::sys::may_syscall(),
         s.wf(),
-        wa.id() == s.loc(),
-        wl.id() == s.loc(),
-        wa@.0 != Reservation::Huge,
-        wl@.0 != Reservation::Huge,
-        wa@.1 == addr,
-        wl@.2 == len,
+        w.id() == s.loc(),
+        w@.0 != Reservation::Huge,
+        w@.1 == addr,
+        w@.2 == len,
+        addr + len <= crate::sys::pac::user_va_limit(),
 {
     // SAFETY: a reservation this process owns; `MADV_NOHUGEPAGE` sets a
     // VMA flag, never contents.
