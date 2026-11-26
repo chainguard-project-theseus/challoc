@@ -145,6 +145,10 @@ impl ClassState {
             },
             // The slab is `Purged` exactly when it came from that set.
             r matches Some(s) ==> (final(g).st(s as nat) == State::Purged) == old(g).purged.map@.contains(s as nat),
+            // The group cursor never moves back, and the slab is `Fresh`
+            // exactly when it is one the cursor passed in this call.
+            old(g).group_next <= final(g).group_next,
+            r matches Some(s) ==> (final(g).st(s as nat) == State::Fresh) == (old(g).group_next <= s < final(g).group_next),
             // Only a `Purged` slab it returns leaves the `Purged` set.
             final(g).purged.map@ == match r {
                 Some(s) => if old(g).purged.map@.contains(s as nat) {
@@ -286,6 +290,9 @@ impl ClassState {
                 && final(g).committed@.contains(s as nat)
                 && !self.spec_table().spec_is_guard(s)
                 && !(final(g).group_next <= s < final(g).group_end),
+            // The cursor only moves up, past the slab handed out.
+            old(g).group_next <= final(g).group_next,
+            r matches Some(s) ==> old(g).group_next <= s < final(g).group_next,
             forall|s: nat| #[trigger] old(g).owns(s) ==> final(g).owns(s) && final(g).st(s) == old(g).st(s)
                 && final(g).dirty@[s] == old(g).dirty@[s],
             forall|s: nat| #[trigger] old(g).committed@.contains(s) ==> final(g).committed@.contains(s),
@@ -328,6 +335,7 @@ impl ClassState {
                 g.partial.map@ == old(g).partial.map@,
                 g.empty.map@ == old(g).empty.map@,
                 g.purged.map@ == old(g).purged.map@,
+                old(g).group_next <= g.group_next,
             decreases self.spec_nslabs() - g.group_end, g.group_end - g.group_next,
         {
             broadcast use lemma_same_sets_inv;
