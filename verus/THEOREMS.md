@@ -149,6 +149,9 @@ leave out (theorem 33). Remaining work is tracked in
 - **Purged slab order in a hold** ([A refill takes Purged slabs after Empty ones, before fresh ones](#a-refill-takes-purged-slabs-after-empty-ones-before-fresh-ones-no-fork-epoch-over-the-sets-read)):
   `class::theorem_idle_purged_ascending`, `class/mod.rs`, with
   `ClassState::plan_at`'s contract.
+- **Fresh slab order in a hold** ([A refill takes fresh slabs in ascending order](#a-refill-takes-fresh-slabs-in-ascending-order-from-the-group-cursor)):
+  `class::theorem_fresh_ascending`, `class/mod.rs`, with
+  `ClassState::plan_at`'s contract.
 
 ## Configuration
 
@@ -11977,7 +11980,8 @@ them as atoms; it verifies within its rlimit.
   read never turns that way, but no spec states it; stating it needs
   `LAZY_EVER` under an invariant, an atomic change.
 - One lock hold, over the sets it read under the class lock, as the
-  previous section.
+  previous section. The order of the fresh picks themselves is the next
+  section.
 - `p0` and `q` are ghost outputs, as `e0` and `m` are in the previous
   section. `q` is pinned by the picks: the idle picks recorded `Purged`
   are exactly the `q` after the `m` recorded `Empty`. `p0` is pinned by
@@ -12008,6 +12012,130 @@ rejects: the base's per-call contract (`idle_pick` at the hold's floor,
 checked at every pick by `lemma_idle_step`) and the lock invariant (the
 `Purged` set is the slabs whose state is `Purged`) already confine the
 code to this order at floor 0; this PR states it across the hold.
+
+## A refill takes fresh slabs in ascending order (from the group cursor)
+
+The previous two sections order a lock hold's `Empty` and `Purged` idle
+picks. Before chainguard-project-theseus/challoc#969 nothing stated the
+order of its fresh picks, the slabs `next_slab` takes from the arena's
+group cursor (`Inner::group_next`) once neither idle set holds a slab
+from the floor: `next_fresh_slab` said only that its slab is no longer
+in the current group, so nothing ruled out a hold taking a lower fresh
+slab after a higher one, or the same slab fresh twice.
+
+**Statement.**
+
+```rust
+// class/mod.rs
+spec fn fresh_ordered(p: Seq<Pick>, np: int, gn0: int, gn1: int) -> bool {  // opaque
+    &&& gn0 <= gn1
+    &&& np <= p.len()
+    &&& forall|i: int| 0 <= i < np && p[i].state == State::Fresh ==> gn0 <= p[i].slab < gn1
+    &&& forall|i: int, j: int| 0 <= i < j < np && p[i].state == State::Fresh && p[j].state == State::Fresh
+        ==> p[i].slab < p[j].slab
+}
+
+// class/fresh.rs
+fn next_fresh_slab(&self, g: &mut Inner, ..) -> (r: Option<usize>)
+    ensures
+        old(g).group_next <= final(g).group_next,
+        r matches Some(s) ==> old(g).group_next <= s < final(g).group_next,
+
+fn next_slab(&self, g: &mut Inner, floor: usize, ..) -> (r: Option<usize>)
+    ensures
+        old(g).group_next <= final(g).group_next,
+        r matches Some(s) ==> (final(g).st(s) == State::Fresh) == (old(g).group_next <= s < final(g).group_next),
+
+// class/mod.rs
+fn plan_at(&self, floor: usize, .., Tracked(scan): Tracked<&mut Ghost<PlanOrder>>, ..) -> (np: usize)
+    ensures
+        fresh_ordered(final(picks)@, np, final(scan)@.7, final(ex)@.0.group_next),
+
+proof fn theorem_fresh_ascending(e0, e1, p0, p1, p: Seq<Pick>, lo: int, m: int, q: int, np: int, floor: int, gn0: int, gn1: int)
+    requires
+        fresh_ordered(p, np, gn0, gn1),
+        idle_ordered(e0, e1, p, lo, m, np, floor),
+        purged_ordered(p0, p1, p, lo + m, q, np, floor),
+    ensures
+        forall|i: int, j: int| 0 <= i < j < np && p[i].state == State::Fresh && p[j].state == State::Fresh
+            ==> p[i].slab < p[j].slab,
+        forall|i: int| 0 <= i < np && p[i].state == State::Fresh ==> gn0 <= p[i].slab < gn1,
+        forall|i: int, j: int| 0 <= i < np && 0 <= j < np && p[i].state == State::Empty && p[j].state == State::Fresh
+            ==> i < j,
+        floor == 0 ==> forall|i: int, j: int| 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
+            && p[j].state == State::Fresh ==> i < j,
+```
+
+In words, for one refill's lock hold, with `gn0` the arena's group
+cursor as its idle picks began and `gn1` the cursor it left: the picks
+recorded `Fresh` are strictly ascending, so no slab is handed out fresh
+twice in a hold, and each lies in `[gn0, gn1)`, so none is below the
+cursor the hold found; each comes after every pick recorded `Empty`, at
+any fork floor, and with no fork epoch after every pick recorded
+`Purged` too.
+
+**Proof sketch.** `next_fresh_slab`'s loop carries that the cursor has
+not moved back: a new group starts at or above the old group's end
+(`take_group` already ensures `old(sets).group_end <= s`), which the
+lock invariant puts at or above the cursor; the slab it returns is the
+cursor's value just before the cursor moves past it. `next_slab` adds
+that an `Empty` or `Purged` slab it returns leaves the cursor where it
+was, so its slab is `Fresh` exactly when it is in the range the cursor
+passed in that call. `take` already ensures it leaves `group_next`
+unchanged and records the slab's state in its pick. `plan_at`'s idle
+loop carries `fresh_ordered` from `lemma_fresh_start` (the partial
+scan's picks are recorded `Active`) through `lemma_fresh_step` (a new
+`Fresh` pick is at or above the cursor every earlier one is below);
+`lemma_fresh_mono` covers a `next_slab` call that returns `None` after
+moving the cursor (a group taken, then a commit failed). The early
+return in the partial scan states it with no idle pick. The theorem's
+order against the `Empty` and `Purged` picks comes from
+`idle_ordered` and `purged_ordered` (previous sections): those picks
+are a block of indices before any pick recorded otherwise. The new spec
+is opaque, so `plan_at` carries it as an atom; it verifies within its
+rlimit.
+
+**Premises (seams).** None beyond the common ones. No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- One lock hold. That the cursor never moves back across holds is a
+  property of every function that writes the lock value: only
+  `next_fresh_slab` and the value's construction write `group_next`
+  today, but this section proves it for `next_fresh_slab` and
+  `next_slab` only.
+- `gn0` is a ghost output pinned to the lock value as the idle picks
+  began; `gn1` is `plan_at`'s `ex` lock value's `group_next`. The order
+  and the "never twice" claim are about the picks alone.
+- A fresh pick is a slab the cursor passed, not every slab it passed:
+  guard slabs and slabs whose commit reported them unusable are passed
+  and not handed out, so the fresh picks need not be consecutive.
+- `plan`, the floor-0 caller, discards `plan_at`'s ghost outputs, as for
+  the previous sections; the theorem is about `plan_at`'s contract.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures`, a loop invariant, a widened ghost tuple and proof blocks
+  only).
+
+**Mutations** (`cargo verus focus --locked -- --verify-module class`,
+on the PR's tree and on its base):
+
+| id | change | PR | base |
+|---|---|---|---|
+| M1 | `next_fresh_slab` drops "the slab lies in `[old cursor, new cursor)`" | rejected (`next_slab`'s new "`Fresh` exactly when the cursor passed it" `ensures`) | not applicable (no such clause) |
+| M2 | `next_slab` drops "`Fresh` exactly when the cursor passed it" | rejected (`lemma_fresh_step` precondition in `plan_at`) | not applicable (no such clause) |
+| M3 | `plan_at` drops `lemma_fresh_mono` where `next_slab` returns `None` | rejected (`plan_at`'s `fresh_ordered` `ensures`) | not applicable |
+| M4 | `next_fresh_slab` drops `g.group_next = s + 1` (the cursor never passes the slab it returns) | rejected (the existing "not in the current group" `ensures`, and the loop's `decreases`) | rejected (the same two) |
+| M5 | `next_fresh_slab` sets `g.group_next = s` instead of `s + 1` | rejected (the same two) | rejected (the same two) |
+| M6 | M5, with the existing "not in the current group" conjunct also dropped | rejected (the new "the slab lies in `[old cursor, new cursor)`" `ensures`, and the loop's `decreases`) | rejected (the loop's `decreases`, and `next_slab`'s `ready`) |
+
+M4-M6 ran with `--verify-module class::fresh`, which holds both
+functions. M1 and M2 show the two new `ensures` are what carries the order through
+the hold; M3 shows a `None` from `next_slab` can move the cursor, which
+the hold's statement must allow. M4 and M5 break the cursor in the code;
+M6 shows the new `ensures` alone rejects M5's cursor. No executable mutant was found that the
+base accepts and this PR rejects: the lock invariant (the current
+group's remaining slabs are owned and `Fresh`, and a new group starts
+past every owned slab) already confines `next_fresh_slab` to the
+cursor's slab; this PR states it across the hold.
 
 ## Interface contract
 

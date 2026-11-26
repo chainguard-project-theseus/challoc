@@ -1540,8 +1540,9 @@ proof fn lemma_picked_frame(a: Seq<Pick>, b: Seq<Pick>, n: int)
 /// scan, how far the scan reached ([`ClassState::refill_ordered`]), the
 /// `Empty` set as the idle picks began and how many of those were `Empty`
 /// slabs ([`idle_ordered`]), and the `Purged` set as they began and how
-/// many were `Purged` slabs ([`purged_ordered`]).
-type PlanOrder = (vstd::set::Set<nat>, int, int, vstd::set::Set<nat>, int, vstd::set::Set<nat>, int);
+/// many were `Purged` slabs ([`purged_ordered`]), and the arena's group
+/// cursor as they began ([`fresh_ordered`]).
+type PlanOrder = (vstd::set::Set<nat>, int, int, vstd::set::Set<nat>, int, vstd::set::Set<nat>, int, int);
 
 /// Slab `x` is the slab of one of the picks `[lo, hi)`. Opaque: only the
 /// lemmas about the idle picks open it.
@@ -1966,6 +1967,135 @@ proof fn theorem_idle_purged_ascending(
     if a + q < np {
         assert forall|x: nat| #[trigger] p0.contains(x) implies taken_in(p, a, a + q, x) by {
             assert(!p1.contains(x));
+        }
+    }
+}
+
+/// The fresh picks of a refill's lock hold ([`ClassState::plan_at`]): of
+/// the picks `[0, np)`, those recorded `Fresh` are slabs the arena's group
+/// cursor (`Inner::group_next`) passed during the hold, from `gn0`, its
+/// value as the idle picks began, to `gn1`, the value the hold left, and
+/// they are strictly ascending; the cursor did not move back. Opaque:
+/// [`ClassState::plan_at`]'s idle loop carries it, and only the lemmas
+/// about the fresh picks open it.
+#[verifier::opaque]
+spec fn fresh_ordered(p: Seq<Pick>, np: int, gn0: int, gn1: int) -> bool {
+    &&& gn0 <= gn1
+    &&& np <= p.len()
+    &&& forall|i: int| #![trigger p[i]] 0 <= i < np && p[i].state == State::Fresh ==> gn0 <= p[i].slab < gn1
+    &&& forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < np && p[i].state == State::Fresh && p[j].state == State::Fresh
+        ==> p[i].slab < p[j].slab
+}
+
+/// [`fresh_ordered`] before the first idle pick: the partial scan's picks
+/// are recorded `Active`.
+proof fn lemma_fresh_start(p: Seq<Pick>, lo: int, gn: int)
+    requires
+        0 <= lo <= p.len(),
+        picks_active(p, lo),
+    ensures
+        fresh_ordered(p, lo, gn, gn),
+{
+    reveal(fresh_ordered);
+}
+
+/// [`fresh_ordered`] past a `next_slab` call that returned no slab but may
+/// have moved the group cursor up (a group taken, then a commit failed).
+proof fn lemma_fresh_mono(p: Seq<Pick>, np: int, gn0: int, ga: int, gb: int)
+    requires
+        fresh_ordered(p, np, gn0, ga),
+        ga <= gb,
+    ensures
+        fresh_ordered(p, np, gn0, gb),
+{
+    reveal(fresh_ordered);
+}
+
+/// One idle pick of [`ClassState::plan_at`]: `next_slab` moved the group
+/// cursor from `ga` to `gb` (never back) and returned `s`, `Fresh` exactly
+/// when the cursor passed it, and `take` made pick `k` of it with that
+/// state. The fresh picks stay ascending.
+proof fn lemma_fresh_step(a: Seq<Pick>, b: Seq<Pick>, k: int, gn0: int, ga: int, gb: int, s: usize)
+    requires
+        fresh_ordered(a, k, gn0, ga),
+        ga <= gb,
+        0 <= k < b.len() == a.len(),
+        b[k].slab as nat == s as nat,
+        (b[k].state == State::Fresh) == (ga <= s < gb),
+        forall|i: int| 0 <= i < k ==> a[i] == b[i],
+    ensures
+        fresh_ordered(b, k + 1, gn0, gb),
+{
+    reveal(fresh_ordered);
+    assert forall|i: int| #![trigger b[i]] 0 <= i < k + 1 && b[i].state == State::Fresh implies gn0 <= b[i].slab < gb by {
+        if i < k {
+            assert(a[i] == b[i]);
+        }
+    }
+    assert forall|i: int, j: int| #![trigger b[i], b[j]] 0 <= i < j < k + 1 && b[i].state == State::Fresh && b[j].state == State::Fresh
+        implies b[i].slab < b[j].slab by {
+        assert(a[i] == b[i]);
+        if j < k {
+            assert(a[j] == b[j]);
+        }
+    }
+}
+
+/// Theorem: a refill's lock hold takes its fresh slabs in ascending order,
+/// each one the arena's group cursor passed during the hold (THEOREMS.md,
+/// "A refill takes fresh slabs in ascending order"). For the picks
+/// [`ClassState::plan_at`] hands out ([`fresh_ordered`], [`idle_ordered`],
+/// [`purged_ordered`]), with `gn0` the cursor as the idle picks began and
+/// `gn1` the cursor the hold left:
+/// - the picks recorded `Fresh` are strictly ascending, and lie in
+///   `[gn0, gn1)`, so no slab is handed out fresh twice in one hold and
+///   none below the cursor the hold found;
+/// - with any fork floor, each comes after every pick recorded `Empty`;
+/// - with no fork epoch (floor 0), each also comes after every pick
+///   recorded `Purged`.
+///
+/// Unlike the `Empty` and `Purged` order, this one needs no floor: the
+/// cursor, not the idle sets, picks a fresh slab. `gn0` and `gn1` are the
+/// `group_next` field of the lock value as the idle picks began and as
+/// the hold left it (`plan_at`'s `ex`).
+proof fn theorem_fresh_ascending(
+    e0: VSet<nat>,
+    e1: VSet<nat>,
+    p0: VSet<nat>,
+    p1: VSet<nat>,
+    p: Seq<Pick>,
+    lo: int,
+    m: int,
+    q: int,
+    np: int,
+    floor: int,
+    gn0: int,
+    gn1: int,
+)
+    requires
+        fresh_ordered(p, np, gn0, gn1),
+        idle_ordered(e0, e1, p, lo, m, np, floor),
+        purged_ordered(p0, p1, p, lo + m, q, np, floor),
+    ensures
+        forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < np && p[i].state == State::Fresh && p[j].state == State::Fresh
+            ==> p[i].slab < p[j].slab,
+        forall|i: int| #![trigger p[i]] 0 <= i < np && p[i].state == State::Fresh ==> gn0 <= p[i].slab < gn1,
+        forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Empty && p[j].state == State::Fresh
+            ==> i < j,
+        floor == 0 ==> forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
+            && p[j].state == State::Fresh ==> i < j,
+{
+    reveal(fresh_ordered);
+    reveal(idle_ordered);
+    reveal(purged_ordered);
+    assert forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Empty && p[j].state == State::Fresh
+        implies i < j by {
+        assert(lo <= i < lo + m);
+    }
+    if floor == 0 {
+        assert forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
+            && p[j].state == State::Fresh implies i < j by {
+            assert(lo + m <= i < lo + m + q);
         }
     }
 }
@@ -5319,7 +5449,7 @@ impl ClassState {
         if floor != 0 {
             return self.plan_epoch(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
         }
-        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int, VSet::<nat>::empty(), 0int));
+        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int, VSet::<nat>::empty(), 0int, 0int));
         self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord))
     }
 
@@ -5364,7 +5494,7 @@ impl ClassState {
             picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
             picks_sum(final(picks)@, np as int) <= want,
     {
-        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int, VSet::<nat>::empty(), 0int));
+        let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int, VSet::<nat>::empty(), 0int, 0int));
         let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
         if np == 0 && want > 0 {
             return self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
@@ -5442,6 +5572,7 @@ impl ClassState {
             self.refill_ordered(final(scan)@.0, final(ex)@.1, final(ex)@.0, final(picks)@, final(scan)@.1, np as int, floor as int, final(scan)@.2),
             idle_ordered(final(scan)@.3, final(ex)@.0.empty.map@, final(picks)@, final(scan)@.1, final(scan)@.4, np as int, floor as int),
             purged_ordered(final(scan)@.5, final(ex)@.0.purged.map@, final(picks)@, final(scan)@.1 + final(scan)@.4, final(scan)@.6, np as int, floor as int),
+            fresh_ordered(final(picks)@, np as int, final(scan)@.7, final(ex)@.0.group_next as int),
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
@@ -5516,7 +5647,8 @@ impl ClassState {
                     *ex = Ghost((g@, seen));
                     lemma_idle_start(g@.empty.map@, picks@, np as int, floor as int);
                     lemma_purged_start(g@.purged.map@, picks@, np as int, floor as int);
-                    *scan = Ghost((p0, np as int, s as int, g@.empty.map@, 0, g@.purged.map@, 0));
+                    lemma_fresh_start(picks@, np as int, g@.group_next as int);
+                    *scan = Ghost((p0, np as int, s as int, g@.empty.map@, 0, g@.purged.map@, 0, g@.group_next as int));
                 }
                 g.unlock();
                 return np;
@@ -5603,9 +5735,13 @@ impl ClassState {
         // `q` of them so far.
         let ghost p_idle = g@.purged.map@;
         let ghost mut q: int = 0;
+        // The group cursor as the idle picks begin: the fresh ones are
+        // slabs it passes, ascending (`fresh_ordered`).
+        let ghost gn0 = g@.group_next as int;
         proof {
             lemma_idle_start(e0, picks@, npart, floor as int);
             lemma_purged_start(p_idle, picks@, npart, floor as int);
+            lemma_fresh_start(picks@, npart, gn0);
         }
         while remaining > 0 && np < MAX_PICKS
             invariant
@@ -5633,6 +5769,7 @@ impl ClassState {
                 forall|x: nat| #[trigger] g@.partial.map@.contains(x) ==> p0.contains(x) || picked(picks@, np as int, x),
                 idle_ordered(e0, g@.empty.map@, picks@, npart, m, np as int, floor as int),
                 purged_ordered(p_idle, g@.purged.map@, picks@, npart + m, q, np as int, floor as int),
+                fresh_ordered(picks@, np as int, gn0, g@.group_next as int),
             decreases MAX_PICKS - np,
         {
             let ghost g_idle = g@;
@@ -5641,6 +5778,7 @@ impl ClassState {
                 None => {
                     proof {
                         dry = true;
+                        lemma_fresh_mono(picks@, np as int, gn0, g_idle.group_next as int, g@.group_next as int);
                     }
                     break;
                 },
@@ -5666,6 +5804,8 @@ impl ClassState {
                 m = lemma_idle_step(e0, g_idle.empty.map@, g@.empty.map@, g_idle.purged.map@, before, picks@, npart, m, k as int, floor as int, s);
                 // The `Purged` picks stay lowest first, after the `Empty` ones.
                 q = lemma_purged_step(e0, g_idle.empty.map@, p_idle, g_idle.purged.map@, g@.purged.map@, before, picks@, npart, m_prev, m, q, k as int, floor as int, s);
+                // The fresh picks stay ascending, from the cursor.
+                lemma_fresh_step(before, picks@, k as int, gn0, g_idle.group_next as int, g@.group_next as int, s);
                 // The scan's picks stay, and the idle slab is a pick.
                 self.lemma_scan_ordered_frame(p0, seen, before, picks@, npart, floor as int, self.spec_nslabs() as int);
                 lemma_picked_frame(before, picks@, k as int);
@@ -5677,7 +5817,7 @@ impl ClassState {
             }
         }
         proof {
-            *scan = Ghost((p0, npart, self.spec_nslabs() as int, e0, m, p_idle, q));
+            *scan = Ghost((p0, npart, self.spec_nslabs() as int, e0, m, p_idle, q, gn0));
             lemma_picks_sum(picks@, picks@, np as int);
             // Dry: the scan saw every partial slab and `next_slab` found
             // both idle sets empty.
