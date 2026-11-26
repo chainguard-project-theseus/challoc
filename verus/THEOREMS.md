@@ -31,7 +31,7 @@ groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
 | The C boundary and system calls | 8, 21, 32, 42, 45, 46; secure-exec configuration; interface contract |
 | Zeroing and usable size | 6, 12 |
-| Statistics | 22, 27, 35 |
+| Statistics | 22, 27, 35; stored totals coherence |
 
 ## How to read a section
 
@@ -154,6 +154,9 @@ leave out (theorem 33). Remaining work is tracked in
 - **Fresh slab order in a hold** ([A refill takes fresh slabs in ascending order](#a-refill-takes-fresh-slabs-in-ascending-order-from-the-group-cursor)):
   `class::theorem_fresh_ascending`, `class/mod.rs`, with
   `ClassState::plan_at`'s contract.
+- **Statistics coherence** ([The stored statistics totals sum the counted arenas' stored figures](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant)):
+  `StoredSnapshot`'s and `StoredArena`'s `LockSpec` impls, with
+  `stats::lemma_stored_agree`, `stats.rs`.
 
 ## Configuration
 
@@ -6044,8 +6047,11 @@ in the totals, allocated bytes never exceed active bytes, resident bytes
 are active plus dirty plus metadata, and mapped bytes are resident plus
 retained.
 
-**Statement.** Two parts; the first is proved, the second holds by
-construction (read from the code, not stated as an `ensures`).
+**Statement.** Two parts; the first is proved, and of the second the
+arenas-and-totals half is proved at the process statistics lock's
+invariant ([its own section](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant))
+and the epoch-number half holds by construction (read from the code,
+not stated as an `ensures`).
 
 1. **Identities** (proved). Every `ArenaStats` an arena stores, and
    every one `collect_arena`, `collect_into` and `collect_all` compute,
@@ -6087,7 +6093,11 @@ construction (read from the code, not stated as an `ensures`).
    an `epoch`, the stored per-arena figures sum to the stored totals
    (they come from one collection), and `mallctl("epoch")` returns the
    number its own refresh stored.
-   - Arenas and totals (by construction):
+   - Arenas and totals (proved at the lock's invariant, in
+     [its own section](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant):
+     whenever the process statistics lock is free, at each acquisition
+     and release, its stored totals are the sum of the figures the statistics locks of the arenas the last
+     epoch counted store; what follows is how the code gets there):
      `collect_into` takes the process statistics lock
      (`shared.stats.lock()`) first and holds it across its whole scan,
      storing each arena's figures (`arena.store_stats(&a)`, under that
@@ -6118,9 +6128,14 @@ construction (read from the code, not stated as an `ensures`).
      distinct) checks it. jemalloc holds `ctl_mtx`
      across the refresh and the read.
 
-   Neither is stated as an `ensures`: `collect_into`'s ties only the
-   totals' `allocated` (`totals_exact`) and `mapped` to `rd`, not to
-   what was stored.
+   `collect_into`'s `ensures` ties every field of the totals it returns
+   to the records it read, `rd` (`r.totals == totals_sum(rd.0)`, the
+   wrapping fold; and `totals_exact` for `allocated`, `sum_mapped` for
+   `mapped` where the sums fit). That is about the records read, not
+   what is stored: stored-state coherence for arenas and totals is
+   `StoredSnapshot`'s lock invariant (the section linked above), and no
+   reader's `ensures` carries it yet. The epoch number's read-back is
+   not stated as an `ensures`.
 
 **Covers.** `mallctl` `stats.{allocated,active,metadata,resident,
 retained,mapped}` and `stats.arenas.<i>.*` (from `snapshot` and
@@ -6159,14 +6174,17 @@ is counted once and `k` arenas sum below `2^58 + k * 2^55`, which fits
 for `k <= 256`.
 
 **Premises beyond the common ones.**
-- The per-arena statistics lock's invariant, `ArenaStats::identities`,
-  is stated by no axiom: `ArenaStats`'s `LockSpec` impl (`stats.rs`)
-  defines it, with a frame true of any two values. Its writers: `Arena`
+- The per-arena statistics lock's invariant, `ArenaStats::identities`
+  of the stored record (with its ghost points-to's value
+  being that record), is stated by no axiom: `StoredArena`'s `LockSpec`
+  impl (`stats.rs`) defines it, with a frame that keeps only the ghost
+  points-to's location and key. Its writers: `Arena`
   initialisation (`ArenaStats::empty`, which ensures the identities,
   written by the trusted `Arena::put_stats`, which a test compares with
   `Lock::new`) and `Arena::store_stats` (which requires them). The process
-  statistics lock's invariant, `Snapshot::inv`, is stated by no axiom:
-  `Snapshot`'s `LockSpec` impl (`stats.rs`) defines it, `Lock::new` in
+  statistics lock's invariant, `Snapshot::inv` of the stored snapshot
+  (with `StoredSnapshot::coherent`), is stated by no axiom:
+  `StoredSnapshot`'s `LockSpec` impl (`stats.rs`) defines it, `Lock::new` in
   `Shared::put_tail` (`heap/shared.rs`) requires it of
   `Snapshot::EMPTY`, and every holder (`collect_into`, `snapshot`,
   `arena_stats_all_into`) ends in `LockGuard::unlock`, which requires
@@ -6191,12 +6209,15 @@ for `k <= 256`.
   not exact.
 - `pactive` and `pdirty` (`active / page`, `dirty / page`) and the bins'
   counters are outside the identities.
-- Coherence (part 2) is read from the code, not proved: no `ensures`
-  ties the figures stored under the arenas' statistics locks to the
-  totals stored under the process statistics lock, and a reader of one
-  arena's `stats.arenas.<i>.*` (`arena_stats`, which does not take the
-  process statistics lock) may see it from a newer collection than the
-  `stats.*` totals it read before.
+- Coherence (part 2): the arenas-and-totals half is proved as the
+  process statistics lock's invariant over a ghost authority
+  that every arena's statistics lock agrees with
+  ([its own section](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant)),
+  for the arenas the last epoch counted; that an arena outside them
+  stores zeros, and the epoch-number half, are read from the code. A
+  reader of one arena's `stats.arenas.<i>.*` (`arena_stats`, which does
+  not take the process statistics lock) may see it from a newer
+  collection than the `stats.*` totals it read before.
 - The lock frames it rests on, which the `LockSpec` impls of `Created`
   (the arena creation lock), `meta::Inner` and `huge::Inner` define, are
   definitions, not axioms.
@@ -12397,6 +12418,196 @@ base accepts and this PR rejects: the lock invariant (the current
 group's remaining slabs are owned and `Fresh`, and a new group starts
 past every owned slab) already confines `next_fresh_slab` to the
 cursor's slab; this PR states it across the hold.
+
+## The stored statistics totals sum the counted arenas' stored figures (at the process statistics lock's invariant)
+
+Theorem 27's coherence half says that after an `epoch` the figures the
+arenas' statistics locks store sum to the totals the process statistics
+lock stores. Ghost state ties the two kinds of lock, and this section
+proves it as the process statistics lock's invariant: whenever that lock is
+free, so at each acquisition and each release, its stored totals are
+the sum, in index order, of the figures the statistics locks of the
+arenas the last stored collection counted store at that moment. A
+holder may break it midway: `collect_into`, storing, updates each
+arena's figures before it stores the new totals, and restores it
+before it unlocks.
+
+**Statement.**
+
+```rust
+// stats.rs: the process statistics lock's value (`Shared::stats`).
+// `auth` and `counted` are ghost (no bytes).
+pub struct StoredSnapshot {
+    pub s: Snapshot,
+    pub auth: Tracked<GhostMapAuth<int, ArenaStats>>,
+    pub counted: Ghost<Seq<int>>,
+}
+
+impl LockSpec for StoredSnapshot {
+    open spec fn lock_spec_inv(self) -> bool { self.s.inv() && self.coherent() }
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool { v.auth@.id() == init.auth@.id() }
+}
+
+pub open spec fn coherent(self) -> bool {
+    &&& self.counted@.len() == self.s.narenas
+    &&& forall|j| 0 <= j < self.counted@.len() ==> 0 <= self.counted@[j] < MAX_ARENAS
+    &&& forall|j, k| 0 <= j < k < self.counted@.len() ==> self.counted@[j] < self.counted@[k]
+    &&& forall|j| 0 <= j < self.counted@.len() ==> self.auth@@.contains_key(self.counted@[j])
+    &&& self.s.totals == totals_sum(stored_of(self.auth@@, self.counted@))
+}
+
+// The totals of a sequence of arena figures, added in order from zero
+// exactly as `Totals::add_arena` adds them (`fig_sum` is `wrapping_add`,
+// which `fig_add` ensures it returns).
+pub open spec fn totals_sum(reads: Seq<ArenaStats>) -> Totals
+    decreases reads.len(),
+{
+    if reads.len() == 0 { Totals::EMPTY } else { totals_sum(reads.drop_last()).plus(reads.last()) }
+}
+
+// stats.rs: an arena's statistics lock's value (`Arena::stats`).
+// `pt` is ghost (no bytes).
+pub struct StoredArena {
+    pub s: ArenaStats,
+    pub pt: Tracked<GhostPointsTo<int, ArenaStats>>,
+}
+
+impl LockSpec for StoredArena {
+    open spec fn lock_spec_inv(self) -> bool { self.s.identities() && self.pt@.value() == self.s }
+    open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
+        v.pt@.id() == init.pt@.id() && v.pt@.key() == init.pt@.key()
+    }
+}
+
+// stats.rs: what a holder of both locks sees.
+pub proof fn lemma_stored_agree(tracked p: &StoredSnapshot, tracked a: &StoredArena)
+    requires
+        a.pt@.id() == p.auth@.id(),
+        crate::lock::lock_inv(*a),
+    ensures
+        p.auth@@.contains_key(a.pt@.key()),
+        p.auth@@[a.pt@.key()] == a.s,
+
+// The two kinds of lock share the authority's location, and each arena's
+// points-to is at its own index:
+//   Shared::wf (heap/shared.rs):
+//     lock_init(self.stats).auth@.id() == self.arenas.spec_stats_loc()
+//   entry_ok (arena.rs), for every published arena a at index i:
+//     a.spec_stats_loc() == k.stats && a.spec_stats_key() == i
+//   Arenas::get_existing, stats::arena_at:
+//     r matches Some(a) ==> a.spec_stats_loc() == self.spec_stats_loc() && a.spec_stats_key() == index
+// with Arena::spec_stats_loc() == lock_init(self.stats).pt@.id() and
+// spec_stats_key() == lock_init(self.stats).pt@.key().
+
+// stats.rs: the collection, beside its existing contract.
+fn collect_into(..) -> (r: Snapshot)
+    ensures
+        r.totals == totals_sum(final(rd)@.0),
+```
+
+In words: the process statistics lock's value carries, as ghosts, the
+authority of a vstd ghost map from arena index to `ArenaStats` and the
+indices the stored totals count. Every arena's statistics lock carries
+the points-to of its own index in that map (its location and key are
+the lock's frame, so they are the ones the lock was created with), and
+the lock's invariant makes its value the stored record. So for any
+counted arena `i`, the figures arena `i`'s statistics lock stores are
+`auth@@[i]` (`lemma_stored_agree`), and the stored totals are those
+figures summed over the counted arenas, in ascending index order, from
+`Totals::EMPTY`, each of the six figures (`allocated`, `active`,
+`metadata`, `resident`, `retained`, `mapped`) with the wrapping add
+`fig_add` uses. The checked statement is that wrapping fold
+(`totals_sum` over `fig_sum`, a closed spec). That it is the integer sum
+where the sums fit follows from `fig_sum`'s definition and is not an
+`ensures`: no proof function relates `totals_sum` to `sum_mapped` or
+`reads_allocated`, and the stored records' lock invariant does not keep
+the per-arena `mapped` bound (`arena_mapped_max`) that `collect_into`
+uses for the figures it computes. There are
+exactly `narenas` counted arenas, each once.
+
+How it is kept:
+- `Shared::init` mints the authority over every index below
+  `MAX_ARENAS`, each at `ArenaStats::empty_spec(i)` (`empty`'s value,
+  which `ArenaStats::empty` ensures it returns), with the matching
+  submap of points-to. Arena 0's points-to goes to its statistics lock
+  (`Arena::init`), the rest to the arena creation lock's value
+  (`Created::parked`), and the authority to the process statistics lock
+  (`Shared::put_tail`, with no arena counted and `Snapshot::EMPTY`,
+  whose zero totals are `totals_sum` of nothing).
+- `Created::ok` now also says every index the registry has not
+  published has its points-to parked, at its empty figures
+  (`Created::parked_ok`); the creation lock's frame and
+  `Arenas::type_inv` keep the parked submap at the authority's location
+  (`RegKey::stats`). `Arenas::build` hands the index's points-to to
+  `Arena::init`, which splits it off only when the build succeeds and
+  hands it to the statistics lock it writes (`put_tail`,
+  `put_stats`); the registry's `entry_ok` records the location and key
+  of every published arena's points-to.
+- `Arena::store_stats` takes the authority (the caller holds the
+  process statistics lock), stores the figures and updates its
+  points-to, and with it the authority's entry at the arena's index, to
+  them. `collect_into` passes the authority of the value it holds, so
+  after the scan the authority records, for each arena it found, the
+  figures it stored and added into its totals; it then stores the
+  totals and, as `counted`, those arenas' indices. A collection that
+  does not store (`collect`) leaves the value as it was.
+- `snapshot`, `arena_stats_all_into`, `Arena::stats_into` and
+  `Arena::add_stats_to` read only.
+
+**Premises (seams).**
+
+| seam | kind | what it gives here |
+|---|---|---|
+| `Arena::put_stats` (existing, `external_body`) | trusted, partly checked (Kani: `arena::kani_put_stats::put_stats_writes_empty`) | now takes the zero-sized points-to `pt`, `requires pt.value() == ArenaStats::empty_spec(index)`, and `ensures lock_init(..).s == ArenaStats::empty_spec(index)` and `lock_init(..).pt@ == pt`: the lock is the one `Lock::new(StoredArena { s: ArenaStats::empty(index), pt }, ..)` builds. The bytes are unchanged and the harness and `put_stats_writes_lock_new_of_empty` still compare them; the new ghost claims are ledgered as not checked (`verus/ledger/src/arena.rs.overrides`) |
+| `axiom_arenas_assemble` (existing axiom) | axiom, trusted | one more `requires`, `lock_init(parts.lock.value()).parked@.id() == parts.count_inv.value()@.constant().stats`, matching the new `Arenas::type_inv` conjunct, which `Arenas::init` proves |
+| vstd `GhostMapAuth` / `GhostSubmap` / `GhostPointsTo` (`resource::map`) | vstd, verified ghost resource | agreement and update of the authority and its points-to |
+| `lock::LockGuard::unlock` holders (existing) | checked by `api::tests::guards_end_in_unlock` | every holder of both locks ends in `unlock`, which requires the invariants and frames above |
+
+No seam is added. `axiom_arena_layout` and `axiom_shared_layout` name
+the new lock types (`Lock<StoredArena>`, `Lock<StoredSnapshot>`); the
+build's `const` assertions still check them and the ledger records
+their new hashes. The test `put_stats_writes_lock_new_of_empty` and the
+Kani harness pass `Tracked::assume_new()` for the new ghost argument,
+outside `verus!` (no seam).
+
+**Scope and where the statement is weaker than the code.**
+- The sum is over the arenas the last stored collection counted. An
+  arena outside them is not claimed to store zeros. It does: arenas are
+  never unpublished, so one the last collection did not find was
+  created after the scan passed its index, and was never stored (its
+  lock still holds `ArenaStats::empty`'s figures). Proving that needs
+  a witness from `Arenas::get_existing` that an index found absent was
+  never published; that is not done here.
+- The theorem is the process statistics lock's invariant: it holds
+  whenever that lock is free (at each acquisition and release), not
+  throughout a holder's critical section (`collect_into` stores an
+  arena's new figures before the new totals). A reader of `stats.arenas.<i>.*` that does not take it
+  (`arena_stats`) may see a newer collection than the `stats.*` totals
+  it read before, as theorem 27 says.
+- No reader's `ensures` carries the statement: `snapshot` ensures only
+  `Snapshot::inv`, `arena_stats_all_into` (which holds the process
+  statistics lock across its reads of every arena's lock) only the
+  result's `index`, and `Arena::stats_into` / `add_stats_to` return the
+  record with no tie to the points-to. `lemma_stored_agree` is the step
+  such a reader would take; no verified function uses it yet
+  (chainguard-project-theseus/challoc#981).
+- The epoch number's read-back (theorem 27) is still read from the
+  code.
+- Machine code is unchanged: the ghost fields are zero-sized, the
+  stored record or snapshot is each value's only data (the test
+  compares the record's size), and the codegen verdict reports the
+  release `.text` (both quanta) against main.
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module
+stats`, or `arena` for S3 and S5, on this tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| S1 | `collect_into` adds each arena to the totals twice | rejected (loop invariants `totals == totals_sum(reads)` and `totals_exact`) | rejected (`totals_exact`) |
+| S2 | `collect_into` skips the store of arena 0 (`if store && i > 0`) but stores the totals | rejected (loop invariant: the authority records every arena read) | verifies |
+| S3 | `Arena::store_stats` stores only the record's `index`, not its figures | rejected (the lock's invariant: the points-to's value is the stored record) | verifies |
+| S4 | `collect_into` stores the totals with `metadata` 0 | rejected (`coherent` at the store) | verifies |
+| S5 | `Arena::put_tail` writes the statistics lock for index 0, whatever the arena's index | rejected (`put_stats`' new `requires`, and its existing rank `ensures`) | rejected (the rank) |
 
 ## Interface contract
 

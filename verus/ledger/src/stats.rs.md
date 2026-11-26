@@ -13,7 +13,7 @@ file.
 
 ## `zero_records`
 
-src/stats.rs:2094. Kind: external_body. Category: raw pointer (internal).
+src/stats.rs:2256. Kind: external_body. Category: raw pointer (internal).
 Tool: Kani. Status: discharged (Kani: stats::kani_records::zero_records_zeroes).
 
 > Zero the records at `p` in place: every field of an `ArenaStats` is an integer, for which zero is a value.
@@ -33,12 +33,12 @@ fn zero_records(p: *mut StatsPair, Tracked(perm): Tracked<&mut PointsTo<StatsPai
 
 ## `pool_take`
 
-src/stats.rs:2129. Kind: external_body. Category: allocator invariant.
+src/stats.rs:2291. Kind: external_body. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > A pooled object for thread `tid` at stack position `mark`, with its permission: one no call holds, one `tid`'s call abandoned (held by `tid` at a mark at or below `mark`: that call's frame is gone, since a call made from inside it would be deeper), or one a thread that has exited held.
 
-Body mints Tracked at line 2135.
+Body mints Tracked at line 2297.
 
 Hashes: contract 1387577703, body 171475313.
 
@@ -54,7 +54,7 @@ fn pool_take(mark: usize, tid: u32) -> (r: Option<(*mut StatsPair, Tracked<Point
 
 ## `empty_pool`
 
-src/stats.rs:2258. Kind: external_body. Category: core library.
+src/stats.rs:2420. Kind: external_body. Category: core library.
 Tool: Kani. Status: discharged (Kani: stats::pool::kani_pool::empty_pool_is_empty).
 
 > `[EMPTY; POOL_SLOTS]`, which Verus does not take for an element type that is not `Copy`.

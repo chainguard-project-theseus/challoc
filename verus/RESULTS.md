@@ -151,7 +151,7 @@ A calloc-style result reads zero over its whole usable size, and zero-on-free co
 
 ### Statistics
 
-At a quiescent state, reported allocated bytes equal the usable bytes of live blocks plus cached slots. Stored arena statistics satisfy their identities, huge-run counts match the live runs, and the utilization query and defragmentation hint report exactly the values they read. Details: THEOREMS.md [22](THEOREMS.md#22-exact-stats-ledger-model-at-quiescence), [27](THEOREMS.md#27-stats-identities), and [35](THEOREMS.md#35-utilization-and-defrag-hint-are-exact-over-the-values-read).
+At a quiescent state, reported allocated bytes equal the usable bytes of live blocks plus cached slots. Stored arena statistics satisfy their identities, whenever the process statistics lock is free (at each acquisition and release) its stored totals are the sum of the figures the statistics locks of the arenas the last epoch counted store, huge-run counts match the live runs, and the utilization query and defragmentation hint report exactly the values they read. Details: THEOREMS.md [22](THEOREMS.md#22-exact-stats-ledger-model-at-quiescence), [27](THEOREMS.md#27-stats-identities), [stored totals coherence](THEOREMS.md#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant), and [35](THEOREMS.md#35-utilization-and-defrag-hint-are-exact-over-the-values-read).
 
 | Theorem | Statement | File | Assumes |
 | --- | --- | --- | --- |

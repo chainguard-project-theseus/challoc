@@ -145,7 +145,7 @@ Tool: Kani. Status: discharged (const assert: `axiom_arena_layout` in src/arena.
 
 > `Arena`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last by the size, and a class state is not empty (a zero-sized one would leave its array outside any allocation, as far as `in_alloc` knows).
 
-Hashes: contract 3337610579, body none.
+Hashes: contract 4209655713, body none.
 
 Specs: `field_fits` (src/arena.rs) 1160781729.
 
@@ -164,7 +164,7 @@ axiom fn axiom_arena_layout()
         // `name: ...Lock<...>` as a lock field.
         field_fits::<
             Arena,
-            Lock<ArenaStats>,
+            Lock<StoredArena>,
         >(A_STATS, A_LAST_EXIT_PURGE as int),
         field_fits::<Arena, AtomicU64>(A_LAST_EXIT_PURGE, size_of::<Arena>() as int),
         size_of::<Arena>() <= isize::MAX,
@@ -180,7 +180,7 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 1520016682, body none.
 
-Specs: `classes_at` (src/arena.rs) 3824279873, `pad_covers` (src/arena.rs) 1139935517, `elems_init` (src/arena.rs) 1251027085, `Stored::ptr` (src/vspec/usable.rs) 3663496071, `rank_arena_stats` (src/lock.rs) 1171131731, `rank_sets` (src/lock.rs) 2828740158.
+Specs: `classes_at` (src/arena.rs) 3824279873, `pad_covers` (src/arena.rs) 43947430, `elems_init` (src/arena.rs) 1251027085, `Stored::ptr` (src/vspec/usable.rs) 3663496071, `rank_arena_stats` (src/lock.rs) 1171131731, `rank_sets` (src/lock.rs) 2828740158.
 Specs unresolved (spec fns of the name): `at` (7), `provenance` (2), `value` (6), `spec_class` (2), `spec_arena` (2), `rank` (3).
 
 ```rust
@@ -225,29 +225,32 @@ axiom fn axiom_arena_assemble(
 
 ## `Arena::put_stats`
 
-src/arena.rs:1123. Kind: external_body. Category: raw pointer (internal).
-Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; the lock's other ghost state, which has no bytes either: its word and cell invariants (`lock::RawPred`, `lock::CellPred`), which `Lock::new` builds for every other lock and which here are taken to describe the bytes written (a free word, and the empty record with `lock_inv`, as a test compares with `Lock::new(ArenaStats::empty(index), ..)`); the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`).
+src/arena.rs:1130. Kind: external_body. Category: raw pointer (internal).
+Tool: Kani. Status: trusted (partly checked, Kani: arena::kani_put_stats::put_stats_writes_empty; not checked: `final(perm).value().rank() == rank_arena_stats(index)`, the lock's ghost rank, which has no bytes for Kani to read; `lock_init(final(perm).value()).s == ArenaStats::empty_spec(index)` and `lock_init(final(perm).value()).pt@ == pt`, the ghost value the lock was created with, which has no bytes either: its record is the one the bytes hold (`empty_spec` is `empty`'s value, which `empty` ensures, and the harness checks the bytes are `empty(index)`'s), and its points-to the zero-sized `pt` the call consumes, whose value the `requires` makes that record; the lock's other ghost state, which has no bytes either: its word and cell invariants (`lock::RawPred`, `lock::CellPred`), which `Lock::new` builds for every other lock and which here are taken to describe the bytes written (a free word, and the empty record with `pt`, with `lock_inv`, as a test compares with `Lock::new(StoredArena { s: ArenaStats::empty(index), pt }, ..)`); the `# Safety` contract, that `p` is the `stats` field of `init`'s storage: the harness passes a slot of its own; the `requires` of its call of `Lock::value_ptr` (`perm.ptr() == p`), which Verus does not check in this body: `lock::tests::value_ptr_called_only_by_put_stats` pins that it passes its own `p` and `perm`).
 
-> The per-arena statistics lock, free, over [`ArenaStats::empty`], written at `p` through its permission.
+> The per-arena statistics lock, free, over [`ArenaStats::empty`] with the points-to `pt` of the arena's index in the process statistics authority (`stats::StoredArena`), written at `p` through its permission.
 
-Hashes: contract 2008592952, body 2682043248.
+Hashes: contract 1166782591, body 2234486224.
 
-Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071, `rank_arena_stats` (src/lock.rs) 1171131731.
+Specs: `Stored::ptr` (src/vspec/usable.rs) 3663496071, `ArenaStats::empty_spec` (src/stats.rs) 4290317333, `rank_arena_stats` (src/lock.rs) 1171131731, `lock_init` (src/lock.rs) 551678868.
 Specs unresolved (spec fns of the name): `value` (6), `rank` (3).
 
 ```rust
-unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)
+unsafe fn put_stats(p: *mut Lock<StoredArena>, Tracked(perm): Tracked<&mut PointsTo<Lock<StoredArena>>>, index: u16, Tracked(pt): Tracked<GhostPointsTo<int, ArenaStats>>)
     requires
         old(perm).ptr() == p,
+        pt.value() == ArenaStats::empty_spec(index),
     ensures
         final(perm).ptr() == p,
         final(perm).is_init(),
         final(perm).value().rank() == rank_arena_stats(index as int),
+        lock_init(final(perm).value()).s == ArenaStats::empty_spec(index),
+        lock_init(final(perm).value()).pt@ == pt,
 ```
 
 ## `AR_TABLE`
 
-src/arena.rs:2120. Kind: external_body const. Category: core library.
+src/arena.rs:2228. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 2025192559, body none.
@@ -258,7 +261,7 @@ const AR_TABLE: usize = core::mem::offset_of!(Arenas, table);
 
 ## `AR_BOUND`
 
-src/arena.rs:2122. Kind: external_body const. Category: core library.
+src/arena.rs:2230. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 472640039, body none.
@@ -269,7 +272,7 @@ const AR_BOUND: usize = core::mem::offset_of!(Arenas, bound);
 
 ## `AR_LOCK`
 
-src/arena.rs:2124. Kind: external_body const. Category: core library.
+src/arena.rs:2232. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1212088989, body none.
@@ -280,7 +283,7 @@ const AR_LOCK: usize = core::mem::offset_of!(Arenas, lock);
 
 ## `AR_COUNT`
 
-src/arena.rs:2126. Kind: external_body const. Category: core library.
+src/arena.rs:2234. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 2895611472, body none.
@@ -291,7 +294,7 @@ const AR_COUNT: usize = core::mem::offset_of!(Arenas, count);
 
 ## `AR_AUTO`
 
-src/arena.rs:2128. Kind: external_body const. Category: core library.
+src/arena.rs:2236. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1096182461, body none.
@@ -302,7 +305,7 @@ const AR_AUTO: usize = core::mem::offset_of!(Arenas, auto);
 
 ## `AR_SPARE`
 
-src/arena.rs:2130. Kind: external_body const. Category: core library.
+src/arena.rs:2238. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1690279427, body none.
@@ -313,7 +316,7 @@ const AR_SPARE: usize = core::mem::offset_of!(Arenas, spare);
 
 ## `AR_INVS`
 
-src/arena.rs:2132. Kind: external_body const. Category: core library.
+src/arena.rs:2240. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 875656104, body none.
@@ -324,7 +327,7 @@ const AR_INVS: usize = core::mem::offset_of!(Arenas, invs);
 
 ## `AR_COUNT_INV`
 
-src/arena.rs:2134. Kind: external_body const. Category: core library.
+src/arena.rs:2242. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 4281409, body none.
@@ -335,7 +338,7 @@ const AR_COUNT_INV: usize = core::mem::offset_of!(Arenas, count_inv);
 
 ## `AR_SPARE_INV`
 
-src/arena.rs:2136. Kind: external_body const. Category: core library.
+src/arena.rs:2244. Kind: external_body const. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 Hashes: contract 1171311431, body none.
@@ -346,7 +349,7 @@ const AR_SPARE_INV: usize = core::mem::offset_of!(Arenas, spare_inv);
 
 ## `axiom_arenas_layout`
 
-src/arena.rs:2144. Kind: axiom. Category: core library.
+src/arena.rs:2252. Kind: axiom. Category: core library.
 Tool: Kani. Status: discharged (const assert: `axiom_arenas_layout` in src/arena.rs).
 
 > `Arenas`'s layout (`repr(C)`): each field at its offset, aligned, and ending by the next one's offset, the last (the zero-sized ghost `spare_inv`) by the size, and neither array's element empty (as for `Arena`'s class states).
@@ -381,12 +384,12 @@ axiom fn axiom_arenas_layout()
 
 ## `axiom_arenas_assemble`
 
-src/arena.rs:2351. Kind: axiom. Category: raw pointer (internal).
+src/arena.rs:2459. Kind: axiom. Category: raw pointer (internal).
 Tool: none (assumption). Status: trusted.
 
 > The written fields of the `Arenas` at `p` (`Arenas::split`'s parts and array elements, every one initialised), as the `Arenas`: the value of each field is what its permission holds.
 
-Hashes: contract 1034589893, body none.
+Hashes: contract 2135684679, body none.
 
 Specs: `bounds_at` (src/arena.rs) 71488751, `arenas_pad_covers` (src/arena.rs) 2643696279, `elems_init` (src/arena.rs) 1251027085, `rank_arenas` (src/lock.rs) 471950314, `count_id` (src/vspec/count.rs) 1104713034, `entry_id` (src/vspec/entry.rs) 3056279958, `narenas_ns` (src/arena.rs) 2026059371, `lock_init` (src/lock.rs) 551678868, `spare_ns` (src/arena.rs) 207717461, `Stored::ptr` (src/vspec/usable.rs) 3663496071.
 Specs unresolved (spec fns of the name): `at` (7), `tables_at` (2), `provenance` (2), `value` (6), `rank` (3), `id` (4).
@@ -419,6 +422,7 @@ axiom fn axiom_arenas_assemble(
         forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] parts.count_inv.value()@.constant().entries[i] == entry_id(&tables[i].value()),
         parts.count_inv.value()@.namespace() == narenas_ns(),
         lock_init(parts.lock.value()).half@.id() == parts.count_inv.value()@.constant().snap,
+        lock_init(parts.lock.value()).parked@.id() == parts.count_inv.value()@.constant().stats,
         lock_init(parts.lock.value()).n == parts.auto.value(),
         parts.spare_inv.value()@.constant() == parts.spare.value().id(),
         parts.spare_inv.value()@.namespace() == spare_ns(),

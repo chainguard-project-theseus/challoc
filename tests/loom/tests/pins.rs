@@ -336,7 +336,7 @@ const PINS: &[(&str, &[&str])] = &[
             "let index = g.n;",
             "if index as usize >= MAX_ARENAS {",
             "return None;",
-            "if self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under)).is_none() {",
+            "let built = self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(c.parked.borrow_mut()), Tracked(&mut under));",
             "c.n = index + 1;",
             "crate::vspec::count::store(&self.count, index + 1, Tracked(&mut v.count));",
         ],
@@ -929,7 +929,7 @@ const GENMC_PINS: &[(&str, &str, &[(&str, &str)])] = &[
             ),
             ("return None;", "return None;"),
             (
-                "if self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under)).is_none() {",
+                "let built = self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(c.parked.borrow_mut()), Tracked(&mut under));",
                 "unsafe { *self.fields[i].get() = u64::from(index) + 1 };",
             ),
             (

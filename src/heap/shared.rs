@@ -33,7 +33,7 @@ use crate::lock::{
 };
 use crate::meta::Meta;
 use crate::policy::Policy;
-use crate::stats::Snapshot;
+use crate::stats::{ArenaStats, Snapshot, StoredSnapshot};
 use crate::sys::cgroup::{CellSeen, Cgroup, Deferred};
 #[cfg(verus_keep_ghost)]
 use crate::vspec::atom::usize_id;
@@ -68,6 +68,7 @@ use vstd::prelude::*;
 use vstd::prelude::{Tracked, verus};
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 use vstd::resource::ghost_var::GhostVarAuth;
+use vstd::resource::map::GhostMapAuth;
 use vstd::resource::set::{GhostSingleton, GhostSubset};
 
 verus! {
@@ -157,7 +158,7 @@ pub struct Shared {
     pub arenas: Arenas,
     pub tcaches: Tcaches,
     /// Process-wide statistics as of the last `epoch` (`stats.rs`).
-    pub stats: Lock<crate::stats::Snapshot>,
+    pub stats: Lock<crate::stats::StoredSnapshot>,
     /// The memory cgroup as last sampled (design 11; `sys::cgroup`),
     /// discovered after init unless init needs it (`Deferred`): read it
     /// through [`Shared::cgroup`] or [`Shared::cgroup_now`]. Cold: written
@@ -296,7 +297,9 @@ impl Shared {
     /// (its claims to reserved pages are
     /// [`process_pages_id`](crate::meta::process_pages_id)'s, on the
     /// regions' page), and the statistics lock is at its rank
-    /// ([`rank_stats`](crate::lock::rank_stats)); `region_hi` is the offset
+    /// ([`rank_stats`](crate::lock::rank_stats)) and was created with the
+    /// statistics authority whose points-to every arena of the registry's
+    /// statistics lock holds ([`Shared::lemma_stats_loc`]); `region_hi` is the offset
     /// bits past a class region, each table is its class's and keeps its
     /// arrays in the metadata region ([`SlabTable::meta_ok`]), and each class
     /// line is well formed over its table ([`ClassLine::wf`]) and has the
@@ -339,6 +342,7 @@ impl Shared {
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
         &&& self.arena0.spec_index() == 0
         &&& self.stats.rank() == crate::lock::rank_stats()
+        &&& crate::lock::lock_init(self.stats).auth@.id() == self.arenas.spec_stats_loc()
         &&& self.arenas.wf()
         &&& self.arenas.is_process()
         &&& self.arenas.spec_arena0() == self.arena0
@@ -428,6 +432,18 @@ impl Shared {
             self.regions.separated(),
             self.meta.is_process(),
             self.huge.runs_process(),
+    {
+    }
+
+    /// [`Shared::wf`] unfolded for the statistics: the process statistics
+    /// lock was created with the authority (`stats::StoredSnapshot`) at
+    /// the location of the points-to every arena of the registry's
+    /// statistics lock holds (`Arenas::spec_stats_loc`).
+    pub(crate) proof fn lemma_stats_loc(&self)
+        requires
+            self.wf(),
+        ensures
+            crate::lock::lock_init(self.stats).auth@.id() == self.arenas.spec_stats_loc(),
     {
     }
 
@@ -1534,7 +1550,7 @@ axiom fn axiom_shared_layout()
         // Over several lines, as in `arena::axiom_arena_layout`.
         field_fits::<
             Shared,
-            Lock<Snapshot>,
+            Lock<StoredSnapshot>,
         >(S_STATS, S_CGROUP as int),
         field_fits::<Shared, Deferred>(S_CGROUP, size_of::<Shared>() as int),
         size_of::<Shared>() <= isize::MAX,
@@ -1563,7 +1579,7 @@ const _: () = assert!(
         && fits::<Shared, ThreadKey>(S_KEY, S_ARENAS)
         && fits::<Shared, Arenas>(S_ARENAS, S_TCACHES)
         && fits::<Shared, Tcaches>(S_TCACHES, S_STATS)
-        && fits::<Shared, Lock<Snapshot>>(S_STATS, S_CGROUP)
+        && fits::<Shared, Lock<StoredSnapshot>>(S_STATS, S_CGROUP)
         && fits::<Shared, Deferred>(S_CGROUP, core::mem::size_of::<Shared>())
         && core::mem::size_of::<Shared>() <= isize::MAX as usize
 );
@@ -1582,7 +1598,7 @@ verus! {
 /// The type of [`Shared::stats`]: named, so that the permission parameter
 /// of [`Shared::put_tail`] does not read as a lock field to
 /// `api::tests::lock_inventory`.
-type StatsLock = Lock<Snapshot>;
+type StatsLock = Lock<StoredSnapshot>;
 
 /// The permissions to the fields of a `Shared` under construction but
 /// its regions (frozen once written: [`axiom_shared_regions`]) and its
@@ -1637,7 +1653,7 @@ impl SharedParts {
         &&& self.key.ptr() == field_ptr::<Shared, ThreadKey>(p, S_KEY)
         &&& (self.arenas.perm matches Some(a) ==> a.ptr() == field_ptr::<Shared, Arenas>(p, S_ARENAS))
         &&& (self.tcaches.perm matches Some(t) ==> t.ptr() == field_ptr::<Shared, Tcaches>(p, S_TCACHES))
-        &&& self.stats.ptr() == field_ptr::<Shared, Lock<Snapshot>>(p, S_STATS)
+        &&& self.stats.ptr() == field_ptr::<Shared, Lock<StoredSnapshot>>(p, S_STATS)
         &&& self.cgroup.ptr() == field_ptr::<Shared, Deferred>(p, S_CGROUP)
     }
 
@@ -1859,7 +1875,7 @@ impl Shared {
         let tracked (key, raw) = take_field::<Shared, ThreadKey>(raw, p, S_KEY, S_ARENAS as int);
         let tracked (arenas, raw) = take_field::<Shared, Arenas>(raw, p, S_ARENAS, S_TCACHES as int);
         let tracked (tcaches, raw) = take_field::<Shared, Tcaches>(raw, p, S_TCACHES, S_STATS as int);
-        let tracked (stats, raw) = take_field::<Shared, Lock<Snapshot>>(raw, p, S_STATS, S_CGROUP as int);
+        let tracked (stats, raw) = take_field::<Shared, Lock<StoredSnapshot>>(raw, p, S_STATS, S_CGROUP as int);
         let tracked (cgroup, _raw) = take_field::<Shared, Deferred>(raw, p, S_CGROUP, size_of::<Shared>() as int);
         crate::arena::axiom_array_layout::<ClassLine, NCLASSES>();
         crate::arena::axiom_array_layout::<SlabTable, NCLASSES>();
@@ -2120,6 +2136,7 @@ impl Shared {
         Tracked(pg): Tracked<&mut PointsTo<u64>>,
         Tracked(pa): Tracked<&mut Held<Arenas>>,
         Tracked(pt): Tracked<&mut Held<Tcaches>>,
+        Tracked(parked): Tracked<vstd::resource::map::GhostSubmap<int, ArenaStats>>,
     )
         requires
             shared_ok(this),
@@ -2128,12 +2145,15 @@ impl Shared {
             a0@.ptr() == arena0,
             a0@.is_init(),
             a0@.value().spec_index() == 0,
+            a0@.value().spec_stats_loc() == parked.id(),
+            a0@.value().spec_stats_key() == 0,
+            forall|i: int| 0 < i < crate::arena::MAX_ARENAS ==> #[trigger] parked@.contains_key(i) && parked@[i] == ArenaStats::empty_spec(i as u16),
             old(pt).perm matches Some(t) && t.ptr() == field_ptr::<Shared, Tcaches>(this, S_TCACHES) && t.is_uninit(),
         ensures
             final(pg).ptr() == old(pg).ptr(),
             final(pg).is_init(),
             final(pa).perm matches Some(a) && a.ptr() == field_ptr::<Shared, Arenas>(this, S_ARENAS) && a.is_init() && a.value().wf()
-                && a.value().spec_arena0() == a0@.value(),
+                && a.value().spec_arena0() == a0@.value() && a.value().spec_stats_loc() == parked.id(),
             final(pt).perm matches Some(t) && t.ptr() == field_ptr::<Shared, Tcaches>(this, S_TCACHES) && t.is_init(),
     {
         proof {
@@ -2146,7 +2166,7 @@ impl Shared {
         // SAFETY: as in `put_head`; `arena0` is inside the same `Shared`.
         unsafe {
             ptr_mut_write(field_at(this, S_GC_INTERVAL_NS), Tracked(pg), gc_interval_ns);
-            Arenas::init(field_at(this, S_ARENAS), arena0, narenas, a0, Tracked(pa));
+            Arenas::init(field_at(this, S_ARENAS), arena0, narenas, a0, Tracked(pa), Tracked(parked));
             Tcaches::init(field_at(this, S_TCACHES), Tracked(pt));
         }
     }
@@ -2196,7 +2216,8 @@ impl Shared {
     }
 
     /// `config`, then the thread-exit key (`ThreadKey::create`) and the
-    /// empty statistics.
+    /// empty statistics, with the process statistics authority `auth`
+    /// (`stats::StoredSnapshot`) and no arena counted.
     #[inline(always)]
     unsafe fn put_tail(
         this: *mut Shared,
@@ -2204,13 +2225,14 @@ impl Shared {
         Tracked(pc): Tracked<&mut PointsTo<Config>>,
         Tracked(pk): Tracked<&mut PointsTo<ThreadKey>>,
         Tracked(ps): Tracked<&mut PointsTo<StatsLock>>,
+        Tracked(auth): Tracked<GhostMapAuth<int, ArenaStats>>,
     )
         requires
             crate::sys::may_syscall(),
             shared_ok(this),
             old(pc).ptr() == field_ptr::<Shared, Config>(this, S_CONFIG),
             old(pk).ptr() == field_ptr::<Shared, ThreadKey>(this, S_KEY),
-            old(ps).ptr() == field_ptr::<Shared, Lock<Snapshot>>(this, S_STATS),
+            old(ps).ptr() == field_ptr::<Shared, Lock<StoredSnapshot>>(this, S_STATS),
         ensures
             final(pc).ptr() == old(pc).ptr(),
             final(pc).is_init(),
@@ -2220,6 +2242,7 @@ impl Shared {
             final(ps).ptr() == old(ps).ptr(),
             final(ps).is_init(),
             final(ps).value().rank() == rank_stats(),
+            crate::lock::lock_init(final(ps).value()).auth@.id() == auth.id(),
     {
         proof {
             axiom_shared_layout();
@@ -2228,7 +2251,14 @@ impl Shared {
         unsafe {
             ptr_mut_write(field_at(this, S_CONFIG), Tracked(pc), config);
             ptr_mut_write(field_at(this, S_KEY), Tracked(pk), ThreadKey::create());
-            ptr_mut_write(field_at(this, S_STATS), Tracked(ps), Lock::new(Snapshot::EMPTY, Ghost(rank_stats())));
+            ptr_mut_write(
+                field_at(this, S_STATS),
+                Tracked(ps),
+                Lock::new(
+                    StoredSnapshot { s: Snapshot::EMPTY, auth: Tracked(auth), counted: Ghost(Seq::empty()) },
+                    Ghost(rank_stats()),
+                ),
+            );
         }
     }
 
@@ -2548,7 +2578,27 @@ impl Shared {
                 axiom_shared_layout();
                 axiom_ptr_add_addr(this as *mut u8, S_ARENA0);
             }
-            if !Arena::init(arena0, meta, regions, tables, Tracked(table_perms), 0, decay_ns, Tracked(&mut parts.arena0), Tracked(&mut ord), Tracked(classes)) {
+            // The process statistics authority, over every arena index's
+            // empty figures, and the points-to of each index: arena 0's
+            // goes to its statistics lock now, the rest to the arena
+            // creation lock (`arena::Created`), and the authority to the
+            // process statistics lock (`put_tail`).
+            let tracked (sauth, mut parked) = GhostMapAuth::<int, ArenaStats>::new(
+                Map::new(vstd::set::Set::range(0, crate::arena::MAX_ARENAS as int), |i: int| ArenaStats::empty_spec(i as u16)),
+            );
+            if !Arena::init(
+                arena0,
+                meta,
+                regions,
+                tables,
+                Tracked(table_perms),
+                0,
+                decay_ns,
+                Tracked(&mut parts.arena0),
+                Tracked(&mut ord),
+                Tracked(classes),
+                Tracked(&mut parked),
+            ) {
                 return false;
             }
             // Arena 0's permission, frozen: the arena registry's table
@@ -2573,6 +2623,7 @@ impl Shared {
                 Tracked(&mut parts.gc_interval_ns),
                 Tracked(&mut parts.arenas),
                 Tracked(&mut parts.tcaches),
+                Tracked(parked),
             );
             let policy = Shared::put_policy(
                 this,
@@ -2589,6 +2640,7 @@ impl Shared {
                 Tracked(&mut parts.config),
                 Tracked(&mut parts.key),
                 Tracked(&mut parts.stats),
+                Tracked(sauth),
             );
             proof {
                 built.perm = Some(axiom_shared_built(parts, regions_perm, meta_perm, line_perms, table_perms, a0, this));
