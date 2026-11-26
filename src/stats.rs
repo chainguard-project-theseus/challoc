@@ -825,11 +825,27 @@ pub open spec fn rec_coherent(r: StoredRec) -> bool {
     &&& uncounted_empty(r.1, r.2)
 }
 
+/// The record `r` of generation `k` carries that generation's epoch
+/// number: `k` modulo 2^64, as [`epoch`] counts with [`fig_add64`] from 0
+/// at generation 0.
+pub open spec fn rec_numbered(k: nat, r: StoredRec) -> bool {
+    r.0.epoch as int == k as int % 0x1_0000_0000_0000_0000
+}
+
 /// `st` is a stamp of `shared`'s process statistics history whose record
-/// is coherent ([`rec_coherent`]).
+/// is coherent ([`rec_coherent`]) and carries its generation's epoch
+/// number ([`rec_numbered`]).
 pub open spec fn stamp_ok(shared: &Shared, st: Stamp) -> bool {
     &&& st.id() == stats_hist_loc(shared)
     &&& rec_coherent(st.value())
+    &&& rec_numbered(st.key(), st.value())
+}
+
+/// `old` is a stamp of `shared`'s process statistics history only if its
+/// generation is at most `new`'s: a reader never returns a record older
+/// than one the caller already held.
+pub open spec fn stamp_not_older(shared: &Shared, old: Stamp, new: Stamp) -> bool {
+    old.id() == stats_hist_loc(shared) ==> old.key() <= new.key()
 }
 
 /// A stamp of a fresh, unshared history, for a caller to hand a reader
@@ -867,12 +883,14 @@ impl StoredSnapshot {
     /// The history records the held value: the current generation's
     /// stamp is the history's, names the held snapshot, authority figures
     /// and counted arenas, and no generation above it is recorded (so the
-    /// next store's is fresh).
+    /// next store's is fresh); the held snapshot's epoch number is the
+    /// generation modulo 2^64 ([`rec_numbered`]).
     pub open spec fn recorded(self) -> bool {
         &&& self.stamp@.id() == self.hist@.id()
         &&& self.stamp@.key() == self.generation@
         &&& self.stamp@.value() == (self.s, self.auth@@, self.counted@)
         &&& forall|k: nat| #[trigger] self.hist@@.contains_key(k) ==> k <= self.generation@
+        &&& rec_numbered(self.generation@, self.stamp@.value())
     }
 
     /// Statistics coherence: the stored totals are every figure of the
@@ -1579,7 +1597,12 @@ pub proof fn lemma_totals_add(t: Totals, a: ArenaStats)
 /// it finds and counts every arena that epoch counted
 /// ([`StoredSnapshot::coherent`]'s [`counted_kept`] and
 /// [`uncounted_empty`] hold again when it stores).
-fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
+///
+/// When it stores, `st` gets the stamp of the record stored
+/// ([`stamp_ok`]), whose snapshot is the one returned, at a generation
+/// above that of any stamp of the process history `st` held before;
+/// otherwise `st` is unchanged.
+fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd): Tracked<&mut Ghost<(Seq<ArenaStats>, Seq<int>)>>, Tracked(st): Tracked<&mut Stamp>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
@@ -1595,6 +1618,9 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             && r.totals.identities(),
         r.inv(),
         r.totals == totals_sum(final(rd)@.0),
+        store ==> stamp_ok(shared, *final(st)) && final(st).value().0 == r,
+        store ==> (old(st).id() == stats_hist_loc(shared) ==> old(st).key() < final(st).key()),
+        !store ==> *final(st) == *old(st),
         *final(ord) == *old(ord),
 {
     proof {
@@ -1817,9 +1843,18 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             // as no generation above the current one is recorded.
             let ghost (h0, g0) = (c.hist@@, c.generation@);
             assert(!h0.contains_key(g0 + 1));
+            // A stamp of this history the caller held is of a recorded
+            // generation, so at most the current one.
+            if st.id() == c.hist@.id() {
+                st.agree(c.hist.borrow());
+                assert(h0.contains_key(st.key()));
+            }
+            // The epoch number counts the generation modulo 2^64
+            // (`fig_sum64(e, 1)` wraps exactly at 2^64).
             let tracked p = c.hist.borrow_mut().insert(g0 + 1, (c.s, c.auth@@, c.counted@));
             *c.stamp.borrow_mut() = p.persist();
             c.generation = Ghost(g0 + 1);
+            *st = c.stamp.borrow().duplicate();
             assert forall|k: nat| #[trigger] c.hist@@.contains_key(k) implies k <= c.generation@ by {
                 if k != g0 + 1 {
                     assert(h0.contains_key(k));
@@ -1853,7 +1888,13 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
 /// `fx` gets [`Change::Refreshed`]; or `None`, with nothing changed, when
 /// there is no metadata object for the [`Scratch`] the collection works
 /// in.
-pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
+///
+/// On `Some(e)`, `st` gets the stamp of the record stored ([`Stamp`]):
+/// it is coherent ([`stamp_ok`]), its snapshot's epoch number is `e`,
+/// and its generation is above that of any stamp of the process history
+/// `st` held before (from an earlier `epoch`, [`snapshot`] or
+/// [`arena_stats_all_into`]). On `None`, `st` is unchanged.
+pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(st): Tracked<&mut Stamp>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<u64>)
     requires
         crate::sys::may_abort_corrupt(),
         crate::sys::may_syscall(),
@@ -1863,6 +1904,9 @@ pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(
         *final(ord) == *old(ord),
         r is Some ==> final(fx)@ == Change::Refreshed,
         r is None ==> final(fx)@ == old(fx)@,
+        r is Some ==> stamp_ok(shared, *final(st)) && final(st).value().0.epoch == r->Some_0,
+        r is Some ==> (old(st).id() == stats_hist_loc(shared) ==> old(st).key() < final(st).key()),
+        r is None ==> *final(st) == *old(st),
 {
     proof {
         shared.lemma_wf();
@@ -1872,7 +1916,7 @@ pub fn epoch(shared: &Shared, Tracked(fx): Tracked<&mut Ghost<Change>>, Tracked(
         *fx = Ghost(Change::Refreshed);
     }
     let tracked mut rd = Ghost((Seq::<ArenaStats>::empty(), Seq::<int>::empty()));
-    let e = collect_into(shared, true, &mut tmp.record().a, Tracked(&mut rd), Tracked(ord)).epoch;
+    let e = collect_into(shared, true, &mut tmp.record().a, Tracked(&mut rd), Tracked(st), Tracked(ord)).epoch;
     tmp.free(&shared.meta, Tracked(ord));
     Some(e)
 }
@@ -1890,7 +1934,8 @@ pub fn collect(shared: &Shared, tmp: &mut ArenaStats, Tracked(ord): Tracked<&mut
         *final(ord) == *old(ord),
 {
     let tracked mut rd = Ghost((Seq::<ArenaStats>::empty(), Seq::<int>::empty()));
-    collect_into(shared, false, tmp, Tracked(&mut rd), Tracked(ord))
+    let tracked mut st = spare_stamp();
+    collect_into(shared, false, tmp, Tracked(&mut rd), Tracked(&mut st), Tracked(ord))
 }
 
 /// The snapshot stored by the last [`epoch`] (all zero before the first),
@@ -1904,7 +1949,10 @@ pub fn collect(shared: &Shared, tmp: &mut ArenaStats, Tracked(ord): Tracked<&mut
 /// ([`lemma_stored_agree`]), and their `mapped` is the true sum when
 /// that fits ([`lemma_totals_sum_mapped`]). The stamp is the held value's
 /// ([`StoredSnapshot::recorded`]), so any other stamp of its generation
-/// names the same record ([`lemma_stamps_agree`]).
+/// names the same record ([`lemma_stamps_agree`]). Its epoch number is
+/// the stamp's generation modulo 2^64 ([`rec_numbered`]), and the
+/// generation is at least that of any stamp of the process history `st`
+/// held before ([`stamp_not_older`]).
 pub fn snapshot(shared: &Shared, Tracked(st): Tracked<&mut Stamp>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_syscall(),
@@ -1913,6 +1961,7 @@ pub fn snapshot(shared: &Shared, Tracked(st): Tracked<&mut Stamp>, Tracked(ord):
     ensures
         r.inv(),
         stamp_ok(shared, *final(st)),
+        stamp_not_older(shared, *old(st), *final(st)),
         final(st).value().0 == r,
         sum_mapped(stored_of(final(st).value().1, final(st).value().2)) <= usize::MAX ==> r.totals.mapped == sum_mapped(
             stored_of(final(st).value().1, final(st).value().2),
@@ -1932,6 +1981,11 @@ pub fn snapshot(shared: &Shared, Tracked(st): Tracked<&mut Stamp>, Tracked(ord):
         let (m, counted) = (c.auth@@, c.counted@);
         lemma_totals_sum_mapped(stored_of(m, counted));
         assert(sums_stored(r, m, counted));
+        // A stamp of this history the caller held is of a recorded
+        // generation, so at most the current one.
+        if st.id() == c.hist@.id() {
+            st.agree(c.hist.borrow());
+        }
         *st = c.stamp.borrow().duplicate();
         assert(st.value() == (r, m, counted));
     }
@@ -1972,6 +2026,8 @@ pub fn arena_stats_into(shared: &Shared, index: u16, out: &mut ArenaStats, Track
 /// all-zero figures ([`counted_kept`], [`uncounted_empty`]). The record
 /// is coherent ([`rec_coherent`]), and a stamp [`snapshot`] returns for
 /// the same generation names the same record ([`lemma_stamps_agree`]).
+/// Its generation is at least that of any stamp of the process history
+/// `st` held before ([`stamp_not_older`]).
 pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): Tracked<&mut Stamp>,Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
@@ -1980,6 +2036,7 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): 
     ensures
         final(out).index == crate::arena::ARENAS_ALL as u16,
         stamp_ok(shared, *final(st)),
+        stamp_not_older(shared, *old(st), *final(st)),
         exists|found: Seq<int>, steps: Seq<ArenaStats>| #[trigger] merged_rec(final(st).value(), found, steps, *final(out)),
         *final(ord) == *old(ord),
 {
@@ -2097,7 +2154,11 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): 
                 found[j] as u16,
             ));
         // The held value's stamp names the authority figures and counted
-        // arenas merged.
+        // arenas merged. A stamp of this history the caller held is of a
+        // recorded generation, so at most the current one.
+        if st.id() == c.hist@.id() {
+            st.agree(c.hist.borrow());
+        }
         *st = c.stamp.borrow().duplicate();
         assert(st.value() == (c.s, m, c.counted@));
         assert(merged_rec(st.value(), found, steps, *out));
@@ -3380,7 +3441,7 @@ mod tests {
     // The by-value forms the tests read the figures through (on the test
     // threads' large stacks); the build collects into `Scratch` records.
     fn epoch(s: &Shared, fx: Tracked<&mut Ghost<Change>>, ord: Tracked<&mut LockOrder>) -> u64 {
-        super::epoch(s, fx, ord).unwrap()
+        super::epoch(s, fx, Tracked::assume_new(), ord).unwrap()
     }
 
     fn collect(s: &Shared, ord: Tracked<&mut LockOrder>) -> Snapshot {

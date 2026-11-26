@@ -2970,7 +2970,8 @@ fn ctl(
                     // And the slab-pages walks, so a consumer's next read
                     // counts the free pages they release as released.
                     crate::purge::note_epoch(shared);
-                    stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut *ord)).ok_or(EAGAIN)?
+                    let tracked mut st = stats::spare_stamp();
+                    stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut st), Tracked(&mut *ord)).ok_or(EAGAIN)?
                 },
                 None => {
                     let tracked mut st = stats::spare_stamp();
