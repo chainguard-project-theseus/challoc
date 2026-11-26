@@ -664,6 +664,8 @@ pub fn calloc(n: usize, m: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tra
     ensures
         n * m > usize::MAX ==> r@.addr == 0,
         heap::fits(r, n * m, QUANTUM as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for((n * m) as usize, 1)),
+        r@.addr != 0 ==> class_slot(r, (n * m) as usize),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
         *final(ord) == *old(ord),
 {
@@ -693,6 +695,9 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
         r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
         final(blk).gives(r.0, n * m),
         r.0@.addr != 0 ==> final(blk).reads_zero(0, n * m),
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for((n * m) as usize, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, (n * m) as usize),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r.0, (n * m) as usize),
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let Some(size) = n.checked_mul(m) else { return (enomem(Tracked(errno)), Tracked(Zeroed::empty(0))) };
@@ -707,6 +712,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
             proof {
                 lemma_class_fits(r.0, c as int, size);
                 lemma_class_gives(*blk, r.0, c as int, size);
+                lemma_class_named(*blk, r.0, c as int, size);
             }
             // The heap's zero flag is not trusted for a slab slot: it records that
             // challoc wrote nothing to the slot since its slab was `Fresh` or
@@ -721,6 +727,12 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
             let r = alloc_huge(shared, size, 1, true, Tracked(blk), Tracked(ord));
             proof {
                 lemma_huge_result(r.0, size, 1);
+                lemma_huge_named(shared, *blk, r.0, size);
+                if r.0@.addr != 0 {
+                    // The run's token claims it, so `huge_hint_ok`'s length
+                    // holds of the token the zero fill below keeps.
+                    blk.lemma_claims(r.0);
+                }
             }
             r
         },
@@ -2518,6 +2530,8 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize, Tracked(uout): Trac
         final(uout).opt() matches Some(q) ==> reports_usable(q.opt_value(), r, n * m),
         n * m > usize::MAX ==> r@.addr == 0,
         heap::fits(r, n * m, QUANTUM as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for((n * m) as usize, 1)),
+        r@.addr != 0 ==> class_slot(r, (n * m) as usize),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
@@ -2553,6 +2567,9 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
         r.0@.addr != 0 ==> usable_is(r.0, n * m, r.2@.val() as int),
         final(blk).gives(r.0, n * m),
         r.0@.addr != 0 ==> final(blk).reads_zero(0, final(blk).len()),
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for((n * m) as usize, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, (n * m) as usize),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r.0, (n * m) as usize),
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let Some(size) = n.checked_mul(m) else {
@@ -2590,6 +2607,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
                     }
                 }
                 lemma_class_gives(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size);
                 if p@.addr != 0 {
                     blk.lemma_slot_len(p, c as int);
                 }
@@ -2600,6 +2618,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
             let (p, zeroed, z) = alloc_huge(shared, size, 1, true, Tracked(blk), Tracked(&mut *ord));
             proof {
                 lemma_huge_result(p, size, 1);
+                lemma_huge_named(shared, *blk, p, size);
                 if p@.addr != 0 {
                     blk.lemma_claims(p);
                 }
@@ -3967,6 +3986,8 @@ mod exports {
         fn calloc / je_calloc(n: usize, m: usize) -> (r: *mut c_void) ensures [
             n * m > usize::MAX ==> r@.addr == 0,
             heap::fits(r as *mut u8, n * m, QUANTUM as int),
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for((n * m) as usize, 1)),
+            r@.addr != 0 ==> class_slot(r as *mut u8, (n * m) as usize),
             r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
@@ -4184,6 +4205,8 @@ mod exports {
         ensures
             n * m > usize::MAX ==> r@.addr == 0,
             heap::fits(r as *mut u8, n * m, QUANTUM as int),
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for((n * m) as usize, 1)),
+            r@.addr != 0 ==> class_slot(r as *mut u8, (n * m) as usize),
             r@.addr == 0 ==> c_errno() == ENOMEM,
             usable@.addr != 0 ==> reports_usable(c_out(usable), r as *mut u8, n * m),
     {
