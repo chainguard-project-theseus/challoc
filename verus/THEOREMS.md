@@ -146,6 +146,9 @@ leave out (theorem 33). Remaining work is tracked in
 - **Empty slab order in a hold** ([A refill takes Empty slabs in ascending order](#a-refill-takes-empty-slabs-in-ascending-order-over-the-sets-read)):
   `class::theorem_idle_empty_ascending`, `class/mod.rs`, with
   `ClassState::plan_at`'s contract.
+- **Purged slab order in a hold** ([A refill takes Purged slabs after Empty ones, before fresh ones](#a-refill-takes-purged-slabs-after-empty-ones-before-fresh-ones-no-fork-epoch-over-the-sets-read)):
+  `class::theorem_idle_purged_ascending`, `class/mod.rs`, with
+  `ClassState::plan_at`'s contract.
 
 ## Configuration
 
@@ -11835,11 +11838,11 @@ its rlimit as before.
 - One lock hold, over the sets it read under the class lock; a refill's
   second hold (the retry without a floor in `plan`) starts again.
 - `Empty` slabs only. The order of the `Purged` picks across a hold is
-  not stated: which purged floor a call uses depends on
-  `purge::purged_is_zero()`, which has no spec here (previous section,
-  M5), and a call that lifts it may return a slab below the one an
-  earlier call returned from the floor. That a fresh pick is in neither
-  set holds per call only (previous section).
+  the next section's theorem, with no fork epoch only: which purged
+  floor a call uses depends on `purge::purged_is_zero()`, which has no
+  spec here (previous section, M5), and a call that lifts it may return
+  a slab below the one an earlier call returned from the floor. That a
+  fresh pick is in neither set holds per call only (previous section).
 - `lo`, `e0` and `m` are ghost outputs. `lo` and `m` are pinned by the
   picks: the picks before `lo` are recorded `Active`, and the picks
   recorded `Empty` are exactly `lo .. lo + m`, so a hold whose picks
@@ -11872,6 +11875,139 @@ or `class::fresh` for M3, on the PR's tree and on main):
 | M3 | under a floor, `next_slab` leaves the `Empty` slab it returns in the `Empty` set | rejected (the new `Empty`-set `ensures`, and `ready`) | rejected (`ready`) |
 | M4 | `take` records `state: State::Active` in its pick instead of the state it read | rejected (`take`'s new `state` postcondition) | verifies |
 | M5 | `idle_ordered` drops its clause that the picks before `lo` are recorded `Active` (the `[slab 5, slab 2]` case with `lo = 1` from review) | rejected (`theorem_idle_empty_ascending`'s first two postconditions) | not applicable (no such clause) |
+
+## A refill takes Purged slabs after Empty ones, before fresh ones (no fork epoch; over the sets read)
+
+The previous section orders a lock hold's `Empty` idle picks and puts
+them before every other idle pick. It says nothing about the picks after
+them: before chainguard-project-theseus/challoc#967, nothing said that
+`next_slab` takes a `Purged` slab it returns out of the `Purged` set, or
+that `take` leaves that set alone, so the per-call statement
+(`idle_pick`) did not compose for `Purged` slabs either: nothing ruled
+out a lower `Purged` slab after a higher one, or a fresh slab before a
+`Purged` one.
+
+**Statement.**
+
+```rust
+// class/mod.rs
+spec fn purged_ordered(p0: Set<nat>, p1: Set<nat>, p: Seq<Pick>, a: int, q: int, np: int, floor: int) -> bool {  // opaque
+    floor == 0 ==> {
+        &&& 0 <= a
+        &&& 0 <= q
+        &&& a + q <= np <= p.len()
+        &&& forall|i: int| a <= i < a + q ==> p0.contains(p[i].slab) && !p1.contains(p[i].slab)
+            && p[i].state == State::Purged
+        &&& forall|i: int| a + q <= i < np ==> p[i].state != State::Purged
+        &&& forall|i: int, j: int| a <= i < j < a + q ==> p[i].slab < p[j].slab
+        &&& forall|x: nat| p1.contains(x) ==> p0.contains(x)
+        &&& forall|x: nat, i: int| p1.contains(x) && a <= i < a + q ==> p[i].slab < x
+        &&& forall|x: nat| p0.contains(x) && !p1.contains(x) ==> taken_in(p, a, a + q, x)
+        &&& a + q < np ==> none_from(p1, 0)
+    }
+}
+
+fn next_slab(&self, g: &mut Inner, floor: usize, ..) -> (r: Option<usize>)
+    ensures
+        r matches Some(s) ==> (final(g).st(s) == State::Purged) == old(g).purged.map@.contains(s),
+        final(g).purged.map@ == match r {
+            Some(s) => if old(g).purged.map@.contains(s) { old(g).purged.map@.remove(s) } else { old(g).purged.map@ },
+            None => old(g).purged.map@,
+        },
+
+fn take(&self, g: &mut Inner, slab: usize, ..)
+    ensures
+        final(g).purged.map@ == old(g).purged.map@,
+
+fn plan_at(&self, floor: usize, .., Tracked(scan): Tracked<&mut Ghost<PlanOrder>>, ..) -> (np: usize)
+    ensures
+        idle_ordered(final(scan)@.3, final(ex)@.0.empty.map@, final(picks)@, final(scan)@.1, final(scan)@.4, np, floor),
+        purged_ordered(final(scan)@.5, final(ex)@.0.purged.map@, final(picks)@, final(scan)@.1 + final(scan)@.4,
+            final(scan)@.6, np, floor),
+
+proof fn theorem_idle_purged_ascending(e0, e1, p0, p1, p: Seq<Pick>, lo: int, m: int, q: int, np: int)
+    requires
+        idle_ordered(e0, e1, p, lo, m, np, 0),
+        purged_ordered(p0, p1, p, lo + m, q, np, 0),
+    ensures
+        forall|i: int| 0 <= i < np ==> ((p[i].state == State::Purged) == (lo + m <= i < lo + m + q)),
+        forall|i: int| lo + m + q <= i < np ==> p[i].state != State::Empty && p[i].state != State::Purged,
+        forall|i: int| lo + m <= i < lo + m + q ==> p0.contains(p[i].slab),
+        forall|i: int, j: int| lo + m <= i < j < lo + m + q ==> p[i].slab < p[j].slab,
+        forall|i: int, x: nat| lo + m <= i < lo + m + q && p0.contains(x) && x < p[i].slab ==> taken_in(p, lo + m, i, x),
+        lo + m + q < np ==> forall|x: nat| p0.contains(x) ==> taken_in(p, lo + m, lo + m + q, x),
+```
+
+In words, for a hold with no fork epoch (floor 0), with `m` its idle
+picks recorded `Empty` (previous section) and `p0` the `Purged` set when
+the idle picks began: the `q` idle picks right after the `Empty` ones
+are exactly the hold's picks recorded `Purged` (the partial scan's are
+`Active`, previous section); they are slabs of `p0` in strictly
+ascending order; below each of them every slab of `p0` is an earlier one
+of them; and an idle pick after them, which is recorded neither `Empty`
+nor `Purged` (a fresh slab), comes only once every slab of `p0` is
+taken.
+
+**Proof sketch.** `next_slab` ensures that the `Purged` set loses
+exactly the slab it returns when that slab came from it, and is
+otherwise unchanged, and that the slab is still `Purged` exactly when it
+came from that set (the lock invariant ties the `Purged` set to the
+`Purged` state, as it ties the `Empty` set to `Empty`); `take` ensures
+it leaves the `Purged` set unchanged, and its pick already records the
+slab's state (previous section). `plan_at`'s idle loop carries
+`purged_ordered` from `lemma_purged_start` through `lemma_purged_step`,
+which takes the same pick's `idle_ordered` (to know that an `Empty`
+pick comes before any other) and `idle_pick`: at floor 0 a `Purged` pick
+is the lowest of the current set, which only shrinks during the hold, so
+the picks ascend; a fresh pick comes only with the `Purged` set empty,
+which then stays empty. The early return in the partial scan states it
+with no idle pick. `lemma_idle_step` now also ensures how its count of
+`Empty` picks moves. Both new specs are opaque, so `plan_at` carries
+them as atoms; it verifies within its rlimit.
+
+**Premises (seams).** None beyond the common ones. No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- No fork epoch only (floor 0): `purged_ordered` says nothing with a
+  floor. With a floor, `next_slab` takes `Purged` slabs from the floor,
+  or from 0 while `purge::purged_is_zero()` reads true. A hold whose
+  read turned from false to true between two calls could take a
+  `Purged` slab below the floor after a higher one, or after a fresh
+  slab. The only store to `LAZY_EVER` (`purge.rs`) writes `true`, so the
+  read never turns that way, but no spec states it; stating it needs
+  `LAZY_EVER` under an invariant, an atomic change.
+- One lock hold, over the sets it read under the class lock, as the
+  previous section.
+- `p0` and `q` are ghost outputs, as `e0` and `m` are in the previous
+  section. `q` is pinned by the picks: the idle picks recorded `Purged`
+  are exactly the `q` after the `m` recorded `Empty`. `p0` is pinned by
+  nothing outside `plan_at`'s body, so the "no `Purged` slab is skipped"
+  and "every slab of `p0`" items are about that set, and hold trivially
+  for an empty `p0`. Which picks are `Purged`, that they follow the
+  `Empty` ones and precede the fresh ones, and that they ascend, are
+  about the picks alone.
+- `plan`, the floor-0 caller, discards `plan_at`'s ghost outputs, as for
+  the previous sections; the theorem is about `plan_at`'s contract.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures`, a widened ghost tuple and proof blocks only).
+
+**Mutations** (`cargo verus focus --locked -- --verify-module class`,
+on the PR's tree and on its base):
+
+| id | change | PR | base |
+|---|---|---|---|
+| M1 | `next_slab` leaves the `Purged` slab it returns in the `Purged` set | rejected (the new `Purged`-set `ensures`, and `ready`) | rejected (`ready`) |
+| M2 | `take` drops its `Purged`-set `ensures` | rejected (`lemma_purged_step` precondition in `plan_at`) | not applicable (no such clause) |
+| M3 | `next_slab` drops its "still `Purged` exactly when it came from that set" `ensures` | rejected (`lemma_purged_step` precondition in `plan_at`) | not applicable (no such clause) |
+| M4 | the theorem is stated at floor 1 instead of 0 | rejected (its assertions: `purged_ordered` says nothing with a floor) | not applicable |
+
+M2 and M3 show the two new frame clauses are what carries the order
+through the hold; M4 shows the floor-0 scope is real, not a convenience.
+No executable mutant was found that the base accepts and this PR
+rejects: the base's per-call contract (`idle_pick` at the hold's floor,
+checked at every pick by `lemma_idle_step`) and the lock invariant (the
+`Purged` set is the slabs whose state is `Purged`) already confine the
+code to this order at floor 0; this PR states it across the hold.
 
 ## Interface contract
 
