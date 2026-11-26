@@ -26,7 +26,7 @@ groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 | --- | --- |
 | Returned blocks and allocator metadata | 1, 2, 4, 5, 7, 24, 41; overflow reach, same-region overflow reach and commits that avoid guards |
 | Free paths and bad input | 3, 25, 43, 44; Bad input; claims past the check; exact sized frees and the double-free window (opt-in keys) |
-| Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy and registry; home arena index |
+| Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy and registry; home arena index; Purged floor read |
 | Purge and decay | 18, 19, 30, 31, 38, 40 |
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
 | The C boundary and system calls | 8, 21, 32, 42, 45, 46; secure-exec configuration; interface contract |
@@ -181,6 +181,10 @@ leave out (theorem 33). Remaining work is tracked in
   `heap::Heap::lemma_home_index` and `Heap::arena`'s `ensures`, over
   `Heap::homed_ok`, `heap/mod.rs`, with `Tcaches::create`'s `requires`,
   `heap/tcaches.rs`.
+- **Purged floor read** ([A refill lifts the `Purged` floor only on its own read that returned true](#a-refill-lifts-the-purged-floor-only-on-its-own-read-that-returned-true)):
+  `class::ClassState::next_slab`'s `ensures` (`LazyMark::reads`),
+  `class/fresh.rs`, with `purge::purged_is_zero_seen`'s `ensures`,
+  `purge.rs`.
 
 ## Configuration
 
@@ -11950,13 +11954,18 @@ carries it as an atom; `plan_at` verifies within its rlimit as before.
   across a hold's idle picks is the next section's theorem.
 - Which purged floor applies is not stated by `idle_pick`. The code
   lifts it only while `purge::purged_is_zero()` is true; the statement
-  allows either floor (mutant M5 survives). Since
+  allows either floor (mutant M5 survived this section's statement when
+  it was added). Since
   chainguard-project-theseus/challoc#971 `next_slab` also ensures the
   floor it used against the caller's `LazyMark` (0 unless a read through
   the mark returned false), which orders the picks across a hold (the
-  Purged section below). That still does not say a call read the flag:
-  a call that never reads it and lifts the floor (M5) meets it, since
-  its mark stays clear.
+  Purged section below). That still did not say a call read the flag:
+  a call that never reads it and lifts the floor meets it while its
+  mark is clear. Since chainguard-project-theseus/challoc#997
+  `next_slab` states the read: it records one read in the mark exactly
+  when it reaches the `Purged` set with a fork floor, and lifts that
+  floor only when the read returned true
+  ([Purged floor read](#a-refill-lifts-the-purged-floor-only-on-its-own-read-that-returned-true)).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures` and proof blocks only).
 
@@ -11969,7 +11978,7 @@ on the PR's tree and on main):
 | M2 | under a floor, the `Purged` scan starts at `floor + 1` (saturating) | rejected (assertion behind `idle_pick`) | verifies |
 | M3 | under a floor, the `Empty` scan ignores it (`lowest_set()`) | rejected (assertion behind `idle_pick`) | verifies |
 | M4 | under a floor, the `Empty` scan finds nothing (`lowest_set_from(usize::MAX)`) | rejected (assertion behind `idle_pick`) | verifies |
-| M5 | the `Purged` floor is always lifted (`if true`) | verifies (stated above) | verifies |
+| M5 | the `Purged` floor is always lifted (`if true`) | verifies (stated above); rejected since #971 and #997 (see the [Purged floor read](#a-refill-lifts-the-purged-floor-only-on-its-own-read-that-returned-true) section) | verifies |
 
 ## A refill takes Empty slabs in ascending order (over the sets read)
 
@@ -12321,7 +12330,7 @@ statement):
 | N5 | `purged_is_zero_seen` drops "a lazy mark reads false" | rejected (`next_slab`'s in-place assertion that the mark stays lazy) | not applicable |
 | N6 | `LazyPred` drops "every value held is at most the one held" | rejected (`purged_is_zero_seen`'s `ensures`) | not applicable |
 | N7 | the theorem's last item drops "at or above the fork floor" | rejected (its `ensures`) | not applicable |
-| N8 | the `Purged` floor is always lifted, with no read (`if true`; the idle-slab section's M5) | verifies (stated in that section: the mark stays clear) | verifies |
+| N8 | the `Purged` floor is always lifted, with no read (`if true`; the idle-slab section's M5) | verifies (stated in that section: the mark stays clear); rechecked on 723a9e5d for #997: rejected (the in-place assertion `lowest_from(p0, pf, s)`, since the hold's mark may already be lazy) | verifies |
 
 M2 and M3 show the two new frame clauses are what carries the order
 through the hold; M4 showed #967's floor-0 scope was real, not a
@@ -13386,6 +13395,83 @@ this tree and on main):
 
 H3 and H4 survive on main: there an explicit cache homed on `FOREIGN`
 was well formed.
+
+## A refill lifts the `Purged` floor only on its own read that returned true
+
+In a fork epoch (fork floor `floor` nonzero) `ClassState::next_slab`
+takes a `Purged` slab from below the floor only while
+`purge::purged_is_zero` reads true: until the process's first lazy
+(`MADV_FREE`) batch, a `Purged` slab's pages were discarded eagerly and
+a fork child shares none of them. Since
+chainguard-project-theseus/challoc#971 its contract states the floor it
+used against the hold's `LazyMark` (`purged_floor(floor, lazy)`: 0
+unless a read through the mark returned false). A clear mark allowed
+the floor 0 whether or not this call read the flag
+([idle slab](#a-refill-takes-the-lowest-idle-slab-over-the-sets-read),
+"Which purged floor applies"). Now the mark records each read's result,
+and `next_slab` states which reads it made.
+
+**Statement.**
+
+```rust
+// purge.rs
+pub closed spec fn reads(&self) -> Seq<bool>;   // LazyMark: each read's result, oldest first
+
+pub proof fn new() -> (tracked r: LazyMark)
+    ensures !r.lazy(), r.reads() == Seq::<bool>::empty(), ..;
+
+pub fn purged_is_zero_seen(s: &LazyEver, Tracked(w): Tracked<&mut LazyMark>) -> (r: bool)
+    ensures
+        final(w).lazy() == !r,
+        final(w).reads() == old(w).reads().push(r), ..;
+
+// class/fresh.rs, ClassState::next_slab
+    ensures
+        final(mark).reads() == if floor != 0 && none_from(old(g).empty.map@, floor as int) {
+            old(mark).reads().push(!final(mark).lazy())
+        } else {
+            old(mark).reads()
+        }, ..;
+```
+
+In words: a call reads the flag exactly once when it reaches the
+`Purged` set under a fork floor (no `Empty` slab at or above the floor),
+and not otherwise; the mark is lazy after the call exactly when that
+read returned false. With the existing `ensures` (the `Purged` pick is
+the lowest from `purged_floor(floor, final(mark).lazy())`), a pick below
+a nonzero fork floor comes only from a call whose own read returned
+true.
+
+**Premises (seams).** None added. The read's result rests on
+`LAZY_EVER`'s invariant (`LazyPred`), as before.
+
+**Scope and where the statement is weaker than the code.**
+- "Returned true" is the load's result at the time of the read. A lazy
+  batch of another class may run after it in the same hold; the
+  statement does not order the read against later stores (the flag
+  only rises, so a later read would return false).
+- That a lifted floor is safe for the slab's pages (it was discarded
+  eagerly, so a fork child shares none of them) is the design's
+  argument (design 5, "Fork epochs"), not stated.
+- Ghost only: the release library's machine code is unchanged (a ghost
+  field of `LazyMark`, new `ensures` and a proof statement).
+
+**Mutations** (`cargo verus focus --locked -- --verify-module M`, on
+this tree and on main 723a9e5d):
+
+| id | change | PR | main |
+|---|---|---|---|
+| R1 | `next_slab` lifts the `Purged` floor with no read (`if true`; M5 and N8 above) | rejected (the new `reads` `ensures`, and the in-place assertion `lowest_from(p0, pf, s)`) | rejected (the in-place assertion: the hold's mark may already be lazy) |
+| R2 | `next_slab` reads the flag twice under a fork floor (`a && b`, same mark) | rejected (the new `reads` `ensures`) | verifies |
+| R3 | `purged_is_zero_seen` records the negated result (`push(v != 0)`; `purge`) | rejected (its `reads` `ensures`) | n/a (no such field) |
+| R4 | `next_slab`'s `ensures` records the mark's `lazy()`, not its negation | rejected (that `ensures`) | n/a (no such clause) |
+
+R1 is rejected on main too, so the THEOREMS rows that say M5 and N8
+verify were out of date: the in-place assertion is about the floor
+`next_slab` used, which with a lazy mark is the fork floor. On main a
+call that lifts the floor with no read is still rejected only because
+the mark may be lazy; the new `ensures` names the read itself. R2 is an
+executable mutant main accepts: a second `SeqCst` load per pick.
 
 ## Interface contract
 

@@ -166,17 +166,26 @@ impl LazyEver {
 /// that returned false, after which every read given the mark returns
 /// false too, on this thread or any other, whatever ran in between. The
 /// witness is a persistent element of the set of values the byte has
-/// held ([`LazyPred`]); its field is private to this module.
+/// held ([`LazyPred`]). It also records the result of each read made
+/// through it, in order ([`LazyMark::reads`]). Its fields are private to
+/// this module.
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub tracked struct LazyMark {
     tracked seen: Option<GhostPersistentSingleton<u8>>,
+    ghost reads: Seq<bool>,
 }
 
 impl LazyMark {
     /// A read through this mark returned false.
     pub closed spec fn lazy(&self) -> bool {
         self.seen is Some
+    }
+
+    /// The results of the reads made through this mark
+    /// ([`purged_is_zero_seen`]), oldest first.
+    pub closed spec fn reads(&self) -> Seq<bool> {
+        self.reads
     }
 
     /// The mark is for `lz` ([`LAZY_EVER`], from [`lazy`]): its witness,
@@ -190,9 +199,10 @@ impl LazyMark {
     pub proof fn new() -> (tracked r: LazyMark)
         ensures
             !r.lazy(),
+            r.reads() == Seq::<bool>::empty(),
             forall|lz: &LazyEver| r.of(lz),
     {
-        LazyMark { seen: None }
+        LazyMark { seen: None, reads: Seq::empty() }
     }
 }
 /// Batches that discarded anything, and bytes discarded, with each advice
@@ -395,8 +405,9 @@ fn lazy_set() {
 /// [`LazyMark::lazy`] after the call exactly when the read returned
 /// false. Given a lazy mark, the read returns false again, on this thread
 /// or any other, whatever ran in between: it rests on the byte's
-/// invariant ([`LazyPred`]), not on this thread's order. The mark is
-/// ghost: the machine code is the one load.
+/// invariant ([`LazyPred`]), not on this thread's order. The mark records
+/// the result ([`LazyMark::reads`]). The mark is ghost: the machine code
+/// is the one load.
 #[inline]
 pub fn purged_is_zero_seen(s: &LazyEver, Tracked(w): Tracked<&mut LazyMark>) -> (r: bool)
     requires
@@ -406,6 +417,7 @@ pub fn purged_is_zero_seen(s: &LazyEver, Tracked(w): Tracked<&mut LazyMark>) -> 
         final(w).of(s),
         final(w).lazy() == !r,
         old(w).lazy() ==> !r,
+        final(w).reads() == old(w).reads().push(r),
 {
     let v;
     let tracked mut d = GhostPersistentSubset::<u8>::dummy();
@@ -422,6 +434,7 @@ pub fn purged_is_zero_seen(s: &LazyEver, Tracked(w): Tracked<&mut LazyMark>) -> 
         if w.seen is None && v != 0 {
             w.seen = Some(d.split_singleton(v));
         }
+        w.reads = w.reads.push(v == 0);
     }
     v == 0
 }
