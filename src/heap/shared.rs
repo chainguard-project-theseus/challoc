@@ -438,12 +438,14 @@ impl Shared {
     /// [`Shared::wf`] unfolded for the statistics: the process statistics
     /// lock was created with the authority (`stats::StoredSnapshot`) at
     /// the location of the points-to every arena of the registry's
-    /// statistics lock holds (`Arenas::spec_stats_loc`).
+    /// statistics lock holds (`Arenas::spec_stats_loc`), and the registry
+    /// is the process's (`Arenas::is_process`).
     pub(crate) proof fn lemma_stats_loc(&self)
         requires
             self.wf(),
         ensures
             crate::lock::lock_init(self.stats).auth@.id() == self.arenas.spec_stats_loc(),
+            self.arenas.is_process(),
     {
     }
 
@@ -2233,6 +2235,10 @@ impl Shared {
             old(pc).ptr() == field_ptr::<Shared, Config>(this, S_CONFIG),
             old(pk).ptr() == field_ptr::<Shared, ThreadKey>(this, S_KEY),
             old(ps).ptr() == field_ptr::<Shared, Lock<StoredSnapshot>>(this, S_STATS),
+            forall|i: int|
+                0 <= i < crate::arena::MAX_ARENAS ==> #[trigger] auth@.contains_key(i) && auth@[i] == ArenaStats::empty_spec(
+                    i as u16,
+                ),
         ensures
             final(pc).ptr() == old(pc).ptr(),
             final(pc).is_init(),
@@ -2247,6 +2253,9 @@ impl Shared {
         proof {
             axiom_shared_layout();
         }
+        // No arena counted yet: no registry record, no floor record.
+        let tracked pubs = Map::tracked_empty();
+        let tracked floor = None;
         // SAFETY: as in `put_head`.
         unsafe {
             ptr_mut_write(field_at(this, S_CONFIG), Tracked(pc), config);
@@ -2255,7 +2264,13 @@ impl Shared {
                 field_at(this, S_STATS),
                 Tracked(ps),
                 Lock::new(
-                    StoredSnapshot { s: Snapshot::EMPTY, auth: Tracked(auth), counted: Ghost(Seq::empty()) },
+                    StoredSnapshot {
+                        s: Snapshot::EMPTY,
+                        auth: Tracked(auth),
+                        counted: Ghost(Seq::empty()),
+                        pubs: Tracked(pubs),
+                        floor: Tracked(floor),
+                    },
                     Ghost(rank_stats()),
                 ),
             );

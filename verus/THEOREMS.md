@@ -31,7 +31,7 @@ groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
 | The C boundary and system calls | 8, 21, 32, 42, 45, 46; secure-exec configuration; interface contract |
 | Zeroing and usable size | 6, 12 |
-| Statistics | 22, 27, 35; stored totals coherence; statistics readers |
+| Statistics | 22, 27, 35; stored totals coherence; statistics readers; counted arenas kept |
 
 ## How to read a section
 
@@ -161,6 +161,10 @@ leave out (theorem 33). Remaining work is tracked in
   `Arena::add_stats_to`'s and `ArenaStats::add`'s `ensures`, `arena.rs`
   and `stats.rs`, with the in-body checks of `stats::snapshot` and
   `stats::arena_stats_all_into`.
+- **Counted arenas kept** ([Each epoch counts every arena the last one counted, and the rest store zeros](#each-epoch-counts-every-arena-the-last-one-counted-and-the-rest-store-zeros-at-the-process-statistics-locks-invariant)):
+  `StoredSnapshot`'s `LockSpec` impl (`counted_kept`,
+  `uncounted_empty`), `stats.rs`, with `Arenas::count_seen`'s and
+  `Arenas::get_existing_seen`'s `ensures` and `NarenasPred`, `arena.rs`.
 
 ## Configuration
 
@@ -6217,8 +6221,11 @@ for `k <= 256`.
   process statistics lock's invariant over a ghost authority
   that every arena's statistics lock agrees with
   ([its own section](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant)),
-  for the arenas the last epoch counted; that an arena outside them
-  stores zeros, and the epoch-number half, are read from the code.
+  for the arenas the last epoch counted; an arena outside them stores
+  zeros and each epoch counts every arena the last one counted, both
+  in the same invariant
+  ([counted arenas kept](#each-epoch-counts-every-arena-the-last-one-counted-and-the-rest-store-zeros-at-the-process-statistics-locks-invariant));
+  the epoch-number half is read from the code.
   `snapshot` and `arena_stats_all_into` check their results against it
   in their bodies, not their `ensures`
   ([readers](#the-statistics-readers-check-their-figures-against-the-held-authority-snapshot-and-arena_stats_all_into)). A
@@ -12578,13 +12585,10 @@ Kani harness pass `Tracked::assume_new()` for the new ghost argument,
 outside `verus!` (no seam).
 
 **Scope and where the statement is weaker than the code.**
-- The sum is over the arenas the last stored collection counted. An
-  arena outside them is not claimed to store zeros. It does: arenas are
-  never unpublished, so one the last collection did not find was
-  created after the scan passed its index, and was never stored (its
-  lock still holds `ArenaStats::empty`'s figures). Proving that needs
-  a witness from `Arenas::get_existing` that an index found absent was
-  never published; that is not done here.
+- The sum is over the arenas the last stored collection counted. That
+  an arena outside them stores zeros, and that the next collection
+  counts each of them again, are proved later
+  ([counted arenas kept](#each-epoch-counts-every-arena-the-last-one-counted-and-the-rest-store-zeros-at-the-process-statistics-locks-invariant)).
 - The theorem is the process statistics lock's invariant: it holds
   whenever that lock is free (at each acquisition and release), not
   throughout a holder's critical section (`collect_into` stores an
@@ -12729,13 +12733,10 @@ location, `arena_at`'s location and key) and vstd's
   needs a ghost the caller holds and can relate to the authority (for
   example a history of stored epochs); that is left open
   (chainguard-project-theseus/challoc#981).
-- `found` is the arenas `arena_at` returned, not proved to be every
-  published arena: dropping one from the merge is not rejected (it is
-  by reading the loop, which visits every index below `count()`).
-  Proving it needs the absence witness from
-  `Arenas::get_existing` the section above names; so does relating
-  `found` to `counted` (every counted arena is still published, and
-  an arena found but not counted stores zeros).
+- `found` is the arenas the scan returned. That it includes every
+  counted arena, and that a found arena not counted stores zeros, is
+  checked in the next section
+  ([counted arenas kept](#each-epoch-counts-every-arena-the-last-one-counted-and-the-rest-store-zeros-at-the-process-statistics-locks-invariant)).
 - `Arena::stats_into` (`stats.arenas.<i>.*` for one arena) does not take
   the process statistics lock and its `ensures` do not name the
   points-to.
@@ -12760,7 +12761,150 @@ location, `arena_at`'s location and key) and vstd's
 R1 and R4 are rejected by exported contracts; R2 and R3 by the bodies'
 checks against the held value (a caller of either reader is not
 protected from them by its `ensures`). On main each verifies. R5
-survives on both: nothing says which arenas the merge must visit.
+survives on both: nothing says which arenas the merge must visit
+(the next section rejects it).
+
+Every mutation in the table was run on this tree and on main.
+
+## Each epoch counts every arena the last one counted, and the rest store zeros (at the process statistics lock's invariant)
+
+The two sections above sum the stored totals over the arenas the last
+stored collection counted (`counted`), but say nothing of the arenas it
+did not count, and nothing ties `counted` to the registry. This one
+adds both to the process statistics lock's invariant: whenever that
+lock is free, every arena index below `MAX_ARENAS` that `counted` does
+not name holds all-zero figures in the authority (so its statistics
+lock stores them, `StoredArena`), and every counted index has the
+registry's persistent record of its arena and lies below a count the
+registry once had. With those, the next collection finds and counts
+every arena the last one counted, and `arena_stats_all_into`'s merge
+visits all of them.
+
+**Statement.** `StoredSnapshot::coherent` gains two conjuncts over two
+new ghost fields, `pubs` (the registry record of each counted arena)
+and `floor` (a floor record of the count the last epoch read):
+
+```rust
+// stats.rs
+pub open spec fn coherent(self) -> bool {
+    &&& sums_stored(self.s, self.auth@@, self.counted@)
+    &&& counted_kept(self.pubs@, self.floor@, self.counted@)
+    &&& uncounted_empty(self.auth@@, self.counted@)
+}
+
+pub open spec fn counted_kept(p: Map<int, &'static Published>, f: Option<&'static Floor>, counted: Seq<int>) -> bool {
+    &&& f matches Some(w) ==> w.id() == process_floor_loc()
+    &&& forall|j| 0 <= j < counted.len() ==> {
+        &&& p.contains_key(counted[j])
+        &&& p[counted[j]].id() == process_pub_loc()
+        &&& p[counted[j]].key() == counted[j]
+        &&& f matches Some(w) && w@.contains_key(counted[j])
+    }
+}
+
+pub open spec fn uncounted_empty(m: Map<int, ArenaStats>, counted: Seq<int>) -> bool {
+    forall|k| 0 <= k < MAX_ARENAS && !counted.contains(k)
+        ==> m.contains_key(k) && m[k] == ArenaStats::empty_spec(k as u16)
+}
+```
+
+The registry (`arena.rs`) gains the count's floor record: an authority
+`lows` whose keys are exactly the indices below the count, and a
+persistent submap `low` of all of them (`NarenasPred`), which
+`Arenas::init` mints over `0..auto` and `Arenas::create` extends by
+the new index when it raises the count. Two scans use them:
+
+```rust
+// arena.rs: `count`'s code, with a floor record of the count read; an
+// earlier record's keys are all below it (the count only grows).
+pub fn count_seen(&self, Tracked(prev): Tracked<Option<&Floor>>) -> (r: (u32, Tracked<Floor>))
+    requires
+        prev matches Some(f) ==> self.is_process() && f.id() == process_floor_loc(),
+    ensures
+        r.0 as usize <= MAX_ARENAS,
+        self.is_process() ==> r.1@.id() == process_floor_loc(),
+        r.1@@.dom() == Set::range(0, r.0 as int),
+        prev matches Some(f) ==> forall|i| f@.contains_key(i) ==> i < r.0,
+
+// arena.rs: `get_existing_published`'s code; given the arena's record,
+// the arena is found (the record agrees with the registry's authority,
+// whose keys are the non-null entries).
+pub fn get_existing_seen(&self, index: u16, Tracked(seen): Tracked<Option<&'static Published>>)
+    -> (r: Option<(&Arena, Tracked<&'static Published>)>)
+    requires
+        seen matches Some(w) ==> self.is_process() && w.id() == process_pub_loc() && w.key() == index as int
+            && (index as usize) < MAX_ARENAS,
+    ensures
+        r matches Some((a, w)) ==> a.spec_index() == index && w@.key() == index as int
+            && (self.is_process() ==> w@.id() == process_pub_loc()),
+        seen is Some ==> r is Some,
+        // and get_existing's location and key facts
+```
+
+`collect_into` reads the count with the stored floor record, so every
+counted index is below the new count, and hands each counted index's
+record to the scan of that index (`stats::arena_seen`), so it finds
+that arena; when storing, it records the new counted arenas' records
+and the new floor record. `arena_stats_all_into` makes the same reads
+and checks in its body, before it releases the lock:
+
+```rust
+// arena_stats_all_into, with c the held value and m = c.auth@@:
+assert(forall|j| 0 <= j < c.counted@.len() ==> found.contains(c.counted@[j]));
+assert(forall|j| 0 <= j < found.len() && !c.counted@.contains(found[j])
+    ==> m[found[j]] == ArenaStats::empty_spec(found[j] as u16));
+```
+
+In words: an epoch's figures are never dropped by a later epoch. The
+count only grows (its floor record is persistent), so an arena counted
+once is below every later count, and an arena once published stays
+published (its record is persistent), so every later scan of its index
+finds it. Every index no epoch counted still holds the figures
+`Shared::init` minted for it, all zero: only `collect_into` changes the
+authority, and only at the indices it then counts. So the merge
+`arena_stats_all_into` returns visits every arena the stored totals
+count, and any other arena it visits (built since that epoch) adds
+zeros.
+
+**Premises (seams).** None added. vstd's `GhostMapAuth`,
+`GhostPersistentSubmap` and `GhostPersistentPointsTo` (`agree`,
+`insert`, `persist`, `combine_points_to`, `duplicate`); the existing
+premises of the two sections above.
+
+**Scope and where the statement is weaker than the code.**
+- It is the process statistics lock's invariant, as above: it holds
+  whenever that lock is free, not throughout `collect_into`'s critical
+  section.
+- No reader's `ensures` carries it; `arena_stats_all_into` checks it in
+  its body, as in the section above
+  (chainguard-project-theseus/challoc#981 stays open for a
+  caller-held ghost).
+- "All zero" is `ArenaStats::empty_spec` of the index in the
+  authority. That the merge's `add` of such a record leaves `out`'s
+  figures unchanged is not stated (the bin geometry is taken from it
+  where `out` has none).
+- An arena the scan did not find and no epoch counted is not proved
+  absent from the registry: it may be published after the scan passed
+  its index, which is fine, since it stores zeros.
+- Machine code: `count_seen` and `get_existing_seen` have the code of
+  `count` and `get_existing_published`, and the two scans call them
+  where they called `count` and `get_existing`; every other change is
+  ghost. The codegen verdict reports the release `.text` (both quanta)
+  against main.
+
+**Mutations** (`cargo verus focus --locked -- --verify-module stats
+--verify-module arena`, on this tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| R1 | `collect_into` skips arena 0 (`continue` when `i == 0`) | rejected (the loop's "every counted arena below `i` is found again" invariant) | verifies |
+| R2 | `arena_stats_all_into` skips arena 0 (`continue` when `i == 0`) | rejected (the loop's "every counted arena below `i` is found" invariant) | verifies |
+| R3 | `arena_stats_all_into` stops after the first arena it adds (`break`) | rejected (the body's check that `found` includes every counted arena) | verifies |
+
+R2 is the previous section's R5, which survived there. R1 is rejected
+through the lock invariant: an arena the last epoch counted and this
+one skipped would keep nonzero figures outside `counted`
+(`uncounted_empty`). On main each verifies.
 
 Every mutation in the table was run on this tree and on main.
 

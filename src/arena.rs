@@ -70,7 +70,9 @@ use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
-use vstd::resource::map::{GhostMapAuth, GhostPersistentPointsTo, GhostPointsTo, GhostSubmap};
+use vstd::resource::map::{
+    GhostMapAuth, GhostPersistentPointsTo, GhostPersistentSubmap, GhostPointsTo, GhostSubmap,
+};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::set::GhostSubset;
 use vstd::resource::set::{GhostSetAuth, GhostSingleton};
@@ -82,6 +84,11 @@ verus! {
 /// entry the arena registry publishes for it). What a class state that
 /// takes groups holds (`SlabTable::take_group`'s `pubw`).
 pub type Published = GhostPersistentPointsTo<int, Seq<Loc>>;
+
+/// Persistent knowledge of a floor of the arena count: a record whose
+/// keys are every index below a count the registry once had. The count
+/// only grows, so every key stays below it ([`Arenas::count_seen`]).
+pub type Floor = GhostPersistentSubmap<int, ()>;
 
 /// `w` names `a` as the arena the process registry published at `a`'s
 /// index: two class states of one class and arena index that both have
@@ -111,6 +118,14 @@ pub open(crate) spec fn process_arena0() -> Arena {
 /// which a [`Published`] of the process is a point of.
 pub closed spec fn process_pub_loc() -> Loc {
     Shared::built_at(Shared::storage()).arenas.spec_pub_loc()
+}
+
+/// The location of the process registry's floor record of the arena
+/// count (`Shared::built_at(Shared::storage())`'s,
+/// [`Arenas::spec_floor_loc`]), which a [`Floor`] of the process is a
+/// part of.
+pub closed spec fn process_floor_loc() -> Loc {
+    Shared::built_at(Shared::storage()).arenas.spec_floor_loc()
 }
 
 } // verus!
@@ -1955,6 +1970,8 @@ pub ghost struct RegKey {
     pub entries: Seq<int>,
     pub snap: Loc,
     pub pubs: Loc,
+    /// The location of the count's floor record ([`Floor`]).
+    pub floor: Loc,
     pub arena0: Arena,
     /// The location of the process statistics authority
     /// (`stats::StoredSnapshot`), whose points-to every published arena's
@@ -1975,6 +1992,10 @@ pub tracked struct RegVal {
     pub tracked auth: GhostVarAuth<Snap>,
     pub tracked pmap: GhostMapAuth<int, Seq<Loc>>,
     pub tracked pubs: Map<int, &'static Published>,
+    /// The count's floor record: the indices below the count, each once
+    /// it is below it, and their persistent record ([`Floor`]).
+    pub tracked lows: GhostMapAuth<int, ()>,
+    pub tracked low: Floor,
 }
 
 /// Table entry `i` in the registry's invariant: its permission is for the
@@ -2024,6 +2045,10 @@ impl InvariantPredicate<RegKey, RegVal> for NarenasPred {
         &&& v.pmap@.dom() == v.auth@.1.dom()
         &&& v.auth@.1.contains_key(0)
         &&& v.auth@.1[0] == k.arena0
+        &&& v.lows.id() == k.floor
+        &&& v.low.id() == k.floor
+        &&& v.lows@.dom() == Set::range(0, v.count.value() as int)
+        &&& v.low@.dom() == v.lows@.dom()
     }
 }
 
@@ -3080,16 +3105,24 @@ impl Arenas {
                 pubs.tracked_insert(0int, p0);
                 assert(pmap@.dom() =~= snap0.1.dom());
             }
+            // The count's floor record, over every index below `auto`.
+            let tracked (lows, below) = GhostMapAuth::<int, ()>::new(Map::new(Set::range(0, auto as int), |i: int| ()));
+            let tracked low = below.persist();
+            proof {
+                assert(lows@.dom() =~= Set::range(0, auto as int));
+                assert(low@.dom() =~= lows@.dom());
+            }
             let ghost ents = entries;
             let ghost key = RegKey {
                 count: nperm.id(),
                 entries: Seq::new(MAX_ARENAS as nat, |j: int| ents[j].id()),
                 snap: auth.id(),
                 pubs: pmap.id(),
+                floor: lows.id(),
                 arena0: a0.value(),
                 stats: sloc,
             };
-            let tracked val = RegVal { count: nperm, entries, arenas, auth, pmap, pubs };
+            let tracked val = RegVal { count: nperm, entries, arenas, auth, pmap, pubs, lows, low };
             proof {
                 assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] entry_ok(key, val, j) by {
                     assert(e1.contains_key(j));
@@ -3160,6 +3193,11 @@ impl Arenas {
     /// ([`Published`]).
     pub closed spec fn spec_pub_loc(&self) -> Loc {
         self.count_inv@.constant().pubs
+    }
+
+    /// The location of the count's floor record ([`Floor`]).
+    pub closed spec fn spec_floor_loc(&self) -> Loc {
+        self.count_inv@.constant().floor
     }
 
     /// Arena 0, as `init` published it.
@@ -3306,6 +3344,53 @@ impl Arenas {
         vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
             proof {
                 assert(entry_ok(self.count_inv@.constant(), v, i as int));
+            }
+            p = crate::vspec::entry::load(&self.table[i], Tracked(v.entries.tracked_borrow(i as int)));
+            proof {
+                if p@.addr != 0 {
+                    perm = Some(*v.arenas.tracked_borrow(i as int));
+                    pw = Some(*v.pubs.tracked_borrow(i as int));
+                }
+            }
+        });
+        // SAFETY: a non-null entry of the table.
+        if p.is_null() { None } else { Some((unsafe { arena_ref(p, Tracked(perm.tracked_unwrap()), Ghost(index)) }, Tracked(pw.tracked_unwrap()))) }
+    }
+
+    /// [`Arenas::get_existing_published`] for the process registry, the
+    /// same code, given the arena's record when the caller holds one
+    /// (`seen`): an arena once published stays published, so with a
+    /// record the arena is found (the record agrees with the registry's
+    /// authority, whose keys are the non-null entries, [`NarenasPred`]).
+    /// For the statistics scans (`stats::arena_seen`).
+    pub fn get_existing_seen(&self, index: u16, Tracked(seen): Tracked<Option<&'static Published>>) -> (r: Option<(&Arena, Tracked<&'static Published>)>)
+        requires
+            seen matches Some(w) ==> self.is_process() && w.id() == process_pub_loc() && w.key() == index as int
+                && (index as usize) < MAX_ARENAS,
+        ensures
+            r matches Some((a, w)) ==> a.spec_index() == index && w@.key() == index as int && (self.is_process() ==> w@.id()
+                == process_pub_loc()),
+            r matches Some((a, w)) ==> a.spec_stats_loc() == self.spec_stats_loc() && a.spec_stats_key() == index as int
+                && same_tables(*a, self.spec_arena0()),
+            seen is Some ==> r is Some,
+    {
+        let i = index as usize;
+        if i >= MAX_ARENAS {
+            return None;
+        }
+        proof {
+            use_type_invariant(self);
+        }
+        let p;
+        let tracked mut perm: Option<&'static PointsTo<Arena>> = None;
+        let tracked mut pw: Option<&'static Published> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                assert(entry_ok(self.count_inv@.constant(), v, i as int));
+                if let Some(w) = seen {
+                    w.agree(&v.pmap);
+                    assert(v.auth@.1.contains_key(i as int));
+                }
             }
             p = crate::vspec::entry::load(&self.table[i], Tracked(v.entries.tracked_borrow(i as int)));
             proof {
@@ -3695,6 +3780,43 @@ impl Arenas {
         r
     }
 
+    /// [`Arenas::count`] for the process registry, the same code, with a
+    /// floor record of the count read ([`Floor`]: its keys are the
+    /// indices below it) and, given an earlier floor record (`prev`),
+    /// that the count read is no lower: the count only grows. For the
+    /// statistics scans (`stats::collect_into`).
+    #[inline]
+    pub fn count_seen(&self, Tracked(prev): Tracked<Option<&Floor>>) -> (r: (u32, Tracked<Floor>))
+        requires
+            prev matches Some(f) ==> self.is_process() && f.id() == process_floor_loc(),
+        ensures
+            r.0 as usize <= MAX_ARENAS,
+            self.is_process() ==> r.1@.id() == process_floor_loc(),
+            r.1@@.dom() == Set::range(0, r.0 as int),
+            prev matches Some(f) ==> forall|i: int| #[trigger] f@.contains_key(i) ==> i < r.0,
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let r;
+        let tracked mut w: Option<Floor> = None;
+        vstd::open_atomic_invariant!(self.count_inv.borrow() => v => {
+            proof {
+                if let Some(f) = prev {
+                    f.agree(&v.lows);
+                    assert forall|i: int| #[trigger] f@.contains_key(i) implies i < v.count.value() by {
+                        assert(v.lows@.dom().contains(i));
+                    }
+                }
+            }
+            r = crate::vspec::count::load(&self.count, Tracked(&v.count));
+            proof {
+                w = Some(v.low.duplicate());
+            }
+        });
+        (r, Tracked(w.tracked_unwrap()))
+    }
+
     /// Number of automatic arenas (`opt.narenas` as applied).
     #[inline]
     pub fn auto(&self) -> (r: u32)
@@ -3844,6 +3966,7 @@ impl Arenas {
     pub closed spec fn is_process(&self) -> bool {
         &&& self.invs == Shared::built_at(Shared::storage()).arenas.invs
         &&& self.spec_pub_loc() == Shared::built_at(Shared::storage()).arenas.spec_pub_loc()
+        &&& self.spec_floor_loc() == Shared::built_at(Shared::storage()).arenas.spec_floor_loc()
         &&& self.spec_arena0() == process_arena0()
     }
 
@@ -4302,6 +4425,12 @@ impl Arenas {
             proof {
                 let ghost s0 = v.auth@;
                 v.auth.update(c.half.borrow_mut(), ((index + 1) as u32, s0.1));
+                // The floor record gains `index`, now below the count.
+                assert(!v.lows@.dom().contains(index as int));
+                let tracked p = v.lows.insert(index as int, ()).persist();
+                v.low.combine_points_to(p);
+                assert(v.lows@.dom() =~= Set::range(0, index + 1));
+                assert(v.low@.dom() =~= v.lows@.dom());
                 assert forall|j: int| 0 <= j < MAX_ARENAS implies #[trigger] entry_ok(k, v, j) by {
                     assert(entry_ok(k, v0, j));
                 }
