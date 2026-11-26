@@ -824,7 +824,8 @@ fn stats_allocated(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tra
     ensures
         *final(ord) == *old(ord),
 {
-    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(ord)).totals.allocated))
+    let tracked mut st = stats::spare_stamp();
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut st), Tracked(ord)).totals.allocated))
 }
 
 fn stats_active(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracked(ord): Tracked<&mut LockOrder>) -> Result<Reading, c_int>
@@ -835,7 +836,8 @@ fn stats_active(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracke
     ensures
         *final(ord) == *old(ord),
 {
-    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(ord)).totals.active))
+    let tracked mut st = stats::spare_stamp();
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut st), Tracked(ord)).totals.active))
 }
 
 fn stats_metadata(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracked(ord): Tracked<&mut LockOrder>) -> Result<Reading, c_int>
@@ -846,7 +848,8 @@ fn stats_metadata(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Trac
     ensures
         *final(ord) == *old(ord),
 {
-    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(ord)).totals.metadata))
+    let tracked mut st = stats::spare_stamp();
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut st), Tracked(ord)).totals.metadata))
 }
 
 fn stats_resident(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracked(ord): Tracked<&mut LockOrder>) -> Result<Reading, c_int>
@@ -857,7 +860,8 @@ fn stats_resident(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Trac
     ensures
         *final(ord) == *old(ord),
 {
-    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(ord)).totals.resident))
+    let tracked mut st = stats::spare_stamp();
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut st), Tracked(ord)).totals.resident))
 }
 
 fn stats_mapped(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracked(ord): Tracked<&mut LockOrder>) -> Result<Reading, c_int>
@@ -868,7 +872,8 @@ fn stats_mapped(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracke
     ensures
         *final(ord) == *old(ord),
 {
-    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(ord)).totals.mapped))
+    let tracked mut st = stats::spare_stamp();
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut st), Tracked(ord)).totals.mapped))
 }
 
 fn stats_retained(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracked(ord): Tracked<&mut LockOrder>) -> Result<Reading, c_int>
@@ -879,7 +884,8 @@ fn stats_retained(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Trac
     ensures
         *final(ord) == *old(ord),
 {
-    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(ord)).totals.retained))
+    let tracked mut st = stats::spare_stamp();
+    Ok(Size(stats::snapshot(shared(Tracked(mark)), Tracked(&mut st), Tracked(ord)).totals.retained))
 }
 
 fn thread_allocated(_m: &[usize], Tracked(mark): Tracked<&'static ReadyMark>, Tracked(ord): Tracked<&mut LockOrder>) -> Result<Reading, c_int>
@@ -2813,7 +2819,8 @@ fn arena_stats_into(shared: &Shared, i: usize, out: &mut ArenaStats, Tracked(ord
         *final(ord) == *old(ord),
 {
     if i == ARENAS_ALL as usize {
-        stats::arena_stats_all_into(shared, out, Tracked(ord));
+        let tracked mut st = stats::spare_stamp();
+        stats::arena_stats_all_into(shared, out, Tracked(&mut st), Tracked(ord));
         return Ok(());
     }
     if i == ARENAS_DESTROYED {
@@ -2965,7 +2972,10 @@ fn ctl(
                     crate::purge::note_epoch(shared);
                     stats::epoch(shared, Tracked(&mut *fx), Tracked(&mut *ord)).ok_or(EAGAIN)?
                 },
-                None => stats::snapshot(shared, Tracked(&mut *ord)).epoch,
+                None => {
+                    let tracked mut st = stats::spare_stamp();
+                    stats::snapshot(shared, Tracked(&mut st), Tracked(&mut *ord)).epoch
+                },
             };
             io.read(e, Tracked(cc))
         },

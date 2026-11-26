@@ -2256,6 +2256,10 @@ impl Shared {
         // No arena counted yet: no registry record, no floor record.
         let tracked pubs = Map::tracked_empty();
         let tracked floor = None;
+        // The history of stored records, with generation 0's: the initial
+        // value.
+        let tracked (mut hist, _) = GhostMapAuth::<nat, crate::stats::StoredRec>::new(Map::empty());
+        let tracked stamp = hist.insert(0, (Snapshot::EMPTY, auth@, Seq::empty())).persist();
         // SAFETY: as in `put_head`.
         unsafe {
             ptr_mut_write(field_at(this, S_CONFIG), Tracked(pc), config);
@@ -2270,6 +2274,9 @@ impl Shared {
                         counted: Ghost(Seq::empty()),
                         pubs: Tracked(pubs),
                         floor: Tracked(floor),
+                        hist: Tracked(hist),
+                        generation: Ghost(0),
+                        stamp: Tracked(stamp),
                     },
                     Ghost(rank_stats()),
                 ),

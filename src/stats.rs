@@ -62,7 +62,7 @@ use core::alloc::Layout;
 use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
-use vstd::resource::map::{GhostMapAuth, GhostPointsTo};
+use vstd::resource::map::{GhostMapAuth, GhostPersistentPointsTo, GhostPointsTo};
 
 pub mod ledger;
 
@@ -783,9 +783,98 @@ pub struct StoredSnapshot {
     /// read ([`Floor`]), none before the first.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     pub floor: Tracked<Option<&'static Floor>>,
+    /// Ghost (no bytes): the history of stored records, by generation
+    /// ([`StoredSnapshot::recorded`]): one entry per store, 0 for the
+    /// initial value.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub hist: Tracked<GhostMapAuth<nat, StoredRec>>,
+    /// Ghost (no bytes): the current generation, the history's last.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub generation: Ghost<nat>,
+    /// Ghost (no bytes): the history's persistent entry of the current
+    /// generation, which the readers hand out ([`Stamp`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub stamp: Tracked<Stamp>,
+}
+
+/// What one store of the process statistics lock leaves, as a history
+/// entry ([`StoredSnapshot::recorded`]): the snapshot, the authority's
+/// figures of every arena index, and the arenas the totals count.
+pub type StoredRec = (Snapshot, Map<int, ArenaStats>, Seq<int>);
+
+/// A persistent entry of the process statistics lock's history
+/// ([`StoredSnapshot::hist`]), which [`snapshot`] and
+/// [`arena_stats_all_into`] return: the generation it names and that
+/// generation's record. Two stamps of one generation name one record
+/// ([`lemma_stamps_agree`]).
+pub type Stamp = GhostPersistentPointsTo<nat, StoredRec>;
+
+/// The location of the process statistics lock's history (its initial
+/// value's, which the lock's frame keeps): the only one whose stamps the
+/// readers return.
+pub closed spec fn stats_hist_loc(shared: &Shared) -> Loc {
+    crate::lock::lock_init(shared.stats).hist@.id()
+}
+
+/// A stored record's coherence, as [`StoredSnapshot::coherent`] states it
+/// of the value that stored it: the totals are the counted arenas'
+/// figures summed in index order, and every uncounted index's figures
+/// are all zero.
+pub open spec fn rec_coherent(r: StoredRec) -> bool {
+    &&& sums_stored(r.0, r.1, r.2)
+    &&& uncounted_empty(r.1, r.2)
+}
+
+/// `st` is a stamp of `shared`'s process statistics history whose record
+/// is coherent ([`rec_coherent`]).
+pub open spec fn stamp_ok(shared: &Shared, st: Stamp) -> bool {
+    &&& st.id() == stats_hist_loc(shared)
+    &&& rec_coherent(st.value())
+}
+
+/// A stamp of a fresh, unshared history, for a caller to hand a reader
+/// as the place its stamp goes (the reader overwrites it).
+pub proof fn spare_stamp() -> (tracked r: Stamp) {
+    let tracked (mut h, _) = GhostMapAuth::<nat, StoredRec>::new(Map::empty());
+    h.insert(0, arbitrary()).persist()
+}
+
+/// `r` is a `MALLCTL_ARENAS_ALL` merge of `rec`'s figures
+/// ([`merged_stored`]) over arenas `found` that include every one `rec`
+/// counts, each other one with all-zero figures.
+pub open spec fn merged_rec(rec: StoredRec, found: Seq<int>, steps: Seq<ArenaStats>, r: ArenaStats) -> bool {
+    &&& merged_stored(rec.1, found, steps, r)
+    &&& forall|j: int| 0 <= j < rec.2.len() ==> found.contains(#[trigger] rec.2[j])
+    &&& forall|j: int|
+        0 <= j < found.len() && !rec.2.contains(#[trigger] found[j]) ==> rec.1[found[j]] == ArenaStats::empty_spec(
+            found[j] as u16,
+        )
+}
+
+/// Two stamps of one history and generation name one record.
+pub proof fn lemma_stamps_agree(tracked p: &Stamp, tracked q: &Stamp)
+    requires
+        p.id() == q.id(),
+        p.key() == q.key(),
+    ensures
+        p.value() == q.value(),
+{
+    let tracked mut a = p.duplicate();
+    a.intersection_agrees(q);
 }
 
 impl StoredSnapshot {
+    /// The history records the held value: the current generation's
+    /// stamp is the history's, names the held snapshot, authority figures
+    /// and counted arenas, and no generation above it is recorded (so the
+    /// next store's is fresh).
+    pub open spec fn recorded(self) -> bool {
+        &&& self.stamp@.id() == self.hist@.id()
+        &&& self.stamp@.key() == self.generation@
+        &&& self.stamp@.value() == (self.s, self.auth@@, self.counted@)
+        &&& forall|k: nat| #[trigger] self.hist@@.contains_key(k) ==> k <= self.generation@
+    }
+
     /// Statistics coherence: the stored totals are every figure of the
     /// arenas `counted` names (as many as the snapshot's `narenas`, each
     /// once, ascending) summed in index order ([`totals_sum`], wrapping as
@@ -1575,7 +1664,11 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             store ==> same_outside(c.auth@@, c0.auth@@, ids_of(reads)),
             c.pubs == c0.pubs,
             c.floor == c0.floor,
+            c.hist == c0.hist,
+            c.generation == c0.generation,
+            c.stamp == c0.stamp,
             c0.coherent(),
+            c0.recorded(),
             forall|j: int| 0 <= j < c0.counted@.len() ==> #[trigger] c0.counted@[j] < n,
             shared.arenas.is_process() ==> fl.id() == process_floor_loc(),
             fl@.dom() == Set::range(0, n as int),
@@ -1720,6 +1813,19 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             assert(stored_of(c.auth@@, c.counted@) =~= reads);
             assert(totals_exact(reads, pages, c.s.totals));
             assert(c.coherent());
+            // The next generation records the value stored: it is fresh,
+            // as no generation above the current one is recorded.
+            let ghost (h0, g0) = (c.hist@@, c.generation@);
+            assert(!h0.contains_key(g0 + 1));
+            let tracked p = c.hist.borrow_mut().insert(g0 + 1, (c.s, c.auth@@, c.counted@));
+            *c.stamp.borrow_mut() = p.persist();
+            c.generation = Ghost(g0 + 1);
+            assert forall|k: nat| #[trigger] c.hist@@.contains_key(k) implies k <= c.generation@ by {
+                if k != g0 + 1 {
+                    assert(h0.contains_key(k));
+                }
+            }
+            assert(c.recorded());
             assert(crate::lock::lock_inv(*c));
             assert(crate::lock::lock_frame(crate::lock::lock_init(shared.stats), *c));
         }
@@ -1727,6 +1833,7 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
     } else {
         proof {
             assert(c.auth@@ == c0.auth@@);
+            assert(c.recorded());
             assert(crate::lock::lock_inv(*c));
         }
         Snapshot {
@@ -1786,22 +1893,30 @@ pub fn collect(shared: &Shared, tmp: &mut ArenaStats, Tracked(ord): Tracked<&mut
     collect_into(shared, false, tmp, Tracked(&mut rd), Tracked(ord))
 }
 
-/// The snapshot stored by the last [`epoch`] (all zero before the first).
+/// The snapshot stored by the last [`epoch`] (all zero before the first),
+/// with `st` a stamp of the process statistics history ([`Stamp`]) whose
+/// record's snapshot it is.
 ///
-/// The body checks, before it releases the lock, that its totals are the
-/// figures of the arenas that epoch counted summed in index order
-/// ([`sums_stored`]), each as the held value's authority records it, which
-/// is what that arena's statistics lock stores then
-/// ([`lemma_stored_agree`]), and that their `mapped` is the true sum when
-/// that fits ([`lemma_totals_sum_mapped`]). The `ensures` does not export
-/// it: the authority is the lock value's ghost, which no caller can name.
-pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
+/// The record is coherent ([`rec_coherent`]): the totals are the figures
+/// of the arenas that epoch counted summed in index order
+/// ([`sums_stored`]), each as the process authority recorded it, which is
+/// what that arena's statistics lock stored then
+/// ([`lemma_stored_agree`]), and their `mapped` is the true sum when
+/// that fits ([`lemma_totals_sum_mapped`]). The stamp is the held value's
+/// ([`StoredSnapshot::recorded`]), so any other stamp of its generation
+/// names the same record ([`lemma_stamps_agree`]).
+pub fn snapshot(shared: &Shared, Tracked(st): Tracked<&mut Stamp>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_stats()),
     ensures
         r.inv(),
+        stamp_ok(shared, *final(st)),
+        final(st).value().0 == r,
+        sum_mapped(stored_of(final(st).value().1, final(st).value().2)) <= usize::MAX ==> r.totals.mapped == sum_mapped(
+            stored_of(final(st).value().1, final(st).value().2),
+        ),
         *final(ord) == *old(ord),
 {
     proof {
@@ -1809,15 +1924,16 @@ pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: S
     }
     let tracked mut under = LockOrder::spare();
     let g = shared.stats.lock(Tracked(ord), Tracked(&mut under));
-    let r = g.s;
+    // The lock's value, read only: its history's stamp is handed out.
+    let c = &*g;
+    let r = c.s;
     proof {
         // The result against the held value's ghosts.
-        let (m, counted) = (g@.auth@@, g@.counted@);
+        let (m, counted) = (c.auth@@, c.counted@);
         lemma_totals_sum_mapped(stored_of(m, counted));
         assert(sums_stored(r, m, counted));
-        assert(sum_mapped(stored_of(m, counted)) <= usize::MAX ==> r.totals.mapped == sum_mapped(
-            stored_of(m, counted),
-        ));
+        *st = c.stamp.borrow().duplicate();
+        assert(st.value() == (r, m, counted));
     }
     g.unlock();
     r
@@ -1847,21 +1963,24 @@ pub fn arena_stats_into(shared: &Shared, index: u16, out: &mut ArenaStats, Track
 /// stored figures summed into `out`, all from one `epoch` (the process
 /// statistics lock keeps one from storing midway). Its `index` is 4096.
 ///
-/// The body checks, before it releases the lock, that `out` is the merge,
-/// in index order, of the figures the held value's authority records for
-/// the arenas found ([`merged_stored`]), which are the figures each one's
-/// statistics lock stores when it is read (`Arena::add_stats_to`), and
-/// that the arenas found include every one the stored epoch counted,
-/// each other one with all-zero figures ([`counted_kept`],
-/// [`uncounted_empty`]). The `ensures` does not export it, as in
-/// [`snapshot`].
-pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
+/// `st` gets a stamp of the process statistics history ([`Stamp`]) whose
+/// record `out` merges ([`merged_rec`]): `out` is the merge, in index
+/// order, of the figures that record has for the arenas found
+/// ([`merged_stored`]), which are the figures each one's statistics lock
+/// stores when it is read (`Arena::add_stats_to`), and the arenas found
+/// include every one the stored epoch counted, each other one with
+/// all-zero figures ([`counted_kept`], [`uncounted_empty`]). The record
+/// is coherent ([`rec_coherent`]), and a stamp [`snapshot`] returns for
+/// the same generation names the same record ([`lemma_stamps_agree`]).
+pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): Tracked<&mut Stamp>,Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_stats()),
     ensures
         final(out).index == crate::arena::ARENAS_ALL as u16,
+        stamp_ok(shared, *final(st)),
+        exists|found: Seq<int>, steps: Seq<ArenaStats>| #[trigger] merged_rec(final(st).value(), found, steps, *final(out)),
         *final(ord) == *old(ord),
 {
     proof {
@@ -1977,6 +2096,11 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord):
             0 <= j < found.len() && !c.counted@.contains(#[trigger] found[j]) ==> m[found[j]] == ArenaStats::empty_spec(
                 found[j] as u16,
             ));
+        // The held value's stamp names the authority figures and counted
+        // arenas merged.
+        *st = c.stamp.borrow().duplicate();
+        assert(st.value() == (c.s, m, c.counted@));
+        assert(merged_rec(st.value(), found, steps, *out));
     }
     published.unlock();
 }
@@ -3095,15 +3219,18 @@ verus! {
 /// stored snapshot and statistics coherence
 /// ([`StoredSnapshot::coherent`]): the stored totals are the sum of the
 /// figures the statistics locks of the arenas the last epoch counted
-/// store. Its frame is the authority's location, which every arena's
-/// points-to shares (`Arenas::spec_stats_loc`, `Shared::wf`).
+/// store, and the history records the held value
+/// ([`StoredSnapshot::recorded`]). Its frame is the authority's location,
+/// which every arena's points-to shares (`Arenas::spec_stats_loc`,
+/// `Shared::wf`), and the history's ([`stats_hist_loc`]).
 ///
 /// The lock's writers are `Shared::init` (`Snapshot::EMPTY`, all zero,
 /// with no arena counted and the authority minted over every index's
-/// `ArenaStats::empty_spec`; `Lock::new` requires the invariant) and
+/// `ArenaStats::empty_spec`, and a history minted with generation 0's
+/// record; `Lock::new` requires the invariant) and
 /// [`collect_into`], which updates the authority with each arena's figures
 /// as `Arena::store_stats` stores them and then stores their totals and
-/// the arenas it counted. Each holder ([`collect_into`], [`snapshot`],
+/// the arenas it counted, and records them as the next generation. Each holder ([`collect_into`], [`snapshot`],
 /// [`arena_stats_all_into`]) ends in `LockGuard::unlock`, which requires
 /// both (`api::tests::guards_end_in_unlock`); the fork handlers take only
 /// the raw lock. `snapshot` only reads the value, and
@@ -3115,10 +3242,12 @@ impl crate::lock::LockSpec for StoredSnapshot {
     open spec fn lock_spec_inv(self) -> bool {
         &&& self.s.inv()
         &&& self.coherent()
+        &&& self.recorded()
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        v.auth@.id() == init.auth@.id()
+        &&& v.auth@.id() == init.auth@.id()
+        &&& v.hist@.id() == init.hist@.id()
     }
 }
 
@@ -3277,9 +3406,12 @@ mod tests {
     #[test]
     fn identities_hold_through_the_lifecycle() {
         let s = shared();
-        assert_eq!(snapshot(s, Tracked::assume_new()), Snapshot::EMPTY);
+        assert_eq!(
+            snapshot(s, Tracked::assume_new(), Tracked::assume_new()),
+            Snapshot::EMPTY
+        );
         assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 1);
-        let first = snapshot(s, Tracked::assume_new());
+        let first = snapshot(s, Tracked::assume_new(), Tracked::assume_new());
         assert_eq!(first.epoch, 1);
         assert_eq!(first.narenas, 1);
         assert_eq!(first.totals.allocated, 0);
@@ -3326,7 +3458,10 @@ mod tests {
         );
 
         // Frozen until the next epoch; `collect` sees the live figures.
-        assert_eq!(snapshot(s, Tracked::assume_new()), first);
+        assert_eq!(
+            snapshot(s, Tracked::assume_new(), Tracked::assume_new()),
+            first
+        );
         assert_eq!(
             arena_stats(s, 0, Tracked::assume_new())
                 .unwrap()
@@ -3338,7 +3473,7 @@ mod tests {
 
         assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 2);
         let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
-        let tot = snapshot(s, Tracked::assume_new()).totals;
+        let tot = snapshot(s, Tracked::assume_new(), Tracked::assume_new()).totals;
         assert_eq!(a.index, 0);
         let b16 = a.bins[c16];
         assert_eq!(
@@ -3424,7 +3559,7 @@ mod tests {
         t.flush_all();
         assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 3);
         let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
-        let tot = snapshot(s, Tracked::assume_new()).totals;
+        let tot = snapshot(s, Tracked::assume_new(), Tracked::assume_new()).totals;
         assert_eq!((tot.allocated, tot.active), (0, 0));
         let b16 = a.bins[c16];
         assert_eq!(
@@ -3462,7 +3597,7 @@ mod tests {
         assert!(crate::purge::purge_all(s, Tracked::assume_new(), Tracked::assume_new()) > 0);
         assert_eq!(epoch(s, Tracked::assume_new(), Tracked::assume_new()), 4);
         let a = arena_stats(s, 0, Tracked::assume_new()).unwrap();
-        let tot = snapshot(s, Tracked::assume_new()).totals;
+        let tot = snapshot(s, Tracked::assume_new(), Tracked::assume_new()).totals;
         assert_eq!((a.small_dirty, a.large_dirty, a.huge_dirty), (0, 0, 0));
         assert_eq!(a.small_retained + a.large_retained + a.huge_retained, dirty);
         assert_eq!(a.bins[c16].purged_slabs, 1);
@@ -3575,7 +3710,7 @@ mod tests {
 
         let live = collect(s, Tracked::assume_new());
         epoch(s, Tracked::assume_new(), Tracked::assume_new());
-        let snap = snapshot(s, Tracked::assume_new());
+        let snap = snapshot(s, Tracked::assume_new(), Tracked::assume_new());
         assert_eq!((live.narenas, snap.narenas), (2, 2));
         assert!(arena_stats(s, 1, Tracked::assume_new()).is_none());
         let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
@@ -3633,7 +3768,7 @@ mod tests {
         let usable = s.huge.usable_for(size).unwrap();
 
         epoch(s, Tracked::assume_new(), Tracked::assume_new());
-        let snap = snapshot(s, Tracked::assume_new());
+        let snap = snapshot(s, Tracked::assume_new(), Tracked::assume_new());
         assert_eq!(snap.narenas, 2);
         let s0 = arena_stats(s, 0, Tracked::assume_new()).unwrap();
         let s1 = arena_stats(s, 1, Tracked::assume_new()).unwrap();
@@ -3677,7 +3812,7 @@ mod tests {
         assert_eq!(s1.huge_dirty, 0);
         assert_eq!(s1.bins[c32].empty_slabs, 1);
         assert_eq!(s0.bins[c32].empty_slabs, 1);
-        let tot = snapshot(s, Tracked::assume_new()).totals;
+        let tot = snapshot(s, Tracked::assume_new(), Tracked::assume_new()).totals;
         assert_eq!(tot.resident, s0.resident + s1.resident);
         assert!(tot.identities_hold(), "{tot:?}");
         t.destroy();
@@ -3739,7 +3874,7 @@ mod tests {
                         });
                     }
                 });
-                let snap = snapshot(s, Tracked::assume_new());
+                let snap = snapshot(s, Tracked::assume_new(), Tracked::assume_new());
                 let mut sum = Totals::EMPTY;
                 for a in s.arenas.iter() {
                     sum.add_arena(&stored(a));
