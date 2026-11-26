@@ -3626,6 +3626,8 @@ pub fn pvalloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(o
             let page = (1usize << crate::layout::process_regions().lg_page) as int;
             &&& heap::fits(r, page_round(size as int, page), page)
             &&& size as int + (page - 1) > usize::MAX ==> r@.addr == 0
+            &&& r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(page_round(size as int, page) as usize, page as usize))
+            &&& r@.addr != 0 ==> class_slot_at(r, page_round(size as int, page) as usize, page as usize)
         }),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
@@ -3648,6 +3650,9 @@ pub fn pvalloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errn
             &&& heap::fits(r, page_round(size as int, page), page)
             &&& final(blk).gives(r, page_round(size as int, page))
             &&& size as int + (page - 1) > usize::MAX ==> r@.addr == 0
+            &&& r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(page_round(size as int, page) as usize, page as usize))
+            &&& r@.addr != 0 ==> class_slot_at(r, page_round(size as int, page) as usize, page as usize)
+            &&& r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, page_round(size as int, page) as usize)
         }),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
@@ -4150,6 +4155,8 @@ mod exports {
                 let page = (1usize << crate::layout::process_regions().lg_page) as int;
                 &&& heap::fits(r as *mut u8, super::page_round(size as int, page), page)
                 &&& size as int + (page - 1) > usize::MAX ==> r@.addr == 0
+                &&& r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for(super::page_round(size as int, page) as usize, page as usize))
+                &&& r@.addr != 0 ==> class_slot_at(r as *mut u8, super::page_round(size as int, page) as usize, page as usize)
             }),
             r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {

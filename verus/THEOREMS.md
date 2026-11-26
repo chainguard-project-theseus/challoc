@@ -215,6 +215,10 @@ leave out (theorem 33). Remaining work is tracked in
   the size), `malloc_usable` and the `challoc_malloc_usable` export's
   `ensures` (`heap::hint_ok`, `class_slot`, and for the token-carrying
   cores `heap::huge_hint_ok`), `api/libc.rs`.
+- **Pvalloc's rounded size names its block** ([`pvalloc(n)`'s block is named by `n` rounded up to a page](#pvallocns-block-is-named-by-n-rounded-up-to-a-page)):
+  `pvalloc_block`, `pvalloc` and the `pvalloc` / `je_pvalloc` exports'
+  `ensures` (`heap::hint_ok`, `class_slot_at`, and for `pvalloc_block`
+  `heap::huge_hint_ok`), `api/libc.rs`.
 
 ## Configuration
 
@@ -9950,11 +9954,16 @@ listed above.
   its token from `axiom_c_claim`, which states only `claims(p)`, so for
   a run the round trip through C still rests on this premise. Both
   halves still rest on it for a block from an entry that states no
-  `hint_ok` of its result: `realloc`, `reallocarray`, `pvalloc`,
+  `hint_ok` of its result: `realloc`, `reallocarray`,
   `challoc_realloc_usable` and `rallocx` (`challoc_malloc_usable`
   since chainguard-project-theseus/challoc#1016:
   [`challoc_malloc_usable(n)`'s block is named by
-  `n`](#challoc_malloc_usablens-block-is-named-by-n)).
+  `n`](#challoc_malloc_usablens-block-is-named-by-n)). A block from
+  `pvalloc(n)` is named by `n` rounded up to a page, not by `n`, since
+  chainguard-project-theseus/challoc#1018 ([`pvalloc(n)`'s block is
+  named by `n` rounded up to a
+  page](#pvallocns-block-is-named-by-n-rounded-up-to-a-page)); a sized
+  free of it with `n` itself still rests on this premise.
 - `shared.wf()` stands for init complete, as in theorem 32: `free`'s
   `shared_if_ready` and `free_before_init`, and `heap_for_thread` (which
   creates a heap, and may abort when that fails), come before the calls
@@ -13686,7 +13695,10 @@ and `Shared::huge_ok` is the no-overflow conjunct.
   alignment](#operator-news-block-is-named-by-its-size-and-alignment),
   and, since chainguard-project-theseus/challoc#1016,
   `challoc_malloc_usable`: [`challoc_malloc_usable(n)`'s block is named
-  by `n`](#challoc_malloc_usablens-block-is-named-by-n)).
+  by `n`](#challoc_malloc_usablens-block-is-named-by-n), and, since
+  chainguard-project-theseus/challoc#1018, `pvalloc` at its rounded
+  size: [`pvalloc(n)`'s block is named by `n` rounded up to a
+  page](#pvallocns-block-is-named-by-n-rounded-up-to-a-page)).
 - The run half (`huge_hint_ok`) is stated of the token the cores
   return, not across C. `malloc` drops that token, and a sized free
   called from C gets its own from `axiom_c_claim`, whose `ensures` is
@@ -14043,6 +14055,63 @@ Both are executable mutants that main accepts. U1's block reports its
 usable size truthfully but is a slot of the wrong class, so a sized
 free of `n` aborts on it. U2's one-page run passes the sized free's
 check, but it is not the class-0 slot the code returns.
+
+## `pvalloc(n)`'s block is named by `n` rounded up to a page
+
+`pvalloc(n)` rounds `n` up to a multiple of the page,
+`m = page_round(n, page)`, and returns `alloc_aligned(page, m)`. Since
+chainguard-project-theseus/challoc#1018 it states what [the aligned
+allocations' blocks are named by their size and
+alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)
+states for `valloc`, at `m` instead of `n`.
+
+**Statement** (`api/libc.rs`; `page` is
+`1usize << process_regions().lg_page`, as an `int`):
+
+```rust
+// pvalloc_block
+    ensures
+        ({
+            let page = ..;
+            &&& r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(page_round(size as int, page) as usize, page as usize))
+            &&& r@.addr != 0 ==> class_slot_at(r, page_round(size as int, page) as usize, page as usize)
+            &&& r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, page_round(size as int, page) as usize)
+            ..
+        }), ..;
+
+// pvalloc and the pvalloc / je_pvalloc exports: the first two
+```
+
+**Proof.** None added: `alloc_aligned` ensures the three of its own
+size, and `pvalloc_block`'s existing proof already asserts that the size
+it passes is `page_round(size, page)`. A non-null result has no
+overflow, so that value is below `usize::MAX` and the cast is exact.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- The size that names the block is the rounded one. A sized free of a
+  `pvalloc(n)` block with `n` itself is not stated; it still rests on
+  section 44's premise.
+- As for `valloc`: the run half is a fact of the token, which `pvalloc`
+  and the exports drop. Across C it still rests on section 44's
+  premise.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures` only).
+
+**Mutations** (`cargo verus focus -- --verify-module api::libc`, on
+this tree and on main de5dc5f4):
+
+| id | change | PR | main |
+|---|---|---|---|
+| P1 | `pvalloc_block` allocates one page more than it rounds to (`(rounded & !(page - 1)) + page`, NULL when that overflows), and its proof shrinks the block to both `size` and `page_round(size, page)` | rejected (the new `huge_hint_ok` conjunct of `pvalloc_block`'s `ensures`) | verifies |
+| V1 | `pvalloc_block`'s `hint_ok` names the caller's `size` instead of the rounded size | rejected (`pvalloc_block` and `pvalloc` postconditions) | n/a |
+| V2 | `pvalloc_block`'s `huge_hint_ok` at the caller's `size` | rejected (`pvalloc_block` postcondition) | n/a |
+
+P1 is an executable mutant that main accepts: its block still fits and
+gives both sizes, but a sized free with the rounded size aborts on a
+huge-path run one page too long. V1 and V2 are specification mutants:
+they show the rounded size cannot be replaced by the caller's.
 
 ## Interface contract
 
