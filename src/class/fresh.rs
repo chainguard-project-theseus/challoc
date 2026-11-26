@@ -411,10 +411,10 @@ impl ClassState {
                 g.group_next = start;
                 g.group_end = end;
                 proof {
-                    broadcast use vstd::set_lib::range_set_properties;
-                    assert forall|x: nat| #[trigger] g.owns(x) == (g0.owns(x) || start <= x < end) by {}
-                    assert forall|x: nat| start <= x < end implies #[trigger] g.st(x) == State::Fresh by {}
-                    assert forall|x: nat| #[trigger] g0.owns(x) implies g.st(x) == g0.st(x) && g.dirty@[x] == g0.dirty@[x] by {}
+                    // The group's descriptor permissions and zero tokens,
+                    // from `take_group`, agree with its ghost; the others
+                    // are as they were.
+                    lemma_group_descs(g0, *g, dpv, zpv, start, end);
                     assert forall|x: int| start <= x < end && !table.spec_is_guard(x as usize)
                         implies #[trigger] slab_marked(g0.table@, x, g.inited@@) by {
                         lemma_slab_marked_mono(g0.table@, x, im@, g.inited@@);
@@ -422,45 +422,6 @@ impl ClassState {
                     assert forall|x: int| start <= x < end && table.spec_is_guard(x as usize)
                         implies #[trigger] guard_marked(g0.table@, x, g.inited@@) by {
                         lemma_guard_marked_mono(g0.table@, x, im@, g.inited@@);
-                    }
-                    // The group's descriptor permissions, from `take_group`,
-                    // agree with its ghost; the others are as they were.
-                    assert(g.descs()) by {
-                        reveal(descs_ok);
-                        assert forall|x: nat| #[trigger] g.states@.contains_key(x)
-                            implies desc_ok(g.dperms@, g.table@, g.arena@, x, g.states@[x], g.dirty@[x]) by {
-                            if start <= x < end {
-                                assert(desc_handed(dpv, *table, x, self.arena));
-                            } else {
-                                assert(g0.owns(x));
-                                g0.lemma_desc(x);
-                                assert(!dpv.contains_key(x));
-                            }
-                        }
-                        // So do its slabs' zero tokens; an older owned
-                        // `Fresh` slab keeps its own.
-                        reveal(zeros_ok);
-                        assert forall|x: nat| #[trigger] g.states@.contains_key(x) && g.states@[x] == State::Fresh
-                            && !g.table@.spec_is_guard(x as usize) implies slab_zero(g.zeros@, g.table@, x as int) by {
-                            if start <= x < end {
-                                assert(slab_zero(zpv, *table, x as int));
-                            } else {
-                                assert(g0.owns(x));
-                                assert(g0.states@.contains_key(x) && g0.states@[x] == State::Fresh);
-                                assert(slab_zero(g0.zeros@, g0.table@, x as int));
-                                assert(!zpv.contains_key(x as int));
-                            }
-                        }
-                        // The group's slabs are `Fresh`; an older owned
-                        // `Purged` slab keeps its discard.
-                        reveal(purged_ok);
-                        assert forall|x: nat| #[trigger] g.states@.contains_key(x) && g.states@[x] == State::Purged
-                            implies slab_discarded(g.table@, x as int) by {
-                            assert(!(start <= x < end));
-                            assert(g0.owns(x));
-                            assert(g0.states@.contains_key(x) && g0.states@[x] == State::Purged);
-                            lemma_purged_at(g0.states@, g0.table@, x);
-                        }
                     }
                     // `g0` with the record it had before the group: the value
                     // the group joins, which has the invariant.
@@ -563,6 +524,78 @@ proof fn lemma_shr_in(x: usize, g: usize, lg: u8)
 {
     assert(x >> lg == g) by (bit_vector)
         requires lg < 32, g <= 0x400_0000, g << lg <= x, x < (g << lg) + (1usize << lg);
+}
+
+/// The descriptor side of a fresh group ([`Inner::descs`]): `g1` is `g0`
+/// (the value `take_group` left) with the group `start..end`'s descriptor
+/// permissions `dp` and zero tokens `zp` joined, its slabs owned and
+/// `Fresh` with stamp 0, and the owned slabs' states and stamps kept.
+/// `take_group` handed `dp` and `zp` over for the group's slabs only, so
+/// the group's descriptors agree with their ghost and hold their zero
+/// tokens, and the other owned slabs keep their own; no group slab is
+/// `Purged`. Out of `next_fresh_slab`'s loop, which it kept near its
+/// rlimit (chainguard-project-theseus/challoc#973).
+proof fn lemma_group_descs(g0: Inner, g1: Inner, dp: Map<nat, DescPerm>, zp: Map<int, Zeroed>, start: usize, end: usize)
+    requires
+        g0.descs(),
+        forall|x: nat| #[trigger] g0.owns(x) ==> x < start,
+        end <= g0.table@.spec_nslabs(),
+        g1.table == g0.table,
+        g1.arena == g0.arena,
+        g1.dperms@ == g0.dperms@.union_prefer_right(dp),
+        g1.zeros@ == g0.zeros@.union_prefer_right(zp),
+        g1.states@ == g0.states@.union_prefer_right(Map::new(vstd::set::Set::<nat>::range(start as nat, end as nat), |x: nat| State::Fresh)),
+        g1.dirty@ == Map::new(g0.dirty@.dom() + g0.states@.dom() + vstd::set::Set::<nat>::range(start as nat, end as nat),
+            |x: nat| if start <= x < end { 0u64 } else { g0.dirty@[x] }),
+        forall|x: nat| #[trigger] dp.contains_key(x) ==> start <= x < end,
+        forall|x: nat| start <= x < end ==> #[trigger] desc_handed(dp, g0.table@, x, g0.arena@),
+        forall|x: int| #[trigger] zp.contains_key(x) ==> start <= x < end,
+        forall|x: int| start <= x < end && !g0.table@.spec_is_guard(x as usize) ==> #[trigger] slab_zero(zp, g0.table@, x),
+    ensures
+        forall|x: nat| #[trigger] g1.owns(x) == (g0.owns(x) || start <= x < end),
+        forall|x: nat| start <= x < end ==> #[trigger] g1.st(x) == State::Fresh,
+        forall|x: nat| #[trigger] g0.owns(x) ==> g1.st(x) == g0.st(x) && g1.dirty@[x] == g0.dirty@[x],
+        g1.descs(),
+{
+    broadcast use vstd::set_lib::range_set_properties;
+    assert forall|x: nat| #[trigger] g1.owns(x) == (g0.owns(x) || start <= x < end) by {}
+    assert forall|x: nat| start <= x < end implies #[trigger] g1.st(x) == State::Fresh by {}
+    assert forall|x: nat| #[trigger] g0.owns(x) implies g1.st(x) == g0.st(x) && g1.dirty@[x] == g0.dirty@[x] by {}
+    reveal(descs_ok);
+    assert forall|x: nat| #[trigger] g1.states@.contains_key(x)
+        implies desc_ok(g1.dperms@, g1.table@, g1.arena@, x, g1.states@[x], g1.dirty@[x]) by {
+        if start <= x < end {
+            assert(desc_handed(dp, g0.table@, x, g0.arena@));
+        } else {
+            assert(g0.owns(x));
+            g0.lemma_desc(x);
+            assert(!dp.contains_key(x));
+        }
+    }
+    // So do its slabs' zero tokens; an older owned `Fresh` slab keeps
+    // its own.
+    reveal(zeros_ok);
+    assert forall|x: nat| #[trigger] g1.states@.contains_key(x) && g1.states@[x] == State::Fresh
+        && !g1.table@.spec_is_guard(x as usize) implies slab_zero(g1.zeros@, g1.table@, x as int) by {
+        if start <= x < end {
+            assert(slab_zero(zp, g0.table@, x as int));
+        } else {
+            assert(g0.owns(x));
+            assert(g0.states@.contains_key(x) && g0.states@[x] == State::Fresh);
+            assert(slab_zero(g0.zeros@, g0.table@, x as int));
+            assert(!zp.contains_key(x as int));
+        }
+    }
+    // The group's slabs are `Fresh`; an older owned `Purged` slab keeps
+    // its discard.
+    reveal(purged_ok);
+    assert forall|x: nat| #[trigger] g1.states@.contains_key(x) && g1.states@[x] == State::Purged
+        implies slab_discarded(g1.table@, x as int) by {
+        assert(!(start <= x < end));
+        assert(g0.owns(x));
+        assert(g0.states@.contains_key(x) && g0.states@[x] == State::Purged);
+        lemma_purged_at(g0.states@, g0.table@, x);
+    }
 }
 
 /// The ghost side of a fresh group: `g1` is `g0` (every current-group

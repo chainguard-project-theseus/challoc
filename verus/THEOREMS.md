@@ -12035,6 +12035,11 @@ Both specs are opaque, so `plan_at` carries them as atoms; it verifies
 within its rlimit. `next_fresh_slab`, unchanged, gets
 `#[verifier::spinoff_prover]`: with the new context its loop ran out of
 rlimit in the shared prover (README "Headroom", the first remedy).
+On its own prover it used 56.9% of its rlimit, as it did on main;
+chainguard-project-theseus/challoc#973 moves its fresh group's ghost
+bookkeeping (ownership, states, stamps, and the descriptor, zero-token
+and discard facts of `Inner::descs`) into `lemma_group_descs`, which
+brings it to 30.1% (README "Headroom", the second remedy).
 
 **Premises (seams).** None beyond the common ones and vstd's atomics
 (each `PAtomicU8` operation is one atomic operation on the byte, under a
