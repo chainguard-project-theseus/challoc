@@ -5059,7 +5059,10 @@ child at the entry's index is named by it. `split` says
 `comps` are the dotted components of a name: at least one, none holding
 a dot, joined with dots back into the name. `level` is the
 sibling list the `j`-th entry picks from, and `entry_named`
-says which entry a component names there.
+says which entry a component names there. `sole(nodes, c, i)` says
+entry `i` is the only entry that names `c` among `nodes`, and
+`walk_sole` is `walk` with every entry `sole` at its level: the
+components name that MIB and no other.
 
 **Statement**:
 
@@ -5090,6 +5093,31 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'
             && walk(root_nodes(), comps, final(mib)@.subrange(0, len as int)) == Some(*n),
         r matches Ok((len, n)) ==> resolve(root_nodes(), final(mib)@.subrange(0, len as int)) == Some(*n),
         r matches Err(e) ==> e == ENOENT,
+        forall|comps: Seq<Seq<u8>>, m: Seq<usize>|
+            #[trigger] walk_sole(root_nodes(), comps, m) && split(name@, comps) && m.len() <= MAX_MIB
+                ==> (r matches Ok((len, _)) && len == m.len()
+                    && final(mib)@.subrange(0, len as int) == m),
+
+spec fn sole(nodes: Seq<Node>, c: Seq<u8>, i: usize) -> bool {
+    &&& names(nodes, c, i) is Some
+    &&& forall|k: usize| #[trigger] names(nodes, c, k) is Some ==> k == i
+}
+
+spec fn walk_sole(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>) -> bool {
+    &&& mib.len() >= 1
+    &&& comps.len() == mib.len()
+    &&& sole(nodes, comps[0], mib[0])
+    &&& mib.len() > 1 ==> walk_sole(
+        spec_children(names(nodes, comps[0], mib[0])->Some_0),
+        comps.drop_first(),
+        mib.drop_first(),
+    )
+}
+
+fn child(nodes: &'static [Node], comp: &[u8]) -> (r: Option<(usize, &'static Node)>)
+    ensures
+        r matches Some((i, n)) ==> names(nodes@, comp@, i) == Some(*n),
+        r is None ==> forall|k: usize| #[trigger] names(nodes@, comp@, k) is None,
 
 fn mib_to_node(mib: &[usize]) -> (r: Result<&'static Node, c_int>)
     ensures
@@ -5121,6 +5149,18 @@ of `arenas.bin.<j>` and the `<i>` of `stats.arenas.<i>`, 4 for the
 `<j>` of `stats.arenas.<i>.bins.<j>`) are those numeric levels is
 checked by inspection, not stated.
 
+Completeness (since chainguard-project-theseus/challoc#999): if a name
+of at most `MAX_MIB` components names a MIB `m` with each entry the only
+one that names its component at its level (`walk_sole`),
+`name_to_mib` succeeds and writes exactly `m`; with the success clauses
+above and the unique split, it returns that walk's node. `child`
+returns `None` only when no entry names the component. `walk_sole`
+implies `walk` (`lemma_walk_sole_walks`). Its "only entry" premise is
+about the tree's content, which Verus does not see (`root_nodes()` is
+uninterpreted): the test `no_two_siblings_share_a_name` checks that no
+two siblings of `ROOT` share a name and that a numeric node has no
+siblings, which makes every walk of the tree a `walk_sole`.
+
 **Proof.** The traversals' loops keep the descent as invariants:
 `name_to_mib` keeps the ghost components matched so far, the node the
 last one named (`walk` of the prefix), the current sibling list as that
@@ -5133,7 +5173,28 @@ unresolved. `child` and `child_by_index` ensure
 `names` and `step` exactly. `lemma_walk_resolves` turns a walk into a
 resolution, `lemma_walk_entries` reads off each entry, and
 `lemma_split_unique` shows the components are unique: the
-first ends at the first dot.
+first ends at the first dot. For completeness, `name_to_mib`'s loop
+also keeps, for every split `cs` of the name and MIB `m` with
+`walk_sole(root_nodes(), cs, m)` and at most `MAX_MIB` entries: more
+components than matched so far, `m`'s entries so far are the ones
+written, `rest` splits into the remaining components, and
+`walk_sole` of the remaining components and entries holds from the
+current sibling list. `lemma_split_first` takes one component off a
+split: it is `split_component`'s, and the tail splits into the rest.
+So the `MAX_MIB` exit, `child`'s `None` (no entry names the
+component), and a non-directory node with components left (no child
+names anything) each contradict such a walk, and the entry `child`
+returns is the walk's, since it is the only one.
+
+**Mutations** (`cargo verus focus -- --verify-module api::mallctl`;
+each verifies on main, where only success was stated, and is rejected
+here): N1, the length guard `len >= MAX_MIB - 1` (an eight-component
+name refused), fails `name_to_mib`'s completeness `ensures` at the
+early exit; N2, `child`'s loop skipping the last child (`while i <
+nodes.len() && i + 1 != nodes.len()`), fails `child`'s `None` clause;
+N3, `child` matching only components longer than one byte, fails the
+loop invariant of `child`; N4, the numeric branch refusing values of
+4096 and above, fails `child`'s `None` clause.
 
 **Premises beyond the common ones.**
 - `root` (`external_body`; discharged by Kani,
@@ -5161,10 +5222,11 @@ first ends at the first dot.
 - `child` returns the first child of that name; `names` accepts any
   child of that name. With duplicate sibling names (there are none) the
   theorem would still hold but not say which index is chosen.
-- Completeness of `name_to_mib` is not stated: nothing says it succeeds
-  for every name that does split into matching components (it fails on
-  more than `MAX_MIB` components, and on a non-final component naming a
-  key, which `walk` would reject one step later anyway). The test
+- Completeness of `name_to_mib` is stated for `walk_sole` walks only
+  (since chainguard-project-theseus/challoc#999). With duplicate
+  sibling names `child` would pick the first and a walk through a later
+  one would not be found; the tree has none
+  (`no_two_siblings_share_a_name`, a test, not a proof). The test
   `every_name_round_trips_through_its_mib` checks every name
   in the tree (numeric components spelled `0`);
   `names_resolve_to_positional_mibs_and_back` checks the

@@ -525,6 +525,28 @@ fn all_names() -> Vec<std::string::String> {
     out
 }
 
+/// The premise of `name_to_mib`'s completeness (`walk_sole`): no two
+/// siblings share a name, and a numeric node has no siblings, so every
+/// component names one entry at its level.
+#[test]
+fn no_two_siblings_share_a_name() {
+    fn check(nodes: &'static [Node], path: &str, seen: &mut usize) {
+        for (i, n) in nodes.iter().enumerate() {
+            *seen += 1;
+            if n.name == NUMERIC {
+                assert_eq!(nodes.len(), 1, "{path}: a numeric node has siblings");
+            }
+            for m in &nodes[i + 1..] {
+                assert_ne!(n.name, m.name, "{path}: two children named {}", n.name);
+            }
+            check(n.children(), &std::format!("{path}.{}", n.name), seen);
+        }
+    }
+    let mut seen = 0;
+    check(&ROOT, "", &mut seen);
+    assert_eq!(seen, all_names().len());
+}
+
 /// Every key's name resolves to a MIB that leads back to the same key,
 /// and a directory is never a key.
 #[test]

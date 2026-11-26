@@ -49,7 +49,7 @@ fn root() -> (r: &'static [Node])
 
 ## `axiom_c_call`
 
-src/api/mallctl.rs:3642. Kind: axiom. Category: C-program contract.
+src/api/mallctl.rs:3805. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > Trusted (the C contract of the entry point, `vspec::cbuf`): the token of this call from C, through the entry point and with the arguments `e` names: the export wrapper's own parameters, which C passed under the entry point's contract ([`CCall::fresh`]: each pointer argument's [`crate::vspec::cbuf::CArg`] facts, of memory of the program's, and the string argument's view).
@@ -69,7 +69,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ## `mallctl`
 
-src/api/mallctl.rs:3665. Kind: unsupported-attribute. Category: C ABI export.
+src/api/mallctl.rs:3828. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -85,7 +85,7 @@ pub extern "C" fn mallctl (verified_export_pair!)
 
 ## `je_mallctl`
 
-src/api/mallctl.rs:3665. Kind: unsupported-attribute. Category: C ABI export.
+src/api/mallctl.rs:3828. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -101,7 +101,7 @@ pub extern "C" fn je_mallctl (verified_export_pair!)
 
 ## `mallctlnametomib`
 
-src/api/mallctl.rs:3665. Kind: unsupported-attribute. Category: C ABI export.
+src/api/mallctl.rs:3828. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -117,7 +117,7 @@ pub extern "C" fn mallctlnametomib (verified_export_pair!)
 
 ## `je_mallctlnametomib`
 
-src/api/mallctl.rs:3665. Kind: unsupported-attribute. Category: C ABI export.
+src/api/mallctl.rs:3828. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -133,7 +133,7 @@ pub extern "C" fn je_mallctlnametomib (verified_export_pair!)
 
 ## `mallctlbymib`
 
-src/api/mallctl.rs:3665. Kind: unsupported-attribute. Category: C ABI export.
+src/api/mallctl.rs:3828. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -149,7 +149,7 @@ pub extern "C" fn mallctlbymib (verified_export_pair!)
 
 ## `je_mallctlbymib`
 
-src/api/mallctl.rs:3665. Kind: unsupported-attribute. Category: C ABI export.
+src/api/mallctl.rs:3828. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.

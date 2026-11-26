@@ -1284,6 +1284,111 @@ spec fn split(name: Seq<u8>, comps: Seq<Seq<u8>>) -> bool {
     &&& join(comps) == name
 }
 
+/// MIB entry `i` is the only entry that names `c` among `nodes`
+/// ([`names`]): the child [`child`] finds for `c`, even though it returns
+/// the first child of a name. A numeric level has one entry per number.
+spec fn sole(nodes: Seq<Node>, c: Seq<u8>, i: usize) -> bool {
+    &&& names(nodes, c, i) is Some
+    &&& forall|k: usize| #[trigger] names(nodes, c, k) is Some ==> k == i
+}
+
+/// [`walk`] with every entry [`sole`] at its level: the components name
+/// the MIB `mib` and no other. Without duplicate sibling names (a unit
+/// test checks the tree has none), every walk is one of these.
+spec fn walk_sole(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>) -> bool
+    decreases mib.len(),
+{
+    &&& mib.len() >= 1
+    &&& comps.len() == mib.len()
+    &&& sole(nodes, comps[0], mib[0])
+    &&& mib.len() > 1 ==> walk_sole(
+        spec_children(names(nodes, comps[0], mib[0])->Some_0),
+        comps.drop_first(),
+        mib.drop_first(),
+    )
+}
+
+/// A [`walk_sole`] is a [`walk`].
+proof fn lemma_walk_sole_walks(nodes: Seq<Node>, comps: Seq<Seq<u8>>, mib: Seq<usize>)
+    requires
+        walk_sole(nodes, comps, mib),
+    ensures
+        walk(nodes, comps, mib) is Some,
+    decreases mib.len(),
+{
+    if mib.len() > 1 {
+        lemma_walk_sole_walks(
+            spec_children(names(nodes, comps[0], mib[0])->Some_0),
+            comps.drop_first(),
+            mib.drop_first(),
+        );
+    }
+}
+
+/// The first of a name's components is the part before its first dot
+/// ([`split_component`]): `c`, with no dot, followed by nothing or by a
+/// dot and `t`, which then splits into the remaining components.
+proof fn lemma_split_first(name: Seq<u8>, c: Seq<u8>, t: Option<Seq<u8>>, comps: Seq<Seq<u8>>)
+    requires
+        split(name, comps),
+        forall|j: int| 0 <= j < c.len() ==> #[trigger] c[j] != 46,
+        t is None ==> name == c,
+        t matches Some(u) ==> name == c + seq![46u8] + u,
+    ensures
+        comps[0] == c,
+        t is None ==> comps.len() == 1,
+        t matches Some(u) ==> comps.len() >= 2 && split(u, comps.drop_first()),
+{
+    let x = comps[0];
+    assert forall|j: int| 0 <= j < x.len() implies #[trigger] x[j] != 46 by {
+        assert(comps[0][j] != 46);
+    }
+    if comps.len() > 1 {
+        assert(name =~= x + (seq![46u8] + join(comps.drop_first())));
+        assert(name[x.len() as int] == 46);
+    } else {
+        assert(name == x);
+    }
+    match t {
+        None => {
+            if comps.len() > 1 {
+                assert(c[x.len() as int] == 46);
+            }
+            assert(x =~= c);
+        },
+        Some(u) => {
+            assert(name[c.len() as int] == 46);
+            if comps.len() == 1 {
+                assert(x[c.len() as int] == 46);
+            }
+            assert(comps.len() > 1);
+            assert(name =~= x + (seq![46u8] + join(comps.drop_first())));
+            assert(name =~= c + (seq![46u8] + u));
+            assert(name[x.len() as int] == 46);
+            if x.len() < c.len() {
+                assert(c[x.len() as int] == name[x.len() as int]);
+            }
+            if c.len() < x.len() {
+                assert(x[c.len() as int] == name[c.len() as int]);
+            }
+            assert(x.len() == c.len());
+            assert forall|j: int| 0 <= j < x.len() implies x[j] == c[j] by {
+                assert(x[j] == name[j]);
+                assert(c[j] == name[j]);
+            }
+            assert(x =~= c);
+            let rest = name.subrange(c.len() + 1int, name.len() as int);
+            assert(join(comps.drop_first()) =~= rest);
+            assert(u =~= rest);
+            assert forall|k: int, j: int|
+                0 <= k < comps.drop_first().len() && 0 <= j < comps.drop_first()[k].len()
+                implies #[trigger] comps.drop_first()[k][j] != 46 by {
+                assert(comps[k + 1][j] != 46);
+            }
+        },
+    }
+}
+
 /// The sibling list the entry `mib[j]` picks a child from: `nodes` for
 /// the first entry, then the children of each node the entries before it
 /// reach.
@@ -1533,6 +1638,7 @@ proof fn theorem_mib_round_trip(name: Seq<u8>, comps: Seq<Seq<u8>>, mib: Seq<usi
 fn child(nodes: &'static [Node], comp: &[u8]) -> (r: Option<(usize, &'static Node)>)
     ensures
         r matches Some((i, n)) ==> names(nodes@, comp@, i) == Some(*n),
+        r is None ==> forall|k: usize| #[trigger] names(nodes@, comp@, k) is None,
 {
     // `if let [n] = nodes` and `nodes.iter().position(..).map(..)`,
     // spelled out: Verus supports neither slice patterns nor
@@ -1551,6 +1657,7 @@ fn child(nodes: &'static [Node], comp: &[u8]) -> (r: Option<(usize, &'static Nod
         invariant
             i <= nodes@.len(),
             !(nodes@.len() == 1 && numeric(nodes@[0])),
+            forall|j: int| 0 <= j < i ==> #[trigger] nodes@[j].name.spec_bytes() != comp@,
         decreases nodes@.len() - i,
     {
         if bytes_is(nodes[i].name.as_bytes(), comp) {
@@ -1580,7 +1687,9 @@ fn child_by_index(nodes: &'static [Node], i: usize) -> (r: Option<&'static Node>
 /// is then `ENOENT`. Writes `mib[..len]` only. The MIB is the name's:
 /// its components match the entries one by one ([`walk`]), and
 /// [`mib_to_node`] maps it back to the same node
-/// ([`theorem_mib_round_trip`]).
+/// ([`theorem_mib_round_trip`]). It is complete: a name of at most
+/// `MAX_MIB` components that names a MIB, each entry the only one naming
+/// its component ([`walk_sole`]), gets that MIB.
 fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'static Node), c_int>)
     ensures
         r matches Ok((len, _)) ==> 1 <= len <= MAX_MIB && forall|j: int|
@@ -1594,6 +1703,10 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'
         r matches Ok((len, n)) ==> resolve(root_nodes(), final(mib)@.subrange(0, len as int))
             == Some(*n),
         r matches Err(e) ==> e == ENOENT,
+        forall|comps: Seq<Seq<u8>>, m: Seq<usize>|
+            #[trigger] walk_sole(root_nodes(), comps, m) && split(name@, comps) && m.len() <= MAX_MIB
+                ==> (r matches Ok((len, _)) && len == m.len() && final(mib)@.subrange(0, len as int)
+                == m),
 {
     let mut nodes: &'static [Node] = root();
     let mut rest = name;
@@ -1601,6 +1714,15 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'
     // The components matched so far, and the node the last one named.
     let ghost mut comps: Seq<Seq<u8>> = Seq::empty();
     let ghost mut last: Node = arbitrary();
+    proof {
+        assert forall|cs: Seq<Seq<u8>>, m: Seq<usize>|
+            #[trigger] walk_sole(root_nodes(), cs, m) implies cs.skip(0) == cs && m.skip(0) == m
+            && m.subrange(0, 0) == mib@.subrange(0, 0) by {
+            assert(cs.skip(0) =~= cs);
+            assert(m.skip(0) =~= m);
+            assert(m.subrange(0, 0) =~= mib@.subrange(0, 0));
+        }
+    }
     loop
         invariant
             len <= MAX_MIB,
@@ -1611,16 +1733,56 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'
             len == 0 ==> nodes@ == root_nodes() && rest@ == name@,
             len > 0 ==> walk(root_nodes(), comps, mib@.subrange(0, len as int)) == Some(last)
                 && nodes@ == spec_children(last) && name@ == join(comps) + seq![46u8] + rest@,
+            // Completeness: every sole walk of the name agrees with the
+            // entries so far and continues from `nodes` with `rest`.
+            forall|cs: Seq<Seq<u8>>, m: Seq<usize>|
+                #[trigger] walk_sole(root_nodes(), cs, m) && split(name@, cs) && m.len() <= MAX_MIB
+                    ==> len < cs.len() && m.len() == cs.len() && m.subrange(0, len as int)
+                    == mib@.subrange(0, len as int) && split(rest@, cs.skip(len as int))
+                    && walk_sole(nodes@, cs.skip(len as int), m.skip(len as int)),
         decreases rest@.len(),
     {
         if len == MAX_MIB {
             return Err(ENOENT);
         }
         let (comp, tail) = split_component(rest);
+        proof {
+            let ghost tl: Option<Seq<u8>> = match tail {
+                Some(t) => Some(t@),
+                None => None,
+            };
+            assert forall|cs: Seq<Seq<u8>>, m: Seq<usize>|
+                #[trigger] walk_sole(root_nodes(), cs, m) && split(name@, cs) && m.len() <= MAX_MIB
+                implies sole(nodes@, comp@, m[len as int]) && (tail is None ==> cs.len() == len + 1)
+                && (tail matches Some(t) ==> cs.len() >= len + 2 && split(t@, cs.skip(len + 1))
+                && walk_sole(
+                    spec_children(names(nodes@, comp@, m[len as int])->Some_0),
+                    cs.skip(len + 1),
+                    m.skip(len + 1),
+                )) by {
+                let c2 = cs.skip(len as int);
+                let m2 = m.skip(len as int);
+                lemma_split_first(rest@, comp@, tl, c2);
+                assert(c2.drop_first() =~= cs.skip(len + 1));
+                assert(m2.drop_first() =~= m.skip(len + 1));
+                assert(m2[0] == m[len as int]);
+            }
+        }
         let (i, node) = child(nodes, comp).ok_or(ENOENT)?;
         let ghost prefix = mib@.subrange(0, len as int);
         mib[len] = i;
         len += 1;
+        proof {
+            assert forall|cs: Seq<Seq<u8>>, m: Seq<usize>|
+                #[trigger] walk_sole(root_nodes(), cs, m) && split(name@, cs) && m.len() <= MAX_MIB
+                implies m.subrange(0, len as int) == mib@.subrange(0, len as int)
+                && names(nodes@, comp@, m[len - 1]) == Some(*node) by {
+                assert(sole(nodes@, comp@, m[len - 1]));
+                assert(names(nodes@, comp@, i) is Some);
+                assert(m.subrange(0, len - 1) == prefix);
+                assert(m.subrange(0, len as int) =~= prefix.push(i));
+            }
+        }
         proof {
             assert(mib@.subrange(0, len as int) =~= prefix.push(i));
             if len == 1 {
@@ -1654,6 +1816,7 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> (r: Result<(usize, &'
                 };
                 nodes = children;
                 proof {
+                    assert(children@ == spec_children(*node));
                     assert(rest@.len() == comp@.len() + 1 + t@.len());
                     assert(name@ =~= join(comps) + seq![46u8] + t@);
                 }
