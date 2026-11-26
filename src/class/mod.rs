@@ -1744,49 +1744,77 @@ proof fn theorem_idle_empty_ascending(e0: VSet<nat>, e1: VSet<nat>, p: Seq<Pick>
     }
 }
 
-/// The `Purged` idle picks of a refill's lock hold with no fork epoch
-/// (floor 0; [`ClassState::plan_at`]). `a` is the first idle pick after the
-/// `Empty` ones ([`idle_ordered`]'s `lo + m`), `p0` the `Purged` set when
-/// the idle picks began and `p1` the one the hold left: the picks
-/// `[a, a + q)` are slabs of `p0`, strictly ascending, recorded `Purged`,
-/// and none is in `p1`; no later pick is recorded `Purged`; `p1` is part
-/// of `p0`, and its slabs lie above every one of those picks; every slab
-/// of `p0` that left the set is one of them; and a pick past them came
-/// only once `p1` was empty. With a fork floor it says nothing (see
-/// [`theorem_idle_purged_ascending`]). Opaque: [`ClassState::plan_at`]'s
-/// idle loop carries it, and only the lemmas about the idle picks open it.
-#[verifier::opaque]
-spec fn purged_ordered(p0: VSet<nat>, p1: VSet<nat>, p: Seq<Pick>, a: int, q: int, np: int, floor: int) -> bool {
-    floor == 0 ==> {
-        &&& 0 <= a
-        &&& 0 <= q
-        &&& a + q <= np <= p.len()
-        &&& forall|i: int| #![trigger p[i]] a <= i < a + q ==> p0.contains(p[i].slab as nat) && !p1.contains(p[i].slab as nat)
-            && p[i].state == State::Purged
-        &&& forall|i: int| #![trigger p[i]] a + q <= i < np ==> p[i].state != State::Purged
-        &&& forall|i: int, j: int| #![trigger p[i], p[j]] a <= i < j < a + q ==> p[i].slab < p[j].slab
-        &&& forall|x: nat| #[trigger] p1.contains(x) ==> p0.contains(x)
-        &&& forall|x: nat, i: int| #![trigger p1.contains(x), p[i]] p1.contains(x) && a <= i < a + q ==> p[i].slab < x
-        &&& forall|x: nat| #[trigger] p0.contains(x) && !p1.contains(x) ==> taken_in(p, a, a + q, x)
-        &&& a + q < np ==> fresh::none_from(p1, 0)
+/// The floor [`ClassState::next_slab`] takes a `Purged` slab from, for
+/// the fork floor `floor`: 0 while `purge::purged_is_zero` reads true
+/// (`lazy` false: no lazy discard seen), else the fork floor. A false
+/// read stays false ([`crate::purge::purged_is_zero_seen`]), so in one
+/// lock hold this floor only rises.
+pub open spec fn purged_floor(floor: int, lazy: bool) -> int {
+    if lazy {
+        floor
+    } else {
+        0
     }
 }
 
+/// The `Purged` idle picks of a refill's lock hold
+/// ([`ClassState::plan_at`]). `a` is the first idle pick after the
+/// `Empty` ones ([`idle_ordered`]'s `lo + m`), `p0` the `Purged` set when
+/// the idle picks began, `p1` the one the hold left, and `f` the floor the
+/// last `next_slab` call took the `Purged` set from
+/// ([`purged_floor`]: 0, or the fork floor once a read of
+/// `purge::purged_is_zero` returned false; it only rises): the picks
+/// `[a, a + q)` are slabs of `p0`, strictly ascending, recorded `Purged`,
+/// and none is in `p1`; no later pick is recorded `Purged`; `p1` is part
+/// of `p0`, and its slabs at or above `f` lie above every one of those
+/// picks; every slab of `p0` that left the set is one of them; and a pick
+/// past them came only once `p1` held none at or above `f`. Opaque:
+/// [`ClassState::plan_at`]'s idle loop carries it, and only the lemmas
+/// about the idle picks open it.
+#[verifier::opaque]
+spec fn purged_ordered(p0: VSet<nat>, p1: VSet<nat>, p: Seq<Pick>, a: int, q: int, np: int, f: int) -> bool {
+    &&& 0 <= a
+    &&& 0 <= q
+    &&& a + q <= np <= p.len()
+    &&& forall|i: int| #![trigger p[i]] a <= i < a + q ==> p0.contains(p[i].slab as nat) && !p1.contains(p[i].slab as nat)
+        && p[i].state == State::Purged
+    &&& forall|i: int| #![trigger p[i]] a + q <= i < np ==> p[i].state != State::Purged
+    &&& forall|i: int, j: int| #![trigger p[i], p[j]] a <= i < j < a + q ==> p[i].slab < p[j].slab
+    &&& forall|x: nat| #[trigger] p1.contains(x) ==> p0.contains(x)
+    &&& forall|x: nat, i: int| #![trigger p1.contains(x), p[i]] p1.contains(x) && f <= x && a <= i < a + q ==> p[i].slab < x
+    &&& forall|x: nat| #[trigger] p0.contains(x) && !p1.contains(x) ==> taken_in(p, a, a + q, x)
+    &&& a + q < np ==> fresh::none_from(p1, f)
+}
+
 /// [`purged_ordered`] before the first idle pick.
-proof fn lemma_purged_start(p: VSet<nat>, picks: Seq<Pick>, lo: int, floor: int)
+proof fn lemma_purged_start(p: VSet<nat>, picks: Seq<Pick>, lo: int, f: int)
     requires
         0 <= lo <= picks.len(),
     ensures
-        purged_ordered(p, p, picks, lo, 0, lo, floor),
+        purged_ordered(p, p, picks, lo, 0, lo, f),
+{
+    reveal(purged_ordered);
+}
+
+/// [`purged_ordered`] holds at any higher floor: its clauses about `f`
+/// only weaken as `f` rises.
+proof fn lemma_purged_mono(p0: VSet<nat>, p1: VSet<nat>, p: Seq<Pick>, a: int, q: int, np: int, fa: int, fb: int)
+    requires
+        purged_ordered(p0, p1, p, a, q, np, fa),
+        fa <= fb,
+    ensures
+        purged_ordered(p0, p1, p, a, q, np, fb),
 {
     reveal(purged_ordered);
 }
 
 /// One idle pick of [`ClassState::plan_at`], as [`lemma_idle_step`], for
 /// the `Purged` picks: `next_slab` returned `s` for the `Empty` set `ea`
-/// and the `Purged` set `pa`, removing it from the `Purged` set (`pb`)
-/// exactly when it came from it, and `take` made pick `k` of it, recorded
-/// `Purged` exactly then. `m2` is the count of `Empty` picks after it.
+/// and the `Purged` set `pa`, the lowest of `pa` from the floor `fb` when
+/// it came from it (removing it: `pb`), and a slab from neither set only
+/// with none of `pa` from `fb`; `fb` is at least the floor `fa` of the
+/// earlier picks. `take` made pick `k` of it, recorded `Purged` exactly
+/// when it came from `pa`. `m2` is the count of `Empty` picks after it.
 /// The `Purged` picks stay ordered, `q2` of them.
 proof fn lemma_purged_step(
     e0: VSet<nat>,
@@ -1802,13 +1830,18 @@ proof fn lemma_purged_step(
     q: int,
     k: int,
     floor: int,
+    fa: int,
+    fb: int,
     s: usize,
 ) -> (q2: int)
     requires
         idle_ordered(e0, ea, a, lo, m, k, floor),
-        purged_ordered(p0, pa, a, lo + m, q, k, floor),
+        purged_ordered(p0, pa, a, lo + m, q, k, fa),
+        fa <= fb,
         fresh::idle_pick(ea, pa, floor, Some(s)),
-        pb == (if pa.contains(s as nat) { pa.remove(s as nat) } else { pa }),
+        pa.contains(s as nat) ==> fresh::lowest_from(pa, fb, s as nat),
+        !fresh::lowest_from(ea, floor, s as nat) && !pa.contains(s as nat) ==> fresh::none_from(pa, fb),
+        pb ==(if pa.contains(s as nat) { pa.remove(s as nat) } else { pa }),
         m2 == (if fresh::lowest_from(ea, floor, s as nat) { m + 1 } else { m }),
         k < b.len() == a.len(),
         b[k].slab as nat == s as nat,
@@ -1816,15 +1849,12 @@ proof fn lemma_purged_step(
         (b[k].state == State::Purged) == pa.contains(s as nat),
         forall|i: int| 0 <= i < k ==> a[i] == b[i],
     ensures
-        purged_ordered(p0, pb, b, lo + m2, q2, k + 1, floor),
+        purged_ordered(p0, pb, b, lo + m2, q2, k + 1, fb),
 {
     reveal(idle_ordered);
     reveal(purged_ordered);
     reveal(taken_in);
     reveal(fresh::idle_pick);
-    if floor != 0 {
-        return q;
-    }
     let x0 = lo + m;
     if fresh::lowest_from(ea, floor, s as nat) {
         // An `Empty` pick: no other idle pick came yet, so no `Purged` one.
@@ -1840,10 +1870,11 @@ proof fn lemma_purged_step(
         }
         0
     } else if pa.contains(s as nat) {
-        // A `Purged` pick: the lowest `Purged` slab, and no fresh one came yet.
-        assert(fresh::lowest_from(pa, 0, s as nat));
+        // A `Purged` pick: the lowest `Purged` slab from `fb`, so above
+        // every earlier one, and no fresh one came yet.
+        assert(fresh::lowest_from(pa, fb, s as nat));
         if x0 + q < k {
-            assert(fresh::none_from(pa, 0));
+            assert(fresh::none_from(pa, fa));
         }
         assert(x0 + q == k);
         assert forall|i: int| #![trigger b[i]] x0 <= i < x0 + q + 1 implies p0.contains(b[i].slab as nat) && !pb.contains(b[i].slab as nat)
@@ -1860,7 +1891,7 @@ proof fn lemma_purged_step(
                 assert(pa.contains(s as nat));
             }
         }
-        assert forall|x: nat, i: int| #![trigger pb.contains(x), b[i]] pb.contains(x) && x0 <= i < x0 + q + 1 implies b[i].slab < x by {
+        assert forall|x: nat, i: int| #![trigger pb.contains(x), b[i]] pb.contains(x) && fb <= x && x0 <= i < x0 + q + 1 implies b[i].slab < x by {
             assert(pa.contains(x));
             if i < k {
                 assert(a[i] == b[i]);
@@ -1877,8 +1908,8 @@ proof fn lemma_purged_step(
         }
         q + 1
     } else {
-        // A fresh pick: the `Purged` set held no slab.
-        assert(fresh::none_from(pa, 0));
+        // A fresh pick: the `Purged` set held no slab from `fb`.
+        assert(fresh::none_from(pa, fb));
         assert(pb == pa);
         assert forall|i: int| #![trigger b[i]] x0 <= i < x0 + q implies p0.contains(b[i].slab as nat) && !pb.contains(b[i].slab as nat)
             && b[i].state == State::Purged by {
@@ -1893,7 +1924,7 @@ proof fn lemma_purged_step(
             assert(a[i] == b[i]);
             assert(a[j] == b[j]);
         }
-        assert forall|x: nat, i: int| #![trigger pb.contains(x), b[i]] pb.contains(x) && x0 <= i < x0 + q implies b[i].slab < x by {
+        assert forall|x: nat, i: int| #![trigger pb.contains(x), b[i]] pb.contains(x) && fb <= x && x0 <= i < x0 + q implies b[i].slab < x by {
             assert(a[i] == b[i]);
         }
         assert forall|x: nat| #[trigger] p0.contains(x) && !pb.contains(x) implies taken_in(b, x0, x0 + q, x) by {
@@ -1904,28 +1935,33 @@ proof fn lemma_purged_step(
     }
 }
 
-/// Theorem: with no fork epoch, a refill's lock hold takes its `Purged`
+/// Theorem: at any fork floor, a refill's lock hold takes its `Purged`
 /// slabs right after its `Empty` ones, lowest first, and all of them
 /// before any fresh slab (THEOREMS.md, "A refill takes Purged slabs after
 /// Empty ones, before fresh ones"). For the idle picks
 /// [`ClassState::plan_at`] hands out ([`idle_ordered`],
-/// [`purged_ordered`]) at floor 0, with `p0` the `Purged` set when they
-/// began:
+/// [`purged_ordered`]) at the fork floor `floor` (0 for none), with `p0`
+/// the `Purged` set when they began and `f` the floor the hold last took
+/// the `Purged` set from (at most `floor`):
 /// - the picks recorded `Purged`, over all of the hold's picks, are the
 ///   `q` idle picks right after the `m` recorded `Empty`; every later one
 ///   is neither (a fresh slab);
 /// - those are slabs of `p0`, strictly ascending;
-/// - below each of them, every slab of `p0` is an earlier one of them
-///   (no `Purged` slab is skipped);
-/// - when a fresh pick follows them, every slab of `p0` is one of them.
+/// - below each of them, every slab of `p0` at or above the fork floor is
+///   an earlier one of them (no such `Purged` slab is skipped);
+/// - when a fresh pick follows them, every slab of `p0` at or above the
+///   fork floor is one of them.
 ///
 /// `p0` is a ghost output of `plan_at`, as `e0` is for
 /// [`theorem_idle_empty_ascending`]: the last two items are about the set
 /// it names; the first, and the order in the second, are about the picks
-/// alone. With a fork floor, a `Purged` slab below the floor is taken only
-/// while `purge::purged_is_zero` reads true, and the order across the
-/// hold would rest on that read never turning from false to true within
-/// it, which no spec states; so the theorem is for floor 0.
+/// alone. With a fork floor, `next_slab` takes the `Purged` set from 0
+/// while `purge::purged_is_zero` reads true and from the floor after;
+/// the order holds because a false read stays false
+/// ([`crate::purge::purged_is_zero_seen`], over `LAZY_EVER`'s invariant),
+/// so that floor only rises within the hold. Below the fork floor a
+/// `Purged` slab may be left while a higher one is taken (once the read
+/// is false), so the last two items are for slabs at or above it.
 proof fn theorem_idle_purged_ascending(
     e0: VSet<nat>,
     e1: VSet<nat>,
@@ -1936,23 +1972,26 @@ proof fn theorem_idle_purged_ascending(
     m: int,
     q: int,
     np: int,
+    floor: int,
+    f: int,
 )
     requires
-        idle_ordered(e0, e1, p, lo, m, np, 0),
-        purged_ordered(p0, p1, p, lo + m, q, np, 0),
+        idle_ordered(e0, e1, p, lo, m, np, floor),
+        purged_ordered(p0, p1, p, lo + m, q, np, f),
+        0 <= f <= floor,
     ensures
         forall|i: int| #![trigger p[i]] 0 <= i < np ==> ((p[i].state == State::Purged) == (lo + m <= i < lo + m + q)),
         forall|i: int| #![trigger p[i]] lo + m + q <= i < np ==> p[i].state != State::Empty && p[i].state != State::Purged,
         forall|i: int| #![trigger p[i]] lo + m <= i < lo + m + q ==> p0.contains(p[i].slab as nat),
         forall|i: int, j: int| #![trigger p[i], p[j]] lo + m <= i < j < lo + m + q ==> p[i].slab < p[j].slab,
-        forall|i: int, x: nat| #![trigger p[i], p0.contains(x)] lo + m <= i < lo + m + q && p0.contains(x) && x < p[i].slab ==>
-            taken_in(p, lo + m, i, x),
-        lo + m + q < np ==> forall|x: nat| #[trigger] p0.contains(x) ==> taken_in(p, lo + m, lo + m + q, x),
+        forall|i: int, x: nat| #![trigger p[i], p0.contains(x)] lo + m <= i < lo + m + q && p0.contains(x) && floor <= x && x < p[i].slab
+            ==> taken_in(p, lo + m, i, x),
+        lo + m + q < np ==> forall|x: nat| #[trigger] p0.contains(x) && floor <= x ==> taken_in(p, lo + m, lo + m + q, x),
 {
     reveal(idle_ordered);
     reveal(purged_ordered);
     let a = lo + m;
-    assert forall|i: int, x: nat| #![trigger p[i], p0.contains(x)] a <= i < a + q && p0.contains(x) && x < p[i].slab implies
+    assert forall|i: int, x: nat| #![trigger p[i], p0.contains(x)] a <= i < a + q && p0.contains(x) && floor <= x && x < p[i].slab implies
         taken_in(p, a, i, x) by {
         reveal(taken_in);
         if p1.contains(x) {
@@ -1965,7 +2004,7 @@ proof fn theorem_idle_purged_ascending(
         assert(j < i);
     }
     if a + q < np {
-        assert forall|x: nat| #[trigger] p0.contains(x) implies taken_in(p, a, a + q, x) by {
+        assert forall|x: nat| #[trigger] p0.contains(x) && floor <= x implies taken_in(p, a, a + q, x) by {
             assert(!p1.contains(x));
         }
     }
@@ -2050,9 +2089,9 @@ proof fn lemma_fresh_step(a: Seq<Pick>, b: Seq<Pick>, k: int, gn0: int, ga: int,
 /// - the picks recorded `Fresh` are strictly ascending, and lie in
 ///   `[gn0, gn1)`, so no slab is handed out fresh twice in one hold and
 ///   none below the cursor the hold found;
-/// - with any fork floor, each comes after every pick recorded `Empty`;
-/// - with no fork epoch (floor 0), each also comes after every pick
-///   recorded `Purged`.
+/// - each comes after every pick recorded `Empty` or `Purged`, at any
+///   fork floor (`f` is the floor the hold last took the `Purged` set
+///   from, as in [`theorem_idle_purged_ascending`]).
 ///
 /// Unlike the `Empty` and `Purged` order, this one needs no floor: the
 /// cursor, not the idle sets, picks a fresh slab. `gn0` and `gn1` are the
@@ -2069,20 +2108,21 @@ proof fn theorem_fresh_ascending(
     q: int,
     np: int,
     floor: int,
+    f: int,
     gn0: int,
     gn1: int,
 )
     requires
         fresh_ordered(p, np, gn0, gn1),
         idle_ordered(e0, e1, p, lo, m, np, floor),
-        purged_ordered(p0, p1, p, lo + m, q, np, floor),
+        purged_ordered(p0, p1, p, lo + m, q, np, f),
     ensures
         forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < np && p[i].state == State::Fresh && p[j].state == State::Fresh
             ==> p[i].slab < p[j].slab,
         forall|i: int| #![trigger p[i]] 0 <= i < np && p[i].state == State::Fresh ==> gn0 <= p[i].slab < gn1,
         forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Empty && p[j].state == State::Fresh
             ==> i < j,
-        floor == 0 ==> forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
+        forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
             && p[j].state == State::Fresh ==> i < j,
 {
     reveal(fresh_ordered);
@@ -2092,11 +2132,9 @@ proof fn theorem_fresh_ascending(
         implies i < j by {
         assert(lo <= i < lo + m);
     }
-    if floor == 0 {
-        assert forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
-            && p[j].state == State::Fresh implies i < j by {
-            assert(lo + m <= i < lo + m + q);
-        }
+    assert forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
+        && p[j].state == State::Fresh implies i < j by {
+        assert(lo + m <= i < lo + m + q);
     }
 }
 
@@ -5571,7 +5609,9 @@ impl ClassState {
             np == 0 && want > 0 && floor == 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
             self.refill_ordered(final(scan)@.0, final(ex)@.1, final(ex)@.0, final(picks)@, final(scan)@.1, np as int, floor as int, final(scan)@.2),
             idle_ordered(final(scan)@.3, final(ex)@.0.empty.map@, final(picks)@, final(scan)@.1, final(scan)@.4, np as int, floor as int),
-            purged_ordered(final(scan)@.5, final(ex)@.0.purged.map@, final(picks)@, final(scan)@.1 + final(scan)@.4, final(scan)@.6, np as int, floor as int),
+            // From 0, or from the fork floor once a lazy discard was seen.
+            purged_ordered(final(scan)@.5, final(ex)@.0.purged.map@, final(picks)@, final(scan)@.1 + final(scan)@.4, final(scan)@.6, np as int, 0)
+                || purged_ordered(final(scan)@.5, final(ex)@.0.purged.map@, final(picks)@, final(scan)@.1 + final(scan)@.4, final(scan)@.6, np as int, floor as int),
             fresh_ordered(final(picks)@, np as int, final(scan)@.7, final(ex)@.0.group_next as int),
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
@@ -5730,17 +5770,21 @@ impl ClassState {
         // first (`idle_ordered`), `m` of them so far.
         let ghost e0 = g@.empty.map@;
         let ghost mut m: int = 0;
-        // The `Purged` set as the idle picks begin: with no fork epoch they
-        // take it lowest first, after the `Empty` picks (`purged_ordered`),
-        // `q` of them so far.
+        // The `Purged` set as the idle picks begin: they take it lowest
+        // first, after the `Empty` picks (`purged_ordered`), `q` of them so
+        // far, from 0 or, once a read of `purge::purged_is_zero` returned
+        // false (`mark`), from the fork floor: a false read stays false,
+        // so that floor only rises.
         let ghost p_idle = g@.purged.map@;
         let ghost mut q: int = 0;
+        let lz = crate::purge::lazy();
+        let tracked mut mark = crate::purge::LazyMark::new();
         // The group cursor as the idle picks begin: the fresh ones are
         // slabs it passes, ascending (`fresh_ordered`).
         let ghost gn0 = g@.group_next as int;
         proof {
             lemma_idle_start(e0, picks@, npart, floor as int);
-            lemma_purged_start(p_idle, picks@, npart, floor as int);
+            lemma_purged_start(p_idle, picks@, npart, 0);
             lemma_fresh_start(picks@, npart, gn0);
         }
         while remaining > 0 && np < MAX_PICKS
@@ -5768,21 +5812,26 @@ impl ClassState {
                 self.scan_ordered(p0, seen, picks@, npart, floor as int, self.spec_nslabs() as int),
                 forall|x: nat| #[trigger] g@.partial.map@.contains(x) ==> p0.contains(x) || picked(picks@, np as int, x),
                 idle_ordered(e0, g@.empty.map@, picks@, npart, m, np as int, floor as int),
-                purged_ordered(p_idle, g@.purged.map@, picks@, npart + m, q, np as int, floor as int),
+                lz.wf(),
+                mark.of(lz),
+                purged_ordered(p_idle, g@.purged.map@, picks@, npart + m, q, np as int, purged_floor(floor as int, mark.lazy())),
                 fresh_ordered(picks@, np as int, gn0, g@.group_next as int),
             decreases MAX_PICKS - np,
         {
             let ghost g_idle = g@;
-            let s = match self.next_slab(&mut g, floor, meta, pubw, Tracked(&mut under)) {
+            let ghost fa = purged_floor(floor as int, mark.lazy());
+            let s = match self.next_slab(&mut g, floor, meta, lz, Tracked(&mut mark), pubw, Tracked(&mut under)) {
                 Some(s) => s,
                 None => {
                     proof {
                         dry = true;
                         lemma_fresh_mono(picks@, np as int, gn0, g_idle.group_next as int, g@.group_next as int);
+                        lemma_purged_mono(p_idle, g@.purged.map@, picks@, npart + m, q, np as int, fa, purged_floor(floor as int, mark.lazy()));
                     }
                     break;
                 },
             };
+            let ghost fb = purged_floor(floor as int, mark.lazy());
             let ghost before = picks@;
             let ghost k = np;
             let ghost z0 = *pz;
@@ -5803,7 +5852,7 @@ impl ClassState {
                 let m_prev = m;
                 m = lemma_idle_step(e0, g_idle.empty.map@, g@.empty.map@, g_idle.purged.map@, before, picks@, npart, m, k as int, floor as int, s);
                 // The `Purged` picks stay lowest first, after the `Empty` ones.
-                q = lemma_purged_step(e0, g_idle.empty.map@, p_idle, g_idle.purged.map@, g@.purged.map@, before, picks@, npart, m_prev, m, q, k as int, floor as int, s);
+                q = lemma_purged_step(e0, g_idle.empty.map@, p_idle, g_idle.purged.map@, g@.purged.map@, before, picks@, npart, m_prev, m, q, k as int, floor as int, fa, fb, s);
                 // The fresh picks stay ascending, from the cursor.
                 lemma_fresh_step(before, picks@, k as int, gn0, g_idle.group_next as int, g@.group_next as int, s);
                 // The scan's picks stay, and the idle slab is a pick.

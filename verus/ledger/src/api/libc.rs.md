@@ -134,7 +134,7 @@ Tool: none (assumption). Status: trusted.
 Hashes: contract 704435470, body none.
 
 Specs: `COut::opt` (src/vspec/cbuf.rs) 1114397528, `c_out_entry` (src/vspec/cbuf.rs) 268728190.
-Specs unresolved (spec fns of the name): `of` (2).
+Specs unresolved (spec fns of the name): `of` (3).
 
 ```rust
 axiom fn axiom_c_out<T>(p: *mut T, nullable: bool) -> (tracked o: COut<T>)
@@ -155,7 +155,7 @@ Tool: none (assumption). Status: trusted.
 Hashes: contract 2332668077, body none.
 
 Specs: `COut::opt` (src/vspec/cbuf.rs) 1114397528, `c_out` (src/vspec/cbuf.rs) 1382814115.
-Specs unresolved (spec fns of the name): `of` (2).
+Specs unresolved (spec fns of the name): `of` (3).
 
 ```rust
 axiom fn axiom_out_at_return<T>(tracked o: COut<T>, p: *mut T)

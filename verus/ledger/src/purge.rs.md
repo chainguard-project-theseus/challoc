@@ -11,7 +11,7 @@ file.
 
 ## `Explicit::drop`
 
-src/purge.rs:194. Kind: external_body. Category: atomics primitive.
+src/purge.rs:298. Kind: external_body. Category: atomics primitive.
 Tool: Kani. Status: discharged (Kani: purge::kani_explicit::explicit_drop_returns).
 
 Hashes: contract 1849994264, body 2402818886.

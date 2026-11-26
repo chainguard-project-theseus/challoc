@@ -55,8 +55,13 @@ use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::rank_class;
 pub use crate::policy::Advice;
+use crate::sync::patomic::PAtomicU8;
 use crate::sys;
+use crate::vspec::byte::BytePerm;
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
+use vstd::resource::Loc;
+use vstd::resource::set::{GhostPersistentSingleton, GhostPersistentSubset, GhostSetAuth};
 
 mod curve;
 #[cfg(test)]
@@ -88,9 +93,108 @@ exec static HEADROOM: AtomicBool = AtomicBool::new(false);
 exec static EAGER_EXCESS: AtomicBool = AtomicBool::new(false);
 /// Explicit purges in flight ([`purge_all`], [`purge_arena`]): eager.
 exec static EXPLICIT: AtomicU32 = AtomicU32::new(0);
-/// A lazy batch has been issued in this process: `Purged` memory is no
-/// longer known to be zero (the module doc). Sticky.
-exec static LAZY_EVER: AtomicBool = AtomicBool::new(false);
+/// A lazy batch has been issued in this process (1; 0 until then):
+/// `Purged` memory is no longer known to be zero (the module doc).
+/// Sticky, and proved so: its invariant ([`LazyPred`]) keeps every value
+/// it has held at most the one it holds, and the one store
+/// ([`Batch::flush`]) writes 1.
+exec static LAZY_EVER: LazyEver
+    ensures
+        LAZY_EVER.wf(),
+{
+    let (word, Tracked(perm)) = crate::vspec::byte::new(0);
+    let tracked (auth, sub) = GhostSetAuth::<u8>::new(set![0u8]);
+    let tracked all = sub.persist();
+    let tracked inv = AtomicInvariant::new((crate::vspec::byte::byte_id(&word), auth.id()), (perm, auth, all), lazy_ns());
+    LazyEver { word, inv: Tracked(inv) }
+}
+
+/// [`LAZY_EVER`]: the byte, and its invariant ([`LazyPred`]), a ghost
+/// field. `repr(C)` keeps the byte at the static's address.
+#[repr(C)]
+pub struct LazyEver {
+    word: PAtomicU8,
+    inv: Tracked<AtomicInvariant<(int, Loc), LazyVal, LazyPred>>,
+}
+
+/// Namespace of [`LAZY_EVER`]'s invariant ([`LazyPred`]).
+pub open spec fn lazy_ns() -> int {
+    0x6c61_7a79
+}
+
+/// What [`LAZY_EVER`]'s invariant holds: the byte's permission, the
+/// authority over the set of the values it has held, and a persistent
+/// copy of that set, from which [`purged_seen`] splits a witness.
+pub type LazyVal = (BytePerm, GhostSetAuth<u8>, GhostPersistentSubset<u8>);
+
+/// [`LAZY_EVER`]'s invariant, keyed by the byte's identity and the set's
+/// location: the byte holds a value it has held, at most 1, and every
+/// value it has held is at most the one it holds. So it never goes back
+/// from 1 to 0:
+/// nothing leaves the set, and the one store ([`Batch::flush`]) writes 1
+/// and inserts it.
+pub struct LazyPred;
+
+impl InvariantPredicate<(int, Loc), LazyVal> for LazyPred {
+    open spec fn inv(k: (int, Loc), v: LazyVal) -> bool {
+        &&& v.0.id() == k.0
+        &&& v.1.id() == k.1
+        &&& v.2.id() == k.1
+        &&& v.2@ == v.1@
+        &&& v.1@.contains(v.0.value())
+        &&& v.0.value() <= 1
+        &&& forall|t: u8| #[trigger] v.1@.contains(t) ==> t <= v.0.value()
+    }
+}
+
+impl LazyEver {
+    /// The invariant is over this byte, in [`lazy_ns`].
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.inv@.constant().0 == crate::vspec::byte::byte_id(&self.word)
+        &&& self.inv@.namespace() == lazy_ns()
+    }
+
+    /// The location of the set of values the byte has held
+    /// ([`LazyPred`]), which every [`LazySeen`] names.
+    pub closed spec fn loc(&self) -> Loc {
+        self.inv@.constant().1
+    }
+}
+
+/// Ghost: what a thread has seen of [`LAZY_EVER`] through
+/// [`purged_is_zero_seen`]: nothing yet ([`LazyMark::new`]), or a read
+/// that returned false, after which every read given the mark returns
+/// false too, on this thread or any other, whatever ran in between. The
+/// witness is a persistent element of the set of values the byte has
+/// held ([`LazyPred`]); its field is private to this module.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct LazyMark {
+    tracked seen: Option<GhostPersistentSingleton<u8>>,
+}
+
+impl LazyMark {
+    /// A read through this mark returned false.
+    pub closed spec fn lazy(&self) -> bool {
+        self.seen is Some
+    }
+
+    /// The mark is for `lz` ([`LAZY_EVER`], from [`lazy`]): its witness,
+    /// if any, names the set of values that byte has held, and records a
+    /// value that is not 0.
+    pub closed spec fn of(&self, lz: &LazyEver) -> bool {
+        self.seen matches Some(w) ==> w.id() == lz.loc() && w@ != 0
+    }
+
+    /// A mark that has seen nothing, for any `lz`.
+    pub proof fn new() -> (tracked r: LazyMark)
+        ensures
+            !r.lazy(),
+            forall|lz: &LazyEver| r.of(lz),
+    {
+        LazyMark { seen: None }
+    }
+}
 /// Batches that discarded anything, and bytes discarded, with each advice
 /// (the report, `stats.cgroup.*`).
 exec static LAZY_BATCHES: AtomicU64 = AtomicU64::new(0);
@@ -245,9 +349,81 @@ pub fn advice_name() -> &'static str {
 /// the first `MADV_FREE` batch of the process (the module doc), which
 /// leaves the old contents in place until the kernel gets around to
 /// reclaiming the pages; false from then on, for good.
+/// The load is vstd's (`SeqCst`), inside [`LAZY_EVER`]'s invariant
+/// ([`purged_is_zero_seen`]).
 #[inline]
 pub fn purged_is_zero() -> bool {
-    !LAZY_EVER.load(Ordering::Relaxed)
+    let tracked mut mark = LazyMark::new();
+    purged_is_zero_seen(lazy(), Tracked(&mut mark))
+}
+
+/// [`LAZY_EVER`], with the facts its initialiser ensures. A caller that
+/// reads it more than once with a witness ([`purged_is_zero_seen`])
+/// takes it once and passes the same reference to each read, which is
+/// how the witness names the static's set: a spec cannot read an `exec
+/// static`.
+#[inline(always)]
+pub fn lazy() -> (r: &'static LazyEver)
+    ensures
+        r.wf(),
+    opens_invariants none
+{
+    &LAZY_EVER
+}
+
+/// Record a lazy batch: [`LAZY_EVER`]'s one store, of 1, which joins the
+/// set of values it has held and is at least every one of them (0 or 1),
+/// so its invariant ([`LazyPred`]) holds. vstd's store is `SeqCst`.
+#[inline(always)]
+fn lazy_set() {
+    let s = lazy();
+    vstd::open_atomic_invariant!(s.inv.borrow() => l => {
+        let tracked (mut perm, mut auth, mut all) = l;
+        crate::vspec::byte::store(&s.word, 1, Tracked(&mut perm));
+        proof {
+            if !auth@.contains(1u8) {
+                let tracked one = auth.insert(1u8);
+                all.combine_points_to(one.persist());
+            }
+            l = (perm, auth, all);
+        }
+    });
+}
+
+/// [`purged_is_zero`] of `s` ([`LAZY_EVER`], from [`lazy`]), with a
+/// mark of what this thread has seen ([`LazyMark`]): the mark is
+/// [`LazyMark::lazy`] after the call exactly when the read returned
+/// false. Given a lazy mark, the read returns false again, on this thread
+/// or any other, whatever ran in between: it rests on the byte's
+/// invariant ([`LazyPred`]), not on this thread's order. The mark is
+/// ghost: the machine code is the one load.
+#[inline]
+pub fn purged_is_zero_seen(s: &LazyEver, Tracked(w): Tracked<&mut LazyMark>) -> (r: bool)
+    requires
+        s.wf(),
+        old(w).of(s),
+    ensures
+        final(w).of(s),
+        final(w).lazy() == !r,
+        old(w).lazy() ==> !r,
+{
+    let v;
+    let tracked mut d = GhostPersistentSubset::<u8>::dummy();
+    vstd::open_atomic_invariant!(s.inv.borrow() => l => {
+        v = crate::vspec::byte::load(&s.word, Tracked(&l.0));
+        proof {
+            if w.seen is Some {
+                w.seen.tracked_borrow().agree(&l.1);
+            }
+            d = l.2.duplicate();
+        }
+    });
+    proof {
+        if w.seen is None && v != 0 {
+            w.seen = Some(d.split_singleton(v));
+        }
+    }
+    v == 0
 }
 
 /// Ghost: the record of one read of [`purged_is_zero`] that returned
@@ -1529,7 +1705,7 @@ impl Batch {
         if self.n != 0 {
             let advice = advice();
             if let Advice::Lazy = advice {
-                LAZY_EVER.store(true, Ordering::Relaxed);
+                lazy_set();
             }
             let mut bytes = 0u64;
             // The first `self.n` ranges by index, for the `continue` after

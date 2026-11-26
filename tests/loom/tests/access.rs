@@ -1314,8 +1314,9 @@ fn access_fork_slot_control() {
 // `PAtomicU8`, whose every operation takes the permission the phase's
 // invariant holds; this guard keeps the writes where the invariant is):
 // non-test sys/cgroup.rs writes no `.phase` by a method, and no file but it,
-// heap/slotstate.rs (the slot-state bytes' `step`) and api/mod.rs (the
-// feature line's word, `check_once`) calls `vspec::byte`.
+// heap/slotstate.rs (the slot-state bytes' `step`), api/mod.rs (the
+// feature line's word, `check_once`) and purge.rs (`LAZY_EVER`, inside its
+// invariant `LazyPred`) calls `vspec::byte`.
 
 fn check_phase(t: &Tree) -> Vec<String> {
     let mut out = Vec::new();
@@ -1331,6 +1332,7 @@ fn check_phase(t: &Tree) -> Vec<String> {
                 && file != "src/vspec/byte.rs"
                 && file != "src/heap/slotstate.rs"
                 && file != "src/api/mod.rs"
+                && file != "src/purge.rs"
                 && (c.contains("vspec::byte::")
                     || [
                         "byte::new",

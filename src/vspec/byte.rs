@@ -6,7 +6,9 @@
 //! bytes (`heap::slotstate::step`), and for the feature line's state
 //! (`api/mod.rs`, `STATE.line`, `LINE_UNBUILT` to `LINE_BUILDING` to
 //! `LINE_READY`), whose invariant does the same for the line's statics
-//! (`api::LinePred`).
+//! (`api::LinePred`), and for the lazy-discard flag (`purge::LAZY_EVER`,
+//! 0 to 1), whose invariant keeps it from going back
+//! (`purge::LazyPred`).
 //!
 //! Each byte is a vstd `PAtomicU8`, and its [`BytePerm`] is vstd's
 //! `PermissionU8`: the byte's identity and value. Each operation is an
@@ -32,7 +34,10 @@
 //! `claim_line`, `publish_line`, `feature_line_fork_child`), inside the
 //! line's invariant (`api::LinePred`), which `init` builds with the
 //! permission `STATE`'s initialiser got from [`new`] (`STATE`'s invariant
-//! holds it until then).
+//! holds it until then); every access to `LAZY_EVER` is [`load`] in
+//! `purge::purged_is_zero_seen` or [`store`] in `purge::lazy_set`, inside
+//! its invariant, which its initialiser builds with the permission from
+//! [`new`].
 
 use crate::sync::patomic::{PAtomicU8, PermissionU8};
 use vstd::prelude::*;

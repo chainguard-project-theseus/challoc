@@ -13,7 +13,7 @@ file.
 
 ## `ClassState::claim_with`
 
-src/class/mod.rs:4172. Kind: no_decreases. Category: termination.
+src/class/mod.rs:4210. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
@@ -49,7 +49,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ## `axiom_discarded_slots_zero`
 
-src/class/mod.rs:4923. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:4961. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted (requires, checked at its one caller, ClassState::take: some discard advice of a range holding these bytes succeeded, `purge::discard_covers`, from settle's report through the class lock value's purged_ok; not checked: that this discard is the slab's latest, since `discard_covers` holds for any earlier successful discard too, that the advice was MADV_DONTNEED, which the PurgedZero witness's premise covers, and that nothing has written the bytes since).
 
 > The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -85,7 +85,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ## `axiom_fresh_slab_mem`
 
-src/class/mod.rs:4984. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:5022. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
@@ -93,7 +93,7 @@ Tool: none (assumption). Status: trusted.
 Hashes: contract 260036461, body none.
 
 Specs: `SlabTable::spec_is_guard` (src/class/table.rs) 3951951368, `desc_id` (src/slab.rs) 2830877247, `desc_at` (src/class/table.rs) 113355670, `state_byte` (src/slab.rs) 3267048718, `Inner::st` (src/class/mod.rs) 39860947, `process_regions` (src/layout/regions.rs) 2834135997, `class_table` (src/layout/mod.rs) 307783638, `cast_provenance` (src/vspec/addr.rs) 2449243785.
-Specs unresolved (spec fns of the name): `inv` (44), `spec_nslabs` (3), `id` (4), `state` (2), `owns` (3), `covers` (4), `slot_at` (2), `spec_class` (2), `provenance` (2).
+Specs unresolved (spec fns of the name): `inv` (45), `spec_nslabs` (3), `id` (4), `state` (2), `owns` (3), `covers` (4), `slot_at` (2), `spec_class` (2), `provenance` (2).
 
 ```rust
 axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)

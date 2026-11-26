@@ -146,7 +146,7 @@ leave out (theorem 33). Remaining work is tracked in
 - **Empty slab order in a hold** ([A refill takes Empty slabs in ascending order](#a-refill-takes-empty-slabs-in-ascending-order-over-the-sets-read)):
   `class::theorem_idle_empty_ascending`, `class/mod.rs`, with
   `ClassState::plan_at`'s contract.
-- **Purged slab order in a hold** ([A refill takes Purged slabs after Empty ones, before fresh ones](#a-refill-takes-purged-slabs-after-empty-ones-before-fresh-ones-no-fork-epoch-over-the-sets-read)):
+- **Purged slab order in a hold** ([A refill takes Purged slabs after Empty ones, before fresh ones](#a-refill-takes-purged-slabs-after-empty-ones-before-fresh-ones-any-fork-floor-over-the-sets-read)):
   `class::theorem_idle_purged_ascending`, `class/mod.rs`, with
   `ClassState::plan_at`'s contract.
 - **Fresh slab order in a hold** ([A refill takes fresh slabs in ascending order](#a-refill-takes-fresh-slabs-in-ascending-order-from-the-group-cursor)):
@@ -1682,7 +1682,7 @@ meaning, and no stronger.
   and that the slab has had no allocated slot since are not; and `take`
   makes a zero claim of a
   `Purged` one only while `purge::purged_is_zero` (`purge.rs`, a
-  `Relaxed` load of `LAZY_EVER`) reads true under the lock
+  load of `LAZY_EVER`) reads true under the lock
   (`class/mod.rs`, through `purge::purged_zero`, whose witness the
   axiom requires), that is, no batch has used `MADV_FREE`. The run's
   pages in a `Purged` huge extent were discarded again by
@@ -4852,8 +4852,8 @@ run authority stay those the batch's `free` was made from. The makers:
   flush's report as it sets `Purged`, and the class lock value keeps,
   `class::purged_ok`). That
   witness comes from `purge::purged_zero` (`purge.rs`, verified: `Some`
-  exactly when `purge::purged_is_zero`, a plain `Relaxed` load of
-  `purge::LAZY_EVER`, returns true); that the discard's advice was
+  exactly when `purge::purged_is_zero`, a load of `purge::LAZY_EVER`,
+  returns true); that the discard's advice was
   `MADV_DONTNEED` and the slab is untouched since is a premise.
   `Batch::flush` mints no `Zeroed`
   token, and no lock value holds one per `Purged` slab or extent
@@ -11720,9 +11720,15 @@ carries it as an atom; `plan_at` verifies within its rlimit as before.
 - One call, over the sets it read under the class lock. `plan_at`
   calls `next_slab` once per idle pick; the order of the `Empty` slabs
   across a hold's idle picks is the next section's theorem.
-- Which purged floor applies is not stated. The code lifts it only while
-  `purge::purged_is_zero()` is true, a relaxed load with no spec here;
-  the statement allows either floor (mutant M5 survives).
+- Which purged floor applies is not stated by `idle_pick`. The code
+  lifts it only while `purge::purged_is_zero()` is true; the statement
+  allows either floor (mutant M5 survives). Since
+  chainguard-project-theseus/challoc#971 `next_slab` also ensures the
+  floor it used against the caller's `LazyMark` (0 unless a read through
+  the mark returned false), which orders the picks across a hold (the
+  Purged section below). That still does not say a call read the flag:
+  a call that never reads it and lifts the floor (M5) meets it, since
+  its mark stays clear.
 - Ghost only: the release library's machine code is unchanged (new
   `ensures` and proof blocks only).
 
@@ -11841,11 +11847,12 @@ its rlimit as before.
 - One lock hold, over the sets it read under the class lock; a refill's
   second hold (the retry without a floor in `plan`) starts again.
 - `Empty` slabs only. The order of the `Purged` picks across a hold is
-  the next section's theorem, with no fork epoch only: which purged
-  floor a call uses depends on `purge::purged_is_zero()`, which has no
-  spec here (previous section, M5), and a call that lifts it may return
-  a slab below the one an earlier call returned from the floor. That a
-  fresh pick is in neither set holds per call only (previous section).
+  the next section's theorem, at any fork floor since
+  chainguard-project-theseus/challoc#971: which purged floor a call
+  uses depends on `purge::purged_is_zero()`, which never turns from
+  false to true (`LAZY_EVER`'s invariant), so a call never lifts the
+  floor after an earlier call in the hold kept it. That a fresh pick is
+  in neither set holds per call only (previous section).
 - `lo`, `e0` and `m` are ghost outputs. `lo` and `m` are pinned by the
   picks: the picks before `lo` are recorded `Active`, and the picks
   recorded `Empty` are exactly `lo .. lo + m`, so a hold whose picks
@@ -11879,7 +11886,7 @@ or `class::fresh` for M3, on the PR's tree and on main):
 | M4 | `take` records `state: State::Active` in its pick instead of the state it read | rejected (`take`'s new `state` postcondition) | verifies |
 | M5 | `idle_ordered` drops its clause that the picks before `lo` are recorded `Active` (the `[slab 5, slab 2]` case with `lo = 1` from review) | rejected (`theorem_idle_empty_ascending`'s first two postconditions) | not applicable (no such clause) |
 
-## A refill takes Purged slabs after Empty ones, before fresh ones (no fork epoch; over the sets read)
+## A refill takes Purged slabs after Empty ones, before fresh ones (any fork floor; over the sets read)
 
 The previous section orders a lock hold's `Empty` idle picks and puts
 them before every other idle pick. It says nothing about the picks after
@@ -11888,30 +11895,68 @@ them: before chainguard-project-theseus/challoc#967, nothing said that
 that `take` leaves that set alone, so the per-call statement
 (`idle_pick`) did not compose for `Purged` slabs either: nothing ruled
 out a lower `Purged` slab after a higher one, or a fresh slab before a
-`Purged` one.
+`Purged` one. #967 stated the order with no fork epoch (floor 0).
+chainguard-project-theseus/challoc#971 extends it to every fork floor.
+With a floor, `next_slab` takes the `Purged` set from 0 while
+`purge::purged_is_zero()` reads true, else from the floor. The order
+across a hold rests on that read never turning from false to true. #971
+puts `LAZY_EVER` under an invariant that states it.
 
 **Statement.**
 
 ```rust
-// class/mod.rs
-spec fn purged_ordered(p0: Set<nat>, p1: Set<nat>, p: Seq<Pick>, a: int, q: int, np: int, floor: int) -> bool {  // opaque
-    floor == 0 ==> {
-        &&& 0 <= a
-        &&& 0 <= q
-        &&& a + q <= np <= p.len()
-        &&& forall|i: int| a <= i < a + q ==> p0.contains(p[i].slab) && !p1.contains(p[i].slab)
-            && p[i].state == State::Purged
-        &&& forall|i: int| a + q <= i < np ==> p[i].state != State::Purged
-        &&& forall|i: int, j: int| a <= i < j < a + q ==> p[i].slab < p[j].slab
-        &&& forall|x: nat| p1.contains(x) ==> p0.contains(x)
-        &&& forall|x: nat, i: int| p1.contains(x) && a <= i < a + q ==> p[i].slab < x
-        &&& forall|x: nat| p0.contains(x) && !p1.contains(x) ==> taken_in(p, a, a + q, x)
-        &&& a + q < np ==> none_from(p1, 0)
+// purge.rs
+pub struct LazyPred;  // LAZY_EVER's invariant, over (PermissionU8, GhostSetAuth<u8>, GhostPersistentSubset<u8>)
+impl InvariantPredicate<(int, Loc), LazyVal> for LazyPred {
+    open spec fn inv(k: (int, Loc), v: LazyVal) -> bool {
+        &&& v.0.id() == k.0 && v.1.id() == k.1 && v.2.id() == k.1 && v.2@ == v.1@
+        &&& v.1@.contains(v.0.value())
+        &&& v.0.value() <= 1
+        &&& forall|t: u8| v.1@.contains(t) ==> t <= v.0.value()
     }
 }
 
-fn next_slab(&self, g: &mut Inner, floor: usize, ..) -> (r: Option<usize>)
+pub fn purged_is_zero_seen(s: &LazyEver, Tracked(w): Tracked<&mut LazyMark>) -> (r: bool)
+    requires
+        s.wf(),
+        old(w).of(s),
     ensures
+        final(w).of(s),
+        final(w).lazy() == !r,
+        old(w).lazy() ==> !r,
+
+// class/mod.rs
+pub open spec fn purged_floor(floor: int, lazy: bool) -> int {
+    if lazy { floor } else { 0 }
+}
+
+spec fn purged_ordered(p0: Set<nat>, p1: Set<nat>, p: Seq<Pick>, a: int, q: int, np: int, f: int) -> bool {  // opaque
+    &&& 0 <= a
+    &&& 0 <= q
+    &&& a + q <= np <= p.len()
+    &&& forall|i: int| a <= i < a + q ==> p0.contains(p[i].slab) && !p1.contains(p[i].slab)
+        && p[i].state == State::Purged
+    &&& forall|i: int| a + q <= i < np ==> p[i].state != State::Purged
+    &&& forall|i: int, j: int| a <= i < j < a + q ==> p[i].slab < p[j].slab
+    &&& forall|x: nat| p1.contains(x) ==> p0.contains(x)
+    &&& forall|x: nat, i: int| p1.contains(x) && f <= x && a <= i < a + q ==> p[i].slab < x
+    &&& forall|x: nat| p0.contains(x) && !p1.contains(x) ==> taken_in(p, a, a + q, x)
+    &&& a + q < np ==> none_from(p1, f)
+}
+
+// class/fresh.rs
+fn next_slab(&self, g: &mut Inner, floor: usize, .., lz: &LazyEver, Tracked(mark): Tracked<&mut LazyMark>, ..) -> (r: Option<usize>)
+    requires
+        lz.wf(),
+        old(mark).of(lz),
+    ensures
+        final(mark).of(lz),
+        old(mark).lazy() ==> final(mark).lazy(),
+        r matches Some(s) ==> (old(g).purged.map@.contains(s)
+            ==> lowest_from(old(g).purged.map@, purged_floor(floor, final(mark).lazy()), s)),
+        r matches Some(s) ==> (!lowest_from(old(g).empty.map@, floor, s) && !old(g).purged.map@.contains(s)
+            ==> none_from(old(g).purged.map@, purged_floor(floor, final(mark).lazy()))),
+        r is None ==> none_from(old(g).purged.map@, purged_floor(floor, final(mark).lazy())),
         r matches Some(s) ==> (final(g).st(s) == State::Purged) == old(g).purged.map@.contains(s),
         final(g).purged.map@ == match r {
             Some(s) => if old(g).purged.map@.contains(s) { old(g).purged.map@.remove(s) } else { old(g).purged.map@ },
@@ -11922,63 +11967,88 @@ fn take(&self, g: &mut Inner, slab: usize, ..)
     ensures
         final(g).purged.map@ == old(g).purged.map@,
 
+// class/mod.rs
 fn plan_at(&self, floor: usize, .., Tracked(scan): Tracked<&mut Ghost<PlanOrder>>, ..) -> (np: usize)
     ensures
         idle_ordered(final(scan)@.3, final(ex)@.0.empty.map@, final(picks)@, final(scan)@.1, final(scan)@.4, np, floor),
         purged_ordered(final(scan)@.5, final(ex)@.0.purged.map@, final(picks)@, final(scan)@.1 + final(scan)@.4,
+            final(scan)@.6, np, 0)
+            || purged_ordered(final(scan)@.5, final(ex)@.0.purged.map@, final(picks)@, final(scan)@.1 + final(scan)@.4,
             final(scan)@.6, np, floor),
 
-proof fn theorem_idle_purged_ascending(e0, e1, p0, p1, p: Seq<Pick>, lo: int, m: int, q: int, np: int)
+proof fn theorem_idle_purged_ascending(e0, e1, p0, p1, p: Seq<Pick>, lo: int, m: int, q: int, np: int, floor: int, f: int)
     requires
-        idle_ordered(e0, e1, p, lo, m, np, 0),
-        purged_ordered(p0, p1, p, lo + m, q, np, 0),
+        idle_ordered(e0, e1, p, lo, m, np, floor),
+        purged_ordered(p0, p1, p, lo + m, q, np, f),
+        0 <= f <= floor,
     ensures
         forall|i: int| 0 <= i < np ==> ((p[i].state == State::Purged) == (lo + m <= i < lo + m + q)),
         forall|i: int| lo + m + q <= i < np ==> p[i].state != State::Empty && p[i].state != State::Purged,
         forall|i: int| lo + m <= i < lo + m + q ==> p0.contains(p[i].slab),
         forall|i: int, j: int| lo + m <= i < j < lo + m + q ==> p[i].slab < p[j].slab,
-        forall|i: int, x: nat| lo + m <= i < lo + m + q && p0.contains(x) && x < p[i].slab ==> taken_in(p, lo + m, i, x),
-        lo + m + q < np ==> forall|x: nat| p0.contains(x) ==> taken_in(p, lo + m, lo + m + q, x),
+        forall|i: int, x: nat| lo + m <= i < lo + m + q && p0.contains(x) && floor <= x && x < p[i].slab
+            ==> taken_in(p, lo + m, i, x),
+        lo + m + q < np ==> forall|x: nat| p0.contains(x) && floor <= x ==> taken_in(p, lo + m, lo + m + q, x),
 ```
 
-In words, for a hold with no fork epoch (floor 0), with `m` its idle
-picks recorded `Empty` (previous section) and `p0` the `Purged` set when
-the idle picks began: the `q` idle picks right after the `Empty` ones
-are exactly the hold's picks recorded `Purged` (the partial scan's are
-`Active`, previous section); they are slabs of `p0` in strictly
-ascending order; below each of them every slab of `p0` is an earlier one
-of them; and an idle pick after them, which is recorded neither `Empty`
-nor `Purged` (a fresh slab), comes only once every slab of `p0` is
-taken.
+In words, for a hold at any fork floor (`floor`, 0 for none), with `m`
+its idle picks recorded `Empty` (previous section) and `p0` the `Purged`
+set when the idle picks began: the `q` idle picks right after the
+`Empty` ones are exactly the hold's picks recorded `Purged` (the partial
+scan's are `Active`, previous section); they are slabs of `p0` in
+strictly ascending order; below each of them every slab of `p0` at or
+above the fork floor is an earlier one of them; and an idle pick after
+them, which is recorded neither `Empty` nor `Purged` (a fresh slab),
+comes only once every slab of `p0` at or above the fork floor is taken.
+With no fork epoch the last two hold for every slab of `p0`, as #967
+stated.
 
-**Proof sketch.** `next_slab` ensures that the `Purged` set loses
-exactly the slab it returns when that slab came from it, and is
-otherwise unchanged, and that the slab is still `Purged` exactly when it
-came from that set (the lock invariant ties the `Purged` set to the
-`Purged` state, as it ties the `Empty` set to `Empty`); `take` ensures
+**Proof sketch.** `LAZY_EVER` is a `PAtomicU8` (through `vspec::byte`)
+whose permission lives in an atomic invariant with a ghost set of the
+values it has held, every one at most the value it holds, which is 0 or
+1. Its one store (`lazy_set`, in `Batch::flush`) writes 1 and inserts
+it. `purged_is_zero_seen` reads the byte and, on a nonzero read, keeps
+a persistent singleton of that value in the caller's `LazyMark`. Given a
+lazy mark, the read agrees the mark's value with the set, so the byte
+holds at least 1 and the read returns false. The mark names the set by
+its location, which only a `&LazyEver` can name: a spec cannot read an
+`exec static`. So `plan_at` takes `purge::lazy()` once per hold and
+passes the same reference to each `next_slab` call. `next_slab` ensures
+the floor it took the `Purged` set from (`purged_floor`: 0 while the
+read is true, else the fork floor), and that the floor only rises. The
+`Purged` set lost exactly the slab it returned when that slab came from
+it, and is otherwise unchanged. The slab is still `Purged` exactly when
+it came from that set (the lock invariant ties the `Purged` set to the
+`Purged` state, as it ties the `Empty` set to `Empty`). `take` ensures
 it leaves the `Purged` set unchanged, and its pick already records the
 slab's state (previous section). `plan_at`'s idle loop carries
-`purged_ordered` from `lemma_purged_start` through `lemma_purged_step`,
-which takes the same pick's `idle_ordered` (to know that an `Empty`
-pick comes before any other) and `idle_pick`: at floor 0 a `Purged` pick
-is the lowest of the current set, which only shrinks during the hold, so
-the picks ascend; a fresh pick comes only with the `Purged` set empty,
-which then stays empty. The early return in the partial scan states it
-with no idle pick. `lemma_idle_step` now also ensures how its count of
-`Empty` picks moves. Both new specs are opaque, so `plan_at` carries
-them as atoms; it verifies within its rlimit.
+`purged_ordered` at the current `purged_floor`, from
+`lemma_purged_start` through `lemma_purged_step`, which takes the same
+pick's `idle_ordered` (to know that an `Empty` pick comes before any
+other). A `Purged` pick is the lowest of the current set from a floor
+at least every earlier pick's. The set only shrinks during the hold, so
+the picks ascend. A fresh pick comes only with the set holding none
+from that floor, which then stays so as the floor rises.
+`lemma_purged_mono` raises the floor where `next_slab` returns `None`.
+The early return in the partial scan states it with no idle pick.
+Both specs are opaque, so `plan_at` carries them as atoms; it verifies
+within its rlimit. `next_fresh_slab`, unchanged, gets
+`#[verifier::spinoff_prover]`: with the new context its loop ran out of
+rlimit in the shared prover (README "Headroom", the first remedy).
 
-**Premises (seams).** None beyond the common ones. No seam is added.
+**Premises (seams).** None beyond the common ones and vstd's atomics
+(each `PAtomicU8` operation is one atomic operation on the byte, under a
+sequentially consistent model; `vspec/byte.rs`). No seam is added.
 
 **Scope and where the statement is weaker than the code.**
-- No fork epoch only (floor 0): `purged_ordered` says nothing with a
-  floor. With a floor, `next_slab` takes `Purged` slabs from the floor,
-  or from 0 while `purge::purged_is_zero()` reads true. A hold whose
-  read turned from false to true between two calls could take a
-  `Purged` slab below the floor after a higher one, or after a fresh
-  slab. The only store to `LAZY_EVER` (`purge.rs`) writes `true`, so the
-  read never turns that way, but no spec states it; stating it needs
-  `LAZY_EVER` under an invariant, an atomic change.
+- Below the fork floor a `Purged` slab may be left while a higher one
+  is taken: once a read of `purged_is_zero()` returns false, the hold
+  takes the `Purged` set from the floor. The last two items are for
+  slabs at or above the fork floor. The order of the picks themselves
+  holds at every floor.
+- `f` is the floor the hold last took the `Purged` set from. `plan_at`
+  states it as the disjunction of 0 and the fork floor; the theorem
+  takes either.
 - One lock hold, over the sets it read under the class lock, as the
   previous section. The order of the fresh picks themselves is the next
   section.
@@ -11992,11 +12062,18 @@ them as atoms; it verifies within its rlimit.
   about the picks alone.
 - `plan`, the floor-0 caller, discards `plan_at`'s ghost outputs, as for
   the previous sections; the theorem is about `plan_at`'s contract.
-- Ghost only: the release library's machine code is unchanged (new
-  `ensures`, a widened ghost tuple and proof blocks only).
+  `plan_floor` calls it with the fork floor.
+- Not ghost only since #971: `LAZY_EVER`'s loads and its store are
+  vstd's, which are `SeqCst` where the `core` ones were `Relaxed` (an
+  `ldar` and an `stlr` on aarch64, an `xchg` for the x86_64 store). The
+  reads are in `next_slab` with a fork floor, `take` of a `Purged`
+  slab (`purged_zero`) and `advice_name`; the store is in a lazy
+  batch's flush. The pull request carries the codegen verdict and the
+  bench.
 
 **Mutations** (`cargo verus focus --locked -- --verify-module class`,
-on the PR's tree and on its base):
+on the PR's tree and on its base; M1-M4 are #967's, at its floor-0
+statement):
 
 | id | change | PR | base |
 |---|---|---|---|
@@ -12004,14 +12081,29 @@ on the PR's tree and on its base):
 | M2 | `take` drops its `Purged`-set `ensures` | rejected (`lemma_purged_step` precondition in `plan_at`) | not applicable (no such clause) |
 | M3 | `next_slab` drops its "still `Purged` exactly when it came from that set" `ensures` | rejected (`lemma_purged_step` precondition in `plan_at`) | not applicable (no such clause) |
 | M4 | the theorem is stated at floor 1 instead of 0 | rejected (its assertions: `purged_ordered` says nothing with a floor) | not applicable |
+| N1 | `lazy_set` stores 0 instead of 1 (the flag turns back) | rejected (`LazyPred` at the end of the invariant block) | verifies (`LAZY_EVER.store(false, ..)`: no spec on the flag) |
+| N2 | `next_slab` lifts the `Purged` floor on a false read (`!purged_is_zero_seen(..)`) | rejected (the in-place assertions behind the new `Purged`-floor `ensures`) | verifies (`!purged_is_zero()`) |
+| N3 | `next_slab` takes the `Purged` set from 0 after a false read too (`lowest_set()` in both branches) | rejected (the same assertion) | verifies |
+| N4 | `next_slab` drops "a lazy mark stays lazy" | rejected (`lemma_purged_step` and `lemma_purged_mono` preconditions `fa <= fb` in `plan_at`) | not applicable (no such clause) |
+| N5 | `purged_is_zero_seen` drops "a lazy mark reads false" | rejected (`next_slab`'s in-place assertion that the mark stays lazy) | not applicable |
+| N6 | `LazyPred` drops "every value held is at most the one held" | rejected (`purged_is_zero_seen`'s `ensures`) | not applicable |
+| N7 | the theorem's last item drops "at or above the fork floor" | rejected (its `ensures`) | not applicable |
+| N8 | the `Purged` floor is always lifted, with no read (`if true`; the idle-slab section's M5) | verifies (stated in that section: the mark stays clear) | verifies |
 
 M2 and M3 show the two new frame clauses are what carries the order
-through the hold; M4 shows the floor-0 scope is real, not a convenience.
-No executable mutant was found that the base accepts and this PR
-rejects: the base's per-call contract (`idle_pick` at the hold's floor,
-checked at every pick by `lemma_idle_step`) and the lock invariant (the
-`Purged` set is the slabs whose state is `Purged`) already confine the
-code to this order at floor 0; this PR states it across the hold.
+through the hold; M4 showed #967's floor-0 scope was real, not a
+convenience. N1-N3 are executable mutants the base accepts and #971
+rejects: N1 turns the flag back, N2 and N3 take a `Purged` slab below
+the fork floor after a lazy discard was seen. N4-N6 show the flag's
+invariant and the mark's monotonicity carry the order; N7 shows the
+fork-floor scope of the last item is real. N1 and N6 ran with
+`--verify-module purge`, the others with `--verify-module class`.
+For #967 (floor 0), no executable mutant was found that its base
+accepts and it rejects: the per-call contract (`idle_pick` at the
+hold's floor, checked at every pick by `lemma_idle_step`) and the lock
+invariant (the `Purged` set is the slabs whose state is `Purged`)
+already confine the code to this order at floor 0; #967 states it
+across the hold.
 
 ## A refill takes fresh slabs in ascending order (from the group cursor)
 
@@ -12051,18 +12143,18 @@ fn plan_at(&self, floor: usize, .., Tracked(scan): Tracked<&mut Ghost<PlanOrder>
     ensures
         fresh_ordered(final(picks)@, np, final(scan)@.7, final(ex)@.0.group_next),
 
-proof fn theorem_fresh_ascending(e0, e1, p0, p1, p: Seq<Pick>, lo: int, m: int, q: int, np: int, floor: int, gn0: int, gn1: int)
+proof fn theorem_fresh_ascending(e0, e1, p0, p1, p: Seq<Pick>, lo: int, m: int, q: int, np: int, floor: int, f: int, gn0: int, gn1: int)
     requires
         fresh_ordered(p, np, gn0, gn1),
         idle_ordered(e0, e1, p, lo, m, np, floor),
-        purged_ordered(p0, p1, p, lo + m, q, np, floor),
+        purged_ordered(p0, p1, p, lo + m, q, np, f),
     ensures
         forall|i: int, j: int| 0 <= i < j < np && p[i].state == State::Fresh && p[j].state == State::Fresh
             ==> p[i].slab < p[j].slab,
         forall|i: int| 0 <= i < np && p[i].state == State::Fresh ==> gn0 <= p[i].slab < gn1,
         forall|i: int, j: int| 0 <= i < np && 0 <= j < np && p[i].state == State::Empty && p[j].state == State::Fresh
             ==> i < j,
-        floor == 0 ==> forall|i: int, j: int| 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
+        forall|i: int, j: int| 0 <= i < np && 0 <= j < np && p[i].state == State::Purged
             && p[j].state == State::Fresh ==> i < j,
 ```
 
@@ -12070,9 +12162,10 @@ In words, for one refill's lock hold, with `gn0` the arena's group
 cursor as its idle picks began and `gn1` the cursor it left: the picks
 recorded `Fresh` are strictly ascending, so no slab is handed out fresh
 twice in a hold, and each lies in `[gn0, gn1)`, so none is below the
-cursor the hold found; each comes after every pick recorded `Empty`, at
-any fork floor, and with no fork epoch after every pick recorded
-`Purged` too.
+cursor the hold found; each comes after every pick recorded `Empty` or
+`Purged`, at any fork floor (the `Purged` half at a fork floor since
+chainguard-project-theseus/challoc#971; `f` is the floor the hold last
+took the `Purged` set from, previous section).
 
 **Proof sketch.** `next_fresh_slab`'s loop carries that the cursor has
 not moved back: a new group starts at or above the old group's end
