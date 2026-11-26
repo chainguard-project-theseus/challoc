@@ -61,6 +61,7 @@ use core::alloc::Layout;
 use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
+use vstd::resource::map::{GhostMapAuth, GhostPointsTo};
 
 pub mod ledger;
 
@@ -312,6 +313,33 @@ pub struct ArenaStats {
 }
 
 impl ArenaStats {
+    /// [`ArenaStats::empty`]`(index)`, as a value: what an arena's
+    /// statistics lock stores until the first `epoch` (`Arena::put_stats`).
+    pub open spec fn empty_spec(index: u16) -> ArenaStats {
+        ArenaStats {
+            index,
+            small_allocated: 0,
+            small_active: 0,
+            small_dirty: 0,
+            small_retained: 0,
+            large_allocated: 0,
+            large_active: 0,
+            large_dirty: 0,
+            large_retained: 0,
+            large_runs: 0,
+            huge_dirty: 0,
+            huge_retained: 0,
+            metadata: 0,
+            pactive: 0,
+            pdirty: 0,
+            pmuzzy: 0,
+            resident: 0,
+            retained: 0,
+            mapped: 0,
+            bins: [BinStats::EMPTY; NCLASSES],
+        }
+    }
+
     /// All zero, for `index`: what [`ArenaStats::clear`] leaves, by
     /// value, for the tests and the arenas' records' reference value
     /// (`Arena::put_stats`).
@@ -329,6 +357,7 @@ impl ArenaStats {
             r.resident == 0 && r.retained == 0 && r.mapped == 0,
             r.identities(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c] == BinStats::EMPTY,
+            r == ArenaStats::empty_spec(index),
     {
         ArenaStats {
             index,
@@ -440,7 +469,7 @@ impl ArenaStats {
     /// parts and `mapped` theirs. Every part is a natural, so they give
     /// `resident >= active + metadata`, `active >= allocated` and
     /// `mapped == resident + retained`. Every stored `ArenaStats`
-    /// satisfies them (the stats lock's invariant, `ArenaStats`'s
+    /// satisfies them (the stats lock's invariant, `StoredArena`'s
     /// `LockSpec` impl).
     pub open spec fn identities(self) -> bool {
         &&& self.small_allocated <= self.small_active
@@ -522,6 +551,19 @@ impl Totals {
         &&& self.mapped + a.mapped <= usize::MAX
     }
 
+    /// `self` with arena `a`'s figures added as [`Totals::add_arena`]
+    /// adds them, each sum wrapping past `usize::MAX` ([`fig_sum`]).
+    pub open spec fn plus(self, a: ArenaStats) -> Totals {
+        Totals {
+            allocated: fig_sum(self.allocated, fig_sum(a.small_allocated, a.large_allocated)),
+            active: fig_sum(self.active, fig_sum(a.small_active, a.large_active)),
+            metadata: fig_sum(self.metadata, a.metadata),
+            resident: fig_sum(self.resident, a.resident),
+            retained: fig_sum(self.retained, a.retained),
+            mapped: fig_sum(self.mapped, a.mapped),
+        }
+    }
+
     /// Add arena `a`'s figures. The sums are exact when they fit
     /// ([`fig_add`]).
     fn add_arena(&mut self, a: &ArenaStats)
@@ -537,6 +579,8 @@ impl Totals {
             // `allocated` alone, whether or not the other sums fit.
             old(self).allocated + a.small_allocated + a.large_allocated <= usize::MAX ==> final(self).allocated
                 == old(self).allocated + a.small_allocated + a.large_allocated,
+            // Every figure, whether or not it fits.
+            *final(self) == old(self).plus(*a),
     {
         self.allocated = fig_add(self.allocated, fig_add(a.small_allocated, a.large_allocated));
         self.active = fig_add(self.active, fig_add(a.small_active, a.large_active));
@@ -556,7 +600,14 @@ impl Totals {
 pub(crate) fn fig_add(a: usize, b: usize) -> (r: usize)
     ensures
         a + b <= usize::MAX ==> r == a + b,
+        r == fig_sum(a, b),
 {
+    a.wrapping_add(b)
+}
+
+/// [`fig_add`]'s result: `a + b`, wrapping past `usize::MAX`. Closed, so
+/// a caller that only needs the exact sum does not unfold it.
+pub closed spec fn fig_sum(a: usize, b: usize) -> usize {
     a.wrapping_add(b)
 }
 
@@ -660,7 +711,8 @@ impl Snapshot {
     };
 
     /// What every stored snapshot satisfies (the `shared.stats` lock's
-    /// invariant, `Snapshot`'s `LockSpec` impl): with up to
+    /// invariant, with [`StoredSnapshot::coherent`], `StoredSnapshot`'s
+    /// `LockSpec` impl): with up to
     /// 256 arenas the totals' identities hold. Each arena's `mapped` is
     /// at most [`arena_mapped_max`], so 256 of them sum below `2^64` and
     /// no figure of the totals wraps; past that the identities hold when
@@ -669,6 +721,55 @@ impl Snapshot {
     pub open spec fn inv(self) -> bool {
         self.narenas <= 256 ==> self.totals.identities()
     }
+}
+
+/// The value of the process statistics lock (`Shared::stats`): the
+/// snapshot the last [`epoch`] stored and, as ghosts (no bytes), the
+/// authority over the figures every arena's statistics lock stores
+/// ([`StoredArena`]) and the arenas the stored totals count
+/// ([`StoredSnapshot::coherent`]). The snapshot is the only data: the
+/// lock's bytes are those of a `Lock<Snapshot>`.
+pub struct StoredSnapshot {
+    pub s: Snapshot,
+    /// Ghost (no bytes): the authority over every arena's stored
+    /// figures, by arena index. Each arena's statistics lock holds the
+    /// points-to of its own index ([`StoredArena`]), so the two agree.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub auth: Tracked<GhostMapAuth<int, ArenaStats>>,
+    /// Ghost (no bytes): the indices of the arenas the stored totals sum,
+    /// ascending: those the last epoch found.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub counted: Ghost<Seq<int>>,
+}
+
+impl StoredSnapshot {
+    /// Statistics coherence: the stored totals are every figure of the
+    /// arenas `counted` names (as many as the snapshot's `narenas`, each
+    /// once, ascending) summed in index order ([`totals_sum`], wrapping as
+    /// [`fig_add`] does), each arena's figures as the authority records
+    /// them, which are the figures that arena's statistics lock stores
+    /// ([`StoredArena`]'s points-to agrees with it).
+    pub open spec fn coherent(self) -> bool {
+        &&& self.counted@.len() == self.s.narenas
+        &&& forall|j: int| 0 <= j < self.counted@.len() ==> 0 <= #[trigger] self.counted@[j] < MAX_ARENAS
+        &&& forall|j: int, k: int|
+            0 <= j < k < self.counted@.len() ==> #[trigger] self.counted@[j] < #[trigger] self.counted@[k]
+        &&& forall|j: int| 0 <= j < self.counted@.len() ==> self.auth@@.contains_key(#[trigger] self.counted@[j])
+        &&& self.s.totals == totals_sum(stored_of(self.auth@@, self.counted@))
+    }
+}
+
+/// The value of an arena's statistics lock (`Arena::stats`): the figures
+/// the last [`epoch`] stored for the arena ([`ArenaStats::empty`] before
+/// it) and, as a ghost (no bytes), the points-to of the arena's index in
+/// the process statistics lock's authority ([`StoredSnapshot`]), whose
+/// value is the stored figures. The figures are the only data: the
+/// lock's bytes are those of a `Lock<ArenaStats>`.
+pub struct StoredArena {
+    pub s: ArenaStats,
+    /// Ghost (no bytes): the arena's entry in the process authority.
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    pub pt: Tracked<GhostPointsTo<int, ArenaStats>>,
 }
 
 } // verus!
@@ -968,6 +1069,7 @@ pub(crate) fn arena_at(shared: &Shared, i: usize) -> (r: Option<&Arena>)
         i < MAX_ARENAS,
     ensures
         r matches Some(a) ==> a.spec_index() as int == i,
+        r matches Some(a) ==> a.spec_stats_loc() == shared.arenas.spec_stats_loc() && a.spec_stats_key() == i,
 {
     shared.arenas.get_existing(i as u16)
 }
@@ -1231,13 +1333,19 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
         sum_mapped(final(rd)@.0) <= usize::MAX ==> r.totals.mapped == sum_mapped(final(rd)@.0)
             && r.totals.identities(),
         r.inv(),
+        r.totals == totals_sum(final(rd)@.0),
         *final(ord) == *old(ord),
 {
     proof {
         shared.lemma_ranks();
+        shared.lemma_stats_loc();
     }
     let tracked mut under = LockOrder::spare();
     let mut g = shared.stats.lock(Tracked(ord), Tracked(&mut under));
+    // The lock's value: the proof updates its authority with each store
+    // (`Arena::store_stats`) and, when storing, its counted arenas.
+    let c = &mut *g;
+    let ghost c0 = *c;
     let huge = shared.huge.stats(Tracked(&mut under));
     let meta = shared.meta.stats(Tracked(&mut under));
     let mut totals = Totals::EMPTY;
@@ -1267,7 +1375,19 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             // Arena 0, the only one above `2^55`, comes first.
             sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
             sum_mapped(reads) <= usize::MAX ==> totals.mapped == sum_mapped(reads) && totals.identities(),
+            totals == totals_sum(reads),
             under.top() == rank_stats(),
+            // The lock's value: the snapshot and the counted arenas as
+            // acquired, the authority at its location, unchanged unless
+            // storing, and recording each stored arena's figures.
+            c.s == c0.s,
+            c.counted == c0.counted,
+            c.auth@.id() == c0.auth@.id(),
+            c0.auth@.id() == shared.arenas.spec_stats_loc(),
+            !store ==> c.auth@@ == c0.auth@@,
+            store ==> forall|j: int|
+                0 <= j < reads.len() ==> c.auth@@.contains_key(#[trigger] reads[j].index as int) && c.auth@@[reads[j].index
+                    as int] == reads[j],
     {
         if let Some(arena) = arena_at(shared, i) {
             let tracked mut pg = Ghost(0int);
@@ -1282,13 +1402,24 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
                 }
             }
             totals.add_arena(a);
+            let ghost reads0 = reads;
             proof {
                 reads = reads.push(*a);
                 pages = pages.push(p);
             }
             narenas += 1;
             if store {
-                arena.store_stats(a, Tracked(&mut under));
+                arena.store_stats(a, Tracked(c.auth.borrow_mut()), Tracked(&mut under));
+                proof {
+                    assert forall|j: int| 0 <= j < reads.len() implies c.auth@@.contains_key(
+                        #[trigger] reads[j].index as int,
+                    ) && c.auth@@[reads[j].index as int] == reads[j] by {
+                        if j < reads0.len() {
+                            assert(reads[j] == reads0[j]);
+                            assert(reads0[j].index < i);
+                        }
+                    }
+                }
             }
         }
     }
@@ -1300,19 +1431,27 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
         }
     }
     let r = if store {
-        g.epoch = fig_add64(g.epoch, 1);
-        g.narenas = narenas;
-        g.totals = totals;
-        g.huge = huge;
-        g.meta = meta;
+        c.s.epoch = fig_add64(c.s.epoch, 1);
+        c.s.narenas = narenas;
+        c.s.totals = totals;
+        c.s.huge = huge;
+        c.s.meta = meta;
         proof {
-            assert(totals_exact(reads, pages, g@.totals));
-            assert(crate::lock::lock_inv(g@));
+            c.counted = Ghost(ids_of(reads));
+            assert(stored_of(c.auth@@, c.counted@) =~= reads);
+            assert(totals_exact(reads, pages, c.s.totals));
+            assert(c.coherent());
+            assert(crate::lock::lock_inv(*c));
+            assert(crate::lock::lock_frame(crate::lock::lock_init(shared.stats), *c));
         }
-        *g
+        c.s
     } else {
+        proof {
+            assert(c.auth@@ == c0.auth@@);
+            assert(crate::lock::lock_inv(*c));
+        }
         Snapshot {
-            epoch: g.epoch,
+            epoch: c.s.epoch,
             narenas,
             totals,
             huge,
@@ -1383,7 +1522,7 @@ pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: S
     }
     let tracked mut under = LockOrder::spare();
     let g = shared.stats.lock(Tracked(ord), Tracked(&mut under));
-    let r = *g;
+    let r = g.s;
     g.unlock();
     r
 }
@@ -1660,6 +1799,29 @@ pub open spec fn summed(reads: Seq<ArenaStats>, pages: Seq<int>, r: ArenaStats) 
 pub open spec fn totals_exact(reads: Seq<ArenaStats>, pages: Seq<int>, t: Totals) -> bool {
     &&& reads_ok(reads, pages)
     &&& reads_allocated(reads, pages) <= usize::MAX ==> t.allocated == reads_allocated(reads, pages)
+}
+
+/// The totals of the per-arena figures `reads`, added in order from
+/// [`Totals::EMPTY`] as [`collect_into`] adds them ([`Totals::plus`]):
+/// every figure, each sum wrapping past `usize::MAX` as [`fig_add`]'s.
+pub open spec fn totals_sum(reads: Seq<ArenaStats>) -> Totals
+    decreases reads.len(),
+{
+    if reads.len() == 0 {
+        Totals::EMPTY
+    } else {
+        totals_sum(reads.drop_last()).plus(reads.last())
+    }
+}
+
+/// The figures `m` records for the arenas `ids`, in `ids`' order.
+pub open spec fn stored_of(m: Map<int, ArenaStats>, ids: Seq<int>) -> Seq<ArenaStats> {
+    Seq::new(ids.len(), |j: int| m[ids[j]])
+}
+
+/// The arena indices of `reads`, in order.
+pub open spec fn ids_of(reads: Seq<ArenaStats>) -> Seq<int> {
+    Seq::new(reads.len(), |j: int| reads[j].index as int)
 }
 
 /// [`class_bytes`] of naturals is a natural.
@@ -2467,81 +2629,111 @@ mod pool {
 
 verus! {
 
-/// The process statistics lock's invariant is [`Snapshot::inv`], and its
-/// frame holds of any two snapshots: the value keeps no constant from the
-/// one `Shared::init` created it with.
+/// The process statistics lock's invariant is [`Snapshot::inv`] of the
+/// stored snapshot and statistics coherence
+/// ([`StoredSnapshot::coherent`]): the stored totals are the sum of the
+/// figures the statistics locks of the arenas the last epoch counted
+/// store. Its frame is the authority's location, which every arena's
+/// points-to shares (`Arenas::spec_stats_loc`, `Shared::wf`).
 ///
-/// The lock's writers are `Shared::init` (`Snapshot::EMPTY`, all zero;
-/// `Lock::new` requires the invariant) and [`collect_into`]; each holder
-/// ([`collect_into`], [`snapshot`], [`arena_stats_all_into`]) ends in
-/// `LockGuard::unlock`, which requires both
-/// (`api::tests::guards_end_in_unlock`); the fork handlers take only the
-/// raw lock. `snapshot` only reads the value, and `arena_stats_all_into`
-/// leaves it unchanged.
+/// The lock's writers are `Shared::init` (`Snapshot::EMPTY`, all zero,
+/// with no arena counted and the authority minted over every index's
+/// `ArenaStats::empty_spec`; `Lock::new` requires the invariant) and
+/// [`collect_into`], which updates the authority with each arena's figures
+/// as `Arena::store_stats` stores them and then stores their totals and
+/// the arenas it counted. Each holder ([`collect_into`], [`snapshot`],
+/// [`arena_stats_all_into`]) ends in `LockGuard::unlock`, which requires
+/// both (`api::tests::guards_end_in_unlock`); the fork handlers take only
+/// the raw lock. `snapshot` only reads the value, and
+/// `arena_stats_all_into` leaves it unchanged.
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
-impl crate::lock::LockSpec for Snapshot {
+impl crate::lock::LockSpec for StoredSnapshot {
     open spec fn lock_spec_inv(self) -> bool {
-        Snapshot::inv(self)
+        &&& self.s.inv()
+        &&& self.coherent()
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        true
+        v.auth@.id() == init.auth@.id()
     }
 }
 
 /// The frame holds of every value with itself. Nothing calls this: Verus
 /// proves `Lock::new`'s `requires` of the initial value at each call
 /// directly (the cell's invariant, `lock::CellPred`, holds it until the first acquisition).
-proof fn lemma_snapshot_frame_reflexive(v: Snapshot)
+proof fn lemma_snapshot_frame_reflexive(v: StoredSnapshot)
     ensures
         crate::lock::lock_frame(v, v),
 {
 }
 
-/// An arena statistics lock's invariant is the accounting identities
-/// ([`ArenaStats::identities`]), and its frame holds of any two values.
-/// Every stored record does keep the `index` of the `ArenaStats::empty`
-/// that `Arena::init` creates the lock with (`collect_arena_with` ensures
-/// it), but `Arena::store_stats` does not require the record it stores to
-/// keep that or any other field, so no proof needs a constant and `true`,
-/// the weakest frame, is enough.
+/// An arena statistics lock's invariant is the accounting identities of
+/// the stored figures ([`ArenaStats::identities`]) and that its
+/// points-to's value is those figures, so the process statistics lock's
+/// authority ([`StoredSnapshot`]) records them. Its frame is the
+/// points-to's location and key, which `Arena::init` creates the lock
+/// with: the process authority's location and the arena's index (the
+/// registry's `entry_ok` records both).
 ///
 /// `Arena::init` writes the lock over `ArenaStats::empty` through
 /// `Arena::put_stats`, which is trusted (`external_body`): its bytes are
-/// those of `Lock::new(ArenaStats::empty(index), ..)`, which the test
-/// `put_stats_writes_lock_new_of_empty` compares, and `empty` ensures the
-/// identities. Both are checked at every release: each holder outside the tests
+/// those of `Lock::new(StoredArena { s: ArenaStats::empty(index), pt },
+/// ..)`, which the test `put_stats_writes_lock_new_of_empty` compares,
+/// with the points-to `pt` it is handed, whose value it requires to be
+/// `ArenaStats::empty_spec(index)`; `empty` ensures the identities.
+/// Both are checked at every release: each holder outside the tests
 /// (`Arena::stats_into` and `Arena::add_stats_to`, which only read, and
-/// `Arena::store_stats`, which stores a value it requires them of) ends
-/// with `LockGuard::unlock`, which requires both, on every path to a
-/// return (`api::tests::guards_end_in_unlock`). `Arena::store_stats`'s one
+/// `Arena::store_stats`, which stores a value it requires them of and
+/// updates the points-to and the authority to it) ends with
+/// `LockGuard::unlock`, which requires both, on every path to a return
+/// (`api::tests::guards_end_in_unlock`). `Arena::store_stats`'s one
 /// caller, [`collect_into`], stores what [`collect_arena_with`] computes,
 /// whose ensures give the identities. The fork handlers take and release
-/// the raw lock without touching the value, and nothing reads it
-/// without a guard. What is left is the mutex contract
-/// in the fork window (`lock::axiom_window_cell`).
+/// the raw lock without touching the value, and nothing reads it without
+/// a guard. What is left is the mutex contract in the fork window
+/// (`lock::axiom_window_cell`).
 ///
 /// `api::tests::lock_holders_match_inv_docs` checks that the functions
 /// that take the guard are the holders named here.
-impl crate::lock::LockSpec for ArenaStats {
+impl crate::lock::LockSpec for StoredArena {
     open spec fn lock_spec_inv(self) -> bool {
-        self.identities()
+        &&& self.s.identities()
+        &&& self.pt@.value() == self.s
     }
 
     open spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        true
+        &&& v.pt@.id() == init.pt@.id()
+        &&& v.pt@.key() == init.pt@.key()
     }
 }
 
 /// The frame holds of every value with itself. Nothing calls this: Verus
 /// proves `Lock::new`'s `requires` of the initial value at each call
 /// directly (the cell's invariant, `lock::CellPred`, holds it until the first acquisition).
-proof fn lemma_arena_stats_frame_reflexive(v: ArenaStats)
+proof fn lemma_arena_stats_frame_reflexive(v: StoredArena)
     ensures
         crate::lock::lock_frame(v, v),
 {
+}
+
+/// What a holder of both the process statistics lock and arena `a`'s
+/// statistics lock sees: the figures the arena's lock stores are the
+/// ones the process lock's authority records for its index, so, where
+/// the process lock's value is [`StoredSnapshot::coherent`] (at its
+/// acquisition), the stored totals sum the figures the counted arenas'
+/// locks store. No verified function calls it yet: it is the step a
+/// reader that states coherence in its `ensures` would take.
+pub proof fn lemma_stored_agree(tracked p: &StoredSnapshot, tracked a: &StoredArena)
+    requires
+        a.pt@.id() == p.auth@.id(),
+        crate::lock::lock_inv(*a),
+    ensures
+        p.auth@@.contains_key(a.pt@.key()),
+        p.auth@@[a.pt@.key()] == a.s,
+{
+    a.pt.borrow().agree(p.auth.borrow());
 }
 
 } // verus!

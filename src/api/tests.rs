@@ -1927,7 +1927,7 @@ fn lock_holders_match_inv_docs() {
     use std::string::ToString;
     type Holders = &'static [(&'static str, &'static str, &'static str)];
     const HOLDERS: &[(&str, Holders)] = &[
-        // `stats::ArenaStats`'s `LockSpec` impl.
+        // `stats::StoredArena`'s `LockSpec` impl.
         (
             "arena.rs:Arena.stats",
             &[
@@ -2000,7 +2000,7 @@ fn lock_holders_match_inv_docs() {
                 ("heap/tcaches.rs:", "pub fn destroy(", "lock"),
             ],
         ),
-        // `stats::Snapshot`'s `LockSpec` impl.
+        // `stats::StoredSnapshot`'s `LockSpec` impl.
         (
             "heap/shared.rs:Shared.stats",
             &[

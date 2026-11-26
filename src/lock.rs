@@ -1774,7 +1774,7 @@ mod kani_lock {
     /// storage of one (uninitialised: the call reads nothing, and the
     /// permission is a made-up one, `Tracked::assume_new()`, which the body
     /// does not use), at `T` a byte, a word, a padded pair and
-    /// `ArenaStats` (`Arena::put_stats`' instance), it returns, and
+    /// `StoredArena` (`Arena::put_stats`' instance), it returns, and
     /// (beyond the contract) the pointer is the value field's: its `T`
     /// fills the cell, lies inside the lock and apart from the lock word,
     /// is aligned for `T` and is writable.
@@ -1796,6 +1796,6 @@ mod kani_lock {
         on::<u8>();
         on::<u64>();
         on::<(u64, u8)>();
-        on::<crate::stats::ArenaStats>();
+        on::<crate::stats::StoredArena>();
     }
 }

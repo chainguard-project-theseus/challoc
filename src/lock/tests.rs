@@ -44,8 +44,8 @@ fn lock_axioms_state_assumed_specs() {
         ("crate::huge::Inner", true, true),
         ("crate::meta::Inner", true, true),
         ("crate::purge::background::State", true, true),
-        ("crate::stats::ArenaStats", true, true),
-        ("crate::stats::Snapshot", true, true),
+        ("crate::stats::StoredArena", true, true),
+        ("crate::stats::StoredSnapshot", true, true),
     ];
     // Spelled in parts, so that this test's own lines match nothing.
     let named = [
@@ -386,10 +386,10 @@ fn fork_record_uses_are_listed() {
 /// only. Its one caller is the trusted body of `Arena::put_stats`, which
 /// passes its own parameter `p` and its own permission `perm`, the one
 /// that names `p` (`requires old(perm).ptr() == p`), at `T =
-/// ArenaStats`, one of the `T`s `kani_lock` runs it at. The only other
+/// StoredArena`, one of the `T`s `kani_lock` runs it at. The only other
 /// calls are Kani harnesses' (`cfg(kani)`, never in a build): `kani_lock`'s
 /// and the two in `arena::kani_put_stats::put_stats_writes_empty`, which
-/// pass a pointer to its own `Lock<ArenaStats>`. Any call spelling that ends in `value_ptr(`
+/// pass a pointer to its own `Lock<StoredArena>`. Any call spelling that ends in `value_ptr(`
 /// counts (`Self::` and `Lock::<T>::` included), and the name is never
 /// used but as a call (no function pointer to it); an associated
 /// function cannot be imported under another name. In `put_stats`'s
@@ -437,12 +437,12 @@ fn value_ptr_called_only_by_put_stats() {
         .filter(|l| !l.starts_with("//"))
         .collect();
     let sig = concat!(
-        "(p: *mut Lock<Arena",
-        "Stats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, "
+        "(p: *mut Lock<Stored",
+        "Arena>, Tracked(perm): Tracked<&mut PointsTo<Lock<StoredArena>>>, "
     );
     assert!(
         item[0].contains(sig),
-        "put_stats: got = `{}`, want = `p` and the permission at `Lock<ArenaStats>`",
+        "put_stats: got = `{}`, want = `p` and the permission at `Lock<StoredArena>`",
         item[0]
     );
     let line = |l: &str| {
@@ -465,15 +465,18 @@ fn value_ptr_called_only_by_put_stats() {
         .collect();
     let want = [
         "core::ptr::write_bytes(p, 0, 1);",
-        concat!("(*Lock::value", "_ptr(p, Tracked(&*perm))).index = index;"),
+        concat!(
+            "(*Lock::value",
+            "_ptr(p, Tracked(&*perm))).s.index = index;"
+        ),
     ];
     assert_eq!(
         uses, want,
         "put_stats: got = {uses:?} naming `p` or `perm`, want = {want:?}"
     );
     assert!(
-        include_str!("../lock.rs").contains(concat!("on::<crate::stats::Arena", "Stats>();")),
-        "kani_lock: got = no `ArenaStats` instance, want = put_stats' `T`"
+        include_str!("../lock.rs").contains(concat!("on::<crate::stats::Stored", "Arena>();")),
+        "kani_lock: got = no `StoredArena` instance, want = put_stats' `T`"
     );
 }
 

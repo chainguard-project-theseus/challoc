@@ -47,7 +47,7 @@ use crate::lock::{
 };
 use crate::meta::{Meta, MetaClaim};
 use crate::purge::Left;
-use crate::stats::ArenaStats;
+use crate::stats::{ArenaStats, StoredArena};
 use crate::sync::patomic::PAtomicU32;
 use crate::vspec::addr::addr_to_ptr;
 use crate::vspec::cbuf::CCall;
@@ -70,7 +70,7 @@ use vstd::prelude::*;
 use vstd::raw_ptr::{PointsTo, PointsToRaw, ptr_mut_write, ptr_ref};
 use vstd::resource::Loc;
 use vstd::resource::ghost_var::{GhostVar, GhostVarAuth};
-use vstd::resource::map::{GhostMapAuth, GhostPersistentPointsTo};
+use vstd::resource::map::{GhostMapAuth, GhostPersistentPointsTo, GhostPointsTo, GhostSubmap};
 #[cfg(verus_keep_ghost)]
 use vstd::resource::set::GhostSubset;
 use vstd::resource::set::{GhostSetAuth, GhostSingleton};
@@ -150,7 +150,7 @@ pub struct Arena {
     /// the guards exactly).
     large: AtomicU64,
     /// This arena's statistics as of the last `epoch` (`stats.rs`).
-    stats: Lock<ArenaStats>,
+    stats: Lock<StoredArena>,
     /// When the last exit purge ran ([`Arena::take_exit_purge`]), 0 before
     /// the first.
     last_exit_purge: AtomicU64,
@@ -655,7 +655,7 @@ axiom fn axiom_arena_layout()
         // `name: ...Lock<...>` as a lock field.
         field_fits::<
             Arena,
-            Lock<ArenaStats>,
+            Lock<StoredArena>,
         >(A_STATS, A_LAST_EXIT_PURGE as int),
         field_fits::<Arena, AtomicU64>(A_LAST_EXIT_PURGE, size_of::<Arena>() as int),
         size_of::<Arena>() <= isize::MAX,
@@ -691,7 +691,7 @@ const _: () = assert!(
         && core::mem::size_of::<ClassState>() > 0
         && NCLASSES as u128 * core::mem::size_of::<ClassState>() as u128 <= isize::MAX as u128
         && fits::<Arena, AtomicU64>(A_LARGE, A_STATS)
-        && fits::<Arena, Lock<ArenaStats>>(A_STATS, A_LAST_EXIT_PURGE)
+        && fits::<Arena, Lock<StoredArena>>(A_STATS, A_LAST_EXIT_PURGE)
         && fits::<Arena, AtomicU64>(A_LAST_EXIT_PURGE, core::mem::size_of::<Arena>())
         && core::mem::size_of::<Arena>() <= isize::MAX as usize
 );
@@ -738,7 +738,7 @@ pub(crate) tracked struct ArenaParts {
     tracked sets: PointsTo<*const SetTable>,
     tracked sets_perm: PointsTo<Tracked<&'static PointsTo<SetTable>>>,
     tracked large: PointsTo<AtomicU64>,
-    tracked stats: PointsTo<Lock<ArenaStats>>,
+    tracked stats: PointsTo<Lock<StoredArena>>,
     tracked last_exit_purge: PointsTo<AtomicU64>,
 }
 
@@ -752,7 +752,7 @@ impl ArenaParts {
         &&& self.sets.ptr() == field_ptr::<Arena, *const SetTable>(p, A_SETS)
         &&& self.sets_perm.ptr() == field_ptr::<Arena, Tracked<&'static PointsTo<SetTable>>>(p, A_SETS_PERM)
         &&& self.large.ptr() == field_ptr::<Arena, AtomicU64>(p, A_LARGE)
-        &&& self.stats.ptr() == field_ptr::<Arena, Lock<ArenaStats>>(p, A_STATS)
+        &&& self.stats.ptr() == field_ptr::<Arena, Lock<StoredArena>>(p, A_STATS)
         &&& self.last_exit_purge.ptr() == field_ptr::<Arena, AtomicU64>(p, A_LAST_EXIT_PURGE)
         &&& in_alloc(field_ptr::<Arena, ClassState>(p, A_CLASSES), NCLASSES as int * size_of::<ClassState>())
         &&& NCLASSES * size_of::<ClassState>() <= isize::MAX
@@ -782,7 +782,7 @@ spec fn pad_covers(pad: PointsToRaw, p: *mut Arena) -> bool {
             || in_field::<Tracked<&'static PointsTo<SetTable>>>(x, p, A_SETS_PERM)
             || in_field::<[ClassState; NCLASSES]>(x, p, A_CLASSES)
             || in_field::<AtomicU64>(x, p, A_LARGE)
-            || in_field::<Lock<ArenaStats>>(x, p, A_STATS)
+            || in_field::<Lock<StoredArena>>(x, p, A_STATS)
             || in_field::<AtomicU64>(x, p, A_LAST_EXIT_PURGE)
 }
 
@@ -828,7 +828,7 @@ impl Arena {
         );
         let tracked (classes, raw) = take_field::<Arena, [ClassState; NCLASSES]>(raw, p, A_CLASSES, A_LARGE as int);
         let tracked (large, raw) = take_field::<Arena, AtomicU64>(raw, p, A_LARGE, A_STATS as int);
-        let tracked (stats, raw) = take_field::<Arena, Lock<ArenaStats>>(raw, p, A_STATS, A_LAST_EXIT_PURGE as int);
+        let tracked (stats, raw) = take_field::<Arena, Lock<StoredArena>>(raw, p, A_STATS, A_LAST_EXIT_PURGE as int);
         let tracked (last_exit_purge, pad) = take_field::<Arena, AtomicU64>(
             raw,
             p,
@@ -887,7 +887,7 @@ impl Arena {
         // Over several lines, as in `axiom_arena_layout`.
         lemma_field_addr::<
             Arena,
-            Lock<ArenaStats>,
+            Lock<StoredArena>,
         >(p, A_STATS);
         lemma_field_addr::<Arena, AtomicU64>(p, A_LAST_EXIT_PURGE);
         index.leak_contents();
@@ -914,7 +914,7 @@ impl Arena {
             assert(pad.dom().contains(x) || in_field::<u16>(x, p, A_INDEX) || in_field::<AtomicU64>(x, p, A_DECAY_NS)
                 || in_field::<*const SetTable>(x, p, A_SETS) || in_field::<Tracked<&'static PointsTo<SetTable>>>(x, p, A_SETS_PERM)
                 || in_field::<[ClassState; NCLASSES]>(x, p, A_CLASSES) || in_field::<AtomicU64>(x, p, A_LARGE)
-                || in_field::<Lock<ArenaStats>>(x, p, A_STATS) || in_field::<AtomicU64>(x, p, A_LAST_EXIT_PURGE));
+                || in_field::<Lock<StoredArena>>(x, p, A_STATS) || in_field::<AtomicU64>(x, p, A_LAST_EXIT_PURGE));
             if in_field::<[ClassState; NCLASSES]>(x, p, A_CLASSES) {
                 assert(r_classes.dom().contains(x));
             }
@@ -1104,47 +1104,64 @@ impl Arena {
         }
     }
 
-    /// The per-arena statistics lock, free, over [`ArenaStats::empty`],
-    /// written at `p` through its permission. Out of line, so the record
-    /// (about 7 KiB with its bins) is built in place at `p` rather than in
-    /// [`Arena::init`]'s frame and copied, on the first `malloc` of a
-    /// thread whose arena is not built yet.
+    /// The per-arena statistics lock, free, over [`ArenaStats::empty`]
+    /// with the points-to `pt` of the arena's index in the process
+    /// statistics authority (`stats::StoredArena`), written at `p` through
+    /// its permission. Out of line, so the record (about 7 KiB with its
+    /// bins) is built in place at `p` rather than in [`Arena::init`]'s
+    /// frame and copied, on the first `malloc` of a thread whose arena is
+    /// not built yet.
     ///
     /// # Safety
     /// `p` is the `stats` field of `init`'s storage.
     /// Trusted: the bytes written are those of
-    /// `Lock::new(ArenaStats::empty(index), ..)` (an unlocked lock word
-    /// and an all-zero record but its `index`; the test
-    /// `put_stats_writes_lock_new_of_empty` compares them), which has the
-    /// arena's statistics rank. Rust has no placement construction, and
+    /// `Lock::new(StoredArena { s: ArenaStats::empty(index), pt }, ..)` (an
+    /// unlocked lock word and an all-zero record but its `index`; `pt` is
+    /// zero-sized; the test `put_stats_writes_lock_new_of_empty` compares
+    /// them), which has the arena's statistics rank and was created with
+    /// that value, whose `pt` has the value `Lock::new` requires of it
+    /// (`lock_inv`: the record). Rust has no placement construction, and
     /// through `ptr_mut_write` the record went through a 7 KiB stack copy.
     #[verifier::external_body]
     #[inline(never)]
-    unsafe fn put_stats(p: *mut Lock<ArenaStats>, Tracked(perm): Tracked<&mut PointsTo<Lock<ArenaStats>>>, index: u16)
+    // `pt` is named only by the contract: it is zero-sized and the body
+    // writes no byte for it.
+    #[allow(unused_variables)]
+    unsafe fn put_stats(p: *mut Lock<StoredArena>, Tracked(perm): Tracked<&mut PointsTo<Lock<StoredArena>>>, index: u16, Tracked(pt): Tracked<GhostPointsTo<int, ArenaStats>>)
         requires
             old(perm).ptr() == p,
+            pt.value() == ArenaStats::empty_spec(index),
         ensures
             final(perm).ptr() == p,
             final(perm).is_init(),
             final(perm).value().rank() == rank_arena_stats(index as int),
+            lock_init(final(perm).value()).s == ArenaStats::empty_spec(index),
+            lock_init(final(perm).value()).pt@ == pt,
     {
         // SAFETY: `p` is `init`'s field, writable and unaliased; every
-        // byte of a `Lock<ArenaStats>` is data (the ghost fields have none),
+        // byte of a `Lock<StoredArena>` is data (the ghost fields have none),
         // and zero is the free lock word and an empty record.
         unsafe {
             core::ptr::write_bytes(p, 0, 1);
-            (*Lock::value_ptr(p, Tracked(&*perm))).index = index;
+            (*Lock::value_ptr(p, Tracked(&*perm))).s.index = index;
         }
     }
 
-    /// `large`, `stats` and `last_exit_purge`.
+    /// `large`, `stats` and `last_exit_purge`; the statistics lock holds
+    /// `pt` ([`Arena::put_stats`]).
     ///
     /// # Safety
     /// `this` is `init`'s storage.
     #[inline(always)]
-    unsafe fn put_tail(this: *mut Arena, index: u16, Tracked(parts): Tracked<&mut ArenaParts>)
+    unsafe fn put_tail(
+        this: *mut Arena,
+        index: u16,
+        Tracked(parts): Tracked<&mut ArenaParts>,
+        Tracked(pt): Tracked<GhostPointsTo<int, ArenaStats>>,
+    )
         requires
             old(parts).at(this),
+            pt.value() == ArenaStats::empty_spec(index),
         ensures
             final(parts).at(this),
             final(parts).index == old(parts).index,
@@ -1154,6 +1171,7 @@ impl Arena {
             final(parts).large.is_init(),
             final(parts).stats.is_init(),
             final(parts).stats.value().rank() == rank_arena_stats(index as int),
+            lock_init(final(parts).stats.value()).pt@ == pt,
             final(parts).last_exit_purge.is_init(),
     {
         proof {
@@ -1162,7 +1180,7 @@ impl Arena {
         // SAFETY: the fields of `init`'s storage, through their permissions.
         unsafe {
             ptr_mut_write(field_at(this, A_LARGE), Tracked(&mut parts.large), AtomicU64::new(0));
-            Arena::put_stats(field_at(this, A_STATS), Tracked(&mut parts.stats), index);
+            Arena::put_stats(field_at(this, A_STATS), Tracked(&mut parts.stats), index, Tracked(pt));
             ptr_mut_write(field_at(this, A_LAST_EXIT_PURGE), Tracked(&mut parts.last_exit_purge), AtomicU64::new(0));
         }
     }
@@ -1176,6 +1194,9 @@ impl Arena {
     /// and the slab set table object, when the sets themselves did not
     /// fit, goes back to `meta`. Every `classes[c]` is written, with a
     /// state of class `c` (the type invariant), before `true` is returned.
+    /// The statistics lock takes `index`'s points-to out of `pk` (the
+    /// process statistics authority's, parked under the creation lock,
+    /// [`Created`]) only when `true` is returned.
     ///
     /// # Safety
     /// `this` must point to writable storage for an `Arena` that nothing
@@ -1195,6 +1216,7 @@ impl Arena {
         Tracked(slot): Tracked<&mut Held<Arena>>,
         Tracked(ord): Tracked<&mut LockOrder>,
         Tracked(frozen): Tracked<&'static PointsTo<[crate::layout::Class; NCLASSES]>>,
+        Tracked(pk): Tracked<&mut GhostSubmap<int, ArenaStats>>,
     ) -> (r: bool)
         requires
             crate::sys::may_syscall(),
@@ -1207,11 +1229,17 @@ impl Arena {
             *regions == process_regions(),
             meta.is_process(),
             crate::class::tables_ok(*tperms, tables),
+            old(pk)@.contains_key(index as int),
+            old(pk)@[index as int] == ArenaStats::empty_spec(index),
         ensures
             r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().spec_index() == index
-                && p.value().tables_from(*tperms)),
+                && p.value().tables_from(*tperms) && p.value().spec_stats_loc() == old(pk).id()
+                && p.value().spec_stats_key() == index as int),
             !r ==> (final(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit()),
             *final(ord) == *old(ord),
+            final(pk).id() == old(pk).id(),
+            r ==> final(pk)@ == old(pk)@.remove(index as int),
+            !r ==> final(pk)@ == old(pk)@,
     {
         let tracked (mut parts, mut classes, pad) = Arena::split(slot.perm.tracked_take());
         // SAFETY: the caller guarantees `this` is writable and unaliased;
@@ -1306,7 +1334,8 @@ impl Arena {
                     },
                 }
             }
-            Arena::put_tail(this, index, Tracked(&mut parts));
+            let tracked pt = pk.split_points_to(index as int);
+            Arena::put_tail(this, index, Tracked(&mut parts), Tracked(pt));
         }
         proof {
             slot.perm = Some(axiom_arena_assemble(parts, classes, pad, this));
@@ -1440,15 +1469,13 @@ impl Arena {
             use_type_invariant(self);
         }
         let g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-        *out = *g;
+        *out = g.s;
         g.unlock();
     }
 
     /// Add the statistics stored by the last `epoch` to `out`
     /// (`ArenaStats::add`, the `MALLCTL_ARENAS_ALL` merge), read in place
     /// under the lock.
-    // `&*g`: Verus does not apply the guard's deref coercion.
-    #[allow(clippy::explicit_auto_deref)]
     pub fn add_stats_to(&self, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
         requires
             crate::sys::may_syscall(),
@@ -1461,27 +1488,60 @@ impl Arena {
             use_type_invariant(self);
         }
         let g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-        out.add(&*g);
+        out.add(&g.s);
         g.unlock();
     }
 
-    /// Store the statistics of an `epoch`.
-    pub fn store_stats(&self, s: &ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
+    /// Store the statistics of an `epoch`, and record them in the process
+    /// statistics authority `auth` (the process statistics lock's, which
+    /// the caller holds; `stats::StoredSnapshot`) at the arena's entry.
+    pub fn store_stats(
+        &self,
+        s: &ArenaStats,
+        Tracked(auth): Tracked<&mut GhostMapAuth<int, ArenaStats>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_arena_stats(0)),
             s.identities(),
+            old(auth).id() == self.spec_stats_loc(),
         ensures
             *final(ord) == *old(ord),
+            final(auth).id() == old(auth).id(),
+            final(auth)@ == old(auth)@.insert(self.spec_stats_key(), *s),
     {
         proof {
             use_type_invariant(self);
-            // The value this holder leaves satisfies the lock's invariant.
-            assert(crate::lock::lock_inv(*s));
         }
         let mut g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-        *g = *s;
+        // The lock's value, for its points-to: the proof updates it, and
+        // the authority's entry, to the figures stored.
+        let c = &mut *g;
+        c.s = *s;
+        proof {
+            let ghost a0 = auth@;
+            c.pt.borrow_mut().update(auth, *s);
+            assert(auth@ =~= a0.insert(self.spec_stats_key(), *s));
+            // The value this holder leaves satisfies the lock's invariant
+            // and frame.
+            assert(crate::lock::lock_inv(*c));
+            assert(crate::lock::lock_frame(lock_init(self.stats), *c));
+        }
         g.unlock();
+    }
+
+    /// The location of the authority the statistics lock's points-to
+    /// belongs to (`stats::StoredArena`), which its frame keeps: the
+    /// process statistics lock's (`Arenas::spec_stats_loc`).
+    pub closed spec fn spec_stats_loc(&self) -> Loc {
+        lock_init(self.stats).pt@.id()
+    }
+
+    /// The key of the statistics lock's points-to, which its frame keeps:
+    /// the arena's index, for an arena of a registry ([`entry_ok`]).
+    pub closed spec fn spec_stats_key(&self) -> int {
+        lock_init(self.stats).pt@.key()
     }
 
     /// The statistics lock, for the fork handlers (a leaf: no lock is
@@ -1857,6 +1917,13 @@ pub struct Created {
     /// Ghost (no bytes): the holder's half of the registry's snapshot.
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     half: Tracked<GhostVar<Snap>>,
+    /// Ghost (no bytes): the points-to, in the process statistics
+    /// authority (`stats::StoredSnapshot`), of every index the snapshot
+    /// has no arena at, each over `ArenaStats::empty_spec` of its index:
+    /// the one [`Arena::init`] hands the arena's statistics lock when it
+    /// builds the arena at that index (`stats::StoredArena`).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    parked: Tracked<GhostSubmap<int, ArenaStats>>,
 }
 
 /// What the registry's invariant ([`NarenasPred`]) is about: the arena
@@ -1872,6 +1939,10 @@ pub ghost struct RegKey {
     pub snap: Loc,
     pub pubs: Loc,
     pub arena0: Arena,
+    /// The location of the process statistics authority
+    /// (`stats::StoredSnapshot`), whose points-to every published arena's
+    /// statistics lock holds.
+    pub stats: Loc,
 }
 
 /// What the registry's invariant holds: the arena count's permission,
@@ -1911,6 +1982,8 @@ pub open spec fn entry_ok(k: RegKey, v: RegVal, i: int) -> bool {
         &&& v.pubs[i].key() == i
         &&& v.pubs[i].value() == v.auth@.1[i].spec_olocs()
         &&& same_tables(v.auth@.1[i], k.arena0)
+        &&& v.auth@.1[i].spec_stats_loc() == k.stats
+        &&& v.auth@.1[i].spec_stats_key() == i
     }
 }
 
@@ -2050,11 +2123,46 @@ impl Created {
         &&& self.n <= MAX_ARENAS
         &&& self.half@@.0 == self.n
         &&& forall|i: int| #[trigger] self.half@@.1.contains_key(i) ==> 0 <= i < self.n
+        &&& self.parked_ok()
+    }
+
+    /// Every index below [`MAX_ARENAS`] the holder's snapshot has no
+    /// arena at has its points-to parked, over `ArenaStats::empty_spec`.
+    pub closed spec fn parked_ok(self) -> bool {
+        forall|i: int|
+            #![trigger self.parked@@.contains_key(i)]
+            #![trigger self.half@@.1.contains_key(i)]
+            0 <= i < MAX_ARENAS && !self.half@@.1.contains_key(i) ==> self.parked@@.contains_key(i)
+                && self.parked@@[i] == ArenaStats::empty_spec(i as u16)
     }
 
     /// The holder's half's snapshot.
     pub closed spec fn snap(self) -> Snap {
         self.half@@
+    }
+
+    /// [`Created::parked_ok`] across [`Arenas::build`] at `i`, which the
+    /// snapshot `c0` has no arena at: a build that publishes the arena
+    /// (`built`) took its points-to out of `parked`, and one that fails
+    /// left both unchanged.
+    proof fn lemma_parked_ok_build(c0: Created, c1: Created, i: int, built: bool)
+        requires
+            c0.parked_ok(),
+            0 <= i < MAX_ARENAS,
+            !c0.half@@.1.contains_key(i),
+            built ==> c1.half@@.1.dom() == c0.half@@.1.dom().insert(i),
+            built ==> c1.parked@@ == c0.parked@@.remove(i),
+            !built ==> c1.half@@ == c0.half@@,
+            !built ==> c1.parked@@ == c0.parked@@,
+        ensures
+            c1.parked_ok(),
+    {
+        assert forall|j: int|
+            0 <= j < MAX_ARENAS && !c1.half@@.1.contains_key(j) implies #[trigger] c1.parked@@.contains_key(j)
+                && c1.parked@@[j] == ArenaStats::empty_spec(j as u16) by {
+            assert(!c0.half@@.1.contains_key(j));
+            assert(c0.parked@@.contains_key(j));
+        }
     }
 }
 
@@ -2375,6 +2483,7 @@ axiom fn axiom_arenas_assemble(
         forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] parts.count_inv.value()@.constant().entries[i] == entry_id(&tables[i].value()),
         parts.count_inv.value()@.namespace() == narenas_ns(),
         lock_init(parts.lock.value()).half@.id() == parts.count_inv.value()@.constant().snap,
+        lock_init(parts.lock.value()).parked@.id() == parts.count_inv.value()@.constant().stats,
         lock_init(parts.lock.value()).n == parts.auto.value(),
         parts.spare_inv.value()@.constant() == parts.spare.value().id(),
         parts.spare_inv.value()@.namespace() == spare_ns(),
@@ -2513,6 +2622,7 @@ impl Arenas {
         this: *mut Arenas,
         auto: u32,
         half: Tracked<GhostVar<Snap>>,
+        parked: Tracked<GhostSubmap<int, ArenaStats>>,
         Tracked(parts): Tracked<&mut ArenasParts>,
     ) -> (r: Tracked<CountPerm>)
         requires
@@ -2520,12 +2630,18 @@ impl Arenas {
             auto as usize <= MAX_ARENAS,
             half@@.0 == auto,
             forall|i: int| #[trigger] half@@.1.contains_key(i) ==> 0 <= i < auto,
+            forall|i: int|
+                #![trigger parked@@.contains_key(i)]
+                #![trigger half@@.1.contains_key(i)]
+                0 <= i < MAX_ARENAS && !half@@.1.contains_key(i) ==> parked@@.contains_key(i) && parked@@[i]
+                    == ArenaStats::empty_spec(i as u16),
         ensures
             final(parts).at(this),
             final(parts).lock.is_init(),
             final(parts).lock.value().rank() == rank_arenas(),
             lock_init(final(parts).lock.value()).n == auto,
             lock_init(final(parts).lock.value()).half == half,
+            lock_init(final(parts).lock.value()).parked == parked,
             final(parts).count.is_init(),
             final(parts).auto.is_init(),
             final(parts).auto.value() == auto,
@@ -2544,7 +2660,7 @@ impl Arenas {
             ptr_mut_write(
                 field_at(this, AR_LOCK),
                 Tracked(&mut parts.lock),
-                Lock::new(Created { n: auto, half }, Ghost(rank_arenas())),
+                Lock::new(Created { n: auto, half, parked }, Ghost(rank_arenas())),
             );
             let (c, perm) = crate::vspec::count::new(auto);
             ptr_mut_write(field_at(this, AR_COUNT), Tracked(&mut parts.count), c);
@@ -2804,6 +2920,7 @@ impl Arenas {
         narenas: u32,
         Tracked(a0): Tracked<&'static PointsTo<Arena>>,
         Tracked(slot): Tracked<&mut Held<Arenas>>,
+        Tracked(parked): Tracked<GhostSubmap<int, ArenaStats>>,
     )
         requires
             old(slot).perm matches Some(p) && p.ptr() == this && p.is_uninit(),
@@ -2811,8 +2928,12 @@ impl Arenas {
             a0.ptr() == arena0,
             a0.is_init(),
             a0.value().spec_index() == 0,
+            a0.value().spec_stats_loc() == parked.id(),
+            a0.value().spec_stats_key() == 0,
+            forall|i: int| 0 < i < MAX_ARENAS ==> #[trigger] parked@.contains_key(i) && parked@[i] == ArenaStats::empty_spec(i as u16),
         ensures
-            final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().wf() && p.value().spec_arena0() == a0.value(),
+            final(slot).perm matches Some(p) && p.ptr() == this && p.is_init() && p.value().wf() && p.value().spec_arena0() == a0.value()
+                && p.value().spec_stats_loc() == parked.id(),
     {
         let auto = narenas.clamp(1, MAX_ARENAS as u32);
         let tracked (mut parts, mut tables, mut bounds, pad) = Arenas::split(slot.perm.tracked_take());
@@ -2823,10 +2944,17 @@ impl Arenas {
         // Ghost: the snapshot's halves, the automatic count and arena 0.
         let ghost snap0: Snap = (auto, Map::empty().insert(0int, a0.value()));
         let tracked (auth, half) = GhostVarAuth::<Snap>::new(snap0);
+        let ghost sloc = parked.id();
+        proof {
+            assert forall|i: int| 0 <= i < MAX_ARENAS && !half@.1.contains_key(i) implies #[trigger] parked@.contains_key(i)
+                && parked@[i] == ArenaStats::empty_spec(i as u16) by {
+                assert(i != 0);
+            }
+        }
         // SAFETY: the caller guarantees `this` is writable and unaliased;
         // every write goes through the permission to its field.
         unsafe {
-            let Tracked(nperm) = Arenas::put_head(this, auto, Tracked(half), Tracked(&mut parts));
+            let Tracked(nperm) = Arenas::put_head(this, auto, Tracked(half), Tracked(parked), Tracked(&mut parts));
             for i in 0..MAX_ARENAS
                 invariant
                     tables_at(tables, this),
@@ -2942,6 +3070,7 @@ impl Arenas {
                 snap: auth.id(),
                 pubs: pmap.id(),
                 arena0: a0.value(),
+                stats: sloc,
             };
             let tracked val = RegVal { count: nperm, entries, arenas, auth, pmap, pubs };
             proof {
@@ -2975,6 +3104,7 @@ impl Arenas {
                 }
                 assert(v.wf());
                 assert(v.spec_arena0() == a0.value());
+                assert(v.spec_stats_loc() == sloc);
                 slot.perm = Some(a);
             }
         }
@@ -3018,6 +3148,13 @@ impl Arenas {
     /// Arena 0, as `init` published it.
     pub closed spec fn spec_arena0(&self) -> Arena {
         self.count_inv@.constant().arena0
+    }
+
+    /// The location of the process statistics authority
+    /// (`stats::StoredSnapshot`) whose points-to each published arena's
+    /// statistics lock holds ([`Arena::spec_stats_loc`], [`entry_ok`]).
+    pub closed spec fn spec_stats_loc(&self) -> Loc {
+        self.count_inv@.constant().stats
     }
 
     /// In the process registry, a ticket for arena `i` of the process
@@ -3101,6 +3238,7 @@ impl Arenas {
     pub fn get_existing(&self, index: u16) -> (r: Option<&Arena>)
         ensures
             r matches Some(a) ==> a.spec_index() == index && same_tables(*a, self.spec_arena0()),
+            r matches Some(a) ==> a.spec_stats_loc() == self.spec_stats_loc() && a.spec_stats_key() == index as int,
     {
         let i = index as usize;
         if i >= MAX_ARENAS {
@@ -3669,6 +3807,7 @@ impl Arenas {
         &&& forall|i: int| 0 <= i < MAX_ARENAS ==> #[trigger] self.count_inv@.constant().entries[i] == entry_id(&self.table[i])
         &&& self.count_inv@.namespace() == narenas_ns()
         &&& lock_init(self.lock).half@.id() == self.count_inv@.constant().snap
+        &&& lock_init(self.lock).parked@.id() == self.count_inv@.constant().stats
         &&& lock_init(self.lock).n == self.auto
         &&& self.spare_inv@.constant() == self.spare.id()
         &&& self.spare_inv@.namespace() == spare_ns()
@@ -3835,8 +3974,14 @@ impl Arenas {
             g.unlock();
             return Some((a, Tracked(pw.tracked_unwrap())));
         }
-        let r = self.build(shared, index, Tracked(c.half.borrow_mut()), Tracked(&mut under));
+        let ghost c0 = *c;
         proof {
+            // The index's statistics points-to is parked (`Created::parked_ok`).
+            assert(c.parked@@.contains_key(index as int));
+        }
+        let r = self.build(shared, index, Tracked(c.half.borrow_mut()), Tracked(c.parked.borrow_mut()), Tracked(&mut under));
+        proof {
+            Created::lemma_parked_ok_build(c0, *c, index as int, r is Some);
             // The lock's invariant again: an automatic index is below the
             // count (the frame keeps the count at or above `auto`).
             assert(lock_inv(*c));
@@ -3869,6 +4014,7 @@ impl Arenas {
         shared: &'a Shared,
         index: u16,
         Tracked(h): Tracked<&mut GhostVar<Snap>>,
+        Tracked(pk): Tracked<&mut GhostSubmap<int, ArenaStats>>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (r: Option<(&'a Arena, Tracked<&'static Published>)>)
         requires
@@ -3879,6 +4025,9 @@ impl Arenas {
             old(ord).allows(rank_meta()),
             old(h).id() == self.count_inv@.constant().snap,
             !old(h)@.1.contains_key(index as int),
+            old(pk).id() == self.count_inv@.constant().stats,
+            old(pk)@.contains_key(index as int),
+            old(pk)@[index as int] == ArenaStats::empty_spec(index),
         ensures
             r matches Some((a, w)) ==> a.spec_index() == index && w@.id() == self.spec_pub_loc()
                 && (self.is_process() ==> w@.id() == process_pub_loc()) && w@.key() == index as int
@@ -3888,6 +4037,9 @@ impl Arenas {
             final(h)@.0 == old(h)@.0,
             r is None ==> final(h)@ == old(h)@,
             r matches Some((a, w)) ==> final(h)@.1 == old(h)@.1.insert(index as int, *a),
+            final(pk).id() == old(pk).id(),
+            r is None ==> final(pk)@ == old(pk)@,
+            r is Some ==> final(pk)@ == old(pk)@.remove(index as int),
     {
         proof {
             use_type_invariant(self);
@@ -3982,6 +4134,7 @@ impl Arenas {
                 Tracked(&mut slot),
                 Tracked(ord),
                 Tracked(frozen),
+                Tracked(pk),
             )
         };
         if !ok {
@@ -4104,7 +4257,18 @@ impl Arenas {
                 return None;
             }
         }
-        if self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(&mut under)).is_none() {
+        let ghost c0 = *c;
+        proof {
+            // No arena at `index`, the count: its statistics points-to is
+            // parked (`Created::parked_ok`).
+            assert(!c.half@@.1.contains_key(index as int));
+            assert(c.parked@@.contains_key(index as int));
+        }
+        let built = self.build(shared, index as u16, Tracked(c.half.borrow_mut()), Tracked(c.parked.borrow_mut()), Tracked(&mut under));
+        proof {
+            Created::lemma_parked_ok_build(c0, *c, index as int, built is Some);
+        }
+        if built.is_none() {
             g.unlock();
             return None;
         }
@@ -4156,9 +4320,13 @@ verus! {
 
 /// The creation lock's invariant is [`Created::ok`]: `n` is at most
 /// [`MAX_ARENAS`], the holder's half of the snapshot has the count `n`,
-/// and no published entry at or above it. Its frame is the snapshot
-/// half's location and a count at or above the one the lock was created
-/// with (the automatic count, `Arenas::type_inv`).
+/// and no published entry at or above it, and every index below
+/// [`MAX_ARENAS`] with no published entry has its statistics points-to
+/// parked, over its empty figures ([`Created::parked_ok`]). Its frame is
+/// the snapshot half's location, the parked points-to's location (the
+/// process statistics authority's, `Arenas::type_inv`) and a count at or
+/// above the one the lock was created with (the automatic count,
+/// `Arenas::type_inv`).
 ///
 /// `Arenas::init`'s `Lock::new` builds the value (the automatic count,
 /// arena 0 alone; `Lock::new` requires the invariant), and both are
@@ -4183,7 +4351,7 @@ impl crate::lock::LockSpec for Created {
     }
 
     closed spec fn lock_spec_frame(init: Self, v: Self) -> bool {
-        v.n >= init.n && v.half@.id() == init.half@.id()
+        v.n >= init.n && v.half@.id() == init.half@.id() && v.parked@.id() == init.parked@.id()
     }
 }
 
@@ -4240,7 +4408,7 @@ mod kani_put_stats {
     use super::Arena;
     use crate::layout::NCLASSES;
     use crate::lock::Lock;
-    use crate::stats::ArenaStats;
+    use crate::stats::StoredArena;
     use core::mem::{MaybeUninit, size_of};
     use vstd::prelude::Tracked;
 
@@ -4249,40 +4417,44 @@ mod kani_put_stats {
     /// outside a `mod tests` as a lock declaration, which
     /// `kani::assume(i < size_of::<..>())` spelled with the lock type
     /// would be.
-    type StatsLock = Lock<ArenaStats>;
+    type StatsLock = Lock<StoredArena>;
 
     /// `Arena::put_stats`, `requires old(perm).ptr() == p`, `ensures
     /// final(perm).ptr() == p`, `final(perm).is_init()`,
     /// `final(perm).value().rank() == rank_arena_stats(index)`: for every
-    /// `index`, on a slot of a `Lock<ArenaStats>`'s size and alignment
+    /// `index`, on a slot of a `Lock<StoredArena>`'s size and alignment
     /// holding arbitrary bytes, the call is defined (Kani checks the
     /// fill's and the store's writes), and every byte of the slot is then
     /// zero but those of the record's `index`, which hold `index`: a zero
     /// lock word and a record whose `index` is `index` and whose other
     /// fields, the bins' among them, are 0, as `ArenaStats::empty(index)`
-    /// has them. Every byte of a `Lock<ArenaStats>` is an integer's, so
+    /// has them. Every byte of a `Lock<StoredArena>` is an integer's, so
     /// any bytes are a valid value (`kani::mem::can_dereference` holds
     /// before the call too); `is_init` rests on every byte being written.
     /// `final(perm).ptr() == p` is the permission's, which the body does
-    /// not touch. Not checked: the rank, a ghost field of the lock with
-    /// no bytes, and the `# Safety` contract (`p` is the `stats` field of
-    /// `init`'s storage): the harness passes a slot of its own.
+    /// not touch. Not checked: the rank and the value the lock was
+    /// created with (`lock_init`, whose record the bytes checked here are
+    /// and whose points-to is the zero-sized `pt` the call consumes),
+    /// ghost fields of the lock with no bytes, and the `# Safety`
+    /// contract (`p` is the `stats` field of `init`'s storage): the
+    /// harness passes a slot of its own.
     #[kani::proof]
     fn put_stats_writes_empty() {
         let mut slot = MaybeUninit::<StatsLock>::uninit();
         let p = slot.as_mut_ptr();
         // SAFETY: `p` is the slot's storage, of
-        // `size_of::<Lock<ArenaStats>>()` bytes, and a byte array has
+        // `size_of::<Lock<StoredArena>>()` bytes, and a byte array has
         // alignment 1.
         unsafe { p.cast::<[u8; size_of::<StatsLock>()]>().write(kani::any()) };
         let index: u16 = kani::any();
         // SAFETY: the slot is writable and unaliased.
-        unsafe { Arena::put_stats(p, Tracked::assume_new(), index) };
+        unsafe { Arena::put_stats(p, Tracked::assume_new(), index, Tracked::assume_new()) };
         assert!(kani::mem::can_dereference(p));
         // SAFETY: a field projection inside the slot; nothing is read.
-        let at = unsafe { core::ptr::addr_of!((*Lock::value_ptr(p, Tracked::assume_new())).index) }
-            as usize
-            - p as usize;
+        let at =
+            unsafe { core::ptr::addr_of!((*Lock::value_ptr(p, Tracked::assume_new())).s.index) }
+                as usize
+                - p as usize;
         let i: usize = kani::any();
         kani::assume(i < size_of::<StatsLock>());
         // SAFETY: `i` is inside the slot, whose bytes the call wrote.
@@ -4295,7 +4467,7 @@ mod kani_put_stats {
         assert_eq!(b, want);
         // SAFETY: `can_dereference`, checked above; the record is the
         // lock's value.
-        let r = unsafe { &*Lock::value_ptr(p, Tracked::assume_new()) };
+        let r = unsafe { &(*Lock::value_ptr(p, Tracked::assume_new())).s };
         let c: usize = kani::any();
         kani::assume(c < NCLASSES);
         assert_eq!((r.index, r.small_allocated, r.mapped), (index, 0, 0));
@@ -4443,22 +4615,41 @@ mod build_cost_tests {
 mod put_stats_tests {
     use super::*;
 
-    /// `Arena::put_stats` writes `Lock::new(ArenaStats::empty(index), ..)`
-    /// over storage that held anything before (a failed build's spare):
-    /// the record compares equal, and the lock is free (`lock_t` takes it).
+    /// `Arena::put_stats` writes `Lock::new(StoredArena { s:
+    /// ArenaStats::empty(index), pt }, ..)` over storage that held
+    /// anything before (a failed build's spare): the record, the value's
+    /// only data (`pt` is zero-sized), compares equal, and the lock is free
+    /// (`lock_t` takes it).
     #[test]
     fn put_stats_writes_lock_new_of_empty() {
-        let n = core::mem::size_of::<Lock<ArenaStats>>();
+        let n = core::mem::size_of::<Lock<StoredArena>>();
+        assert_eq!(
+            core::mem::size_of::<StoredArena>(),
+            core::mem::size_of::<ArenaStats>()
+        );
         for index in [0u16, 1, 7, 255, 4095] {
-            let want = Lock::new(ArenaStats::empty(index), Ghost::assume_new());
-            let mut got = core::mem::MaybeUninit::<Lock<ArenaStats>>::uninit();
+            let want = Lock::new(
+                StoredArena {
+                    s: ArenaStats::empty(index),
+                    pt: Tracked::assume_new(),
+                },
+                Ghost::assume_new(),
+            );
+            let mut got = core::mem::MaybeUninit::<Lock<StoredArena>>::uninit();
             // SAFETY: `n` writable bytes.
             unsafe { core::ptr::write_bytes(got.as_mut_ptr() as *mut u8, 0xA5, n) };
             // SAFETY: the storage is writable and unaliased.
-            unsafe { Arena::put_stats(got.as_mut_ptr(), Tracked::assume_new(), index) };
+            unsafe {
+                Arena::put_stats(
+                    got.as_mut_ptr(),
+                    Tracked::assume_new(),
+                    index,
+                    Tracked::assume_new(),
+                )
+            };
             // SAFETY: put_stats initialised it.
             let got = unsafe { got.assume_init_ref() };
-            assert_eq!(*want.lock_t(), *got.lock_t(), "index {index}");
+            assert_eq!(want.lock_t().s, got.lock_t().s, "index {index}");
         }
     }
 }

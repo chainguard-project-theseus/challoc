@@ -21,7 +21,7 @@ S_ARENAS	core library	Kani	discharged (const assert: `axiom_shared_layout` in sr
 S_TCACHES	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 1262348297, body none
 S_STATS	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3982933550, body none
 S_CGROUP	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 2964860936, body none
-axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3987711063, body none
+axiom_shared_layout	core library	Kani	discharged (const assert: `axiom_shared_layout` in src/heap/shared.rs)	contract 3269240386, body none
 # A field fixed once its permission is frozen: no vstd counterpart.
 axiom_shared_regions	raw pointer (internal)	none (assumption)
 axiom_shared_meta	raw pointer (internal)	none (assumption)
