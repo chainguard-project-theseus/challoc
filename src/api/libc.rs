@@ -266,54 +266,88 @@ pub(super) proof fn lemma_class_gives(blk: Live, p: *mut u8, c: int, size: usize
     }
 }
 
-/// The block at `p` an allocation of `size` bytes at no alignment
-/// returned is a slot of the class `spec_class_for(size, 1)` picks,
-/// whenever a class serves `size`: never a run (#1006).
-pub open spec fn class_slot(p: *mut u8, size: usize) -> bool {
-    spec_class_for(size, 1) matches Some(c) ==> crate::layout::process_regions().is_slot(c as int, p@.addr)
+/// The block at `p` an allocation of `size` bytes at a power-of-two
+/// `align` returned is a slot of the class `spec_class_for(size, align)`
+/// picks, whenever a class serves `size` at `align`: never a run
+/// (#1006, #1010).
+pub open spec fn class_slot_at(p: *mut u8, size: usize, align: usize) -> bool {
+    spec_class_for(size, align) matches Some(c) ==> crate::layout::process_regions().is_slot(c as int, p@.addr)
 }
 
-/// A slot of class `c`, the class `spec_class_for(size, 1)` picks, is
-/// named by `size`: no other class has a slot there, so it passes a
-/// sized free's slot check for `size` ([`heap::hint_ok`]), and the run
-/// half ([`heap::huge_hint_ok`]) is vacuous for it (#1006).
-proof fn lemma_class_named(blk: Live, p: *mut u8, c: int, size: usize)
+/// [`class_slot_at`] at no alignment (#1006).
+pub open spec fn class_slot(p: *mut u8, size: usize) -> bool {
+    class_slot_at(p, size, 1)
+}
+
+/// At an alignment no larger than the quantum every class serves the
+/// sizes it serves at none, so the class is the same (#1010).
+proof fn lemma_class_for_quantum(size: usize, align: usize)
+    requires
+        align <= QUANTUM,
+    ensures
+        spec_class_for(size, align) == spec_class_for(size, 1),
+{
+    assert(1 <= QUANTUM);
+    assert forall|j: int|
+        #![trigger class_serves(j, size as int, align)]
+        #![trigger class_serves(j, size as int, 1)]
+        class_serves(j, size as int, align) == class_serves(j, size as int, 1) by {}
+    if spec_class_for(size, 1) is Some {
+        let c = choose|c: int| least_class(c, size as int, 1);
+        assert(least_class(c, size as int, align));
+        lemma_class_for_some(size, align, c);
+        lemma_class_for_some(size, 1, c);
+    } else {
+        assert forall|c: int| !least_class(c, size as int, align) by {
+            if least_class(c, size as int, align) {
+                assert(least_class(c, size as int, 1));
+            }
+        }
+    }
+}
+
+/// A slot of class `c`, the class `spec_class_for(size, align)` picks,
+/// is named by `size` at `align`: no other class has a slot there, so it
+/// passes a sized free's slot check ([`heap::hint_ok`]), and the run half
+/// ([`heap::huge_hint_ok`]) is vacuous for it (#1006, #1010).
+proof fn lemma_class_named(blk: Live, p: *mut u8, c: int, size: usize, align: usize)
     requires
         heap::regions_ok(),
         0 <= c < NCLASSES,
-        spec_class_for(size, 1) == Some(c as usize),
+        spec_class_for(size, align) == Some(c as usize),
         p@.addr != 0 ==> blk.slot_block(p, c),
     ensures
-        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, align)),
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
-        p@.addr != 0 ==> class_slot(p, size),
+        p@.addr != 0 ==> class_slot_at(p, size, align),
 {
     if p@.addr != 0 {
         blk.lemma_slot_len(p, c);
         let r = crate::layout::process_regions();
-        assert forall|k: int| #[trigger] r.is_slot(k, p@.addr) implies spec_class_for(size, 1) == Some(k as usize) by {
+        assert forall|k: int| #[trigger] r.is_slot(k, p@.addr) implies spec_class_for(size, align) == Some(k as usize) by {
             crate::vspec::zero::lemma_slot_unique(c, k, p@.addr);
         }
         assert(heap::slot_start(p));
     }
 }
 
-/// A run `alloc_huge` returned for `size` at no alignment, with its token
-/// `blk`, is named by `size`: no slot starts there ([`heap::hint_ok`]
-/// holds of any hint), and its usable bytes are `size` rounded up to
-/// whole pages ([`heap::huge_hint_ok`]) (#1006).
-proof fn lemma_huge_named(shared: &Shared, blk: Live, p: *mut u8, size: usize)
+/// A run `alloc_huge` returned for `size` at `align`, with its token
+/// `blk`, is named by `size` at `align` when no class serves it there: no
+/// slot starts there ([`heap::hint_ok`] holds of any hint), and its
+/// usable bytes are `size` rounded up to whole pages
+/// ([`heap::huge_hint_ok`]) (#1006, #1010).
+proof fn lemma_huge_named(shared: &Shared, blk: Live, p: *mut u8, size: usize, align: usize)
     requires
         shared.wf(),
-        p@.addr != 0 ==> crate::layout::huge_block(p@.addr, size, 1),
+        p@.addr != 0 ==> crate::layout::huge_block(p@.addr, size, align),
         p@.addr != 0 ==> size <= shared.huge_usable(size),
         p@.addr != 0 ==> shared.huge_ok(size),
         p@.addr != 0 ==> blk.block(p) && blk.len() == shared.huge_usable(size),
-        spec_class_for(size, 1) is None,
+        spec_class_for(size, align) is None,
     ensures
-        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, 1)),
+        p@.addr != 0 ==> heap::hint_ok(p, spec_class_for(size, align)),
         p@.addr != 0 ==> heap::huge_hint_ok(blk, p, size),
-        p@.addr != 0 ==> class_slot(p, size),
+        p@.addr != 0 ==> class_slot_at(p, size, align),
 {
     if p@.addr != 0 {
         shared.lemma_huge_usable(size);
@@ -490,7 +524,7 @@ fn malloc_class(size: usize, c: usize, Tracked(blk): Tracked<&mut Live>, Tracked
             proof {
                 lemma_class_fits(p, c as int, size);
                 lemma_class_gives(*blk, p, c as int, size);
-                lemma_class_named(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, 1);
                 heap::theorem_no_block_at_zero(p, c as int, 0);
             }
             p
@@ -504,7 +538,7 @@ fn malloc_class(size: usize, c: usize, Tracked(blk): Tracked<&mut Live>, Tracked
             proof {
                 lemma_class_fits(p, c as int, size);
                 lemma_class_gives(*blk, p, c as int, size);
-                lemma_class_named(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, 1);
             }
             p
         },
@@ -564,7 +598,7 @@ pub(super) fn malloc_fast(size: usize, Tracked(blk): Tracked<&mut Live>) -> (r: 
         if let Some(p) = r {
             lemma_class_fits(p, c as int, size);
             lemma_class_gives(*blk, p, c as int, size);
-            lemma_class_named(*blk, p, c as int, size);
+            lemma_class_named(*blk, p, c as int, size, 1);
             heap::theorem_no_block_at_zero(p, c as int, 0);
         }
     }
@@ -600,7 +634,7 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
             proof {
                 lemma_class_fits(p, c as int, size);
                 lemma_class_gives(*blk, p, c as int, size);
-                lemma_class_named(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, 1);
             }
             p
         },
@@ -608,7 +642,7 @@ pub(super) fn malloc_slow(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked
             let p = alloc_huge(shared, size, 1, false, Tracked(blk), Tracked(ord)).0;
             proof {
                 lemma_huge_result(p, size, 1);
-                lemma_huge_named(shared, *blk, p, size);
+                lemma_huge_named(shared, *blk, p, size, 1);
             }
             p
         },
@@ -712,7 +746,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
             proof {
                 lemma_class_fits(r.0, c as int, size);
                 lemma_class_gives(*blk, r.0, c as int, size);
-                lemma_class_named(*blk, r.0, c as int, size);
+                lemma_class_named(*blk, r.0, c as int, size, 1);
             }
             // The heap's zero flag is not trusted for a slab slot: it records that
             // challoc wrote nothing to the slot since its slab was `Fresh` or
@@ -727,7 +761,7 @@ pub fn calloc_zeroed(n: usize, m: usize, Tracked(blk): Tracked<&mut Live>, Track
             let r = alloc_huge(shared, size, 1, true, Tracked(blk), Tracked(ord));
             proof {
                 lemma_huge_result(r.0, size, 1);
-                lemma_huge_named(shared, *blk, r.0, size);
+                lemma_huge_named(shared, *blk, r.0, size, 1);
                 if r.0@.addr != 0 {
                     // The run's token claims it, so `huge_hint_ok`'s length
                     // holds of the token the zero fill below keeps.
@@ -2607,7 +2641,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
                     }
                 }
                 lemma_class_gives(*blk, p, c as int, size);
-                lemma_class_named(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, 1);
                 if p@.addr != 0 {
                     blk.lemma_slot_len(p, c as int);
                 }
@@ -2618,7 +2652,7 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
             let (p, zeroed, z) = alloc_huge(shared, size, 1, true, Tracked(blk), Tracked(&mut *ord));
             proof {
                 lemma_huge_result(p, size, 1);
-                lemma_huge_named(shared, *blk, p, size);
+                lemma_huge_named(shared, *blk, p, size, 1);
                 if p@.addr != 0 {
                     blk.lemma_claims(p);
                 }
@@ -3279,6 +3313,9 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
         *final(ord) == *old(ord),
         heap::fits(r, size as int, align as int),
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, align)),
+        r@.addr != 0 ==> class_slot_at(r, size, align),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     debug_assert!(align.is_power_of_two());
@@ -3289,6 +3326,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
             let k = choose|k: nat| k < 64 && QUANTUM as nat == #[trigger] pow2(k);
             assert(is_pow2(QUANTUM));
             lemma_fits_down(p, size as int, QUANTUM, align);
+            lemma_class_for_quantum(size, align);
         }
         return p;
     }
@@ -3306,6 +3344,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
                     heap::lemma_slot_fits(p, c as int, size as int, align);
                 }
                 lemma_class_gives(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, align);
             }
             p
         },
@@ -3313,6 +3352,7 @@ pub fn alloc_aligned(align: usize, size: usize, Tracked(blk): Tracked<&mut Live>
             let p = alloc_huge(shared, size, align, false, Tracked(blk), Tracked(&mut *ord)).0;
             proof {
                 lemma_huge_result(p, size, align);
+                lemma_huge_named(shared, *blk, p, size, align);
             }
             p
         },
@@ -3365,6 +3405,8 @@ pub fn aligned_alloc(align: usize, size: usize, Tracked(errno): Tracked<&mut Thr
         !is_pow2(align) ==> r@.addr == 0 && final(errno).val() == EINVAL,
         is_pow2(align) ==> heap::fits(r, size as int, align as int),
         is_pow2(align) && r@.addr == 0 ==> final(errno).val() == ENOMEM,
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, align)),
+        r@.addr != 0 ==> class_slot_at(r, size, align),
 {
     let tracked mut blk = Live::empty();
     aligned_alloc_block(align, size, Tracked(&mut blk), Tracked(errno), Tracked(ord))
@@ -3382,6 +3424,9 @@ pub fn aligned_alloc_block(align: usize, size: usize, Tracked(blk): Tracked<&mut
         is_pow2(align) ==> heap::fits(r, size as int, align as int),
         is_pow2(align) && r@.addr == 0 ==> final(errno).val() == ENOMEM,
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, align)),
+        r@.addr != 0 ==> class_slot_at(r, size, align),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size),
 {
     if !align.is_power_of_two() {
         return einval(Tracked(errno));
@@ -3433,7 +3478,8 @@ pub fn posix_memalign(out: *mut *mut u8, align: usize, size: usize, Tracked(oout
         // `sizeof(void *)` is 8 on every target challoc builds for.
         r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
         r == 0 ==> (final(oout).opt() matches Some(q) && q.is_init() && q.value()@.addr != 0
-            && heap::fits(q.value(), size as int, align as int)),
+            && heap::fits(q.value(), size as int, align as int)
+            && heap::hint_ok(q.value(), spec_class_for(size, align)) && class_slot_at(q.value(), size, align)),
         r != 0 ==> final(oout).opt() == old(oout).opt(),
         r == EINVAL ==> final(errno).val() == old(errno).val(),
         r == ENOMEM ==> final(errno).val() == ENOMEM,
@@ -3460,7 +3506,9 @@ pub fn posix_memalign_block(out: *mut *mut u8, align: usize, size: usize, Tracke
         // `sizeof(void *)` is 8 on every target challoc builds for.
         r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
         r == 0 ==> (final(oout).opt() matches Some(q) && q.is_init() && q.value()@.addr != 0
-            && final(blk).gives(q.value(), size as int) && heap::fits(q.value(), size as int, align as int)),
+            && final(blk).gives(q.value(), size as int) && heap::fits(q.value(), size as int, align as int)
+            && heap::hint_ok(q.value(), spec_class_for(size, align)) && class_slot_at(q.value(), size, align)
+            && heap::huge_hint_ok(*final(blk), q.value(), size)),
         r != 0 ==> final(oout).opt() == old(oout).opt(),
         r == EINVAL ==> final(errno).val() == old(errno).val(),
         r == ENOMEM ==> final(errno).val() == ENOMEM,
@@ -3513,6 +3561,8 @@ pub fn valloc(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(or
     ensures
         *final(ord) == *old(ord),
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1usize << crate::layout::process_regions().lg_page)),
+        r@.addr != 0 ==> class_slot_at(r, size, 1usize << crate::layout::process_regions().lg_page),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
@@ -3529,6 +3579,9 @@ pub fn valloc_block(size: usize, Tracked(blk): Tracked<&mut Live>, Tracked(errno
         *final(ord) == *old(ord),
         heap::fits(r, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1usize << crate::layout::process_regions().lg_page)),
+        r@.addr != 0 ==> class_slot_at(r, size, 1usize << crate::layout::process_regions().lg_page),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let page = page_size(super::shared());
@@ -4017,6 +4070,8 @@ mod exports {
             is_pow2(align) ==> heap::fits(r as *mut u8, size as int, align as int),
             !is_pow2(align) ==> c_errno() == EINVAL,
             is_pow2(align) && r@.addr == 0 ==> c_errno() == ENOMEM,
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for(size, align)),
+            r@.addr != 0 ==> class_slot_at(r as *mut u8, size, align),
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             let tracked mut ord = crate::lock::axiom_c_entry();
@@ -4031,6 +4086,8 @@ mod exports {
             is_pow2(align) ==> heap::fits(r as *mut u8, size as int, align as int),
             !is_pow2(align) ==> c_errno() == EINVAL,
             is_pow2(align) && r@.addr == 0 ==> c_errno() == ENOMEM,
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for(size, align)),
+            r@.addr != 0 ==> class_slot_at(r as *mut u8, size, align),
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
             let tracked mut ord = crate::lock::axiom_c_entry();
@@ -4045,7 +4102,8 @@ mod exports {
             r == EINVAL <==> !(is_pow2(align) && align % 8 == 0),
             r == ENOMEM ==> c_errno() == ENOMEM,
             r == 0 ==> (c_out(out as *mut *mut u8) matches MemContents::Init(q) && q@.addr != 0
-                && heap::fits(q, size as int, align as int)),
+                && heap::fits(q, size as int, align as int)
+                && heap::hint_ok(q, spec_class_for(size, align)) && class_slot_at(q, size, align)),
             r != 0 ==> c_out(out as *mut *mut u8) == c_out_entry(out as *mut *mut u8),
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
@@ -4060,6 +4118,8 @@ mod exports {
         }
         fn valloc / je_valloc(size: usize) -> (r: *mut c_void) ensures [
             heap::fits(r as *mut u8, size as int, (1usize << crate::layout::process_regions().lg_page) as int),
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for(size, 1usize << crate::layout::process_regions().lg_page)),
+            r@.addr != 0 ==> class_slot_at(r as *mut u8, size, 1usize << crate::layout::process_regions().lg_page),
             r@.addr == 0 ==> c_errno() == ENOMEM,
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
