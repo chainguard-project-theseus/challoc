@@ -5980,7 +5980,7 @@ pub closed spec fn routes(&self, arena: u16, class: int, cache: *mut CacheHeader
 
 // A header a pop may take from.
 pub open spec fn poppable(&self, class: int, cache: *mut CacheHeader) -> bool {
-    exists|a: u16| (a != FOREIGN || a == self.home()) && self.routes(a, class, cache)
+    exists|a: u16| a != FOREIGN && self.routes(a, class, cache)
 }
 
 pub proof fn theorem_cache_routing(&self, class: int, cache: *mut CacheHeader, a: u16, b: u16)
@@ -6005,10 +6005,9 @@ pub proof fn theorem_cache_routing(&self, class: int, cache: *mut CacheHeader, a
 // Heap::cache_slot (heap/others.rs), Heap::ensure_cache (heap/cache.rs):
     ensures r@.addr != 0 ==> final(self).routes(arena, class as int, r),
 
-// Heap::alloc_in (heap/paths.rs), Heap::alloc_other (heap/others.rs):
+// Heap::alloc_in, Heap::alloc_slow_in (heap/paths.rs),
+// Heap::alloc_other (heap/others.rs):
     requires arena != FOREIGN,
-// Heap::alloc_slow_in (heap/paths.rs):
-    requires arena != FOREIGN || arena == old(self).home(),
 ```
 
 (Line breaks and triggers dropped.) In words: every pop takes its slot
@@ -6020,7 +6019,9 @@ header a pop site routes to is the requested arena's cache and no
 other's. The pop sites:
 - `Heap::alloc_in` (`MALLOCX_ARENA` on the thread's heap or an explicit
   cache): the home header when `arena` is the home arena
-  (`Heap::lemma_routes_home`), else `alloc_other`.
+  (`Heap::lemma_routes_home`, which requires `Heap::wf` and so has the
+  home arena not `FOREIGN`, `Heap::lemma_home_index`), else
+  `alloc_other`.
 - `Heap::alloc_other`: the class's header in the node `other_caches`
   found for `arena` (`Heap::lemma_keyed_routes`: a node keyed `arena`
   routes it, and `arena` is then not the home arena).
@@ -6111,20 +6112,20 @@ bitmap side: every release goes back to the slot's own arena).
   caches", Verus does not relate two references to the same heap, and
   an explicit cache's heap is assumed `wf` afresh at each
   `Tcaches::get`.
-- `poppable` still admits the home header whatever the home arena is
-  (its `a == self.home()` disjunct). Verus now states that a
-  well-formed heap's home arena is below `MAX_ARENAS`, so never
-  `FOREIGN`, for every heap, counted or not: `Heap::homed_ok`, with
-  `Heap::lemma_home_index` and `Heap::arena`'s `ensures`
+- `poppable` admits the home header only through the home arena not
+  being `FOREIGN`, which holds for every well-formed heap, counted or
+  not: `Heap::homed_ok`, with `Heap::lemma_home_index` and
+  `Heap::arena`'s `ensures`
   ([home arena index](#a-well-formed-heaps-home-arena-is-below-max_arenas-never-foreign)).
   A thread heap's comes from `assign_home`'s ticket; `set_arena`
   requires the new one below `MAX_ARENAS` (its only caller, `mallctl`'s
   `thread.arena`, checks that at run time); `try_rehome` moves it only
   to an arena whose ticket it has just bound; and `Tcaches::create`
   requires its `arena` below `MAX_ARENAS` (its one caller passes the
-  thread's home arena or 0). So for a well-formed heap the disjunct
-  adds nothing; `poppable` is left as it is. That the home arena was
-  created is not stated.
+  thread's home arena or 0). Until chainguard-project-theseus/challoc#1001
+  `poppable` (and `alloc_slow_in`'s `requires`) carried an
+  `a == self.home()` disjunct, which that made redundant; it is gone.
+  That the home arena was created is not stated.
 - Routing names the header a pop takes from, not the arena a refill
   inside the pop draws from: `pop_compact` and `pop_compact_run` refill
   an emptied cache through `shared.arena(self.hdr_ref(cache).arena)`,
