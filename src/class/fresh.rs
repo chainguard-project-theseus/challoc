@@ -141,6 +141,15 @@ impl ClassState {
             // floor the `Purged` set is taken from only rises.
             final(mark).of(lz),
             old(mark).lazy() ==> final(mark).lazy(),
+            // It reads the flag once exactly when it reaches the `Purged`
+            // set with a fork floor, and the mark is lazy after the call
+            // exactly when that read returned false: the floor is lifted
+            // above 0 only by a read in this call that returned true.
+            final(mark).reads() == if floor != 0 && none_from(old(g).empty.map@, floor as int) {
+                old(mark).reads().push(!final(mark).lazy())
+            } else {
+                old(mark).reads()
+            },
             // The `Purged` pick is the lowest from that floor, and a fresh
             // slab (or none) comes only with none left from it.
             r matches Some(s) ==> (old(g).purged.map@.contains(s as nat)
@@ -217,6 +226,7 @@ impl ClassState {
                     assert(g0.slab_ok(x));
                 }
                 assert(lowest_from(e0, floor as int, s as nat));
+                assert(e0.contains(s as nat) && !none_from(e0, floor as int));
                 assert(!p0.contains(s as nat));
                 assert(g.purged.map@ =~= p0);
                 reveal(idle_pick);
