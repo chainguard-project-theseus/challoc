@@ -41,7 +41,7 @@ Tool: none (assumption). Status: trusted.
 Hashes: contract 1614243743, body 4028365563.
 
 Specs: `cast_provenance` (src/vspec/addr.rs) 2449243785.
-Specs unresolved (spec fns of the name): `dom` (2), `wf` (34), `bytes` (6), `provenance` (2).
+Specs unresolved (spec fns of the name): `dom` (2), `wf` (35), `bytes` (6), `provenance` (2).
 
 ```rust
 pub proof fn axiom_cast(tracked m: &mut UserMem)

@@ -93,7 +93,7 @@ Tool: none (assumption). Status: trusted.
 Hashes: contract 260036461, body none.
 
 Specs: `SlabTable::spec_is_guard` (src/class/table.rs) 3951951368, `desc_id` (src/slab.rs) 2830877247, `desc_at` (src/class/table.rs) 113355670, `state_byte` (src/slab.rs) 3267048718, `Inner::st` (src/class/mod.rs) 39860947, `process_regions` (src/layout/regions.rs) 2834135997, `class_table` (src/layout/mod.rs) 307783638, `cast_provenance` (src/vspec/addr.rs) 2449243785.
-Specs unresolved (spec fns of the name): `inv` (45), `spec_nslabs` (3), `id` (4), `state` (2), `owns` (3), `covers` (4), `slot_at` (2), `spec_class` (2), `provenance` (2).
+Specs unresolved (spec fns of the name): `inv` (46), `spec_nslabs` (3), `id` (4), `state` (2), `owns` (3), `covers` (4), `slot_at` (2), `spec_class` (2), `provenance` (2).
 
 ```rust
 axiom fn axiom_fresh_slab_mem<'a>(g: Inner, slab: int, tracked held: &'a DescPerm) -> (tracked m: &'a crate::vspec::user::UserMem)

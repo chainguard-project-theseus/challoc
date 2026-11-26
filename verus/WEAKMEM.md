@@ -20,7 +20,7 @@ and not run.
 
 ## Inventory
 
-404 lines of source carry an `Ordering::` (`grep` over `src/`, leaving
+397 lines of source carry an `Ordering::` (`grep` over `src/`, leaving
 out comment lines and every module under `#[cfg(test)]`, `#[cfg(kani)]`,
 `#[cfg(loom)]` or `#[cfg(challoc_tls_check)]`, inline or in its own files:
 the `tests.rs`, `linux_tests.rs` and other test files, `src/heap/tests/`,
@@ -32,8 +32,9 @@ line has no row. The counters behind
 `vspec/count.rs`, the route byte behind `vspec/flags.rs` and the
 arena and explicit-cache table entries behind `vspec/entry.rs` and the
 class bitmap words behind `vspec/word.rs`, the cgroup record's
-sample clock (`sampled_at`, `sys/cgroup.rs`) and the lazy-discard
-flag `LAZY_EVER` (`purge.rs`, through `vspec/byte.rs`) are vstd atomics, whose
+sample clock (`sampled_at`, `sys/cgroup.rs`), the lazy-discard
+flag `LAZY_EVER` (`purge.rs`, through `vspec/byte.rs`) and the
+reservation slots `RESERVATIONS` (`thp.rs`) are vstd atomics, whose
 operations are `SeqCst` with no ordering argument. The count keeps lines in `#[cfg(test)]`
 functions and statements outside those modules: `sys/abort.rs` and
 `sys/pac.rs` have only such lines (test hooks), and several other rows
@@ -50,7 +51,7 @@ a compiler barrier.
 |---|---|---|
 | `cow.rs` | 69 | fork epochs: `DEPTH`, `IN_FORCE`, `CAP`, `CLAIMED`, `FLUSH_AFTER`, `EPOCHS`, `EXPIRED`, `DEFLECTED` and the drain's `DRAIN_*`, mostly `Relaxed`, with some `Acquire`, `Release` and `AcqRel` operations (P7) |
 | `purge/background.rs` | 56 | `PRESENT`, `REQUESTED`, `SEQ`; the lazy start's `AUTO`, `AUTO_FAILS`, `AUTO_NEXT`, `AUTO_SINCE`, `AUTO_BASE`, all `Relaxed` (rate limits and heuristics; the request they set or withdraw is written under the state lock, as `request`'s) |
-| `thp.rs` | 45 | init-time configuration and counters; `MODE`'s `Release` store publishes the thresholds to its `Acquire` loads (P10) |
+| `thp.rs` | 38 | init-time configuration and counters; `MODE`'s `Release` store publishes the thresholds to its `Acquire` loads (P10); `RESERVATIONS` is vstd atomics (`SeqCst`) |
 | `purge.rs` | 35 | flags, counters, `Decayer`; `LAZY_EVER` is a vstd atomic (`SeqCst`) |
 | `sys/cgroup.rs` | 32 | sampled cgroup limits and the deferred discovery's phase; the sample clock `sampled_at` is a vstd atomic (`SeqCst`) |
 | `stats.rs`, `policy.rs` | 28, 24 | statistics and the sampled policy, `Relaxed`; `stats.rs`'s record pool (`mod pool`) hands slots off with `Acquire` and `Release` (`owner`, `rec`), P11 |

@@ -120,7 +120,7 @@ Body mints Tracked at line 234.
 Hashes: contract 3762602297, body 696989655.
 
 Specs: `usize_id` (src/vspec/atom.rs) 3687383471.
-Specs unresolved (spec fns of the name): `inv` (45), `id` (4), `value` (6).
+Specs unresolved (spec fns of the name): `inv` (46), `id` (4), `value` (6).
 
 ```rust
 pub fn load_usize_seen<K, P: InvariantPredicate<K, SeenVal>>(

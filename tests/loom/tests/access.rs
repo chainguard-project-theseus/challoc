@@ -896,8 +896,9 @@ fn access_desc_fields_control() {
 
 // One permission per atomic (the watermark wrappers' seams; the route
 // byte's, the state bytes', the counters', the table entries' and the
-// bitmap words' permissions are vstd's, which only `PAtomicU8::new`,
-// `PAtomicU32::new`, `PAtomicU64::new` and `PAtomicPtr::new` mint, besides
+// bitmap words' and `thp::RESERVATIONS`' permissions are vstd's, which only
+// `PAtomicU8::new`, `PAtomicU32::new`, `PAtomicU64::new`,
+// `PAtomicUsize::new` and `PAtomicPtr::new` mint, besides
 // `api::axiom_start`'s slot-state bytes, `class::table::axiom_fresh_words`'s
 // bitmap words, `class::table::axiom_zero_desc`'s descriptor fields and
 // `api::resume::axiom_fork_resumed`'s fork slot): each
@@ -914,6 +915,7 @@ const MINTERS: &[&str] = &[
     "PAtomicU8::new",
     "PAtomicU32::new",
     "PAtomicU64::new",
+    "PAtomicUsize::new",
     "PAtomicPtr::new",
     "count::new",
     "new_usize",
