@@ -189,6 +189,11 @@ leave out (theorem 33). Remaining work is tracked in
   `malloc`, `malloc_block` and their cores' `ensures` (`heap::hint_ok`,
   `heap::huge_hint_ok`, `class_slot`), with `lemma_class_named` and
   `lemma_huge_named`, `api/libc.rs`.
+- **Calloc's size names its block** ([`calloc(n, m)`'s block is named by `n * m`](#callocn-ms-block-is-named-by-n--m)):
+  `calloc`, `calloc_zeroed`, `calloc_usable`, `calloc_usable_zeroed`
+  and the `calloc` / `je_calloc` / `challoc_calloc_usable` exports'
+  `ensures` (`heap::hint_ok`, `class_slot`, and for the token-carrying
+  cores `heap::huge_hint_ok`), `api/libc.rs`.
 
 ## Configuration
 
@@ -9903,7 +9908,10 @@ listed above.
   block from `malloc(n)` freed with `n`, the slot half is proved, not
   assumed: `malloc` and its exports ensure `hint_ok` of the address
   ([`malloc(n)`'s block is named by
-  `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)).
+  `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)),
+  and so for a block from `calloc(n, m)` freed with `n * m`
+  ([`calloc(n, m)`'s block is named by
+  `n * m`](#callocn-ms-block-is-named-by-n--m)).
   The run half is proved only of the token `malloc_block` and the
   other token-carrying cores return. A sized free called from C gets
   its token from `axiom_c_claim`, which states only `claims(p)`, so for
@@ -13625,8 +13633,10 @@ and `Shared::huge_ok` is the no-overflow conjunct.
 **Premises (seams).** None added.
 
 **Scope and where the statement is weaker than the code.**
-- Only `malloc` and its cores. `calloc`, `aligned_alloc`,
-  `posix_memalign`, `mallocx` and `operator new` do not state that
+- Only `malloc` and its cores (and, since
+  chainguard-project-theseus/challoc#1008, `calloc`: [`calloc(n, m)`'s
+  block is named by `n * m`](#callocn-ms-block-is-named-by-n--m)).
+  `aligned_alloc`, `posix_memalign`, `mallocx` and `operator new` do not state that
   their size (and alignment) names their block; `operator new`'s fast
   pop gets the `malloc_fast` conjunct, but its `ensures` do not export
   it.
@@ -13659,6 +13669,67 @@ that fits `size` and whose token covers it. H1 and H2 return a block a
 sized free of `size` would abort on (a size hint of the wrong class, or
 a run whose page count `size` does not round up to). H3's run passes
 the sized free's check, but is not the class-0 slot the code returns.
+
+## `calloc(n, m)`'s block is named by `n * m`
+
+The calloc family states of `n * m` what
+[`malloc(n)`'s block is named by `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)
+states of `n`, since chainguard-project-theseus/challoc#1008: a
+non-null `calloc(n, m)` passes a sized free's slot check for `n * m`
+(`hint_ok`), and when a class serves `n * m` it is a slot of exactly
+that class (`class_slot`). The cores that return the block's token also
+state the run half (`huge_hint_ok`).
+
+**Statement** (`api/libc.rs`):
+
+```rust
+// calloc, calloc_usable (and the exports calloc, je_calloc,
+// challoc_calloc_usable, over `r as *mut u8`)
+    ensures
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for((n * m) as usize, 1)),
+        r@.addr != 0 ==> class_slot(r, (n * m) as usize), ..;
+
+// calloc_zeroed, calloc_usable_zeroed
+    ensures
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for((n * m) as usize, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, (n * m) as usize),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r.0, (n * m) as usize), ..;
+```
+
+A non-null result means `n * m` did not overflow (`checked_mul`), so
+the cast is the product.
+
+**Proof.** The class path calls `lemma_class_named` with the class
+`class_index` picked; the huge path calls `lemma_huge_named`. The zero
+fill then takes the token's permission and puts it back
+(`Live::put_mem`), which keeps the token's length but states
+`claims` only through the old token, so the huge path also records
+that the run's token claims its pointer (`Live::lemma_claims`): the
+`huge_hint_ok` antecedent of the token the fill keeps then gives the
+old token's length, which `put_mem` keeps.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- As for `malloc`: the run half is a fact of the token, which `calloc`
+  and `calloc_usable` drop; across C it still rests on section 44's
+  sized-free premise.
+- `aligned_alloc`, `posix_memalign`, `mallocx` and `operator new` are
+  still out of scope.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures` and proof calls).
+
+**Mutations** (`cargo verus focus -- --verify-module api::libc`, on
+this tree and on main 2a01c71b):
+
+| id | change | PR | main |
+|---|---|---|---|
+| C1 | `calloc_zeroed` takes its slot from the next class up (`c + 1` when there is one) | rejected (`lemma_class_named`'s `requires`, which carries the new `ensures`) | verifies |
+| C2 | `calloc_zeroed`'s huge path allocates a run for `size + 4096` (when that does not overflow) | rejected (the new `huge_hint_ok` `ensures`; `lemma_huge_named` called for the mutant's size fails its `requires` too) | verifies |
+| C3 | `calloc_usable_zeroed` takes its slot from the next class up | rejected (`lemma_class_named`'s `requires`) | verifies |
+
+All three are executable mutants main accepts: each returns a zeroed
+block that fits `n * m`, which a sized free of `n * m` would abort on.
 
 ## Interface contract
 
