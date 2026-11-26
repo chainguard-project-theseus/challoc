@@ -2728,6 +2728,12 @@ mod linux {
     fn advise_reservations(sb_map: Mapping, huge_map: Mapping, meta_map: Mapping)
         requires
             crate::sys::may_syscall(),
+            sb_map.addr != 0 && sb_map.len != 0,
+            huge_map.addr != 0 && huge_map.len != 0,
+            meta_map.addr != 0 && meta_map.len != 0,
+            sb_map.addr + sb_map.len <= user_va_limit(),
+            huge_map.addr + huge_map.len <= user_va_limit(),
+            meta_map.addr + meta_map.len <= user_va_limit(),
     {
         use crate::thp::{Reservation, advise_reservation};
         advise_reservation(Reservation::Classes, sb_map.addr, sb_map.len);
