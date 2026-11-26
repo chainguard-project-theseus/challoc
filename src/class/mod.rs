@@ -867,6 +867,20 @@ proof fn lemma_rel_flush(
     }
 }
 
+/// Bit `slab * sb` is slot 0 of slab `slab`: its address is the slab's
+/// start. Its own query, so the step does not depend on its caller's
+/// context (`ClassState::take`).
+pub proof fn lemma_slab_first_addr(s: Slots, slab: int)
+    requires
+        s.sb > 0,
+    ensures
+        s.addr(slab * s.sb) == s.base + slab * s.slab_size,
+{
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(slab, s.sb);
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(slab, s.sb);
+    vstd::arithmetic::mul::lemma_mul_is_commutative(slab, s.sb);
+}
+
 /// The addresses of a set with one more slot.
 pub proof fn lemma_addrs_insert(s: Slots, a: VSet<int>, b: int)
     ensures
@@ -6120,6 +6134,7 @@ impl ClassState {
             vstd::arithmetic::div_mod::lemma_div_multiples_vanish(slab as int, sl.sb);
             vstd::arithmetic::div_mod::lemma_mod_multiples_basic(slab as int, sl.sb);
             vstd::arithmetic::mul::lemma_mul_is_commutative(slab as int, sl.sb);
+            lemma_slab_first_addr(sl, slab as int);
             assert(sl.addr(slab * sl.sb) == sl.base + slab * sl.slab_size);
             // The pick's bytes are inside the slab, which a discard took.
             if state == State::Purged {

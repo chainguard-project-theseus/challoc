@@ -901,11 +901,14 @@ impl StoredSnapshot {
     /// ([`StoredArena`]'s points-to agrees with it). Every counted arena
     /// has its registry record and is below the count's floor record
     /// ([`counted_kept`]), so the next epoch counts it again; and every
-    /// other index's figures are all zero ([`uncounted_empty`]).
+    /// other index's figures are all zero ([`uncounted_empty`]). Every
+    /// record's bins with no size have no geometry ([`auth_geom_ok`]), so
+    /// adding an all-zero record leaves a merge unchanged.
     pub open spec fn coherent(self) -> bool {
         &&& sums_stored(self.s, self.auth@@, self.counted@)
         &&& counted_kept(self.pubs@, self.floor@, self.counted@)
         &&& uncounted_empty(self.auth@@, self.counted@)
+        &&& auth_geom_ok(self.auth@@)
     }
 }
 
@@ -961,6 +964,181 @@ pub open spec fn merged_stored(m: Map<int, ArenaStats>, found: Seq<int>, steps: 
     &&& steps[0].cleared(crate::arena::ARENAS_ALL as u16)
     &&& forall|j: int| 0 <= j < found.len() ==> #[trigger] steps[j].is_plus(m[found[j]], steps[j + 1])
     &&& steps.last() == r
+}
+
+/// Every bin of `a` with no size has no geometry either (`nregs` and
+/// `slab_size` zero): true of [`ArenaStats::empty_spec`] and of every
+/// collection's figures (each bin has its class's size, never 0). So
+/// [`BinStats::plus`], which takes the geometry of the added bin where
+/// `a`'s has no size, leaves `a`'s geometry when that bin is all zero.
+pub open spec fn bins_geom_ok(a: ArenaStats) -> bool {
+    forall|c: int|
+        0 <= c < NCLASSES && (#[trigger] a.bins[c]).size == 0 ==> a.bins[c].nregs == 0 && a.bins[c].slab_size == 0
+}
+
+/// Every record of `m` at an arena index is [`bins_geom_ok`].
+pub open spec fn auth_geom_ok(m: Map<int, ArenaStats>) -> bool {
+    forall|k: int| 0 <= k < MAX_ARENAS && #[trigger] m.contains_key(k) ==> bins_geom_ok(m[k])
+}
+
+/// Adding an all-zero record ([`ArenaStats::empty_spec`]) to `s`, whose
+/// bins are [`bins_geom_ok`], leaves `s`.
+pub proof fn lemma_plus_empty(s: ArenaStats, i: u16, r: ArenaStats)
+    requires
+        bins_geom_ok(s),
+        s.is_plus(ArenaStats::empty_spec(i), r),
+    ensures
+        r == s,
+{
+    let e = ArenaStats::empty_spec(i);
+    assert forall|c: int| 0 <= c < NCLASSES implies r.bins[c] == s.bins[c] by {
+        assert(e.bins[c] == BinStats::EMPTY);
+        assert(r.bins[c] == s.bins[c].plus(e.bins[c]));
+    }
+    assert(r.bins =~= s.bins);
+}
+
+/// [`ArenaStats::is_plus`] keeps [`bins_geom_ok`].
+pub proof fn lemma_plus_geom(s: ArenaStats, o: ArenaStats, r: ArenaStats)
+    requires
+        bins_geom_ok(s),
+        bins_geom_ok(o),
+        s.is_plus(o, r),
+    ensures
+        bins_geom_ok(r),
+{
+    assert forall|c: int| 0 <= c < NCLASSES && (#[trigger] r.bins[c]).size == 0 implies r.bins[c].nregs == 0
+        && r.bins[c].slab_size == 0 by {
+        assert(r.bins[c] == s.bins[c].plus(o.bins[c]));
+    }
+}
+
+/// Every partial merge of a [`merged_stored`] merge of records that are
+/// [`bins_geom_ok`] is [`bins_geom_ok`].
+pub proof fn lemma_steps_geom(m: Map<int, ArenaStats>, found: Seq<int>, steps: Seq<ArenaStats>, r: ArenaStats, j: int)
+    requires
+        merged_stored(m, found, steps, r),
+        auth_geom_ok(m),
+        0 <= j <= found.len(),
+    ensures
+        bins_geom_ok(steps[j]),
+    decreases j,
+{
+    if j == 0 {
+        assert forall|c: int| 0 <= c < NCLASSES && (#[trigger] steps[0].bins[c]).size == 0 implies steps[0].bins[c].nregs
+            == 0 && steps[0].bins[c].slab_size == 0 by {
+            assert(steps[0].bins[c] == BinStats::EMPTY);
+        }
+    } else {
+        let k = j - 1;
+        lemma_steps_geom(m, found, steps, r, k);
+        assert(m.contains_key(found[k]));
+        assert(steps[k].is_plus(m[found[k]], steps[k + 1]));
+        assert(k + 1 == j);
+        lemma_plus_geom(steps[k], m[found[k]], steps[k + 1]);
+    }
+}
+
+/// A [`merged_stored`] merge over arenas `found` that include every one
+/// `counted` names, both ascending, where every other arena found has
+/// all-zero figures, is a merge over `counted` alone: the zero records
+/// leave each partial merge unchanged ([`lemma_plus_empty`]).
+pub proof fn lemma_merge_counted(
+    m: Map<int, ArenaStats>,
+    found: Seq<int>,
+    steps: Seq<ArenaStats>,
+    r: ArenaStats,
+    counted: Seq<int>,
+)
+    requires
+        merged_stored(m, found, steps, r),
+        auth_geom_ok(m),
+        indices_ok(m, counted),
+        forall|j: int| 0 <= j < counted.len() ==> found.contains(#[trigger] counted[j]),
+        forall|j: int|
+            0 <= j < found.len() && !counted.contains(#[trigger] found[j]) ==> m[found[j]] == ArenaStats::empty_spec(
+                found[j] as u16,
+            ),
+    ensures
+        exists|s2: Seq<ArenaStats>| #[trigger] merged_stored(m, counted, s2, r),
+    decreases found.len(),
+{
+    if found.len() == 0 {
+        if counted.len() > 0 {
+            assert(found.contains(counted[0]));
+        }
+        assert(merged_stored(m, counted, steps, r));
+    } else {
+        let n = found.len() - 1;
+        let f = found[n];
+        let (found1, steps1, r1) = (found.drop_last(), steps.drop_last(), steps[n]);
+        assert forall|j: int| 0 <= j < found1.len() implies #[trigger] steps1[j].is_plus(m[found1[j]], steps1[j + 1]) by {
+            assert(steps[j].is_plus(m[found[j]], steps[j + 1]));
+        }
+        assert(merged_stored(m, found1, steps1, r1));
+        assert(steps[n].is_plus(m[f], r));
+        if !counted.contains(f) {
+            assert(m[f] == ArenaStats::empty_spec(f as u16));
+            lemma_steps_geom(m, found, steps, r, n);
+            lemma_plus_empty(steps[n], f as u16, r);
+            assert forall|j: int| 0 <= j < counted.len() implies found1.contains(#[trigger] counted[j]) by {
+                assert(found.contains(counted[j]));
+                let x = choose|x: int| 0 <= x < found.len() && found[x] == counted[j];
+                assert(x != n);
+                assert(found1[x] == counted[j]);
+            }
+            assert forall|j: int|
+                0 <= j < found1.len() && !counted.contains(#[trigger] found1[j]) implies m[found1[j]]
+                == ArenaStats::empty_spec(found1[j] as u16) by {
+                assert(found1[j] == found[j]);
+            }
+            lemma_merge_counted(m, found1, steps1, r1, counted);
+        } else {
+            // `f`, the largest arena found, is the last counted one.
+            let p = choose|p: int| 0 <= p < counted.len() && counted[p] == f;
+            let q = counted.len() - 1;
+            if p < q {
+                assert(found.contains(counted[q]));
+                let x = choose|x: int| 0 <= x < found.len() && found[x] == counted[q];
+                assert(counted[p] < counted[q]);
+                if x < n {
+                    assert(found[x] < found[n]);
+                }
+            }
+            assert(p == q);
+            let counted1 = counted.drop_last();
+            assert forall|j: int| 0 <= j < counted1.len() implies found1.contains(#[trigger] counted1[j]) by {
+                assert(counted1[j] == counted[j]);
+                assert(found.contains(counted[j]));
+                let x = choose|x: int| 0 <= x < found.len() && found[x] == counted[j];
+                assert(counted[j] < counted[q]);
+                assert(x != n);
+                assert(found1[x] == counted1[j]);
+            }
+            assert forall|j: int|
+                0 <= j < found1.len() && !counted1.contains(#[trigger] found1[j]) implies m[found1[j]]
+                == ArenaStats::empty_spec(found1[j] as u16) by {
+                assert(found1[j] == found[j]);
+                assert(found[j] < found[n]);
+                if counted.contains(found[j]) {
+                    let y = choose|y: int| 0 <= y < counted.len() && counted[y] == found[j];
+                    assert(y != q);
+                    assert(counted1[y] == found[j]);
+                }
+            }
+            assert(indices_ok(m, counted1));
+            lemma_merge_counted(m, found1, steps1, r1, counted1);
+            let s1 = choose|s1: Seq<ArenaStats>| #[trigger] merged_stored(m, counted1, s1, r1);
+            let s2 = s1.push(r);
+            assert forall|j: int| 0 <= j < counted.len() implies #[trigger] s2[j].is_plus(m[counted[j]], s2[j + 1]) by {
+                if j < q {
+                    assert(s1[j].is_plus(m[counted1[j]], s1[j + 1]));
+                    assert(counted1[j] == counted[j]);
+                }
+            }
+            assert(merged_stored(m, counted, s2, r));
+        }
+    }
 }
 
 /// The value of an arena's statistics lock (`Arena::stats`): the figures
@@ -1670,6 +1848,7 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             ids_ascending(reads),
             forall|j: int| 0 <= j < reads.len() ==> ((#[trigger] reads[j]).index as usize) < i,
             forall|j: int| 0 <= j < reads.len() ==> #[trigger] reads[j].identities(),
+            forall|j: int| 0 <= j < reads.len() ==> bins_geom_ok(#[trigger] reads[j]),
             // Arena 0, the only one above `2^55`, comes first.
             sum_mapped(reads) <= 0x400_0000_0000_0000 + reads.len() * 0x80_0000_0000_0000,
             sum_mapped(reads) <= usize::MAX ==> totals.mapped == sum_mapped(reads) && totals.identities(),
@@ -1731,6 +1910,10 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             let a: &ArenaStats = tmp;
             let ghost p = pg@;
             proof {
+                // Every bin has its class's size, never 0.
+                assert forall|c: int| 0 <= c < NCLASSES implies (#[trigger] a.bins[c]).size != 0 by {
+                    crate::vspec::class::lemma_class_table_wf(c);
+                }
                 lemma_reads_step(reads, pages, *a, p);
                 assert(reads.push(*a).drop_last() =~= reads);
                 if sum_mapped(reads.push(*a)) <= usize::MAX {
@@ -1836,6 +2019,17 @@ fn collect_into(shared: &Shared, store: bool, tmp: &mut ArenaStats, Tracked(rd):
             }
             assert(counted_kept(c.pubs@, c.floor@, c.counted@));
             assert(uncounted_empty(c.auth@@, c.counted@));
+            // Each record is a collection's figures or as acquired.
+            assert forall|k: int| 0 <= k < MAX_ARENAS && #[trigger] c.auth@@.contains_key(k) implies bins_geom_ok(
+                c.auth@@[k],
+            ) by {
+                if ids_of(reads).contains(k) {
+                    let j = choose|j: int| 0 <= j < reads.len() && ids_of(reads)[j] == k;
+                    assert(c.auth@@[reads[j].index as int] == reads[j]);
+                } else {
+                    assert(c0.auth@@.contains_key(k));
+                }
+            }
             assert(stored_of(c.auth@@, c.counted@) =~= reads);
             assert(totals_exact(reads, pages, c.s.totals));
             assert(c.coherent());
@@ -2018,12 +2212,12 @@ pub fn arena_stats_into(shared: &Shared, index: u16, out: &mut ArenaStats, Track
 /// statistics lock keeps one from storing midway). Its `index` is 4096.
 ///
 /// `st` gets a stamp of the process statistics history ([`Stamp`]) whose
-/// record `out` merges ([`merged_rec`]): `out` is the merge, in index
-/// order, of the figures that record has for the arenas found
-/// ([`merged_stored`]), which are the figures each one's statistics lock
-/// stores when it is read (`Arena::add_stats_to`), and the arenas found
-/// include every one the stored epoch counted, each other one with
-/// all-zero figures ([`counted_kept`], [`uncounted_empty`]). The record
+/// record `out` merges: `out` is the merge, in index order, of the
+/// figures that record has for exactly the arenas it counts
+/// ([`merged_stored`] over `value().2`). The scan finds every counted
+/// arena and perhaps others, which store all-zero figures
+/// ([`merged_rec`], [`counted_kept`], [`uncounted_empty`]); adding those
+/// leaves the merge unchanged ([`lemma_merge_counted`]). The record
 /// is coherent ([`rec_coherent`]), and a stamp [`snapshot`] returns for
 /// the same generation names the same record ([`lemma_stamps_agree`]).
 /// Its generation is at least that of any stamp of the process history
@@ -2037,7 +2231,7 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): 
         final(out).index == crate::arena::ARENAS_ALL as u16,
         stamp_ok(shared, *final(st)),
         stamp_not_older(shared, *old(st), *final(st)),
-        exists|found: Seq<int>, steps: Seq<ArenaStats>| #[trigger] merged_rec(final(st).value(), found, steps, *final(out)),
+        exists|steps: Seq<ArenaStats>| #[trigger] merged_stored(final(st).value().1, final(st).value().2, steps, *final(out)),
         *final(ord) == *old(ord),
 {
     proof {
@@ -2162,6 +2356,9 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): 
         *st = c.stamp.borrow().duplicate();
         assert(st.value() == (c.s, m, c.counted@));
         assert(merged_rec(st.value(), found, steps, *out));
+        // The arenas found but not counted add all-zero records, which
+        // leave the merge unchanged: it is the merge of the counted ones.
+        lemma_merge_counted(m, found, steps, *out, c.counted@);
     }
     published.unlock();
 }
