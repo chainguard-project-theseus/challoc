@@ -223,6 +223,32 @@ impl BinStats {
         }
     }
 
+    /// `o` added to `self` as [`ArenaStats::add`] adds a bin: the geometry
+    /// from `o` where `self` has none, every count summed, each sum
+    /// wrapping as [`fig_add`] and [`fig_add64`] do ([`BinStats::merged`]
+    /// where every sum fits).
+    pub open spec fn plus(self, o: BinStats) -> BinStats {
+        let g = if self.size == 0 { o } else { self };
+        BinStats {
+            size: g.size,
+            nregs: g.nregs,
+            slab_size: g.slab_size,
+            curregs: fig_sum(self.curregs, o.curregs),
+            curslabs: fig_sum(self.curslabs, o.curslabs),
+            nonfull_slabs: fig_sum(self.nonfull_slabs, o.nonfull_slabs),
+            empty_slabs: fig_sum(self.empty_slabs, o.empty_slabs),
+            purged_slabs: fig_sum(self.purged_slabs, o.purged_slabs),
+            refilled: fig_sum64(self.refilled, o.refilled),
+            compacted: fig_sum64(self.compacted, o.compacted),
+            compact_on: fig_sum64(self.compact_on, o.compact_on),
+            compact_off: fig_sum64(self.compact_off, o.compact_off),
+            gate_refill: fig_sum64(self.gate_refill, o.gate_refill),
+            clamped: fig_sum64(self.clamped, o.clamped),
+            closed_slots: fig_sum(self.closed_slots, o.closed_slots),
+            closed_bytes: fig_sum(self.closed_bytes, o.closed_bytes),
+        }
+    }
+
     /// The bin's figures fit its slabs ([`collect_bin`]): its slots out
     /// fill at most its live-capable slabs (`ClassState::bin_stats`'s
     /// clamp), and all its slabs lie in its class region, at most `2^38`
@@ -400,6 +426,7 @@ impl ArenaStats {
             final(self).resident == 0 && final(self).retained == 0 && final(self).mapped == 0,
             final(self).identities(),
             forall|c: int| 0 <= c < NCLASSES ==> #[trigger] final(self).bins[c] == BinStats::EMPTY,
+            final(self).cleared(index),
     {
         self.index = index;
         self.small_allocated = 0;
@@ -630,7 +657,14 @@ pub(crate) fn fig_mul(a: usize, b: usize) -> (r: usize)
 pub(crate) fn fig_add64(a: u64, b: u64) -> (r: u64)
     ensures
         a + b <= u64::MAX ==> r == a + b,
+        r == fig_sum64(a, b),
 {
+    a.wrapping_add(b)
+}
+
+/// [`fig_add64`]'s result: `a + b`, wrapping past `u64::MAX`. Closed, as
+/// [`fig_sum`] is.
+pub closed spec fn fig_sum64(a: u64, b: u64) -> u64 {
     a.wrapping_add(b)
 }
 
@@ -750,13 +784,39 @@ impl StoredSnapshot {
     /// them, which are the figures that arena's statistics lock stores
     /// ([`StoredArena`]'s points-to agrees with it).
     pub open spec fn coherent(self) -> bool {
-        &&& self.counted@.len() == self.s.narenas
-        &&& forall|j: int| 0 <= j < self.counted@.len() ==> 0 <= #[trigger] self.counted@[j] < MAX_ARENAS
-        &&& forall|j: int, k: int|
-            0 <= j < k < self.counted@.len() ==> #[trigger] self.counted@[j] < #[trigger] self.counted@[k]
-        &&& forall|j: int| 0 <= j < self.counted@.len() ==> self.auth@@.contains_key(#[trigger] self.counted@[j])
-        &&& self.s.totals == totals_sum(stored_of(self.auth@@, self.counted@))
+        sums_stored(self.s, self.auth@@, self.counted@)
     }
+}
+
+/// `counted` names `s.narenas` arena indices, each once, ascending, each
+/// with figures in `m`, and `s`'s totals are those figures summed in
+/// index order ([`totals_sum`]): [`StoredSnapshot::coherent`] for the
+/// authority's figures `m`.
+pub open spec fn sums_stored(s: Snapshot, m: Map<int, ArenaStats>, counted: Seq<int>) -> bool {
+    &&& counted.len() == s.narenas
+    &&& indices_ok(m, counted)
+    &&& s.totals == totals_sum(stored_of(m, counted))
+}
+
+/// `ids` are arena indices, ascending (so each once), each with figures
+/// in `m`.
+pub open spec fn indices_ok(m: Map<int, ArenaStats>, ids: Seq<int>) -> bool {
+    &&& forall|j: int| 0 <= j < ids.len() ==> 0 <= #[trigger] ids[j] < MAX_ARENAS
+    &&& forall|j: int, k: int| 0 <= j < k < ids.len() ==> #[trigger] ids[j] < #[trigger] ids[k]
+    &&& forall|j: int| 0 <= j < ids.len() ==> m.contains_key(#[trigger] ids[j])
+}
+
+/// `r` is the `MALLCTL_ARENAS_ALL` merge of the figures `m` records for
+/// the arenas `found`, as [`arena_stats_all_into`] forms it: from
+/// [`ArenaStats::cleared`]`(ARENAS_ALL)`, each arena's figures added in
+/// `found`'s order by [`ArenaStats::add`] ([`ArenaStats::is_plus`]);
+/// `steps` are the partial merges, `steps[j]` after `j` arenas.
+pub open spec fn merged_stored(m: Map<int, ArenaStats>, found: Seq<int>, steps: Seq<ArenaStats>, r: ArenaStats) -> bool {
+    &&& indices_ok(m, found)
+    &&& steps.len() == found.len() + 1
+    &&& steps[0].cleared(crate::arena::ARENAS_ALL as u16)
+    &&& forall|j: int| 0 <= j < found.len() ==> #[trigger] steps[j].is_plus(m[found[j]], steps[j + 1])
+    &&& steps.last() == r
 }
 
 /// The value of an arena's statistics lock (`Arena::stats`): the figures
@@ -784,6 +844,7 @@ impl ArenaStats {
     pub fn add(&mut self, o: &ArenaStats)
         ensures
             final(self).index == old(self).index,
+            old(self).is_plus(*o, *final(self)),
             old(self).can_add(*o) ==> old(self).is_merge(*o, *final(self)),
             // The byte figures, whether or not the counts fit.
             old(self).bytes_fit(*o) ==> old(self).bytes_merged(*o, *final(self)),
@@ -824,6 +885,8 @@ impl ArenaStats {
                 old(self).bytes_fit(*o) ==> old(self).bytes_merged(*o, *self),
                 old(self).can_add(*o) ==> forall|j: int| 0 <= j < c ==> #[trigger] self.bins[j] == old(self).bins[j].merged(o.bins[j]),
                 forall|j: int| c <= j < NCLASSES ==> #[trigger] self.bins[j] == old(self).bins[j],
+                old(self).scalars_plus(*o, *self),
+                forall|j: int| 0 <= j < c ==> #[trigger] self.bins[j] == old(self).bins[j].plus(o.bins[j]),
                 old(self).small_allocated + o.small_allocated <= usize::MAX ==> self.small_allocated
                     == old(self).small_allocated + o.small_allocated,
                 old(self).large_allocated + o.large_allocated <= usize::MAX ==> self.large_allocated
@@ -961,6 +1024,51 @@ impl ArenaStats {
     pub open spec fn is_merge(self, o: ArenaStats, r: ArenaStats) -> bool {
         &&& self.scalars_merged(o, r)
         &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c] == self.bins[c].merged(o.bins[c])
+    }
+
+    /// `r` is what [`ArenaStats::add`] leaves when it adds `o` to `self`,
+    /// whether or not the sums fit: `self`'s index, every figure summed
+    /// and every bin [`BinStats::plus`], each sum wrapping as [`fig_add`]
+    /// and [`fig_add64`] do.
+    pub open spec fn is_plus(self, o: ArenaStats, r: ArenaStats) -> bool {
+        &&& self.scalars_plus(o, r)
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r.bins[c] == self.bins[c].plus(o.bins[c])
+    }
+
+    /// [`ArenaStats::is_plus`], bins aside.
+    pub open spec fn scalars_plus(self, o: ArenaStats, r: ArenaStats) -> bool {
+        &&& r.index == self.index
+        &&& r.small_allocated == fig_sum(self.small_allocated, o.small_allocated)
+        &&& r.small_active == fig_sum(self.small_active, o.small_active)
+        &&& r.small_dirty == fig_sum(self.small_dirty, o.small_dirty)
+        &&& r.small_retained == fig_sum(self.small_retained, o.small_retained)
+        &&& r.large_allocated == fig_sum(self.large_allocated, o.large_allocated)
+        &&& r.large_active == fig_sum(self.large_active, o.large_active)
+        &&& r.large_dirty == fig_sum(self.large_dirty, o.large_dirty)
+        &&& r.large_retained == fig_sum(self.large_retained, o.large_retained)
+        &&& r.large_runs == fig_sum(self.large_runs, o.large_runs)
+        &&& r.huge_dirty == fig_sum(self.huge_dirty, o.huge_dirty)
+        &&& r.huge_retained == fig_sum(self.huge_retained, o.huge_retained)
+        &&& r.metadata == fig_sum(self.metadata, o.metadata)
+        &&& r.pactive == fig_sum(self.pactive, o.pactive)
+        &&& r.pdirty == fig_sum(self.pdirty, o.pdirty)
+        &&& r.pmuzzy == fig_sum(self.pmuzzy, o.pmuzzy)
+        &&& r.resident == fig_sum(self.resident, o.resident)
+        &&& r.retained == fig_sum(self.retained, o.retained)
+        &&& r.mapped == fig_sum(self.mapped, o.mapped)
+    }
+
+    /// What [`ArenaStats::clear`]`(index)` leaves: `index`, every figure
+    /// zero, every bin [`BinStats::EMPTY`].
+    pub open spec fn cleared(self, index: u16) -> bool {
+        &&& self.index == index
+        &&& self.small_allocated == 0 && self.small_active == 0 && self.small_dirty == 0 && self.small_retained == 0
+        &&& self.large_allocated == 0 && self.large_active == 0 && self.large_dirty == 0 && self.large_retained == 0
+        &&& self.large_runs == 0
+        &&& self.huge_dirty == 0 && self.huge_retained == 0 && self.metadata == 0
+        &&& self.pactive == 0 && self.pdirty == 0 && self.pmuzzy == 0
+        &&& self.resident == 0 && self.retained == 0 && self.mapped == 0
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.bins[c] == BinStats::EMPTY
     }
 }
 
@@ -1508,6 +1616,14 @@ pub fn collect(shared: &Shared, tmp: &mut ArenaStats, Tracked(ord): Tracked<&mut
 }
 
 /// The snapshot stored by the last [`epoch`] (all zero before the first).
+///
+/// The body checks, before it releases the lock, that its totals are the
+/// figures of the arenas that epoch counted summed in index order
+/// ([`sums_stored`]), each as the held value's authority records it, which
+/// is what that arena's statistics lock stores then
+/// ([`lemma_stored_agree`]), and that their `mapped` is the true sum when
+/// that fits ([`lemma_totals_sum_mapped`]). The `ensures` does not export
+/// it: the authority is the lock value's ghost, which no caller can name.
 pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Snapshot)
     requires
         crate::sys::may_syscall(),
@@ -1523,6 +1639,15 @@ pub fn snapshot(shared: &Shared, Tracked(ord): Tracked<&mut LockOrder>) -> (r: S
     let tracked mut under = LockOrder::spare();
     let g = shared.stats.lock(Tracked(ord), Tracked(&mut under));
     let r = g.s;
+    proof {
+        // The result against the held value's ghosts.
+        let (m, counted) = (g@.auth@@, g@.counted@);
+        lemma_totals_sum_mapped(stored_of(m, counted));
+        assert(sums_stored(r, m, counted));
+        assert(sum_mapped(stored_of(m, counted)) <= usize::MAX ==> r.totals.mapped == sum_mapped(
+            stored_of(m, counted),
+        ));
+    }
     g.unlock();
     r
 }
@@ -1550,6 +1675,12 @@ pub fn arena_stats_into(shared: &Shared, index: u16, out: &mut ArenaStats, Track
 /// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
 /// stored figures summed into `out`, all from one `epoch` (the process
 /// statistics lock keeps one from storing midway). Its `index` is 4096.
+///
+/// The body checks, before it releases the lock, that `out` is the merge,
+/// in index order, of the figures the held value's authority records for
+/// the arenas found ([`merged_stored`]), which are the figures each one's
+/// statistics lock stores when it is read (`Arena::add_stats_to`). The
+/// `ensures` does not export it, as in [`snapshot`].
 pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
     requires
         crate::sys::may_syscall(),
@@ -1561,21 +1692,63 @@ pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(ord):
 {
     proof {
         shared.lemma_ranks();
+        shared.lemma_stats_loc();
     }
     let tracked mut under = LockOrder::spare();
     let published = shared.stats.lock(Tracked(ord), Tracked(&mut under));
+    // The lock's value, read only: its authority records every arena's
+    // stored figures.
+    #[cfg_attr(not(verus_keep_ghost), allow(unused_variables))]
+    let c = &*published;
+    let ghost m = c.auth@@;
     out.clear(crate::arena::ARENAS_ALL as u16);
+    let ghost mut found = Seq::<int>::empty();
+    let ghost mut steps = seq![*out];
     let n = shared.arenas.count();
     for i in 0..n as usize
         invariant
             n as usize <= MAX_ARENAS,
             crate::sys::may_syscall(),
+            shared.wf(),
             out.index == crate::arena::ARENAS_ALL as u16,
             under.top() == rank_stats(),
+            c.auth@.id() == shared.arenas.spec_stats_loc(),
+            c.auth@@ == m,
+            merged_stored(m, found, steps, *out),
+            forall|j: int| 0 <= j < found.len() ==> #[trigger] found[j] < i,
     {
         if let Some(arena) = arena_at(shared, i) {
-            arena.add_stats_to(out, Tracked(&mut under));
+            let ghost o0 = *out;
+            arena.add_stats_to(out, Tracked(c.auth.borrow()), Tracked(&mut under));
+            proof {
+                let (f0, s0) = (found, steps);
+                found = found.push(i as int);
+                steps = steps.push(*out);
+                assert forall|j: int| 0 <= j < found.len() implies #[trigger] steps[j].is_plus(
+                    m[found[j]],
+                    steps[j + 1],
+                ) by {
+                    if j < f0.len() {
+                        assert(found[j] == f0[j] && steps[j] == s0[j] && steps[j + 1] == s0[j + 1]);
+                    } else {
+                        assert(steps[j] == o0 && steps[j + 1] == *out);
+                    }
+                }
+                assert forall|j: int, k: int| 0 <= j < k < found.len() implies #[trigger] found[j]
+                    < #[trigger] found[k] by {
+                    if k < f0.len() {
+                        assert(found[j] == f0[j] && found[k] == f0[k]);
+                    } else {
+                        assert(found[j] == f0[j]);
+                    }
+                }
+                assert(indices_ok(m, found));
+                assert(merged_stored(m, found, steps, *out));
+            }
         }
+    }
+    proof {
+        assert(merged_stored(m, found, steps, *out));
     }
     published.unlock();
 }
@@ -1811,6 +1984,36 @@ pub open spec fn totals_sum(reads: Seq<ArenaStats>) -> Totals
         Totals::EMPTY
     } else {
         totals_sum(reads.drop_last()).plus(reads.last())
+    }
+}
+
+/// [`totals_sum`]'s `mapped` is the true sum of the figures' `mapped`
+/// ([`sum_mapped`]) whenever that fits: no partial sum wraps.
+pub proof fn lemma_totals_sum_mapped(reads: Seq<ArenaStats>)
+    ensures
+        sum_mapped(reads) <= usize::MAX ==> totals_sum(reads).mapped == sum_mapped(reads),
+    decreases reads.len(),
+{
+    if reads.len() > 0 {
+        let p = reads.drop_last();
+        lemma_totals_sum_mapped(p);
+        lemma_sum_mapped_nonneg(p);
+        let (a, b) = (totals_sum(p).mapped, reads.last().mapped);
+        if sum_mapped(reads) <= usize::MAX {
+            assert(a + b <= usize::MAX);
+            assert(fig_sum(a, b) == a + b);
+        }
+    }
+}
+
+/// [`sum_mapped`] of any figures is a natural.
+pub proof fn lemma_sum_mapped_nonneg(reads: Seq<ArenaStats>)
+    ensures
+        sum_mapped(reads) >= 0,
+    decreases reads.len(),
+{
+    if reads.len() > 0 {
+        lemma_sum_mapped_nonneg(reads.drop_last());
     }
 }
 
@@ -2723,8 +2926,9 @@ proof fn lemma_arena_stats_frame_reflexive(v: StoredArena)
 /// ones the process lock's authority records for its index, so, where
 /// the process lock's value is [`StoredSnapshot::coherent`] (at its
 /// acquisition), the stored totals sum the figures the counted arenas'
-/// locks store. No verified function calls it yet: it is the step a
-/// reader that states coherence in its `ensures` would take.
+/// locks store. No verified function calls it: `Arena::add_stats_to`
+/// takes the same step (`GhostPointsTo::agree`) with the authority alone,
+/// which [`arena_stats_all_into`] lends it from the value it holds.
 pub proof fn lemma_stored_agree(tracked p: &StoredSnapshot, tracked a: &StoredArena)
     requires
         a.pt@.id() == p.auth@.id(),

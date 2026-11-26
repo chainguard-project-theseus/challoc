@@ -1475,20 +1475,37 @@ impl Arena {
 
     /// Add the statistics stored by the last `epoch` to `out`
     /// (`ArenaStats::add`, the `MALLCTL_ARENAS_ALL` merge), read in place
-    /// under the lock.
-    pub fn add_stats_to(&self, out: &mut ArenaStats, Tracked(ord): Tracked<&mut LockOrder>)
+    /// under the lock. The figures added are the ones the process
+    /// statistics authority `auth` (the process statistics lock's, which
+    /// the caller holds; `stats::StoredSnapshot`) records at the arena's
+    /// entry: the lock's points-to agrees with it
+    /// (`stats::lemma_stored_agree`).
+    pub fn add_stats_to(
+        &self,
+        out: &mut ArenaStats,
+        Tracked(auth): Tracked<&GhostMapAuth<int, ArenaStats>>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    )
         requires
             crate::sys::may_syscall(),
             old(ord).allows(rank_arena_stats(0)),
+            auth.id() == self.spec_stats_loc(),
         ensures
             final(out).index == old(out).index,
+            auth@.contains_key(self.spec_stats_key()),
+            old(out).is_plus(auth@[self.spec_stats_key()], *final(out)),
             *final(ord) == *old(ord),
     {
         proof {
             use_type_invariant(self);
         }
         let g = self.stats.lock(Tracked(ord), Tracked(&mut LockOrder::spare()));
-        out.add(&g.s);
+        // The lock's value, read only: its points-to agrees with `auth`.
+        let c = &*g;
+        proof {
+            c.pt.borrow().agree(auth);
+        }
+        out.add(&c.s);
         g.unlock();
     }
 
