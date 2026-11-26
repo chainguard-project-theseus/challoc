@@ -185,6 +185,10 @@ leave out (theorem 33). Remaining work is tracked in
   `class::ClassState::next_slab`'s `ensures` (`LazyMark::reads`),
   `class/fresh.rs`, with `purge::purged_is_zero_seen`'s `ensures`,
   `purge.rs`.
+- **Malloc's size names its block** ([`malloc(n)`'s block is named by `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)):
+  `malloc`, `malloc_block` and their cores' `ensures` (`heap::hint_ok`,
+  `heap::huge_hint_ok`, `class_slot`), with `lemma_class_named` and
+  `lemma_huge_named`, `api/libc.rs`.
 
 ## Configuration
 
@@ -5683,8 +5687,10 @@ verified (`lemma_class_table_wf`).
   `malloc(0)` is a block (`fits`) with its own token
   (`malloc_block`'s `gives`), at least one usable byte and an address
   no other live block has (`theorem_distinct`): the distinct pointer
-  the module doc of `api::libc` promises. That it is a class-0 slot is
-  what the code does (`class_index(0)`), not stated.
+  the module doc of `api::libc` promises. It is a slot of class 0
+  (`class_slot(r, 0)`, with `spec_class_for(0, 1) == Some(0)`, since
+  chainguard-project-theseus/challoc#1006: [`malloc(n)`'s block is
+  named by `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)).
 - The `_usable` entry points: `*usable` is 0 exactly when the result is
   NULL (`theorem_stored_zero_iff_null` over the `_stored` twins'
   `ensures`); `malloc_usable_size` and `challoc_free_usable` return 0
@@ -9893,7 +9899,16 @@ listed above.
   the size's class at the alignment, `hint_ok`, the class the token's
   slot has; for a run, `size` rounds up to the run's usable bytes,
   `huge_hint_ok`), what C23 `free_sized` and jemalloc's `sdallocx` ask
-  of their callers. A wrong size still aborts ("Bad input").
+  of their callers. A wrong size still aborts ("Bad input"). For a
+  block from `malloc(n)` freed with `n`, the slot half is proved, not
+  assumed: `malloc` and its exports ensure `hint_ok` of the address
+  ([`malloc(n)`'s block is named by
+  `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)).
+  The run half is proved only of the token `malloc_block` and the
+  other token-carrying cores return. A sized free called from C gets
+  its token from `axiom_c_claim`, which states only `claims(p)`, so for
+  a run the round trip through C still rests on this premise, as do
+  the other allocation families.
 - `shared.wf()` stands for init complete, as in theorem 32: `free`'s
   `shared_if_ready` and `free_before_init`, and `heap_for_thread` (which
   creates a heap, and may abort when that fails), come before the calls
@@ -13544,6 +13559,106 @@ verify were out of date: the in-place assertion is about the floor
 call that lifts the floor with no read is still rejected only because
 the mark may be lazy; the new `ensures` names the read itself. R2 is an
 executable mutant main accepts: a second `SeqCst` load per pick.
+
+## `malloc(n)`'s block is named by `n` (the sized-free hint of `malloc`'s own size)
+
+A sized free (`free_sized`, `sdallocx` with no flags) checks that its
+size names the block: `hint_ok(p, spec_class_for(size, 1))` for a slot
+and `huge_hint_ok(blk, p, size)` for a run ("Bad input"). Section 44
+takes "the size names the block" as part of the C contract of a sized
+free. Since chainguard-project-theseus/challoc#1006, `malloc`'s
+contract states it of its own size: a non-null `malloc(n)` is named by
+`n`. For a slot, that is a fact of the address (`hint_ok`, with
+`class_slot`), which `malloc` and its exports state, so
+`free_sized(malloc(n), n)` passes the slot check. The run half is a
+fact of the block's token (`huge_hint_ok`), stated by the cores that
+return one (`malloc_block` and below).
+
+**Statement** (`api/libc.rs`):
+
+```rust
+// api/libc.rs: a size a class serves gets a slot of that class, never a run
+pub open spec fn class_slot(p: *mut u8, size: usize) -> bool {
+    spec_class_for(size, 1) matches Some(c) ==> process_regions().is_slot(c as int, p@.addr)
+}
+
+// malloc (and the exports malloc, je_malloc, over `r as *mut u8`)
+    ensures
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1)),
+        r@.addr != 0 ==> class_slot(r, size), ..;
+
+// malloc_block, malloc_medium, malloc_class, malloc_slow
+    ensures
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1)),
+        r@.addr != 0 ==> class_slot(r, size),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size), ..;
+
+// malloc_fast (shared with operator new)
+    ensures
+        r matches Some(p) ==> heap::hint_ok(p, spec_class_for(size, 1))
+            && heap::huge_hint_ok(*final(blk), p, size),
+        r matches Some(p) ==> class_slot(p, size), ..;
+
+// malloc_class now also requires the class it is given to be the size's
+    requires spec_class_for(size, 1) == Some(c), ..;
+```
+
+In words: when a class serves `size`, the result is a slot of exactly
+the class `spec_class_for(size, 1)` picks, the smallest that serves
+`size` (`class_index`), and of no other class (`class_slot` with
+`hint_ok`); otherwise it is a run, no slot, whose token's usable bytes
+are `size` rounded up to whole pages (`huge_usable`). So `malloc(0)` is
+a slot of class 0 (`spec_class_for(0, 1) == Some(0)`). `hint_ok` alone
+would not say so: it holds of any run, and a one-page run satisfies
+`huge_hint_ok` for size 0 (`huge_usable(0)` is one page).
+
+**Proof.** `lemma_class_named`: the slot token gives `is_slot(c, p)`
+(`Live::lemma_slot_len`), and `vspec::zero::lemma_slot_unique` rules
+out every other class there. `lemma_huge_named` (which requires that no
+class serves `size`, as `class_index` returning `None` states): `alloc_huge`'s
+`huge_block` makes `p` a page start of the huge region, which no slot
+is (`lemma_slot_not_huge`); its token's length is
+`shared.huge_usable(size)`, which unfolds to `huge_usable(size)`
+(`Huge::spec_usable`, with the huge allocator's page the process's),
+and `Shared::huge_ok` is the no-overflow conjunct.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- Only `malloc` and its cores. `calloc`, `aligned_alloc`,
+  `posix_memalign`, `mallocx` and `operator new` do not state that
+  their size (and alignment) names their block; `operator new`'s fast
+  pop gets the `malloc_fast` conjunct, but its `ensures` do not export
+  it.
+- The run half (`huge_hint_ok`) is stated of the token the cores
+  return, not across C. `malloc` drops that token, and a sized free
+  called from C gets its own from `axiom_c_claim`, whose `ensures` is
+  only `claims(p)`: nothing ties that token's `len()` to the one
+  `malloc_block` returned. So for `n` above `MEDIUM_MAX`, what reaches
+  a C caller's `free_sized(p, n)` is that `p` is no slot start
+  (`hint_ok(p, None)`); that `n` rounds up to the run's usable bytes
+  there rests on the C contract that the block freed is the one
+  allocated (section 44's sized-free premise).
+- The theorem is about the hint check only. That the sized free then
+  returns without aborting is section 44's, under its other premises.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures`, one new `requires` on an `#[inline(always)]` function,
+  and proof calls).
+
+**Mutations** (`cargo verus focus -- --verify-module api::libc`, on
+this tree and on main a8589194):
+
+| id | change | PR | main |
+|---|---|---|---|
+| H1 | `malloc_medium` passes `malloc_class` the next class up (`c + 1` when there is one): a block of a larger class than the size's | rejected (`malloc_class`'s new `requires`) | verifies |
+| H2 | `malloc_slow`'s huge path allocates a run for `size + 4096` (when that does not overflow): a run one page longer than `size` needs | rejected (`malloc_slow`'s new `huge_hint_ok` `ensures`, with `lemma_huge_named` called for the mutant's size, whose `requires` fails too) | verifies |
+| H3 | `malloc_slow` sends size 0 down the huge path (`if size == 0 { None } else { class_index(size) }`): `malloc(0)` with no heap yet gets a one-page run | rejected (`lemma_huge_named`'s `requires` that no class serves `size`, which carries `class_slot`) | verifies |
+
+All three are executable mutants main accepts: each returns a block
+that fits `size` and whose token covers it. H1 and H2 return a block a
+sized free of `size` would abort on (a size hint of the wrong class, or
+a run whose page count `size` does not round up to). H3's run passes
+the sized free's check, but is not the class-0 slot the code returns.
 
 ## Interface contract
 
