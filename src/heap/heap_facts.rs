@@ -87,6 +87,9 @@ pub(crate) enum Broken {
     /// `CachePerms::zero_ok`: entry `i` of the zero prefix does not read
     /// as zero for its class's size.
     NotZero { hdr: usize, i: usize },
+    /// `Heap::homed_ok`: the home arena is below `MAX_ARENAS` (so not
+    /// `FOREIGN`).
+    HomeRange { arena: u16 },
     /// `Heap::homed_ok`: `self.rehome ==> self.bound`.
     RehomeUnbound,
     /// `Heap::homed_ok`: a counted heap holds its home arena's ticket, so
@@ -349,13 +352,17 @@ pub(crate) unsafe fn no_sets(h: &Heap, p: *const Heap, s: &Shared) -> Result<(),
     unsafe { set_free(h, p, s, |_| Ok(())) }.and_then(|()| homed_ok(h, s))
 }
 
-/// `Heap::homed_ok` of `h`, created on `s`: `rehome ==> bound`, and a
-/// counted heap's ticket is counted in its home arena.
+/// `Heap::homed_ok` of `h`, created on `s`: the home arena is an arena
+/// index, `rehome ==> bound`, and a counted heap's ticket is counted in
+/// its home arena.
 pub(crate) fn homed_ok(h: &Heap, s: &Shared) -> Result<(), Broken> {
+    if (h.arena as usize) >= crate::arena::MAX_ARENAS {
+        return Err(Broken::HomeRange { arena: h.arena });
+    }
     if h.rehome && !h.bound {
         return Err(Broken::RehomeUnbound);
     }
-    if h.bound && ((h.arena as usize) >= crate::arena::MAX_ARENAS || s.arenas.bound(h.arena) == 0) {
+    if h.bound && s.arenas.bound(h.arena) == 0 {
         return Err(Broken::BoundUncounted { arena: h.arena });
     }
     Ok(())

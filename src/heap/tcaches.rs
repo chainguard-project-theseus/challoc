@@ -844,7 +844,8 @@ pub(super) unsafe fn heap_new<'a>(
 }
 
 impl Tcaches {
-    /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
+    /// `tcache.create`: a new explicit cache, home arena `arena` (an arena
+    /// index: below `MAX_ARENAS`, so never [`super::FOREIGN`]). `None`
     /// when the table or the metadata region is full. The caller's record
     /// `fx` gets [`Change::Created`] when a cache is created. The store
     /// that publishes the cache moves its entry to an odd generation
@@ -859,6 +860,7 @@ impl Tcaches {
         requires
             crate::sys::may_syscall(),
             shared.wf(),
+            (arena as int) < crate::arena::MAX_ARENAS,
             old(ord).allows(rank_tcaches()),
         ensures
             r is Some ==> final(fx)@ == Change::Created,

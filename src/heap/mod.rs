@@ -393,8 +393,10 @@ impl Heap {
     /// The heap's ticket ([`Homed`]): a heap counted in `Arenas::bound`
     /// (its `bound` field) holds the ticket for its home arena, a heap
     /// that is not counted holds none, and a heap that may still move its
-    /// home (`rehome`) is counted.
+    /// home (`rehome`) is counted. Counted or not, the home arena is
+    /// below `MAX_ARENAS`, so never [`FOREIGN`].
     pub closed spec fn homed_ok(&self) -> bool {
+        &&& (self.arena as int) < crate::arena::MAX_ARENAS
         &&& self.bound == self.homed@ is Some
         &&& self.homed@ matches Some(t) ==> homed_on(t, self.arena as int)
         &&& self.rehome ==> self.bound
@@ -546,7 +548,8 @@ impl Heap {
 
     /// [`Heap::lemma_fresh_wf`] for a heap that is not counted (an
     /// explicit cache, `tcaches::Tcaches::create`): it holds no ticket and
-    /// may not move its home. And its home headers and the rest of its
+    /// may not move its home; its home arena is below `MAX_ARENAS`, as
+    /// `Tcaches::create` requires. And its home headers and the rest of its
     /// block are at `h` ([`Heap::home_at`]): the headers creation wrote,
     /// and the permission to its plain fields and the block's claim,
     /// which `h`'s block keeps ([`heap_head`], [`heap_claim`]) and does
@@ -564,6 +567,7 @@ impl Heap {
             !self.bound,
             !self.rehome,
             self.homed@ is None,
+            (self.arena as int) < crate::arena::MAX_ARENAS,
             heap_head(h, self.head@.0),
             heap_claim(h, self.head@.1),
             h@.addr + vstd::layout::size_of::<Heap>() <= usize::MAX,
@@ -633,6 +637,21 @@ impl Heap {
     /// The home arena ([`Heap::arena`]).
     pub closed spec fn home(&self) -> u16 {
         self.arena
+    }
+
+    /// A well-formed heap's home arena is below `MAX_ARENAS`, so never
+    /// [`FOREIGN`] (`u16::MAX`), counted in its arena
+    /// ([`Heap::homed_ok`]'s ticket) or not (an explicit cache, or a
+    /// thread heap `Heap::destroy` has unbound). The bound is the
+    /// constant: that the arena was created is not stated.
+    pub proof fn lemma_home_index(&self)
+        requires
+            self.wf(),
+        ensures
+            (self.home() as int) < crate::arena::MAX_ARENAS,
+            self.home() != FOREIGN,
+    {
+        assert(crate::arena::MAX_ARENAS == 4096);
     }
 
     /// The length of the `others` list ([`Heap::list`]).
@@ -4724,9 +4743,19 @@ impl Heap {
         ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)))
     }
 
-    /// Home arena (design 6.2 `heap.arena`; `thread.arena`).
+    /// Home arena (design 6.2 `heap.arena`; `thread.arena`): of a
+    /// well-formed heap, below `MAX_ARENAS` ([`Heap::lemma_home_index`]).
     #[inline]
-    pub fn arena(&self) -> u16 {
+    pub fn arena(&self) -> (r: u16)
+        ensures
+            r == self.home(),
+            self.wf() ==> (r as int) < crate::arena::MAX_ARENAS && r != FOREIGN,
+    {
+        proof {
+            if self.wf() {
+                self.lemma_home_index();
+            }
+        }
         self.arena
     }
 
