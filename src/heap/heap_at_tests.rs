@@ -509,6 +509,11 @@ const SPECS: &[Spec] = &[
         sig: "pub closed spec fn homed_ok(&self) -> bool {",
         items: &[
             (
+                "&&& (self.arena as int) < crate::arena::MAX_ARENAS",
+                Checked,
+                "HomeRange",
+            ),
+            (
                 "&&& self.bound == self.homed@ is Some",
                 Implied,
                 "the ticket is ghost; with the next conjunct, a counted heap's \
@@ -652,6 +657,7 @@ fn variant_name(b: &Broken) -> &'static str {
         Broken::StacksOverlap { .. } => "StacksOverlap",
         Broken::SlotTwice { .. } => "SlotTwice",
         Broken::NotZero { .. } => "NotZero",
+        Broken::HomeRange { .. } => "HomeRange",
         Broken::RehomeUnbound => "RehomeUnbound",
         Broken::BoundUncounted { .. } => "BoundUncounted",
     }
@@ -685,6 +691,7 @@ const BROKEN: &[&str] = &[
     "StacksOverlap",
     "SlotTwice",
     "NotZero",
+    "HomeRange",
     "RehomeUnbound",
     "BoundUncounted",
 ];
@@ -939,6 +946,7 @@ fn checker_transcribes_heap_wf_conjunct_by_conjunct() {
         Broken::StacksOverlap { a: 0, b: 0 },
         Broken::SlotTwice { slot: 0 },
         Broken::NotZero { hdr: 0, i: 0 },
+        Broken::HomeRange { arena: 0 },
         Broken::RehomeUnbound,
         Broken::BoundUncounted { arena: 0 },
     ];
@@ -1826,4 +1834,21 @@ fn checker_fails_each_corrupted_fact() {
     // SAFETY: as above.
     unsafe { (*hu).bound = false };
     assert_tcache_ok(s, u, "bound");
+
+    // A home arena that is no arena index: the uncounted explicit cache
+    // homed on `FOREIGN`, then on the first index past the table.
+    for bad in [FOREIGN, crate::arena::MAX_ARENAS as u16] {
+        // SAFETY: as above.
+        unsafe { (*hu).arena = bad };
+        // SAFETY: as above.
+        let got = unsafe { check_both(&*hu, hu, s) };
+        assert_eq!(
+            got,
+            Err(Broken::HomeRange { arena: bad }),
+            "mutant `home range`"
+        );
+        // SAFETY: as above.
+        unsafe { (*hu).arena = a1 };
+    }
+    assert_tcache_ok(s, u, "home range");
 }

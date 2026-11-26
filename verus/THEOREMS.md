@@ -26,7 +26,7 @@ groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 | --- | --- |
 | Returned blocks and allocator metadata | 1, 2, 4, 5, 7, 24, 41; overflow reach, same-region overflow reach and commits that avoid guards |
 | Free paths and bad input | 3, 25, 43, 44; Bad input; claims past the check; exact sized frees and the double-free window (opt-in keys) |
-| Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy and registry |
+| Caches, slabs and huge runs | 5, 11, 14, 17, 20, 23, 26, 28, 29, 34, 36, 37; explicit-cache destroy and registry; home arena index |
 | Purge and decay | 18, 19, 30, 31, 38, 40 |
 | Locks, fork and threads | 9, 10, 13, 15, 16, 33, 39; thread exit |
 | The C boundary and system calls | 8, 21, 32, 42, 45, 46; secure-exec configuration; interface contract |
@@ -177,6 +177,10 @@ leave out (theorem 33). Remaining work is tracked in
   `stats::arena_stats_all_into`'s `ensures` (`merged_stored` over the
   stamp's counted arenas), `StoredSnapshot::coherent`
   (`auth_geom_ok`) and `stats::lemma_merge_counted`, `stats.rs`.
+- **Home arena index** ([A well-formed heap's home arena is below `MAX_ARENAS`, never `FOREIGN`](#a-well-formed-heaps-home-arena-is-below-max_arenas-never-foreign)):
+  `heap::Heap::lemma_home_index` and `Heap::arena`'s `ensures`, over
+  `Heap::homed_ok`, `heap/mod.rs`, with `Tcaches::create`'s `requires`,
+  `heap/tcaches.rs`.
 
 ## Configuration
 
@@ -6041,17 +6045,20 @@ bitmap side: every release goes back to the slot's own arena).
   caches", Verus does not relate two references to the same heap, and
   an explicit cache's heap is assumed `wf` afresh at each
   `Tcaches::get`.
-- The home arena of a heap is not constrained, so `poppable` admits the
-  home header whatever the home arena is. It is never `FOREIGN` in
-  practice, but by run-time checks and inspection, not by Verus: a
-  thread heap's comes from `assign_home` (below `MAX_ARENAS`, which
-  `Heap::homed_ok` states for every counted heap);
-  `set_arena` requires the new one below `MAX_ARENAS`, which its only
-  caller, `mallctl`'s `thread.arena`, checks at run time;
-  `try_rehome` moves it only to an automatic arena (`to < auto`, checked
-  at run time, so below `MAX_ARENAS`, and `homed_ok` holds after); and
-  `Tcaches::create` takes
-  any `arena` (its callers pass the thread's home arena or 0).
+- `poppable` still admits the home header whatever the home arena is
+  (its `a == self.home()` disjunct). Verus now states that a
+  well-formed heap's home arena is below `MAX_ARENAS`, so never
+  `FOREIGN`, for every heap, counted or not: `Heap::homed_ok`, with
+  `Heap::lemma_home_index` and `Heap::arena`'s `ensures`
+  ([home arena index](#a-well-formed-heaps-home-arena-is-below-max_arenas-never-foreign)).
+  A thread heap's comes from `assign_home`'s ticket; `set_arena`
+  requires the new one below `MAX_ARENAS` (its only caller, `mallctl`'s
+  `thread.arena`, checks that at run time); `try_rehome` moves it only
+  to an arena whose ticket it has just bound; and `Tcaches::create`
+  requires its `arena` below `MAX_ARENAS` (its one caller passes the
+  thread's home arena or 0). So for a well-formed heap the disjunct
+  adds nothing; `poppable` is left as it is. That the home arena was
+  created is not stated.
 - Routing names the header a pop takes from, not the arena a refill
   inside the pop draws from: `pop_compact` and `pop_compact_run` refill
   an emptied cache through `shared.arena(self.hdr_ref(cache).arena)`,
@@ -6405,9 +6412,11 @@ callees'.
 - "Strands nothing" is the released log of theorem 10, with its gaps:
   that each token leaving `release_routed`'s bag reaches a bitmap word
   rests on the verified bodies, not on an `ensures`.
-- That a home arena is never `FOREIGN` is not stated; `gc_all` covers
-  both cases for the home array, and gives each node's headers by the
-  node's key (`Heap::keys`).
+- `gc_all` still covers both cases for the home array and gives each
+  node's headers by the node's key (`Heap::keys`); that a well-formed
+  heap's home arena is never `FOREIGN` is now stated on its own
+  ([home arena index](#a-well-formed-heaps-home-arena-is-below-max_arenas-never-foreign)),
+  and `gc_all`'s proof does not use it.
 - `gc` and `gc_arena` state lengths and subsets, not the released log:
   each `flush` they call appends what it released (theorem 10's per
   flush `log_adds`), but their `ensures` do not compose those entries.
@@ -13269,6 +13278,114 @@ on this tree and on main):
 
 G2 survives on main: there a zero record with geometry is not ruled
 out, since nothing states that adding one leaves the merge unchanged.
+
+## A well-formed heap's home arena is below `MAX_ARENAS`, never `FOREIGN`
+
+A heap's home arena (`Heap::arena`, design 6.2 `heap.arena`) keys its
+home caches; `FOREIGN` (`u16::MAX`) is the key of the flush-only cache
+that frees of other arenas' slots go onto, and every arena index is
+below `MAX_ARENAS` (4096). `Heap::wf` bounded the home arena only
+while the heap was counted in it: a held ticket is `homed_on` its
+arena,
+
+```rust
+// arena.rs
+pub(crate) open spec fn homed_on(t: Homed, i: int) -> bool {
+    &&& t.arena == i
+    &&& 0 <= i < MAX_ARENAS
+    &&& t.tok.id() == bound_loc(i)
+}
+```
+
+which gives the bound and the ghost location of `Arenas::bound[i]`'s
+ticket set, not that arena `i` was created. An explicit cache (never
+counted) and a thread heap `Heap::destroy` has unbound carried no
+bound, and `Heap::arena` had no `ensures`. Section 28 listed the gap.
+Now every well-formed heap's home arena is below `MAX_ARENAS`, counted
+or not. The bound is the constant, not the number of arenas created so
+far.
+
+**Statement.**
+
+```rust
+// heap/mod.rs
+pub closed spec fn homed_ok(&self) -> bool {
+    &&& (self.arena as int) < crate::arena::MAX_ARENAS
+    &&& self.bound == self.homed@ is Some
+    &&& self.homed@ matches Some(t) ==> homed_on(t, self.arena as int)
+    &&& self.rehome ==> self.bound
+}
+
+pub proof fn lemma_home_index(&self)
+    requires self.wf(),
+    ensures (self.home() as int) < crate::arena::MAX_ARENAS, self.home() != FOREIGN;
+
+pub fn arena(&self) -> (r: u16)
+    ensures
+        r == self.home(),
+        self.wf() ==> (r as int) < crate::arena::MAX_ARENAS && r != FOREIGN;
+
+// heap/tcaches.rs
+pub fn create(&self, shared: &Shared, arena: u16, ..) -> (r: Option<u16>)
+    requires .., (arena as int) < crate::arena::MAX_ARENAS;
+```
+
+`Heap::wf` includes `homed_ok`, and `Heap::keeps` (every cache path's
+frame) keeps both the arena and `homed_ok`, so every heap a verified
+path hands on keeps the bound. Where the home arena changes, it was
+already required or derived: `Heap::set_arena` requires its arena
+below `MAX_ARENAS`, and `Heap::try_rehome` moves only to an arena
+whose ticket it has just bound (`Arenas::try_bind_idle`). A new heap gets it from its constructor: a thread heap
+(`Heap::create`) from `assign_home`'s ticket (`lemma_fresh_wf`), an
+explicit cache from `Tcaches::create`'s new `requires`
+(`lemma_fresh_detached_wf` takes it). The one caller of
+`Tcaches::create`, `tcache.create` in `api::mallctl`, passes the
+calling thread's existing heap's `Heap::arena`, which a well-formed
+heap's `ensures` now bounds, or 0.
+
+In words: no heap's home caches are keyed `FOREIGN`, and the home
+arena of every heap a verified path holds is below `MAX_ARENAS`, the
+length of the per-arena tables (`Arenas::table`, `Arenas::bound`).
+That the arena at that index was created is not stated (below).
+
+**Premises (seams).** None added. The heap's fields after creation
+rest on `HeapPerm::assemble`'s existing premise (the arena `init_fields`
+stored), as before.
+
+**Scope and where the statement is weaker than the code.**
+- It is a `Heap::wf` fact: it holds of every heap the verified paths
+  hold well formed, not of the bytes of a heap a test or the checker
+  corrupts. The debug TLS check and the heap checker test it
+  (`heap_facts::homed_ok`, `Broken::HomeRange`), and
+  `checker_fails_each_corrupted_fact` breaks it twice (`FOREIGN`, and
+  `MAX_ARENAS`).
+- `Heap::arena_volatile` (the `free` check's load of the same field)
+  still has no `ensures`: it is trusted, its read discharged by Kani
+  (`heap::kani_volatile::arena_volatile_reads_arena`), and
+  `Shared::home_owns` only compares the value.
+- That the home arena exists (was created) is not stated, counted or
+  not: the bound is the constant `MAX_ARENAS`, and the ticket
+  (`homed_on`, above) names only the index and its bound count's ghost
+  location. `tcache.create` passes an existing heap's arena or arena 0,
+  which `Arenas::init` creates.
+- Machine code: ghost in the release library (new `requires`,
+  `ensures`, a lemma and a proof block in `Heap::arena`). The checker
+  (`heap_facts`, built for tests and `challoc_tls_check` only) tests
+  the bound for every heap before the counted-arena test, which it
+  used to guard.
+
+**Mutations** (`cargo verus focus --locked -- --verify-module M`, on
+this tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| H1 | `homed_ok` drops the arena bound (`heap`) | rejected (`lemma_home_index`'s `ensures`) | n/a (no such term) |
+| H2 | `Tcaches::create` drops its new `requires` (`heap::tcaches`) | rejected (`lemma_fresh_detached_wf`'s precondition) | n/a (no such term) |
+| H3 | `tcache.create` with no heap passes `FOREIGN`, not 0 (`api::mallctl`) | rejected (`Tcaches::create`'s precondition) | verifies |
+| H4 | `Tcaches::create` creates the heap on `FOREIGN`, not `arena` (`heap::tcaches`) | rejected (`lemma_fresh_detached_wf`'s precondition) | verifies |
+
+H3 and H4 survive on main: there an explicit cache homed on `FOREIGN`
+was well formed.
 
 ## Interface contract
 
