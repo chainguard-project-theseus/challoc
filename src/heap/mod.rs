@@ -2912,7 +2912,6 @@ impl Heap {
             heap.bound = false;
             heap.rehome = false;
         }
-        let ghost arena_ok = (heap.arena as int) < crate::arena::MAX_ARENAS;
         heap.flush_all(shared, Tracked(&mut *ord));
         let ghost hf = *heap;
         // SAFETY: the home array (null).
@@ -2953,8 +2952,6 @@ impl Heap {
                 *ord == *old(ord),
                 heap.wf(),
                 heap.home_at(h),
-                bound ==> arena_ok,
-                arena_ok == ((heap.arena as int) < crate::arena::MAX_ARENAS),
                 r == heap.list_len(),
                 o == heap.others,
                 r == 0 ==> o@.addr == 0,
