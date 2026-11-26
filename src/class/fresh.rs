@@ -8,6 +8,7 @@ use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
 use crate::lock::rank_table;
 use crate::meta::Meta;
+use crate::purge::{LazyEver, LazyMark};
 use vstd::prelude::*;
 
 #[cfg(verus_keep_ghost)]
@@ -101,12 +102,31 @@ impl ClassState {
     /// discard left the parent no page to share, so a refill's writes copy
     /// none. With a floor, `None` may leave idle slabs below it.
     ///
+    /// The read goes through `mark`, the caller's record of the hold's
+    /// reads of `lz` ([`crate::purge::lazy`], the same reference for every
+    /// call of the hold; [`crate::purge::purged_is_zero_seen`]): once one
+    /// returned false, every later one does, so the floor the `Purged` set
+    /// is taken from ([`super::purged_floor`]) only rises within a hold.
+    ///
     /// [`purge::purged_is_zero`]: crate::purge::purged_is_zero
+    // The ghost arguments are part of the signature.
+    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
-    pub(super) fn next_slab(&self, g: &mut Inner, floor: usize, meta: &Meta, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
+    pub(super) fn next_slab(
+        &self,
+        g: &mut Inner,
+        floor: usize,
+        meta: &Meta,
+        lz: &LazyEver,
+        Tracked(mark): Tracked<&mut LazyMark>,
+        pubw: Tracked<&'static Published>,
+        Tracked(ord): Tracked<&mut LockOrder>,
+    ) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),
             crate::sys::may_syscall(),
+            lz.wf(),
+            old(mark).of(lz),
             old(g).inv(),
             old(g).nbits() == self.spec_nslabs(),
             old(g).arena@ == self.arena,
@@ -117,6 +137,17 @@ impl ClassState {
             meta.is_process(),
         ensures
             *final(ord) == *old(ord),
+            // A false read of `purge::purged_is_zero` stays false: the
+            // floor the `Purged` set is taken from only rises.
+            final(mark).of(lz),
+            old(mark).lazy() ==> final(mark).lazy(),
+            // The `Purged` pick is the lowest from that floor, and a fresh
+            // slab (or none) comes only with none left from it.
+            r matches Some(s) ==> (old(g).purged.map@.contains(s as nat)
+                ==> lowest_from(old(g).purged.map@, super::purged_floor(floor as int, final(mark).lazy()), s as nat)),
+            r matches Some(s) ==> (!lowest_from(old(g).empty.map@, floor as int, s as nat) && !old(g).purged.map@.contains(s as nat)
+                ==> none_from(old(g).purged.map@, super::purged_floor(floor as int, final(mark).lazy()))),
+            r is None ==> none_from(old(g).purged.map@, super::purged_floor(floor as int, final(mark).lazy())),
             final(g).nbits() == old(g).nbits(),
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
@@ -195,11 +226,21 @@ impl ClassState {
         proof {
             assert(none_from(e0, floor as int));
         }
-        let purged = if floor == 0 || crate::purge::purged_is_zero() {
+        let ghost lazy0 = mark.lazy();
+        let purged = if floor == 0 || crate::purge::purged_is_zero_seen(lz, Tracked(mark)) {
             g.purged.map.lowest_set()
         } else {
             g.purged.map.lowest_set_from(floor)
         };
+        // The floor the `Purged` set was taken from.
+        let ghost pf = super::purged_floor(floor as int, mark.lazy());
+        proof {
+            assert(lazy0 ==> mark.lazy());
+            match purged {
+                Some(s) => assert(lowest_from(p0, pf, s as nat)),
+                None => assert(none_from(p0, pf)),
+            }
+        }
         if let Some(s) = purged {
             let ghost g0 = *g;
             proof {
@@ -263,6 +304,7 @@ impl ClassState {
     ///
     /// [`next_slab`]: ClassState::next_slab
     #[inline(never)]
+    #[verifier::spinoff_prover]
     pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta, pubw: Tracked<&'static Published>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: Option<usize>)
         requires
             crate::sys::may_abort(),

@@ -212,7 +212,7 @@ Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_ra
 Hashes: contract 1867649379, body 574998675.
 
 Specs: `may_abort` (src/sys/mod.rs) 4099677103, `may_syscall` (src/sys/mod.rs) 532674254, `Shared::built_at` (src/heap/shared.rs) 1173621732, `Shared::storage` (src/heap/shared.rs) 1939697436, `marks_ready` (src/api/mod.rs) 1085104621.
-Specs unresolved (spec fns of the name): `wf` (33).
+Specs unresolved (spec fns of the name): `wf` (34).
 
 ```rust
 fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
@@ -332,7 +332,7 @@ Tool: none (assumption). Status: trusted.
 Hashes: contract 1667645340, body none.
 
 Specs: `rank_state` (src/lock.rs) 731152513.
-Specs unresolved (spec fns of the name): `rank` (3), `wf` (33), `lock` (2).
+Specs unresolved (spec fns of the name): `rank` (3), `wf` (34), `lock` (2).
 
 ```rust
 axiom fn axiom_fork_resumed_state(l: &Lock<State>) -> (tracked state: StateHold)
@@ -396,7 +396,7 @@ Tool: none (assumption). Status: trusted.
 Hashes: contract 2664700982, body none.
 
 Specs: `Shared::built_at` (src/heap/shared.rs) 1173621732, `Shared::storage` (src/heap/shared.rs) 1939697436, `fork_holds` (src/api/mod.rs) 2586269018, `ForkHeld::slot_id` (src/api/mod.rs) 1449470842, `fork_slot_id` (src/vspec/word.rs) 1995057694, `ForkHeld::saved` (src/api/mod.rs) 3231177434, `effective` (src/sys/mod.rs) 2499601117, `LockOrder::root` (src/lock.rs) 227210606, `LockOrder::ranks` (src/lock.rs) 599442901, `ForkHeld::held_ranks` (src/api/mod.rs) 3489978882, `rank_state` (src/lock.rs) 731152513.
-Specs unresolved (spec fns of the name): `wf` (33), `has_slot` (2).
+Specs unresolved (spec fns of the name): `wf` (34), `has_slot` (2).
 
 ```rust
 axiom fn axiom_fork_resumed(s: &Shared, slot: &AtomicU64, tracked state: &StateHold) -> (tracked r: (ForkHeld, LockOrder<'static>))

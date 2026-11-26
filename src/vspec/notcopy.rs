@@ -52,8 +52,8 @@ use crate::huge::RunToken;
 use crate::layout::Reserved;
 use crate::lock::{LockHeld, LockOrder};
 use crate::meta::{Carve, MetaClaim};
-use crate::purge::PurgedZero;
 use crate::purge::background::StateHold;
+use crate::purge::{LazyMark, PurgedZero};
 use crate::slab::{DescAtoms, DescPerm, PagesAtoms, StateTicket};
 use crate::sys::SigMask;
 use crate::sys::cgroup::{CellClaim, CellSeen};
@@ -215,6 +215,9 @@ const _: () = assert!(<Carve as NotCopy<_>>::HOLDS && <Carve as NotClone<_>>::HO
 
 // `PurgedZero` is neither Copy nor Clone: the record of one read.
 const _: () = assert!(<PurgedZero as NotCopy<_>>::HOLDS && <PurgedZero as NotClone<_>>::HOLDS);
+
+// `LazyMark` is neither Copy nor Clone: what a thread has seen of `LAZY_EVER`.
+const _: () = assert!(<LazyMark as NotCopy<_>>::HOLDS && <LazyMark as NotClone<_>>::HOLDS);
 
 // `StateHold` is neither Copy nor Clone: the fork handlers' hold.
 const _: () = assert!(<StateHold as NotCopy<_>>::HOLDS && <StateHold as NotClone<_>>::HOLDS);

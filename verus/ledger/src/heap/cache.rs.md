@@ -19,7 +19,7 @@ Tool: Kani. Status: trusted (partly checked, Kani: heap::cache::kani_cache::home
 Hashes: contract 3631836631, body 1935667034.
 
 Specs: `Heap::home_ptr` (src/heap/mod.rs) 938969561.
-Specs unresolved (spec fns of the name): `wf` (33).
+Specs unresolved (spec fns of the name): `wf` (34).
 
 ```rust
 fn home_ptr_at(&mut self, class: usize) -> (r: *mut CacheHeader)
