@@ -3644,10 +3644,18 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
         slot == 0 && r is None ==> final(cell).value() == 0,
         *final(ord) == *old(ord),
 
-pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsCell>) -> (r: bool)  // ThreadKey
-    requires reentry_benign(old(tls).value()),
+pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsCell>,
+    Tracked(ord): Tracked<&LockOrder>) -> (r: bool)  // ThreadKey
+    requires reentry_benign(old(tls).value()), ord.top() == 0,
     ensures *final(tls) == *old(tls),
 ```
+
+`ThreadKey::set` also requires that its caller holds no allocator
+lock (`ord.top() == 0`, since chainguard-project-theseus/challoc#1004),
+as `jemalloc::call_hook` does for a hook that may allocate. So a nested
+entry from `pthread_setspecific` cannot deadlock on a lock the outer
+call holds. `create_heap_for_thread` passes its own token: it requires
+top 0, and `Heap::create` leaves the token unchanged.
 
 (Line breaks added.) While `create_heap_for_thread` is inside
 `ThreadKey::set`, the slot holds `TLS_CREATING`: the call's `requires`
@@ -3772,8 +3780,9 @@ it).
 **Where the statement is weaker than the code.**
 - It covers only the slot and heap creation. A nested call's other
   effects (class locks, the heapless slow paths it takes) are outside
-  it; that `create_heap_for_thread` holds no allocator lock across
-  `ThreadKey::set` is not stated here.
+  it. That the outer call holds no allocator lock across
+  `ThreadKey::set` is stated (`ord.top() == 0`, above). What the
+  nested call then does with the locks is not.
 - After a successful creation the theorem does not state that the slot
   holds a value above the sentinels (it does: the heap address, or the
   address signed under PAC, which keeps its low 48 bits).

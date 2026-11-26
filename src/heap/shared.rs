@@ -1242,11 +1242,14 @@ impl ThreadKey {
     /// the second-level block; `true` without registering when the key
     /// does not exist. `pthread_setspecific` may re-enter the allocator
     /// on this thread, so the slot (`tls`) must hold a sentinel
-    /// ([`reentry_benign`]); the call leaves it as it was.
-    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsCell>) -> (r: bool)
+    /// ([`reentry_benign`]); the call leaves it as it was. The caller
+    /// holds no allocator lock (`ord` has top 0), so such a nested entry
+    /// cannot deadlock on one, as for `jemalloc::call_hook`.
+    pub fn set(&self, heap: *mut Heap, Tracked(tls): Tracked<&mut TlsCell>, Tracked(ord): Tracked<&LockOrder>) -> (r: bool)
         requires
             crate::sys::may_syscall(),
             reentry_benign(old(tls).value()),
+            ord.top() == 0,
         ensures
             *final(tls) == *old(tls),
     {

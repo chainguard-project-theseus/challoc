@@ -479,7 +479,7 @@ fn create_heap_for_thread<'a>(shared: &'a Shared, slot: usize, Tracked(cell): Tr
         return None;
     }
     crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void, Tracked(&mut *cell));
-    if !shared.key.set(h, Tracked(&mut *cell)) {
+    if !shared.key.set(h, Tracked(&mut *cell), Tracked(&*ord)) {
         // Thread exit could not free the heap, so it goes now and this
         // call is served without one; the next call tries again, as
         // after a failed `Heap::create`.
