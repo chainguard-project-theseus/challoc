@@ -735,9 +735,10 @@ impl Heap {
         self.alloc_slow_in(shared, self.arena, class, Tracked(blk), Tracked(errno), Tracked(cell), Tracked(ord))
     }
 
-    /// The slow allocation path for any arena: the home arena or an arena
-    /// that is not [`FOREIGN`] (cache routing; the cache it pops is the one
-    /// [`Heap::ensure_cache`] routes `arena` to).
+    /// The slow allocation path for any arena that is not [`FOREIGN`]
+    /// (the home arena never is, [`Heap::lemma_home_index`]; cache
+    /// routing: the cache it pops is the one [`Heap::ensure_cache`]
+    /// routes `arena` to).
     // The ghost tokens are part of the signature.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn alloc_slow_in(
@@ -756,7 +757,7 @@ impl Heap {
             class < NCLASSES,
             shared.wf(),
             old(self).wf(),
-            arena != FOREIGN || arena == old(self).home(),
+            arena != FOREIGN,
             old(ord).top() == 0,
         ensures
             final(cell).kept(*old(cell)),

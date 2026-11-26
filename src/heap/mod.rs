@@ -692,30 +692,36 @@ impl Heap {
         }
     }
 
-    /// A header a pop may take from: the header for `class` of the home
-    /// arena or of a node whose key is an arena, never [`FOREIGN`]. A pop
-    /// that requires it never takes from the [`FOREIGN`] node.
+    /// A header a pop may take from: the header for `class` of an arena,
+    /// never [`FOREIGN`] (the home arena's, which a well-formed heap's
+    /// never is, [`Heap::lemma_home_index`], or a node's whose key is an
+    /// arena). A pop that requires it never takes from the [`FOREIGN`]
+    /// node.
     pub open spec fn poppable(&self, class: int, cache: *mut CacheHeader) -> bool {
-        exists|a: u16| (a != FOREIGN || a == self.home()) && #[trigger] self.routes(a, class, cache)
+        exists|a: u16| a != FOREIGN && #[trigger] self.routes(a, class, cache)
     }
 
-    /// A header routed for an arena that is not [`FOREIGN`], or for the
-    /// home arena, may be popped.
+    /// A header routed for an arena that is not [`FOREIGN`] may be
+    /// popped.
     pub proof fn lemma_poppable(&self, arena: u16, class: int, cache: *mut CacheHeader)
         requires
             self.routes(arena, class, cache),
-            arena != FOREIGN || arena == self.home(),
+            arena != FOREIGN,
         ensures
             self.poppable(class, cache),
     {
     }
 
-    /// The home header for `class` routes the home arena.
+    /// The home header for `class` routes the home arena, which is not
+    /// [`FOREIGN`].
     pub proof fn lemma_routes_home(&self, class: int)
+        requires
+            self.wf(),
         ensures
             self.routes(self.home(), class, self.home_ptr(class)),
             self.poppable(class, self.home_ptr(class)),
     {
+        self.lemma_home_index();
         self.lemma_poppable(self.home(), class, self.home_ptr(class));
     }
 
@@ -765,7 +771,7 @@ impl Heap {
         ensures
             b.poppable(class, cache),
     {
-        let x = choose|x: u16| (x != FOREIGN || x == a.home()) && #[trigger] a.routes(x, class, cache);
+        let x = choose|x: u16| x != FOREIGN && #[trigger] a.routes(x, class, cache);
         b.lemma_poppable(x, class, cache);
     }
 
@@ -778,7 +784,7 @@ impl Heap {
         ensures
             b.poppable(class, cache),
     {
-        let x = choose|x: u16| (x != FOREIGN || x == a.home()) && #[trigger] a.routes(x, class, cache);
+        let x = choose|x: u16| x != FOREIGN && #[trigger] a.routes(x, class, cache);
         Heap::lemma_keeps_routes(a, b, x, class, cache);
         b.lemma_poppable(x, class, cache);
     }
@@ -822,7 +828,7 @@ impl Heap {
             }
         }
         if self.poppable(class, cache) {
-            let x = choose|x: u16| (x != FOREIGN || x == self.home()) && #[trigger] self.routes(x, class, cache);
+            let x = choose|x: u16| x != FOREIGN && #[trigger] self.routes(x, class, cache);
             assert forall|r: int, k: int|
                 1 <= r <= self.list_len() && self.node_key(r) == FOREIGN && 0 <= k < NCLASSES
                     implies cache != node_hdr(self.node_from_end(r), k) by {
