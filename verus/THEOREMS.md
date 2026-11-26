@@ -173,6 +173,10 @@ leave out (theorem 33). Remaining work is tracked in
   `stats::epoch`'s, `stats::snapshot`'s and
   `stats::arena_stats_all_into`'s `ensures` (`stamp_ok`'s
   `rec_numbered`, `stamp_not_older`) and `recorded`, `stats.rs`.
+- **Merge of the counted arenas** ([The `MALLCTL_ARENAS_ALL` merge is the merge of the stored record's counted arenas](#the-mallctl_arenas_all-merge-is-the-merge-of-the-stored-records-counted-arenas-arena_stats_all_into)):
+  `stats::arena_stats_all_into`'s `ensures` (`merged_stored` over the
+  stamp's counted arenas), `StoredSnapshot::coherent`
+  (`auth_geom_ok`) and `stats::lemma_merge_counted`, `stats.rs`.
 
 ## Configuration
 
@@ -12902,8 +12906,9 @@ premises of the two sections above.
   ([reader stamps](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into)).
 - "All zero" is `ArenaStats::empty_spec` of the index in the
   authority. That the merge's `add` of such a record leaves `out`'s
-  figures unchanged is not stated (the bin geometry is taken from it
-  where `out` has none).
+  figures unchanged is not stated here (the bin geometry is taken from
+  it where `out` has none); a later section states it
+  ([merge of the counted arenas](#the-mallctl_arenas_all-merge-is-the-merge-of-the-stored-records-counted-arenas-arena_stats_all_into)).
 - An arena the scan did not find and no epoch counted is not proved
   absent from the registry: it may be published after the scan passed
   its index, which is fine, since it stores zeros.
@@ -13030,8 +13035,10 @@ name one record.
   record it ranges over is fixed by the stamp, and `found` must
   include every counted arena, with every other one found adding all
   zeros. So the merge is fixed up to zero records. That adding a zero
-  record leaves the figures unchanged is not stated (the bin geometry
-  is taken from it where `out` has none).
+  record leaves the figures unchanged is not stated in this section
+  (the bin geometry is taken from it where `out` has none); a later
+  section states it and drops `found`
+  ([merge of the counted arenas](#the-mallctl_arenas_all-merge-is-the-merge-of-the-stored-records-counted-arenas-arena_stats_all_into)).
 - `Arena::stats_into` (`stats.arenas.<i>.*` for one arena) does not
   take the process statistics lock and returns no stamp.
 - The mallctl callers drop the stamps. `stats::spare_stamp` mints a
@@ -13158,6 +13165,110 @@ on this tree and on main):
 
 E2 and E3 survive on main: there nothing states the epoch number's
 value.
+
+## The `MALLCTL_ARENAS_ALL` merge is the merge of the stored record's counted arenas (`arena_stats_all_into`)
+
+The [reader stamps](#the-statistics-readers-return-a-stamp-of-the-stored-record-they-read-snapshot-and-arena_stats_all_into)
+section states `arena_stats_all_into`'s result as a merge over some
+arenas `found` that include every counted one, each other one adding
+an all-zero record. That such a record leaves the merge unchanged was
+not stated: `BinStats::plus` takes the bin geometry (`size`, `nregs`,
+`slab_size`) from the added bin where the partial merge's bin has no
+size, so a zero record with geometry could change it. This section
+closes that: stored records' size-0 bins have no geometry, adding an
+all-zero record is the identity on such a record, and the result is
+the merge of exactly the counted arenas. `found` is gone from the
+`ensures`.
+
+**Statement.**
+
+```rust
+// stats.rs
+pub open spec fn bins_geom_ok(a: ArenaStats) -> bool {
+    forall|c| 0 <= c < NCLASSES && a.bins[c].size == 0
+        ==> a.bins[c].nregs == 0 && a.bins[c].slab_size == 0
+}
+
+pub open spec fn auth_geom_ok(m: Map<int, ArenaStats>) -> bool {
+    forall|k| 0 <= k < MAX_ARENAS && m.contains_key(k) ==> bins_geom_ok(m[k])
+}
+
+// StoredSnapshot::coherent (the process statistics lock's invariant) gains
+//     auth_geom_ok(self.auth@@)
+
+pub proof fn lemma_plus_empty(s: ArenaStats, i: u16, r: ArenaStats)
+    requires bins_geom_ok(s), s.is_plus(ArenaStats::empty_spec(i), r),
+    ensures r == s;
+
+pub proof fn lemma_merge_counted(m, found: Seq<int>, steps, r, counted: Seq<int>)
+    requires
+        merged_stored(m, found, steps, r),
+        auth_geom_ok(m),
+        indices_ok(m, counted),
+        every counted[j] is in found,
+        every found[j] not in counted has m[found[j]] == ArenaStats::empty_spec(found[j]),
+    ensures exists|s2| merged_stored(m, counted, s2, r);
+
+pub fn arena_stats_all_into(shared: &Shared, out: &mut ArenaStats, Tracked(st): Tracked<&mut Stamp>, ..)
+    ensures
+        final(out).index == ARENAS_ALL as u16,
+        stamp_ok(shared, *final(st)),
+        stamp_not_older(shared, *old(st), *final(st)),
+        exists|steps| merged_stored(final(st).value().1, final(st).value().2, steps, *final(out)),
+```
+
+`collect_into` keeps `bins_geom_ok` for every figure it reads: each
+bin a collection fills has its class's size, which is never 0
+(`vspec::class::lemma_class_table_wf`), so the implication holds
+vacuously. Records it does not store keep the value they had, and the
+initial records are `ArenaStats::empty_spec`, whose bins are
+`BinStats::EMPTY`. `lemma_steps_geom` carries `bins_geom_ok` along
+every partial merge (`lemma_plus_geom`), from `steps[0]`
+(`empty_spec`) on. `lemma_merge_counted` drops the found-but-uncounted
+arenas from the end of `found` one at a time: an uncounted last arena
+adds a zero record, which `lemma_plus_empty` removes; a counted last
+arena is the last counted one, since both sequences ascend.
+
+In words: the figures `stats.arenas.4096.*` reports are the stored
+record's figures of exactly the arenas that record's epoch counted,
+added in index order, with each sum wrapping as `ArenaStats::add`
+does. `steps` is fixed by the record: `steps[0]` is the all-zero
+record and each step adds the next counted arena's figures.
+
+**Premises (seams).** None added; the premises of the sections above.
+
+**Scope and where the statement is weaker than the code.**
+- `merged_rec` (the `found` form) is still asserted in
+  `arena_stats_all_into`'s body, where `lemma_merge_counted` turns it
+  into the `ensures`; `found` is no longer exported.
+- `bins_geom_ok` constrains only bins with size 0. Collected bins all
+  have their class's size, and nothing here says the merge's geometry
+  is the class table's.
+- `Arena::stats_into` (`stats.arenas.<i>.*` for one arena) still
+  returns no stamp.
+- Machine code: ghost only (the new `coherent` term, lemmas and loop
+  invariant). The codegen verdict reports the release `.text` (both
+  quanta) against main.
+- Not part of the statement: `class::ClassState::take`'s step that
+  bit `slab * sb` is slot 0 of slab `slab` moved into its own lemma
+  (`class::lemma_slab_first_addr`). With this change's `stats` edits
+  alone the inline assert failed in the quantum-16 build (it verifies
+  on main and in the quantum-8 build). This change touches no code
+  `take` reaches, so the failure is solver variance; in its own query
+  the step does not depend on `take`'s context.
+
+**Mutations** (`cargo verus focus --locked -- --verify-module stats`,
+on this tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| G1 | `coherent` drops `auth_geom_ok` | rejected (`lemma_merge_counted`'s `auth_geom_ok` precondition in `arena_stats_all_into`) | n/a (no such term) |
+| G2 | `BinStats::EMPTY` has `nregs: 1` | rejected (`lemma_steps_geom` at `steps[0]`, `lemma_plus_geom`) | verifies |
+| G3 | `bins_geom_ok` drops `nregs == 0` | rejected (`lemma_plus_empty`, `lemma_steps_geom`) | n/a (no such spec) |
+| G4 | `arena_stats_all_into` clears `out` after its checks, before the unlock | rejected (the `merged_stored` `ensures` over the counted arenas) | rejected (the `merged_rec` `ensures`) |
+
+G2 survives on main: there a zero record with geometry is not ruled
+out, since nothing states that adding one leaves the merge unchanged.
 
 ## Interface contract
 
