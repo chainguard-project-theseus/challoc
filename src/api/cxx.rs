@@ -282,6 +282,9 @@ fn oom(
         align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
         align != 0 ==> crate::heap::fits(r, size as int, align as int),
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, if align == 0 { 1 } else { align })),
+        r@.addr != 0 ==> libc::class_slot_at(r, size, if align == 0 { 1 } else { align }),
+        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
         !nothrow ==> r@.addr != 0,
 {
     loop
@@ -333,6 +336,9 @@ fn new_slow(
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, 1)),
+        r@.addr != 0 ==> libc::class_slot(r, size),
+        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
         !nothrow ==> r@.addr != 0,
         *final(ord) == *old(ord),
 {
@@ -357,6 +363,8 @@ pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord):
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         // The C++ contract: a throwing `operator new` never returns null.
         r@.addr != 0,
+        crate::heap::hint_ok(r, libc::spec_class_for(size, 1)),
+        libc::class_slot(r, size),
         *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
@@ -372,6 +380,8 @@ pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Track
         old(ord).top() == 0,
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, 1)),
+        r@.addr != 0 ==> libc::class_slot(r, size),
         *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
@@ -395,6 +405,9 @@ pub fn new_block(
     ensures
         crate::heap::fits(r, size as int, crate::QUANTUM as int),
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, 1)),
+        r@.addr != 0 ==> libc::class_slot(r, size),
+        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
         !nothrow ==> r@.addr != 0,
         *final(ord) == *old(ord),
 {
@@ -424,6 +437,8 @@ pub fn new_aligned(
         is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         !is_pow2(align) ==> r@.addr == 0,
         !nothrow ==> r@.addr != 0,
+        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, align)),
+        r@.addr != 0 ==> libc::class_slot_at(r, size, align),
         *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
@@ -447,6 +462,9 @@ pub fn new_aligned_block(
         is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
         !is_pow2(align) ==> r@.addr == 0,
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, align)),
+        r@.addr != 0 ==> libc::class_slot_at(r, size, align),
+        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
         !nothrow ==> r@.addr != 0,
         *final(ord) == *old(ord),
 {
@@ -717,6 +735,8 @@ mod exports {
     pub extern "C" fn new(size: usize) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, 1)),
+            r@.addr != 0 ==> super::libc::class_slot(r as *mut u8, size),
             r@.addr != 0,
     {
         proof {
@@ -734,6 +754,8 @@ mod exports {
     pub extern "C" fn new_array(size: usize) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, 1)),
+            r@.addr != 0 ==> super::libc::class_slot(r as *mut u8, size),
             r@.addr != 0,
     {
         proof {
@@ -751,6 +773,8 @@ mod exports {
     pub extern "C" fn new_nothrow(size: usize, _tag: *const c_void) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, 1)),
+            r@.addr != 0 ==> super::libc::class_slot(r as *mut u8, size),
     {
         proof {
             crate::sys::grant_syscalls();
@@ -767,6 +791,8 @@ mod exports {
     pub extern "C" fn new_array_nothrow(size: usize, _tag: *const c_void) -> (r: *mut c_void)
         ensures
             crate::heap::fits(r as *mut u8, size as int, crate::QUANTUM as int),
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, 1)),
+            r@.addr != 0 ==> super::libc::class_slot(r as *mut u8, size),
     {
         proof {
             crate::sys::grant_syscalls();
@@ -784,6 +810,8 @@ mod exports {
         ensures
             crate::meta::is_pow2(align) ==> crate::heap::fits(r as *mut u8, size as int, align as int),
             !crate::meta::is_pow2(align) ==> r@.addr == 0,
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, align)),
+            r@.addr != 0 ==> super::libc::class_slot_at(r as *mut u8, size, align),
             r@.addr != 0,
     {
         proof {
@@ -802,6 +830,8 @@ mod exports {
         ensures
             crate::meta::is_pow2(align) ==> crate::heap::fits(r as *mut u8, size as int, align as int),
             !crate::meta::is_pow2(align) ==> r@.addr == 0,
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, align)),
+            r@.addr != 0 ==> super::libc::class_slot_at(r as *mut u8, size, align),
             r@.addr != 0,
     {
         proof {
@@ -824,6 +854,8 @@ mod exports {
         ensures
             crate::meta::is_pow2(align) ==> crate::heap::fits(r as *mut u8, size as int, align as int),
             !crate::meta::is_pow2(align) ==> r@.addr == 0,
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, align)),
+            r@.addr != 0 ==> super::libc::class_slot_at(r as *mut u8, size, align),
     {
         proof {
             crate::sys::grant_syscalls();
@@ -845,6 +877,8 @@ mod exports {
         ensures
             crate::meta::is_pow2(align) ==> crate::heap::fits(r as *mut u8, size as int, align as int),
             !crate::meta::is_pow2(align) ==> r@.addr == 0,
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::libc::spec_class_for(size, align)),
+            r@.addr != 0 ==> super::libc::class_slot_at(r as *mut u8, size, align),
     {
         proof {
             crate::sys::grant_syscalls();

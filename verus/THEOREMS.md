@@ -205,6 +205,11 @@ leave out (theorem 33). Remaining work is tracked in
   `je_mallocx` exports' `ensures` (`heap::hint_ok`, `class_slot_at`,
   and for the token-carrying cores `heap::huge_hint_ok`),
   `api/jemalloc.rs`.
+- **Operator new's size and alignment name its block** ([`operator new`'s block is named by its size and alignment](#operator-news-block-is-named-by-its-size-and-alignment)):
+  `new_block`, `new_slow`, `oom`, `new_aligned_block`, `new`,
+  `new_nothrow`, `new_aligned` and the eight `operator new` / `new[]`
+  exports' `ensures` (`heap::hint_ok`, `class_slot` / `class_slot_at`,
+  and for the token-carrying cores `heap::huge_hint_ok`), `api/cxx.rs`.
 
 ## Configuration
 
@@ -9930,14 +9935,17 @@ listed above.
   and for a block from `mallocx(n, flags)` freed by `sdallocx` with `n`
   and the same alignment flag ([`mallocx(n, flags)`'s block is named by
   `n` and its alignment
-  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
+  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)),
+  and for a block from `operator new` freed by a sized `operator
+  delete` with its size (and alignment) ([`operator new`'s block is
+  named by its size and
+  alignment](#operator-news-block-is-named-by-its-size-and-alignment)).
   The run half is proved only of the token `malloc_block` and the
   other token-carrying cores return. A sized free called from C gets
   its token from `axiom_c_claim`, which states only `claims(p)`, so for
   a run the round trip through C still rests on this premise. Both
   halves still rest on it for a block from an entry that states no
-  `hint_ok` of its result: `operator new` (with a sized delete),
-  `realloc`, `reallocarray`, `pvalloc`, `challoc_malloc_usable`,
+  `hint_ok` of its result: `realloc`, `reallocarray`, `pvalloc`, `challoc_malloc_usable`,
   `challoc_realloc_usable` and `rallocx`.
 - `shared.wf()` stands for init complete, as in theorem 32: `free`'s
   `shared_if_ready` and `free_before_init`, and `heap_for_thread` (which
@@ -13664,11 +13672,10 @@ and `Shared::huge_ok` is the no-overflow conjunct.
   alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment),
   and, since chainguard-project-theseus/challoc#1012, `mallocx`:
   [`mallocx(n, flags)`'s block is named by `n` and its alignment
-  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
-  `operator new` does not state that
-  its size (and alignment) names its block; `operator new`'s fast
-  pop gets the `malloc_fast` conjunct, but its `ensures` do not export
-  it.
+  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag),
+  and, since chainguard-project-theseus/challoc#1014, `operator new`:
+  [`operator new`'s block is named by its size and
+  alignment](#operator-news-block-is-named-by-its-size-and-alignment)).
 - The run half (`huge_hint_ok`) is stated of the token the cores
   return, not across C. `malloc` drops that token, and a sized free
   called from C gets its own from `axiom_c_claim`, whose `ensures` is
@@ -13743,13 +13750,16 @@ old token's length, which `put_mem` keeps.
 - As for `malloc`: the run half is a fact of the token, which `calloc`
   and `calloc_usable` drop; across C it still rests on section 44's
   sized-free premise.
-- `operator new` is still out of scope (the aligned family since
-  chainguard-project-theseus/challoc#1010: [the aligned allocations'
-  blocks are named by their size and
-  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment);
-  `mallocx` since chainguard-project-theseus/challoc#1012:
-  [`mallocx(n, flags)`'s block is named by `n` and its alignment
-  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
+- The other families are covered in their own sections: the aligned
+  family since chainguard-project-theseus/challoc#1010 ([the aligned
+  allocations' blocks are named by their size and
+  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)),
+  `mallocx` since chainguard-project-theseus/challoc#1012
+  ([`mallocx(n, flags)`'s block is named by `n` and its alignment
+  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)),
+  and `operator new` since chainguard-project-theseus/challoc#1014
+  ([`operator new`'s block is named by its size and
+  alignment](#operator-news-block-is-named-by-its-size-and-alignment)).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures` and proof calls).
 
@@ -13826,8 +13836,11 @@ quantum, so `class_serves` ignores such an alignment.
 - As for `malloc`: the run half is a fact of the token, which
   `aligned_alloc`, `posix_memalign`, `valloc` and the exports drop.
   Across C it still rests on section 44's sized-free premise.
-- `operator new` (with its aligned forms) is out of scope; `mallocx`
-  is covered since chainguard-project-theseus/challoc#1012
+- `operator new` (with its aligned forms) is covered since
+  chainguard-project-theseus/challoc#1014 ([`operator new`'s block is
+  named by its size and
+  alignment](#operator-news-block-is-named-by-its-size-and-alignment));
+  `mallocx` since chainguard-project-theseus/challoc#1012
   ([`mallocx(n, flags)`'s block is named by `n` and its alignment
   flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
 - Ghost only: the release library's machine code is unchanged (new
@@ -13892,7 +13905,10 @@ the huge path also records that the run's token claims its pointer
   alignment gets a slot, not a run with the same usable bytes.
 - As for `malloc`: the run half is a fact of the token, which `mallocx`
   and the exports drop. Across C it still rests on section 44's premise.
-- `rallocx` and `operator new` are out of scope.
+- `rallocx` is out of scope; `operator new` is covered since
+  chainguard-project-theseus/challoc#1014 ([`operator new`'s block is
+  named by its size and
+  alignment](#operator-news-block-is-named-by-its-size-and-alignment)).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures`, visibility of two proof lemmas, and proof calls).
 
@@ -13910,6 +13926,58 @@ The one gap the new `class_slot_at` closes, a run whose usable bytes
 equal the class size of a size a class serves, needs a class whose
 size is a whole number of pages, and the proof does not fix the page
 size.
+
+## `operator new`'s block is named by its size and alignment
+
+A sized `operator delete(p, size)` checks `hint_ok(p,
+spec_class_for(size, 1))`, and its `align_val_t` form `hint_ok(p,
+spec_class_for(size, align))` for a power-of-two `align`. Since
+chainguard-project-theseus/challoc#1014, `operator new` states that of
+its own size and alignment. Its paths already did: `malloc_fast`,
+`malloc_slow` and `malloc_block` since #1006, and `alloc_aligned` since
+#1010. `api::cxx` now exports what they state.
+
+**Statement** (`api/cxx.rs`):
+
+```rust
+// new_block, new_slow (and oom at `if align == 0 { 1 } else { align }`;
+// new_aligned_block at `align`, with class_slot_at)
+    ensures
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1)),
+        r@.addr != 0 ==> class_slot(r, size),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size), ..;
+
+// new (never null) and new_nothrow, new_aligned; the eight exports
+// operator new / new[] (plain, nothrow_t, align_val_t, both) over
+// `r as *mut u8`: the first two
+```
+
+**Proof.** No new proof: the callees' `ensures` (`malloc_fast`'s
+`Some` conjuncts, `malloc_slow`, `malloc_block`, `alloc_aligned`) are
+the new `ensures`. In `oom`'s handler loop, each `return` of a non-null
+retry carries them, so the loop invariant needs nothing new.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- As for `malloc`: the run half is a fact of the token, which `new`,
+  `new_nothrow`, `new_aligned` and the exports drop. Across C++ it still
+  rests on section 44's sized-free premise.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures`).
+
+**Mutations** (`cargo verus focus -- --verify-module api::cxx`, on
+this tree and on main 9018fc88):
+
+| id | change | PR | main |
+|---|---|---|---|
+| N1 | `new_slow` asks `malloc_slow` for 32 bytes when `size == 0` | rejected (`new_slow`'s new `hint_ok` and `class_slot` `ensures`) | verifies |
+| N2 | `new_aligned_block` asks `alloc_aligned` for 64 bytes when `size == 0` | rejected (`new_aligned_block`'s new `hint_ok` and `class_slot_at` `ensures`) | verifies |
+
+Both are executable mutants that main accepts. Each returns a block
+that fits `size` and whose token covers it. For `operator new(0)` on
+those paths (N2: at an alignment up to 32) it is a slot of a larger
+class than size 0 names, so a sized delete of size 0 aborts on it.
 
 ## Interface contract
 
