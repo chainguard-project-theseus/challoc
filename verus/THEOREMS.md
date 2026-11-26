@@ -200,6 +200,11 @@ leave out (theorem 33). Remaining work is tracked in
   `posix_memalign` / `valloc` exports' `ensures` (`heap::hint_ok`,
   `class_slot_at`, and for the token-carrying cores
   `heap::huge_hint_ok`), with `lemma_class_for_quantum`, `api/libc.rs`.
+- **Mallocx's size and alignment flag name its block** ([`mallocx(n, flags)`'s block is named by `n` and its alignment flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)):
+  `alloc_with`, `mallocx_zeroed`, `mallocx` and the `mallocx` /
+  `je_mallocx` exports' `ensures` (`heap::hint_ok`, `class_slot_at`,
+  and for the token-carrying cores `heap::huge_hint_ok`),
+  `api/jemalloc.rs`.
 
 ## Configuration
 
@@ -9921,12 +9926,19 @@ listed above.
   `aligned_alloc(a, n)`, `memalign`, `posix_memalign` or `valloc` freed
   with its size and alignment ([the aligned allocations' blocks are
   named by their size and
-  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)).
+  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)),
+  and for a block from `mallocx(n, flags)` freed by `sdallocx` with `n`
+  and the same alignment flag ([`mallocx(n, flags)`'s block is named by
+  `n` and its alignment
+  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
   The run half is proved only of the token `malloc_block` and the
   other token-carrying cores return. A sized free called from C gets
   its token from `axiom_c_claim`, which states only `claims(p)`, so for
-  a run the round trip through C still rests on this premise, as do
-  the other allocation families.
+  a run the round trip through C still rests on this premise. Both
+  halves still rest on it for a block from an entry that states no
+  `hint_ok` of its result: `operator new` (with a sized delete),
+  `realloc`, `reallocarray`, `pvalloc`, `challoc_malloc_usable`,
+  `challoc_realloc_usable` and `rallocx`.
 - `shared.wf()` stands for init complete, as in theorem 32: `free`'s
   `shared_if_ready` and `free_before_init`, and `heap_for_thread` (which
   creates a heap, and may abort when that fails), come before the calls
@@ -13649,9 +13661,12 @@ and `Shared::huge_ok` is the no-overflow conjunct.
   block is named by `n * m`](#callocn-ms-block-is-named-by-n--m), and,
   since chainguard-project-theseus/challoc#1010, the aligned family:
   [the aligned allocations' blocks are named by their size and
-  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)).
-  `mallocx` and `operator new` do not state that
-  their size (and alignment) names their block; `operator new`'s fast
+  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment),
+  and, since chainguard-project-theseus/challoc#1012, `mallocx`:
+  [`mallocx(n, flags)`'s block is named by `n` and its alignment
+  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
+  `operator new` does not state that
+  its size (and alignment) names its block; `operator new`'s fast
   pop gets the `malloc_fast` conjunct, but its `ensures` do not export
   it.
 - The run half (`huge_hint_ok`) is stated of the token the cores
@@ -13728,10 +13743,13 @@ old token's length, which `put_mem` keeps.
 - As for `malloc`: the run half is a fact of the token, which `calloc`
   and `calloc_usable` drop; across C it still rests on section 44's
   sized-free premise.
-- `mallocx` and `operator new` are still out of scope (the aligned
-  family since chainguard-project-theseus/challoc#1010: [the aligned
-  allocations' blocks are named by their size and
-  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)).
+- `operator new` is still out of scope (the aligned family since
+  chainguard-project-theseus/challoc#1010: [the aligned allocations'
+  blocks are named by their size and
+  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment);
+  `mallocx` since chainguard-project-theseus/challoc#1012:
+  [`mallocx(n, flags)`'s block is named by `n` and its alignment
+  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures` and proof calls).
 
@@ -13808,8 +13826,10 @@ quantum, so `class_serves` ignores such an alignment.
 - As for `malloc`: the run half is a fact of the token, which
   `aligned_alloc`, `posix_memalign`, `valloc` and the exports drop.
   Across C it still rests on section 44's sized-free premise.
-- `mallocx` (`sdallocx` with `MALLOCX_LG_ALIGN`) and `operator new`
-  (with its aligned forms) are out of scope.
+- `operator new` (with its aligned forms) is out of scope; `mallocx`
+  is covered since chainguard-project-theseus/challoc#1012
+  ([`mallocx(n, flags)`'s block is named by `n` and its alignment
+  flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag)).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures`, a new parameter on two proof lemmas, a new lemma and proof
   calls).
@@ -13828,6 +13848,68 @@ block that fits `size` at `align` and whose token covers it. A1 and A2
 return a block that a sized free of `size` at `align` would abort on.
 A3's run passes that check, but it is not the class slot the code
 returns.
+
+## `mallocx(n, flags)`'s block is named by `n` and its alignment flag
+
+`sdallocx(p, size, flags)` checks `hint_ok(p, spec_class_for(size, 1 <<
+(flags & 0x3f)))` (`MALLOCX_LG_ALIGN`'s field) and, of its token,
+`huge_hint_ok(blk, p, size)`. Since
+chainguard-project-theseus/challoc#1012, `mallocx` and its exports
+state the slot half (`hint_ok`, with `class_slot_at`) of their own size
+and flags, as the sections above do for `malloc`, `calloc` and the
+aligned family. The run half (`huge_hint_ok`) is a fact of the block's
+token, stated by the cores that return one (`alloc_with`,
+`mallocx_zeroed`).
+
+**Statement** (`api/jemalloc.rs`):
+
+```rust
+// alloc_with (f the decoded flags)
+    ensures
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for(size, 1usize << f.lg_align)),
+        r.0@.addr != 0 ==> class_slot_at(r.0, size, 1usize << f.lg_align),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r.0, size), ..;
+
+// mallocx_zeroed: the same of `1usize << ((flags as u32) & 0x3f)`;
+// mallocx and the exports mallocx, je_mallocx: the first two
+```
+
+**Proof.** `alloc_with`'s class path calls `libc::lemma_class_named`
+with the class `class_for(size, align)` picked, and its huge path calls
+`libc::lemma_huge_named` (both now `pub(super)`). As in `calloc_zeroed`,
+the huge path also records that the run's token claims its pointer
+(`Live::lemma_claims`) before the `MALLOCX_ZERO` fill's
+`Live::put_mem`.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- `mallocx`'s `usable_is` `ensures` (since before this section) already
+  pins a slot's class size to `nalloc_usable(size, lg_align)`, and the
+  class sizes are distinct. So the slot half here restates in
+  `sdallocx`'s own terms (`hint_ok`, with `class_slot_at`) what that
+  already implied. The new part is that a size a class serves at the
+  alignment gets a slot, not a run with the same usable bytes.
+- As for `malloc`: the run half is a fact of the token, which `mallocx`
+  and the exports drop. Across C it still rests on section 44's premise.
+- `rallocx` and `operator new` are out of scope.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures`, visibility of two proof lemmas, and proof calls).
+
+**Mutations** (`cargo verus focus -- --verify-module api::jemalloc`, on
+this tree and on main 9018fc88):
+
+| id | change | PR | main |
+|---|---|---|---|
+| X1 | `alloc_with` picks the class for `size + 1` (when `size < MEDIUM_MAX`) | rejected | rejected (`usable_is`) |
+| X3 | `alloc_with` sends size 0 down the huge path | rejected (`lemma_huge_named`'s `requires`) | rejected (`usable_is`) |
+
+Main rejects both through `usable_is`, as the first Scope bullet says.
+No executable mutant was found that main accepts and this tree rejects.
+The one gap the new `class_slot_at` closes, a run whose usable bytes
+equal the class size of a size a class serves, needs a class whose
+size is a whole number of pages, and the proof does not fix the page
+size.
 
 ## Interface contract
 

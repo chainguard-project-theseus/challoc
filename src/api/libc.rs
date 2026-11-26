@@ -310,7 +310,7 @@ proof fn lemma_class_for_quantum(size: usize, align: usize)
 /// is named by `size` at `align`: no other class has a slot there, so it
 /// passes a sized free's slot check ([`heap::hint_ok`]), and the run half
 /// ([`heap::huge_hint_ok`]) is vacuous for it (#1006, #1010).
-proof fn lemma_class_named(blk: Live, p: *mut u8, c: int, size: usize, align: usize)
+pub(super) proof fn lemma_class_named(blk: Live, p: *mut u8, c: int, size: usize, align: usize)
     requires
         heap::regions_ok(),
         0 <= c < NCLASSES,
@@ -336,7 +336,7 @@ proof fn lemma_class_named(blk: Live, p: *mut u8, c: int, size: usize, align: us
 /// slot starts there ([`heap::hint_ok`] holds of any hint), and its
 /// usable bytes are `size` rounded up to whole pages
 /// ([`heap::huge_hint_ok`]) (#1006, #1010).
-proof fn lemma_huge_named(shared: &Shared, blk: Live, p: *mut u8, size: usize, align: usize)
+pub(super) proof fn lemma_huge_named(shared: &Shared, blk: Live, p: *mut u8, size: usize, align: usize)
     requires
         shared.wf(),
         p@.addr != 0 ==> crate::layout::huge_block(p@.addr, size, align),

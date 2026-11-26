@@ -52,7 +52,10 @@ use core::ptr;
 
 use super::libc::{class_for, grow_kept, old_size_or_keep, shrink_kept, usable_size};
 #[cfg(verus_keep_ghost)]
-use super::libc::{grew_in_place, keeps, lemma_class_aligned, shrank_in_place, spec_class_for};
+use super::libc::{
+    class_slot_at, grew_in_place, keeps, lemma_class_aligned, lemma_class_named, lemma_huge_named,
+    shrank_in_place, spec_class_for,
+};
 use super::print::{cancel_disable, cancel_restore};
 #[cfg(verus_keep_ghost)]
 use crate::heap::mallocx::MALLOCX_ZERO;
@@ -299,6 +302,9 @@ fn alloc_with(
         r.0@.addr != 0 ==> usable_is(r.0, size as int, nalloc_usable(size, f.lg_align)),
         final(blk).gives(r.0, size as int),
         r.0@.addr != 0 && f.zero ==> final(blk).reads_zero(0, final(blk).len()),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, spec_class_for(size, 1usize << f.lg_align)),
+        r.0@.addr != 0 ==> class_slot_at(r.0, size, 1usize << f.lg_align),
+        r.0@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r.0, size),
         mallocx::bad_tcache(f.tcache) ==> f.arena is Some && spec_class_for(size, 1usize << f.lg_align) is None,
 {
     let align = f.align();
@@ -335,6 +341,7 @@ fn alloc_with(
                     }
                 }
                 super::libc::lemma_class_gives(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, align);
             }
             (p, CLASSES.table()[c].size(), zero, z)
         }
@@ -354,7 +361,11 @@ fn alloc_with(
                 if p@.addr != 0 {
                     crate::heap::lemma_huge_fits(p, size, align, align);
                     crate::vspec::usable::lemma_usable_huge(p, size as int);
+                    // The run's token claims it, so `huge_hint_ok`'s length
+                    // holds of the token the zero fill below keeps.
+                    blk.lemma_claims(p);
                 }
+                lemma_huge_named(shared, *blk, p, size, align);
             }
             let u = shared.huge.usable_for(size);
             proof {
@@ -422,6 +433,8 @@ pub fn mallocx(size: usize, flags: c_int, errno: Tracked<&mut ThreadErrno>, Trac
     ensures
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
         r@.addr != 0 ==> usable_is(r, size as int, nalloc_usable(size, (flags as u32) & 0x3f)),
+        r@.addr != 0 ==> crate::heap::hint_ok(r, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+        r@.addr != 0 ==> class_slot_at(r, size, 1usize << ((flags as u32) & 0x3f)),
         tcache_checked(size, flags),
         *final(ord) == *old(ord),
 {
@@ -452,6 +465,9 @@ pub fn mallocx_zeroed(
         r.0@.addr != 0 && (flags as u32) & MALLOCX_ZERO != 0 ==> covers_usable(r.1@, r.0, 0, size as int),
         r.0@.addr != 0 ==> usable_is(r.0, size as int, nalloc_usable(size, (flags as u32) & 0x3f)),
         final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+        r.0@.addr != 0 ==> class_slot_at(r.0, size, 1usize << ((flags as u32) & 0x3f)),
+        r.0@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r.0, size),
         tcache_checked(size, flags),
 {
     let f = Flags::decode(flags as u32);
@@ -1356,6 +1372,8 @@ mod exports {
         fn mallocx / je_mallocx(size: usize, flags: c_int) -> (r: *mut c_void) ensures [
             crate::heap::fits(r as *mut u8, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
             r@.addr != 0 ==> crate::vspec::usable::usable_is(r as *mut u8, size as int, super::nalloc_usable(size, (flags as u32) & 0x3f)),
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+            r@.addr != 0 ==> super::class_slot_at(r as *mut u8, size, 1usize << ((flags as u32) & 0x3f)),
             super::tcache_checked(size, flags),
         ] {
             let Tracked(mut errno) = crate::vspec::errno::lend();
