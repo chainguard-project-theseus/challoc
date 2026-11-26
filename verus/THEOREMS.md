@@ -194,6 +194,12 @@ leave out (theorem 33). Remaining work is tracked in
   and the `calloc` / `je_calloc` / `challoc_calloc_usable` exports'
   `ensures` (`heap::hint_ok`, `class_slot`, and for the token-carrying
   cores `heap::huge_hint_ok`), `api/libc.rs`.
+- **The aligned allocations' size and alignment name their block** ([the aligned allocations' blocks are named by their size and alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)):
+  `alloc_aligned`, `aligned_alloc(_block)`, `posix_memalign(_block)`,
+  `valloc(_block)` and the `aligned_alloc` / `memalign` /
+  `posix_memalign` / `valloc` exports' `ensures` (`heap::hint_ok`,
+  `class_slot_at`, and for the token-carrying cores
+  `heap::huge_hint_ok`), with `lemma_class_for_quantum`, `api/libc.rs`.
 
 ## Configuration
 
@@ -9911,7 +9917,11 @@ listed above.
   `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)),
   and so for a block from `calloc(n, m)` freed with `n * m`
   ([`calloc(n, m)`'s block is named by
-  `n * m`](#callocn-ms-block-is-named-by-n--m)).
+  `n * m`](#callocn-ms-block-is-named-by-n--m)), and for a block from
+  `aligned_alloc(a, n)`, `memalign`, `posix_memalign` or `valloc` freed
+  with its size and alignment ([the aligned allocations' blocks are
+  named by their size and
+  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)).
   The run half is proved only of the token `malloc_block` and the
   other token-carrying cores return. A sized free called from C gets
   its token from `axiom_c_claim`, which states only `claims(p)`, so for
@@ -13586,6 +13596,7 @@ return one (`malloc_block` and below).
 
 ```rust
 // api/libc.rs: a size a class serves gets a slot of that class, never a run
+// (since #1010 written as class_slot_at(p, size, 1), the same formula)
 pub open spec fn class_slot(p: *mut u8, size: usize) -> bool {
     spec_class_for(size, 1) matches Some(c) ==> process_regions().is_slot(c as int, p@.addr)
 }
@@ -13635,8 +13646,11 @@ and `Shared::huge_ok` is the no-overflow conjunct.
 **Scope and where the statement is weaker than the code.**
 - Only `malloc` and its cores (and, since
   chainguard-project-theseus/challoc#1008, `calloc`: [`calloc(n, m)`'s
-  block is named by `n * m`](#callocn-ms-block-is-named-by-n--m)).
-  `aligned_alloc`, `posix_memalign`, `mallocx` and `operator new` do not state that
+  block is named by `n * m`](#callocn-ms-block-is-named-by-n--m), and,
+  since chainguard-project-theseus/challoc#1010, the aligned family:
+  [the aligned allocations' blocks are named by their size and
+  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)).
+  `mallocx` and `operator new` do not state that
   their size (and alignment) names their block; `operator new`'s fast
   pop gets the `malloc_fast` conjunct, but its `ensures` do not export
   it.
@@ -13714,8 +13728,10 @@ old token's length, which `put_mem` keeps.
 - As for `malloc`: the run half is a fact of the token, which `calloc`
   and `calloc_usable` drop; across C it still rests on section 44's
   sized-free premise.
-- `aligned_alloc`, `posix_memalign`, `mallocx` and `operator new` are
-  still out of scope.
+- `mallocx` and `operator new` are still out of scope (the aligned
+  family since chainguard-project-theseus/challoc#1010: [the aligned
+  allocations' blocks are named by their size and
+  alignment](#the-aligned-allocations-blocks-are-named-by-their-size-and-alignment)).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures` and proof calls).
 
@@ -13730,6 +13746,88 @@ this tree and on main 2a01c71b):
 
 All three are executable mutants main accepts: each returns a zeroed
 block that fits `n * m`, which a sized free of `n * m` would abort on.
+
+## The aligned allocations' blocks are named by their size and alignment
+
+An aligned sized free (`free_aligned_sized(p, align, size)`) checks
+`hint_ok(p, spec_class_for(size, align))` for a power-of-two `align`.
+Since chainguard-project-theseus/challoc#1010, the aligned allocations
+state that their size and alignment name their block, as
+[`malloc(n)`'s block is named by `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)
+states for `malloc`. A non-null result passes that slot check. When a
+class serves `size` at `align`, the result is a slot of exactly
+`spec_class_for(size, align)` (`class_slot_at`). The cores that return
+the block's token also state the run half (`huge_hint_ok`).
+
+**Statement** (`api/libc.rs`):
+
+```rust
+// a size a class serves at `align` gets a slot of that class, never a run
+pub open spec fn class_slot_at(p: *mut u8, size: usize, align: usize) -> bool {
+    spec_class_for(size, align) matches Some(c) ==> process_regions().is_slot(c as int, p@.addr)
+}
+pub open spec fn class_slot(p: *mut u8, size: usize) -> bool { class_slot_at(p, size, 1) }
+
+// alloc_aligned, aligned_alloc_block
+    ensures
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, align)),
+        r@.addr != 0 ==> class_slot_at(r, size, align),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size), ..;
+
+// aligned_alloc (and the exports aligned_alloc, memalign and their je_ twins)
+    ensures
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, align)),
+        r@.addr != 0 ==> class_slot_at(r, size, align), ..;
+
+// posix_memalign_block (posix_memalign and its exports: the first two
+// conjuncts, of the pointer stored through `out`)
+    ensures
+        r == 0 ==> (.. && heap::hint_ok(q.value(), spec_class_for(size, align))
+            && class_slot_at(q.value(), size, align)
+            && heap::huge_hint_ok(*final(blk), q.value(), size)), ..;
+
+// valloc_block (valloc and its exports: the first two), at the page size
+    ensures
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1usize << process_regions().lg_page)),
+        r@.addr != 0 ==> class_slot_at(r, size, 1usize << process_regions().lg_page),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size), ..;
+```
+
+**Proof.** `lemma_class_named` and `lemma_huge_named` (from #1006) now
+take the alignment. For `align` above the quantum, `alloc_aligned`'s
+class path calls the first with the class `class_for(size, align)`
+picked, and its huge path calls the second. An alignment no larger than
+the quantum goes to `malloc_block`, whose `ensures` are at alignment 1.
+`lemma_class_for_quantum` shows that `spec_class_for(size, align) ==
+spec_class_for(size, 1)` there: every class size is a multiple of the
+quantum, so `class_serves` ignores such an alignment.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- As for `malloc`: the run half is a fact of the token, which
+  `aligned_alloc`, `posix_memalign`, `valloc` and the exports drop.
+  Across C it still rests on section 44's sized-free premise.
+- `mallocx` (`sdallocx` with `MALLOCX_LG_ALIGN`) and `operator new`
+  (with its aligned forms) are out of scope.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures`, a new parameter on two proof lemmas, a new lemma and proof
+  calls).
+
+**Mutations** (`cargo verus focus -- --verify-module api::libc`, on
+this tree and on main 6343872b):
+
+| id | change | PR | main |
+|---|---|---|---|
+| A1 | `alloc_aligned` picks the class for `size + 1` (when `size < MEDIUM_MAX`): a larger class whenever `size` is a class size the alignment allows | rejected (`lemma_class_named`'s `requires`, which carries the new `ensures`; then `lemma_huge_named`'s too) | verifies |
+| A2 | `alloc_aligned`'s huge path allocates a run for `size + 4096` (when that does not overflow) | rejected (the new `huge_hint_ok` `ensures`; `lemma_huge_named` called for the mutant's size fails its `requires` too) | verifies |
+| A3 | `alloc_aligned` sends size 0 down the huge path (`if size == 0 { None } else { class_for(size, align) }`) | rejected (`lemma_huge_named`'s `requires` that no class serves `size` at `align`) | verifies |
+
+All three are executable mutants that main accepts. Each returns a
+block that fits `size` at `align` and whose token covers it. A1 and A2
+return a block that a sized free of `size` at `align` would abort on.
+A3's run passes that check, but it is not the class slot the code
+returns.
 
 ## Interface contract
 
