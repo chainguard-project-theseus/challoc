@@ -2365,6 +2365,8 @@ pub fn malloc_usable(size: usize, usable: *mut usize, Tracked(uout): Tracked<&mu
         final(uout).of(usable),
         final(uout).opt() matches Some(q) ==> reports_usable(q.opt_value(), r, size as int),
         heap::fits(r, size as int, QUANTUM as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1)),
+        r@.addr != 0 ==> class_slot(r, size),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let tracked mut blk = Live::empty();
@@ -2390,6 +2392,9 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(uout): Trac
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
         final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, size),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r.0, size),
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
@@ -2403,6 +2408,7 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(uout): Trac
                 crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
             }
             lemma_class_gives(*blk, p, c as int, size);
+            lemma_class_named(*blk, p, c as int, size, 1);
         }
         return (p, s);
     };
@@ -2419,6 +2425,7 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(uout): Trac
                 heap::theorem_no_block_at_zero(p, c as int, 0);
                 crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
                 lemma_class_gives(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, 1);
             }
             (p, s)
         }
@@ -2430,6 +2437,7 @@ pub fn malloc_usable_stored(size: usize, usable: *mut usize, Tracked(uout): Trac
                     crate::vspec::usable::lemma_usable_slot(p, c as int, size as int);
                 }
                 lemma_class_gives(*blk, p, c as int, size);
+                lemma_class_named(*blk, p, c as int, size, 1);
             }
             (p, s)
         },
@@ -2495,6 +2503,9 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, grow: bool, Tracked(uout)
         r.0@.addr == 0 ==> r.1@.val() == 0,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
         final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 && spec_class_for(size, 1) is None ==> heap::hint_ok(r.0, spec_class_for(size, 1)),
+        r.0@.addr != 0 && spec_class_for(size, 1) is None ==> class_slot(r.0, size),
+        r.0@.addr != 0 && spec_class_for(size, 1) is None ==> heap::huge_hint_ok(*final(blk), r.0, size),
         r.0@.addr == 0 ==> final(errno).val() == ENOMEM,
 {
     let shared = super::shared();
@@ -2505,6 +2516,9 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, grow: bool, Tracked(uout)
     let (p, _, _) = alloc_huge_placed(shared, size, 1, false, grow, Tracked(blk), Tracked(&mut *ord));
     proof {
         lemma_huge_result(p, size, 1);
+        if spec_class_for(size, 1) is None {
+            lemma_huge_named(shared, *blk, p, size, 1);
+        }
     }
     if p.is_null() {
         let s = store_usable(usable, 0, Tracked(uout));
@@ -4241,6 +4255,8 @@ mod exports {
     pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> (r: *mut c_void)
         ensures
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for(size, 1)),
+            r@.addr != 0 ==> class_slot(r as *mut u8, size),
             r@.addr == 0 ==> c_errno() == ENOMEM,
             usable@.addr != 0 ==> reports_usable(c_out(usable), r as *mut u8, size as int),
     {

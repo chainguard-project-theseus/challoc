@@ -210,6 +210,11 @@ leave out (theorem 33). Remaining work is tracked in
   `new_nothrow`, `new_aligned` and the eight `operator new` / `new[]`
   exports' `ensures` (`heap::hint_ok`, `class_slot` / `class_slot_at`,
   and for the token-carrying cores `heap::huge_hint_ok`), `api/cxx.rs`.
+- **Challoc_malloc_usable's size names its block** ([`challoc_malloc_usable(n)`'s block is named by `n`](#challoc_malloc_usablens-block-is-named-by-n)):
+  `malloc_usable_stored`, `malloc_usable_huge` (when no class serves
+  the size), `malloc_usable` and the `challoc_malloc_usable` export's
+  `ensures` (`heap::hint_ok`, `class_slot`, and for the token-carrying
+  cores `heap::huge_hint_ok`), `api/libc.rs`.
 
 ## Configuration
 
@@ -9945,8 +9950,11 @@ listed above.
   its token from `axiom_c_claim`, which states only `claims(p)`, so for
   a run the round trip through C still rests on this premise. Both
   halves still rest on it for a block from an entry that states no
-  `hint_ok` of its result: `realloc`, `reallocarray`, `pvalloc`, `challoc_malloc_usable`,
-  `challoc_realloc_usable` and `rallocx`.
+  `hint_ok` of its result: `realloc`, `reallocarray`, `pvalloc`,
+  `challoc_realloc_usable` and `rallocx` (`challoc_malloc_usable`
+  since chainguard-project-theseus/challoc#1016:
+  [`challoc_malloc_usable(n)`'s block is named by
+  `n`](#challoc_malloc_usablens-block-is-named-by-n)).
 - `shared.wf()` stands for init complete, as in theorem 32: `free`'s
   `shared_if_ready` and `free_before_init`, and `heap_for_thread` (which
   creates a heap, and may abort when that fails), come before the calls
@@ -13675,7 +13683,10 @@ and `Shared::huge_ok` is the no-overflow conjunct.
   flag](#mallocxn-flagss-block-is-named-by-n-and-its-alignment-flag),
   and, since chainguard-project-theseus/challoc#1014, `operator new`:
   [`operator new`'s block is named by its size and
-  alignment](#operator-news-block-is-named-by-its-size-and-alignment)).
+  alignment](#operator-news-block-is-named-by-its-size-and-alignment),
+  and, since chainguard-project-theseus/challoc#1016,
+  `challoc_malloc_usable`: [`challoc_malloc_usable(n)`'s block is named
+  by `n`](#challoc_malloc_usablens-block-is-named-by-n)).
 - The run half (`huge_hint_ok`) is stated of the token the cores
   return, not across C. `malloc` drops that token, and a sized free
   called from C gets its own from `axiom_c_claim`, whose `ensures` is
@@ -13978,6 +13989,60 @@ Both are executable mutants that main accepts. Each returns a block
 that fits `size` and whose token covers it. For `operator new(0)` on
 those paths (N2: at an alignment up to 32) it is a slot of a larger
 class than size 0 names, so a sized delete of size 0 aborts on it.
+
+## `challoc_malloc_usable(n)`'s block is named by `n`
+
+`challoc_malloc_usable(n, usable)` is `malloc(n)` that also stores the
+usable size, but its paths are its own (`malloc_usable_stored`: the
+fast pop, `malloc_usable_class`, `malloc_usable_huge`). Since
+chainguard-project-theseus/challoc#1016 it states what
+[`malloc(n)`'s block is named by `n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)
+states for `malloc`.
+
+**Statement** (`api/libc.rs`):
+
+```rust
+// malloc_usable_stored
+    ensures
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, size),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r.0, size), ..;
+
+// malloc_usable_huge (also the growth move's run, `malloc_grown`)
+    ensures
+        r.0@.addr != 0 && spec_class_for(size, 1) is None ==> (the same three), ..;
+
+// malloc_usable and the challoc_malloc_usable export: the first two
+```
+
+**Proof.** Each class path calls `lemma_class_named` with the class
+`class_index` picked. `malloc_usable_huge` calls `lemma_huge_named` when
+no class serves `size`, which is the only case in which
+`malloc_usable_stored` calls it.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- As for `malloc`: the run half is a fact of the token, which
+  `malloc_usable` and the export drop. Across C it still rests on
+  section 44's premise.
+- `malloc_usable_huge` states nothing new for a size a class serves (a
+  growth move may place such a size in a run).
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures` and proof calls).
+
+**Mutations** (`cargo verus focus -- --verify-module api::libc`, on
+this tree and on main a5322c41):
+
+| id | change | PR | main |
+|---|---|---|---|
+| U1 | `malloc_usable_stored` takes its slot from the next class up (`c + 1` when there is one), and stores that class's size | rejected (`lemma_class_named`'s `requires`) | verifies |
+| U2 | `malloc_usable_stored` sends size 0 down the huge path | rejected (the new `hint_ok` and `class_slot` `ensures`) | verifies |
+
+Both are executable mutants that main accepts. U1's block reports its
+usable size truthfully but is a slot of the wrong class, so a sized
+free of `n` aborts on it. U2's one-page run passes the sized free's
+check, but it is not the class-0 slot the code returns.
 
 ## Interface contract
 
