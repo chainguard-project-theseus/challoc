@@ -137,6 +137,8 @@ leave out (theorem 33). Remaining work is tracked in
   `layout::Regions::theorem_thp_advice_in_reservations`,
   `layout/regions.rs`, and `heap::theorem_thp_advice_published`,
   `heap/theorems.rs`, with `thp::madvise_hugepage`'s contract.
+- **`MADV_NOHUGEPAGE` placement** ([MADV_NOHUGEPAGE never starts at the huge reservation](#madv_nohugepage-never-starts-at-the-huge-reservation-address-of-a-recorded-reservation)):
+  `thp::madvise_nohugepage`'s contract, with `ResPred`, `thp.rs`.
 - **Refill slab order** ([A refill takes partial slabs lowest address first](#a-refill-takes-partial-slabs-lowest-address-first-over-the-values-read)):
   `class::ClassState::theorem_refill_address_ordered`, `class/mod.rs`,
   with `ClassState::plan_at`'s contract.
@@ -11496,10 +11498,9 @@ No seam is added.
   statement does not say so, nor that it spares the run's guard.
   `MADV_HUGEPAGE` sets a VMA flag and changes no contents. The kernel's
   answer is not modelled; a refusal is counted.
-- `MADV_NOHUGEPAGE` is not covered. `advise_reservation` gives it to the
-  class and metadata mappings themselves (`Regions::reserve_owning`
-  passes the `Mapping` values), and `force_never` gives it to the ranges
-  recorded in `RESERVATIONS`, whose `core` atomics have no value spec.
+- `MADV_NOHUGEPAGE` is not covered here; [MADV_NOHUGEPAGE never starts
+  at the huge reservation](#madv_nohugepage-never-starts-at-the-huge-reservation-address-of-a-recorded-reservation)
+  states what is proved of it (#975).
 - Ghost only: the release library's machine code is unchanged
   (the new arguments are `Ghost`, erased).
 
@@ -11516,6 +11517,132 @@ the PR's tree and on main):
 | M6 | the top-side commit advises `self.len` from `addr` | rejected (precondition) | verifies |
 | M7 | `prepare` passes `Ghost(false)` (with M3's length) | verifies; the source test fails | n/a |
 | M8 | `Inner`'s lock frame drops `spec_base` | rejected (`Meta::lemma_process_region`'s postcondition, and six existing ones) | n/a |
+
+## MADV_NOHUGEPAGE never starts at the huge reservation (address of a recorded reservation)
+
+Under `thp:never` on a kernel with THP, `thp::advise_reservation` gives
+the class superblock and the metadata mapping `MADV_NOHUGEPAGE` as
+`Regions::reserve_owning` makes them, and records them in
+`thp::RESERVATIONS`. The huge reservation follows the host's policy
+(`Reservation::follows_host`, design 7) and is neither advised nor
+recorded. Design 11's forced `never` (`thp::force_never`, from
+`Shared::init`) advises every recorded slot again. Before
+chainguard-project-theseus/challoc#975 the slots were `core` atomics,
+whose loads vstd lets return any value, so nothing verified said that
+`force_never` spares the huge reservation.
+
+**Statement.**
+
+```rust
+// thp.rs: the one `MADV_NOHUGEPAGE` call.
+fn madvise_nohugepage(
+    addr: usize,
+    len: usize,
+    Ghost(s): Ghost<&Reservations>,
+    Tracked(wa): Tracked<&GhostPersistentSingleton<Recorded>>,
+    Tracked(wl): Tracked<&GhostPersistentSingleton<Recorded>>,
+) -> bool
+    requires
+        crate::sys::may_syscall(),
+        s.wf(),
+        wa.id() == s.loc(),
+        wl.id() == s.loc(),
+        wa@.0 != Reservation::Huge,
+        wl@.0 != Reservation::Huge,
+        wa@.1 == addr,
+        wl@.2 == len,
+
+// The slots' invariant, keyed by their identities and the two ghost sets.
+impl InvariantPredicate<ResKey, ResVal> for ResPred {
+    open spec fn inv(k: ResKey, v: ResVal) -> bool {
+        &&& k.0.len() == MAX_RESERVATIONS
+        &&& forall|i: int| 0 <= i < MAX_RESERVATIONS ==> #[trigger] slot_ok(k, v, i)
+        &&& /* the log's and the written set's authorities and persistent copies agree */
+        &&& forall|r: Recorded| #[trigger] v.1@.contains(r) ==> r.0 != Reservation::Huge
+    }
+}
+
+pub open spec fn slot_ok(k: ResKey, v: ResVal, i: int) -> bool {
+    &&& v.0.contains_key(i)
+    &&& v.0[i].0.id() == k.0[i].0
+    &&& v.0[i].1.id() == k.0[i].1
+    &&& (v.3@.contains(i) ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.1 == v.0[i].0.value())
+    &&& (v.0[i].1.value() != 0 ==> v.3@.contains(i))
+    &&& (v.0[i].1.value() != 0 ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.2 == v.0[i].1.value())
+}
+```
+
+In words: `RESERVATIONS` is four `(addr, len)` pairs of vstd
+`PAtomicUsize`s under an atomic invariant (`ResPred`). The invariant
+holds the eight permissions, a ghost log of `Recorded` triples (kind,
+address, length) and a ghost set of the slots whose address is written,
+each with a persistent copy from which witnesses split. No logged
+reservation is `Huge`. A slot whose address is written holds a logged
+address; a slot with a nonzero length holds a logged length and has its
+address written. Nothing leaves either set.
+
+`advise_reservation` returns before the log when `follows_host` (now
+specified: `r == (self == Reservation::Huge)`). Otherwise it logs
+`(kind, addr, len)`, takes a free slot, stores the address and marks the
+slot written in one opening, then stores the length with the written
+mark's witness. `force_never` loads each slot's length, and for a
+nonzero one takes witnesses of a logged length and of the slot's written
+mark, then loads the address and takes a witness of a logged address.
+`madvise_nohugepage` requires both witnesses, so every `MADV_NOHUGEPAGE`
+range starts at a logged class or metadata reservation's address and has
+a logged length; the huge reservation is never logged. The two
+witnesses may name two different records (see the scope below).
+
+**Premises (seams).**
+
+| seam | kind | what it gives here |
+|---|---|---|
+| vstd `PAtomicUsize` (`new`, `load`, `store`) | vstd, trusted | each operation is one `SeqCst` atomic operation on the slot; `new` mints the one permission to the atomic it makes |
+| `sys::raw::syscall3` (under the verified `sys::madvise`) | inline asm, an Isla seam | the kernel receives the range `madvise` is given |
+
+No seam is added. The test helpers `reset_reservations_for_test` and
+`slots_for_test` (`#[cfg(test)]`) use `Tracked::assume_new()`
+permissions; no shipped code does.
+
+**Scope and where the statement is weaker than the code.**
+- The log is ghost and is filled only by `advise_reservation`, which
+  is read from the code: `ResPred` says what the log holds, not who
+  writes it. `Regions::reserve_owning` passes the superblock mapping
+  as `Classes`, the huge one as `Huge` and the metadata one as
+  `Metadata` (`advise_reservations`); the kinds are not tied to the
+  mappings in a spec, so "the huge reservation" means the one passed as
+  `Huge`.
+- The address and the length are not paired. `slot_ok` has one
+  `exists` for a slot's address and another for its length, so
+  `ResPred` admits a slot holding one record's address and another's
+  length, race or no race, and nothing bounds `addr + len` to the
+  address's own mapping: a metadata address with the class
+  reservation's length meets the contract. What is proved is the start:
+  never the huge reservation's address. The code stores a slot's
+  address, then its length, after reading the length as 0, so only two
+  recordings racing for one slot could leave a mixed pair, and
+  reservation runs once, at init; the proof does not use that. Pairing
+  the two (one whole recorded reservation per advice) is #977.
+- The test helper `reset_reservations_for_test` zeroes the slots without
+  the invariant; no test relies on it afterwards.
+- The kernel's answer is not modelled; a refusal is counted in
+  `failures`.
+- Exec change: the slots' loads and stores are vstd's `SeqCst` (they
+  were `Relaxed`), and `force_never` indexes the slots instead of
+  iterating them. Both functions run a bounded number of times per
+  process (once per reservation, at init, and once from `Shared::init`),
+  so under the #882 exemption the codegen verdict names them without a
+  bench.
+
+**Mutations** (`cargo verus focus --locked -- --verify-module thp`, on
+the PR's tree and on main):
+
+| id | change | PR | main |
+|---|---|---|---|
+| N1 | `advise_reservation` drops the `follows_host` return (records and advises the huge reservation) | rejected (`ResPred` at the log's insert; the loop invariant `kind != Huge`) | verifies |
+| N2 | `advise_reservation` stores the length as the slot's address | rejected (the stored address is not a logged one) | verifies |
+| N3 | `force_never` advises every slot, used or not (`if true`) | rejected (no length witness for an unused slot) | verifies |
+| N4 | `force_never` reads slot 0's address for every slot | rejected (slot 0 is not known written: no address witness) | verifies |
 
 ## A refill takes partial slabs lowest address first (over the values read)
 

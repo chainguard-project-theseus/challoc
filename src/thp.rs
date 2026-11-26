@@ -46,12 +46,16 @@
 //! group, per PMD chunk, per huge run or per metadata commit. The fast
 //! paths never read this module.
 
-use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crate::config::Thp as Key;
+use crate::sync::patomic::{PAtomicUsize, PermissionUsize};
 use crate::sys::features::Features;
 use crate::sys::thp_host::{Thp as Table, ThpSetting};
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::prelude::*;
+use vstd::resource::Loc;
+use vstd::resource::set::{GhostPersistentSingleton, GhostPersistentSubset, GhostSetAuth};
 
 verus! {
 
@@ -358,14 +362,178 @@ exec static KERNEL_THP: AtomicU8 = AtomicU8::new(0);
 /// the class superblock and the metadata mapping of
 /// `layout::Regions::reserve_owning` (never the huge one, which follows the host),
 /// so [`force_never`] can advise them after the fact. `(addr, len)`, `len`
-/// 0 when unused.
-const MAX_RESERVATIONS: usize = 4;
-exec static RESERVATIONS: [(AtomicUsize, AtomicUsize); MAX_RESERVATIONS] = [
-    (AtomicUsize::new(0), AtomicUsize::new(0)),
-    (AtomicUsize::new(0), AtomicUsize::new(0)),
-    (AtomicUsize::new(0), AtomicUsize::new(0)),
-    (AtomicUsize::new(0), AtomicUsize::new(0)),
-];
+/// 0 when unused. vstd atomics under an invariant ([`ResPred`], #975): a
+/// used slot's address and length are from reservations
+/// [`advise_reservation`] recorded, none of them [`Reservation::Huge`].
+pub const MAX_RESERVATIONS: usize = 4;
+exec static RESERVATIONS: Reservations
+    ensures
+        RESERVATIONS.wf(),
+{
+    let (a0, Tracked(pa0)) = PAtomicUsize::new(0);
+    let (l0, Tracked(pl0)) = PAtomicUsize::new(0);
+    let (a1, Tracked(pa1)) = PAtomicUsize::new(0);
+    let (l1, Tracked(pl1)) = PAtomicUsize::new(0);
+    let (a2, Tracked(pa2)) = PAtomicUsize::new(0);
+    let (l2, Tracked(pl2)) = PAtomicUsize::new(0);
+    let (a3, Tracked(pa3)) = PAtomicUsize::new(0);
+    let (l3, Tracked(pl3)) = PAtomicUsize::new(0);
+    let slots = [(a0, l0), (a1, l1), (a2, l2), (a3, l3)];
+    let ghost ids = seq![(a0.id(), l0.id()), (a1.id(), l1.id()), (a2.id(), l2.id()), (a3.id(), l3.id())];
+    let tracked mut perms = Map::<int, (PermissionUsize, PermissionUsize)>::tracked_empty();
+    proof {
+        perms.tracked_insert(0, (pa0, pl0));
+        perms.tracked_insert(1, (pa1, pl1));
+        perms.tracked_insert(2, (pa2, pl2));
+        perms.tracked_insert(3, (pa3, pl3));
+    }
+    let tracked (log, log_sub) = GhostSetAuth::<Recorded>::new(Set::empty());
+    let tracked (written, written_sub) = GhostSetAuth::<int>::new(Set::empty());
+    let tracked inv = AtomicInvariant::new(
+        (ids, log.id(), written.id()),
+        (perms, log, log_sub.persist(), written, written_sub.persist()),
+        res_ns(),
+    );
+    proof {
+        assert(slots@ =~= seq![(a0, l0), (a1, l1), (a2, l2), (a3, l3)]);
+    }
+    Reservations { slots, inv: Tracked(inv) }
+}
+
+/// A reservation [`advise_reservation`] recorded: its kind, address and
+/// length.
+pub type Recorded = (Reservation, usize, usize);
+
+/// [`RESERVATIONS`]: the slots, `(addr, len)` each, and their invariant
+/// ([`ResPred`]), a ghost field.
+pub struct Reservations {
+    slots: [(PAtomicUsize, PAtomicUsize); MAX_RESERVATIONS],
+    // Ghost: ordinary builds keep the field but erase the code that reads it.
+    #[allow(dead_code)]
+    inv: Tracked<AtomicInvariant<ResKey, ResVal, ResPred>>,
+}
+
+/// Namespace of [`RESERVATIONS`]' invariant ([`ResPred`]).
+pub open spec fn res_ns() -> int {
+    0x6e6f_6875
+}
+
+/// What [`ResPred`] is keyed by: the slots' identities (address, length),
+/// the location of the log of recorded reservations and that of the set
+/// of slots whose address is written.
+pub type ResKey = (Seq<(int, int)>, Loc, Loc);
+
+/// What [`RESERVATIONS`]' invariant holds: each slot's two permissions,
+/// the log's authority and a persistent copy of it (from which witnesses
+/// split), and the same pair for the set of slots whose address is
+/// written.
+pub type ResVal = (
+    Map<int, (PermissionUsize, PermissionUsize)>,
+    GhostSetAuth<Recorded>,
+    GhostPersistentSubset<Recorded>,
+    GhostSetAuth<int>,
+    GhostPersistentSubset<int>,
+);
+
+/// [`RESERVATIONS`]' invariant: no reservation in the log is
+/// [`Reservation::Huge`]; a slot whose address is written holds the
+/// address of a logged reservation; a slot with a nonzero length has its
+/// address written and holds the length of a logged reservation. Nothing
+/// leaves either set, so a witness split from one stays true.
+pub struct ResPred;
+
+/// A slot whose permissions and written mark are as in `v0` keeps
+/// [`slot_ok`] when the log only grows.
+proof fn lemma_slot_kept(k: ResKey, v0: ResVal, v: ResVal, j: int)
+    requires
+        slot_ok(k, v0, j),
+        v.0.contains_key(j),
+        v.0[j] == v0.0[j],
+        v0.1@ <= v.1@,
+        v.3@.contains(j) == v0.3@.contains(j),
+    ensures
+        slot_ok(k, v, j),
+{
+    if v0.3@.contains(j) {
+        let r = choose|r: Recorded| v0.1@.contains(r) && r.1 == v0.0[j].0.value();
+        assert(v.1@.contains(r));
+    }
+    if v0.0[j].1.value() != 0 {
+        let r = choose|r: Recorded| v0.1@.contains(r) && r.2 == v0.0[j].1.value();
+        assert(v.1@.contains(r));
+    }
+}
+
+/// [`ResPred`] at slot `i`: its permissions are the slot's, its address
+/// is a logged reservation's once written, and a nonzero length is a
+/// logged reservation's, with the address written.
+pub open spec fn slot_ok(k: ResKey, v: ResVal, i: int) -> bool {
+    &&& v.0.contains_key(i)
+    &&& v.0[i].0.id() == k.0[i].0
+    &&& v.0[i].1.id() == k.0[i].1
+    &&& (v.3@.contains(i) ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.1 == v.0[i].0.value())
+    &&& (v.0[i].1.value() != 0 ==> v.3@.contains(i))
+    &&& (v.0[i].1.value() != 0 ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.2 == v.0[i].1.value())
+}
+
+impl InvariantPredicate<ResKey, ResVal> for ResPred {
+    open spec fn inv(k: ResKey, v: ResVal) -> bool {
+        &&& k.0.len() == MAX_RESERVATIONS
+        &&& forall|i: int| 0 <= i < MAX_RESERVATIONS ==> #[trigger] slot_ok(k, v, i)
+        &&& v.1.id() == k.1
+        &&& v.2.id() == k.1
+        &&& v.2@ == v.1@
+        &&& v.3.id() == k.2
+        &&& v.4.id() == k.2
+        &&& v.4@ == v.3@
+        &&& forall|r: Recorded| #[trigger] v.1@.contains(r) ==> r.0 != Reservation::Huge
+    }
+}
+
+impl Reservations {
+    /// The invariant is over these slots, in [`res_ns`].
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.inv@.namespace() == res_ns()
+        &&& forall|i: int| 0 <= i < MAX_RESERVATIONS ==>
+            (#[trigger] self.inv@.constant().0[i]) == (self.slots[i].0.id(), self.slots[i].1.id())
+    }
+
+    /// The location of the log of recorded reservations ([`ResPred`]),
+    /// which every witness [`madvise_nohugepage`] takes names.
+    pub closed spec fn loc(&self) -> Loc {
+        self.inv@.constant().1
+    }
+
+    /// [`ResPred`] at slot `i` of these slots, for a value `v` it holds of.
+    proof fn lemma_slot(&self, v: ResVal, i: int)
+        requires
+            self.wf(),
+            ResPred::inv(self.inv@.constant(), v),
+            0 <= i < MAX_RESERVATIONS,
+        ensures
+            v.0.contains_key(i),
+            v.0[i].0.id() == self.slots[i].0.id(),
+            v.0[i].1.id() == self.slots[i].1.id(),
+            v.3@.contains(i) ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.1 == v.0[i].0.value(),
+            v.0[i].1.value() != 0 ==> v.3@.contains(i),
+            v.0[i].1.value() != 0 ==> exists|r: Recorded| #[trigger] v.1@.contains(r) && r.2 == v.0[i].1.value(),
+    {
+        assert(slot_ok(self.inv@.constant(), v, i));
+        assert(self.inv@.constant().0[i] == (self.slots[i].0.id(), self.slots[i].1.id()));
+    }
+}
+
+/// [`RESERVATIONS`], with the facts its initialiser ensures; the witnesses
+/// name its log through this reference (a spec cannot read an `exec
+/// static`).
+#[inline(always)]
+fn reservations() -> (r: &'static Reservations)
+    ensures
+        r.wf(),
+    opens_invariants none
+{
+    &RESERVATIONS
+}
 
 /// The three thresholds as stored. They hold [`Decision::wf`] values
 /// (they start so and only [`store`] writes them, from [`configure`]'s
@@ -438,19 +606,69 @@ pub fn forced_by_limit(key: Key, limit: u64) -> (r: bool)
 /// read) and give the class and metadata reservations already made the
 /// `never` advice (the module doc; the huge reservation was never recorded
 /// and stays with the host's policy, as under a configured `never`).
+/// Proved (#975): each slot it advises has the address and length of
+/// reservations [`advise_reservation`] recorded, none of them the huge
+/// one ([`ResPred`]); the loads are vstd's (`SeqCst`).
 pub fn force_never()
     requires
         crate::sys::may_syscall(),
 {
     let d = Decision::off(Reason::Forced, load_lg_pmd());
     store(&d);
-    for (addr, len) in RESERVATIONS.iter()
+    let s = reservations();
+    for i in 0..MAX_RESERVATIONS
         invariant
             crate::sys::may_syscall(),
+            s.wf(),
     {
-        let len = len.load(Ordering::Relaxed);
+        // The length first: a nonzero one is a logged reservation's, and
+        // its slot's address is written (`ResPred`), which a witness
+        // keeps for the address's load below.
+        let len;
+        let tracked mut owl: Option<GhostPersistentSingleton<Recorded>> = None;
+        let tracked mut owi: Option<GhostPersistentSingleton<int>> = None;
+        vstd::open_atomic_invariant!(s.inv.borrow() => v => {
+            proof {
+                s.lemma_slot(v, i as int);
+            }
+            let tracked (perms, log, log_all, written, written_all) = v;
+            len = s.slots[i].1.load(Tracked(&perms.tracked_borrow(i as int).1));
+            proof {
+                if len != 0 {
+                    let r = choose|r: Recorded| log@.contains(r) && r.2 == len;
+                    let tracked mut c = log_all.duplicate();
+                    let tracked w = c.split_singleton(r);
+                    assert(w@.0 != Reservation::Huge);
+                    owl = Some(w);
+                    let tracked mut d = written_all.duplicate();
+                    owi = Some(d.split_singleton(i as int));
+                }
+                v = (perms, log, log_all, written, written_all);
+            }
+        });
         if len != 0 {
-            advise_nohugepage(addr.load(Ordering::Relaxed), len);
+            let tracked wl = owl.tracked_unwrap();
+            let tracked wi = owi.tracked_unwrap();
+            let addr;
+            let tracked mut owa: Option<GhostPersistentSingleton<Recorded>> = None;
+            vstd::open_atomic_invariant!(s.inv.borrow() => v => {
+                proof {
+                    s.lemma_slot(v, i as int);
+                }
+                let tracked (perms, log, log_all, written, written_all) = v;
+                addr = s.slots[i].0.load(Tracked(&perms.tracked_borrow(i as int).0));
+                proof {
+                    wi.agree(&written);
+                    let r = choose|r: Recorded| log@.contains(r) && r.1 == addr;
+                    let tracked mut c = log_all.duplicate();
+                    let tracked w = c.split_singleton(r);
+                    assert(w@.0 != Reservation::Huge);
+                    owa = Some(w);
+                    v = (perms, log, log_all, written, written_all);
+                }
+            });
+            let tracked wa = owa.tracked_unwrap();
+            advise_nohugepage(addr, len, Ghost(s), Tracked(&wa), Tracked(&wl));
         }
     }
 }
@@ -472,7 +690,10 @@ pub enum Reservation {
 impl Reservation {
     /// Whether `never` leaves the reservation to the host's THP policy
     /// instead of `MADV_NOHUGEPAGE`ing it.
-    pub const fn follows_host(self) -> bool {
+    pub const fn follows_host(self) -> (r: bool)
+        ensures
+            r == (self == Reservation::Huge),
+    {
         matches!(self, Reservation::Huge)
     }
 }
@@ -482,7 +703,9 @@ impl Reservation {
 /// recorded for [`force_never`] and, under `thp:never` on a kernel with
 /// THP, `MADV_NOHUGEPAGE`d here (the module doc); the huge reservation is
 /// neither (it follows the host's policy). Returns whether the advice was
-/// issued.
+/// issued. A class or metadata reservation joins the log of
+/// [`RESERVATIONS`]' invariant ([`ResPred`]) before its slot's address
+/// and then its length are stored (vstd's `SeqCst` stores).
 pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool
     requires
         crate::sys::may_syscall(),
@@ -490,17 +713,122 @@ pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool
     if kind.follows_host() {
         return false;
     }
-    for (a, l) in RESERVATIONS.iter() {
-        if l.load(Ordering::Relaxed) == 0 {
-            a.store(addr, Ordering::Relaxed);
-            l.store(len, Ordering::Relaxed);
+    let s = reservations();
+    // Log the reservation first (ghost): the slots' stores below take
+    // their values from it, and the advice its witness.
+    let tracked mut ow: Option<GhostPersistentSingleton<Recorded>> = None;
+    let ghost k = s.inv@.constant();
+    vstd::open_atomic_invariant!(s.inv.borrow() => v => {
+        let ghost v0 = v;
+        let tracked (perms, mut log, mut log_all, written, written_all) = v;
+        proof {
+            let rec: Recorded = (kind, addr, len);
+            if !log@.contains(rec) {
+                let tracked one = log.insert(rec);
+                log_all.combine_points_to(one.persist());
+            }
+            let tracked mut c = log_all.duplicate();
+            ow = Some(c.split_singleton(rec));
+            v = (perms, log, log_all, written, written_all);
+            // The log only grew: every slot's witnesses are still in it.
+            assert forall|j: int| 0 <= j < MAX_RESERVATIONS implies #[trigger] slot_ok(k, v, j) by {
+                assert(slot_ok(k, v0, j));
+                lemma_slot_kept(k, v0, v, j);
+            }
+        }
+    });
+    let tracked w = ow.tracked_unwrap();
+    let mut i = 0;
+    while i < MAX_RESERVATIONS
+        invariant
+            s.wf(),
+            w.id() == s.loc(),
+            w@ == (kind, addr, len),
+            kind != Reservation::Huge,
+            k == s.inv@.constant(),
+        decreases MAX_RESERVATIONS - i,
+    {
+        let used;
+        vstd::open_atomic_invariant!(s.inv.borrow() => v => {
+            proof {
+                s.lemma_slot(v, i as int);
+            }
+            used = s.slots[i].1.load(Tracked(&v.0.tracked_borrow(i as int).1));
+        });
+        if used == 0 {
+            // The address, then the slot joins the set of written ones
+            // (`ResPred`), whose witness lets the length's store follow.
+            let tracked mut owi: Option<GhostPersistentSingleton<int>> = None;
+            vstd::open_atomic_invariant!(s.inv.borrow() => v => {
+                proof {
+                    s.lemma_slot(v, i as int);
+                }
+                let ghost v0 = v;
+                let tracked (mut perms, log, log_all, mut written, mut written_all) = v;
+                let tracked (mut pa, pl) = perms.tracked_remove(i as int);
+                s.slots[i].0.store(Tracked(&mut pa), addr);
+                proof {
+                    w.agree(&log);
+                    perms.tracked_insert(i as int, (pa, pl));
+                    if !written@.contains(i as int) {
+                        let tracked one = written.insert(i as int);
+                        written_all.combine_points_to(one.persist());
+                    }
+                    let tracked mut c = written_all.duplicate();
+                    owi = Some(c.split_singleton(i as int));
+                    v = (perms, log, log_all, written, written_all);
+                    // Slot `i` now holds `addr`, the logged `w`'s; the
+                    // others are as they were.
+                    assert forall|j: int| 0 <= j < MAX_RESERVATIONS implies #[trigger] slot_ok(k, v, j) by {
+                        assert(slot_ok(k, v0, j));
+                        if j == i as int {
+                            assert(v.1@.contains(w@) && w@.1 == v.0[j].0.value());
+                            if v0.0[j].1.value() != 0 {
+                                let r = choose|r: Recorded| v0.1@.contains(r) && r.2 == v0.0[j].1.value();
+                                assert(v.1@.contains(r));
+                            }
+                        } else {
+                            lemma_slot_kept(k, v0, v, j);
+                        }
+                    }
+                }
+            });
+            let tracked wi = owi.tracked_unwrap();
+            vstd::open_atomic_invariant!(s.inv.borrow() => v => {
+                proof {
+                    s.lemma_slot(v, i as int);
+                }
+                let ghost v0 = v;
+                let tracked (mut perms, log, log_all, written, written_all) = v;
+                let tracked (pa, mut pl) = perms.tracked_remove(i as int);
+                s.slots[i].1.store(Tracked(&mut pl), len);
+                proof {
+                    w.agree(&log);
+                    wi.agree(&written);
+                    perms.tracked_insert(i as int, (pa, pl));
+                    v = (perms, log, log_all, written, written_all);
+                    // Slot `i` now holds `len`, the logged `w`'s, and its
+                    // address is written (`wi`); the others are as they were.
+                    assert forall|j: int| 0 <= j < MAX_RESERVATIONS implies #[trigger] slot_ok(k, v, j) by {
+                        assert(slot_ok(k, v0, j));
+                        if j == i as int {
+                            assert(v.1@.contains(w@) && w@.2 == v.0[j].1.value());
+                            let r = choose|r: Recorded| v0.1@.contains(r) && r.1 == v0.0[j].0.value();
+                            assert(v.1@.contains(r));
+                        } else {
+                            lemma_slot_kept(k, v0, v, j);
+                        }
+                    }
+                }
+            });
             break;
         }
+        i += 1;
     }
     if !is_never() {
         return false;
     }
-    advise_nohugepage(addr, len)
+    advise_nohugepage(addr, len, Ghost(s), Tracked(&w), Tracked(&w))
 }
 
 /// Whether `never` is the policy in force: the key, or `always` forced to
@@ -513,15 +841,28 @@ pub fn is_never() -> bool {
 }
 
 /// `MADV_NOHUGEPAGE` on a reservation, counted; nothing on a kernel
-/// without THP.
-fn advise_nohugepage(addr: usize, len: usize) -> bool
+/// without THP. The witnesses are [`madvise_nohugepage`]'s.
+fn advise_nohugepage(
+    addr: usize,
+    len: usize,
+    Ghost(s): Ghost<&Reservations>,
+    Tracked(wa): Tracked<&GhostPersistentSingleton<Recorded>>,
+    Tracked(wl): Tracked<&GhostPersistentSingleton<Recorded>>,
+) -> bool
     requires
         crate::sys::may_syscall(),
+        s.wf(),
+        wa.id() == s.loc(),
+        wl.id() == s.loc(),
+        wa@.0 != Reservation::Huge,
+        wl@.0 != Reservation::Huge,
+        wa@.1 == addr,
+        wl@.2 == len,
 {
     if len == 0 || KERNEL_THP.load(Ordering::Relaxed) == 0 {
         return false;
     }
-    if madvise_nohugepage(addr, len) {
+    if madvise_nohugepage(addr, len, Ghost(s), Tracked(wa), Tracked(wl)) {
         NOHUGE_RANGES.fetch_add(1, Ordering::Relaxed);
         true
     } else {
@@ -532,12 +873,22 @@ fn advise_nohugepage(addr: usize, len: usize) -> bool
 
 /// Forget every recorded reservation (the tests share the process-wide
 /// slots).
+/// The tests carry no proof: their permissions are ghost, and resetting
+/// the slots breaks [`ResPred`], which no test relies on.
 #[cfg(test)]
 fn reset_reservations_for_test() {
-    for (a, l) in RESERVATIONS.iter() {
-        a.store(0, Ordering::Relaxed);
-        l.store(0, Ordering::Relaxed);
+    for (a, l) in RESERVATIONS.slots.iter() {
+        a.store(Tracked::assume_new(), 0);
+        l.store(Tracked::assume_new(), 0);
     }
+}
+
+/// The recorded slots' `(addr, len)`, used or not, for the tests.
+#[cfg(test)]
+fn slots_for_test() -> [(usize, usize); MAX_RESERVATIONS] {
+    RESERVATIONS.slots.each_ref().map(
+        |(a, l)| (a.load(Tracked::assume_new()), l.load(Tracked::assume_new())),
+    )
 }
 
 /// The host's global THP mode as read at init (0 for a kernel without
@@ -717,9 +1068,29 @@ fn madvise_hugepage(addr: usize, len: usize, Ghost(home): Ghost<bool>) -> bool
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_HUGEPAGE) }.is_ok()
 }
 
-fn madvise_nohugepage(addr: usize, len: usize) -> bool
+/// `MADV_NOHUGEPAGE` on `[addr, addr + len)`, the one place `thp.rs`
+/// asks for it (#975). `wa` and `wl` are witnesses from the log of
+/// [`RESERVATIONS`]' invariant ([`ResPred`]): the address is that of a
+/// reservation [`advise_reservation`] recorded, the length that of one
+/// (maybe another: the two are not paired, #977), and neither is
+/// [`Reservation::Huge`], so no advice starts at the huge reservation.
+/// The witnesses are ghost.
+fn madvise_nohugepage(
+    addr: usize,
+    len: usize,
+    Ghost(s): Ghost<&Reservations>,
+    Tracked(wa): Tracked<&GhostPersistentSingleton<Recorded>>,
+    Tracked(wl): Tracked<&GhostPersistentSingleton<Recorded>>,
+) -> bool
     requires
         crate::sys::may_syscall(),
+        s.wf(),
+        wa.id() == s.loc(),
+        wl.id() == s.loc(),
+        wa@.0 != Reservation::Huge,
+        wl@.0 != Reservation::Huge,
+        wa@.1 == addr,
+        wl@.2 == len,
 {
     // SAFETY: a reservation this process owns; `MADV_NOHUGEPAGE` sets a
     // VMA flag, never contents.
@@ -1027,9 +1398,11 @@ mod tests {
             let before = stats();
             assert!(!advise_reservation(Reservation::Huge, 1 << 40, 1 << 30));
             assert_eq!(stats(), before);
-            assert!(RESERVATIONS.iter().all(
-                |(a, l)| l.load(Ordering::Relaxed) == 0 || a.load(Ordering::Relaxed) != 1 << 40
-            ));
+            assert!(
+                slots_for_test()
+                    .iter()
+                    .all(|&(a, l)| l == 0 || a != 1 << 40)
+            );
         });
     }
 
@@ -1058,9 +1431,8 @@ mod tests {
 
     /// The recorded slots: `(addr, len)` of every used one, in order.
     fn recorded() -> std::vec::Vec<(usize, usize)> {
-        RESERVATIONS
-            .iter()
-            .map(|(a, l)| (a.load(Ordering::Relaxed), l.load(Ordering::Relaxed)))
+        slots_for_test()
+            .into_iter()
             .filter(|&(_, l)| l != 0)
             .collect()
     }

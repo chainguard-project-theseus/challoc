@@ -28,7 +28,7 @@ Tool: none (assumption). Status: trusted.
 
 Hashes: contract 2374419075, body none.
 
-Specs unresolved (spec fns of the name): `wf` (34).
+Specs unresolved (spec fns of the name): `wf` (35).
 
 ```rust
 pub(crate) axiom fn axiom_thread_mask() -> (tracked sig: SigMask)
