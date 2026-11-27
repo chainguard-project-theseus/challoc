@@ -63,6 +63,19 @@ pub open spec fn idle_pick(e: vstd::set::Set<nat>, p: vstd::set::Set<nat>, floor
     }
 }
 
+/// Slab `x` is owned, in the state map `st`, and `Active`.
+pub open spec fn is_active(st: vstd::map::Map<nat, State>, x: nat) -> bool {
+    st.contains_key(x) && st[x] == State::Active
+}
+
+/// Every slab `Active` in `a` is still `Active` in `b`
+/// ([`ClassState::next_slab`] keeps them). Opaque:
+/// [`ClassState::plan_at`] carries it as an atom.
+#[verifier::opaque]
+pub open spec fn active_kept(a: vstd::map::Map<nat, State>, b: vstd::map::Map<nat, State>) -> bool {
+    forall|x: nat| #[trigger] is_active(a, x) ==> is_active(b, x)
+}
+
 /// Theorem: a refill's idle slab is the lowest one, `Empty` before
 /// `Purged` before fresh (THEOREMS.md, "A refill takes the lowest idle
 /// slab"). For what [`ClassState::next_slab`] read and returned
@@ -185,6 +198,11 @@ impl ClassState {
             },
             // The slab is `Purged` exactly when it came from that set.
             r matches Some(s) ==> (final(g).st(s as nat) == State::Purged) == old(g).purged.map@.contains(s as nat),
+            // The slab was no owned `Active` slab (so no earlier pick of
+            // the hold, which `take` made `Active`), and an owned `Active`
+            // slab stays so.
+            r matches Some(s) ==> !is_active(old(g).states@, s as nat),
+            active_kept(old(g).states@, final(g).states@),
             // The group cursor never moves back, and the slab is `Fresh`
             // exactly when it is one the cursor passed in this call.
             old(g).group_next <= final(g).group_next,
@@ -201,6 +219,9 @@ impl ClassState {
     {
         let ghost e0 = g.empty.map@;
         let ghost p0 = g.purged.map@;
+        proof {
+            reveal(active_kept);
+        }
         // Spelled out, not `empty_take` and `purged_take`: this runs
         // inlined in `claim_with` (through `plan`), whose machine
         // code the helpers reorder (`scripts/codegen-diff.sh`); the
@@ -286,6 +307,9 @@ impl ClassState {
                 if g1.owns(s as nat) {
                     assert(g.st(s as nat) == g1.st(s as nat));
                 }
+            }
+            assert forall|x: nat| #[trigger] is_active(g1.states@, x) implies is_active(g.states@, x) by {
+                assert(g1.owns(x));
             }
             reveal(idle_pick);
         }
