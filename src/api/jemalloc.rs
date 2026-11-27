@@ -695,7 +695,7 @@ pub fn rallocx_zeroed(
 /// `xallocx(p, size, extra, flags)`: resize in place only. challoc never
 /// changes a block's class or run in place, so the result is always the
 /// current usable size; a caller that needs more must `rallocx`.
-pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int, Tracked(obs): Tracked<&mut crate::class::BitLoad>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -707,12 +707,15 @@ pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int, Tracked(o
         // NULL aborts (no block is at address 0), and the size is positive.
         p@.addr != 0,
         0 < r,
+        crate::heap::slot_start(p) ==> crate::heap::slot_checked(p, *final(obs)),
 {
-    sallocx(p, 0, Tracked(ord))
+    sallocx(p, 0, Tracked(obs), Tracked(ord))
 }
 
-/// `sallocx(p, flags)`: usable size of the live allocation `p`.
-pub fn sallocx(p: *mut u8, _flags: c_int, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+/// `sallocx(p, flags)`: usable size of the live allocation `p`. For a
+/// slot start, `obs` gets the record of [`usable_size`]'s bit test
+/// ([`crate::heap::slot_checked`]).
+pub fn sallocx(p: *mut u8, _flags: c_int, Tracked(obs): Tracked<&mut crate::class::BitLoad>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -723,6 +726,7 @@ pub fn sallocx(p: *mut u8, _flags: c_int, Tracked(ord): Tracked<&mut LockOrder>)
         usable_of(p, r as int),
         p@.addr != 0,
         0 < r,
+        crate::heap::slot_start(p) ==> crate::heap::slot_checked(p, *final(obs)),
 {
     if p.is_null() {
         not_an_allocation("sallocx", p);
@@ -731,7 +735,7 @@ pub fn sallocx(p: *mut u8, _flags: c_int, Tracked(ord): Tracked<&mut LockOrder>)
         not_an_allocation("sallocx", p)
     };
     let tracked none = Live::empty();
-    usable_size(shared, p, Tracked(&none), Tracked(ord))
+    usable_size(shared, p, Tracked(&none), Tracked(obs), Tracked(ord))
 }
 
 /// `dallocx(p, flags)`: free through the flags' cache (`MALLOCX_TCACHE_NONE`
@@ -1413,7 +1417,8 @@ mod exports {
             0 < r,
         ] {
             let tracked mut ord = crate::lock::axiom_c_entry();
-            super::xallocx(p as *mut u8, size, extra, flags, Tracked(&mut ord))
+            let tracked mut obs = crate::class::BitLoad::new();
+            super::xallocx(p as *mut u8, size, extra, flags, Tracked(&mut obs), Tracked(&mut ord))
         }
         fn sallocx / je_sallocx(p: *mut c_void, flags: c_int) -> (r: usize) ensures [
             crate::heap::free_target(p as *mut u8),
@@ -1422,7 +1427,8 @@ mod exports {
             0 < r,
         ] {
             let tracked mut ord = crate::lock::axiom_c_entry();
-            super::sallocx(p as *mut u8, flags, Tracked(&mut ord))
+            let tracked mut obs = crate::class::BitLoad::new();
+            super::sallocx(p as *mut u8, flags, Tracked(&mut obs), Tracked(&mut ord))
         }
         fn dallocx / je_dallocx(p: *mut c_void, flags: c_int) ensures [
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),

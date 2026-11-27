@@ -3193,7 +3193,8 @@ fn out_tokens() -> [(String, String); 2] {
 /// (`axiom_errno_at_return`, named in `axiom`) and whether it hands an
 /// out-pointer token back ([`out_tokens`]). The body sets up its call
 /// (the root grants, the token it lends, the C caller's out-pointer
-/// token, the C call's lock-order token), then calls its Rust entry
+/// token, a query's ghost bit-test record, the C call's lock-order
+/// token), then calls its Rust entry
 /// point once, through `super::`,
 /// and returns what the call returned: as the body's tail, or bound to
 /// `r`, followed by the axiom on its `errno` token and the hand-back of
@@ -3212,6 +3213,8 @@ fn check_export_body(at: &str, body: &[String], axiom: &str) -> (bool, bool) {
         outs[0].0.clone(),
         outs[1].0.clone(),
         String::from("let tracked mut left = Ghost(crate::purge::Left::none());"),
+        // The queries' bit-test record (`heap::slot_checked`), ghost.
+        String::from("let tracked mut obs = crate::class::BitLoad::new();"),
         std::format!("let tracked mut ord = crate::lock::{}();", "axiom_c_entry"),
     ];
     let call = body

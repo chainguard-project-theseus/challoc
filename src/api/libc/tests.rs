@@ -48,7 +48,11 @@ fn malloc_free_round_trip_every_tier() {
         );
         assert!(!p.is_null(), "malloc({n})");
         assert_eq!(p as usize % QUANTUM, 0);
-        let usable = malloc_usable_size(p, vstd::prelude::Tracked::assume_new());
+        let usable = malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert!(usable >= n, "usable {usable} < {n}");
         match class_size_of(n) {
             Some(s) => assert_eq!(usable, s),
@@ -64,7 +68,11 @@ fn malloc_free_round_trip_every_tier() {
         );
     }
     assert_eq!(
-        malloc_usable_size(ptr::null_mut(), vstd::prelude::Tracked::assume_new()),
+        malloc_usable_size(
+            ptr::null_mut(),
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         0
     );
     free(
@@ -249,6 +257,7 @@ fn realloc_moves_and_preserves_content() {
             super::super::shared(),
             h2,
             vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         ),
         MEDIUM_MAX + 2 * page
@@ -280,7 +289,13 @@ fn realloc_moves_and_preserves_content() {
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
-    assert!(malloc_usable_size(r, vstd::prelude::Tracked::assume_new()) >= 64);
+    assert!(
+        malloc_usable_size(
+            r,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ) >= 64
+    );
     free(
         r,
         vstd::prelude::Tracked::assume_new(),
@@ -303,7 +318,11 @@ fn realloc_to_usable_size_keeps() {
             vstd::prelude::Tracked::assume_new(),
         );
         assert_eq!(
-            malloc_usable_size(p, vstd::prelude::Tracked::assume_new()),
+            malloc_usable_size(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
             s
         );
         assert_eq!(
@@ -343,7 +362,11 @@ fn realloc_to_usable_size_keeps() {
             vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new(),
         );
-        let u = malloc_usable_size(p, vstd::prelude::Tracked::assume_new());
+        let u = malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new(),
+        );
         assert_eq!(
             realloc(
                 p,
@@ -388,7 +411,13 @@ fn aligned_allocations_honour_every_power_of_two() {
                 0,
                 "aligned_alloc({align}, {size}) = {p:p}"
             );
-            assert!(malloc_usable_size(p, vstd::prelude::Tracked::assume_new()) >= size);
+            assert!(
+                malloc_usable_size(
+                    p,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                ) >= size
+            );
             fill(p, size, 9);
             check(p, size, 9);
             free(
@@ -433,7 +462,11 @@ fn aligned_allocation_picks_the_smallest_fitting_class() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(
-        malloc_usable_size(p, vstd::prelude::Tracked::assume_new()),
+        malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         64
     );
     free(
@@ -450,7 +483,11 @@ fn aligned_allocation_picks_the_smallest_fitting_class() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(
-        malloc_usable_size(p, vstd::prelude::Tracked::assume_new()),
+        malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         class_size_of(48).unwrap()
     );
     free(
@@ -468,7 +505,11 @@ fn aligned_allocation_picks_the_smallest_fitting_class() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(
-        malloc_usable_size(p, vstd::prelude::Tracked::assume_new()),
+        malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         8192
     );
     free(
@@ -587,7 +628,13 @@ fn valloc_and_pvalloc_are_page_aligned() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(p as usize % page, 0);
-    assert!(malloc_usable_size(p, vstd::prelude::Tracked::assume_new()) >= 10);
+    assert!(
+        malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ) >= 10
+    );
     free(
         p,
         vstd::prelude::Tracked::assume_new(),
@@ -600,7 +647,13 @@ fn valloc_and_pvalloc_are_page_aligned() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(p as usize % page, 0);
-    assert!(malloc_usable_size(p, vstd::prelude::Tracked::assume_new()) >= 2 * page);
+    assert!(
+        malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ) >= 2 * page
+    );
     free(
         p,
         vstd::prelude::Tracked::assume_new(),
@@ -612,7 +665,13 @@ fn valloc_and_pvalloc_are_page_aligned() {
         vstd::prelude::Tracked::assume_new(),
         vstd::prelude::Tracked::assume_new(),
     );
-    assert!(malloc_usable_size(p, vstd::prelude::Tracked::assume_new()) >= page);
+    assert!(
+        malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ) >= page
+    );
     free(
         p,
         vstd::prelude::Tracked::assume_new(),
@@ -653,7 +712,11 @@ fn usable_entry_points_agree_with_malloc_usable_size_on_every_tier() {
         assert_eq!(p as usize % QUANTUM, 0);
         assert_eq!(
             u,
-            malloc_usable_size(p, vstd::prelude::Tracked::assume_new()),
+            malloc_usable_size(
+                p,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            ),
             "malloc_usable({n})"
         );
         assert!(u >= n);
@@ -683,7 +746,11 @@ fn usable_entry_points_agree_with_malloc_usable_size_on_every_tier() {
         );
         fill(
             d,
-            malloc_usable_size(d, vstd::prelude::Tracked::assume_new()),
+            malloc_usable_size(
+                d,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            ),
             0xAB,
         );
         free(
@@ -704,7 +771,11 @@ fn usable_entry_points_agree_with_malloc_usable_size_on_every_tier() {
         assert!(!q.is_null(), "calloc_usable({n})");
         assert_eq!(
             u,
-            malloc_usable_size(q, vstd::prelude::Tracked::assume_new())
+            malloc_usable_size(
+                q,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
         );
         for i in 0..u {
             assert_eq!(
@@ -748,7 +819,11 @@ fn usable_entry_points_agree_with_malloc_usable_size_on_every_tier() {
         assert!(!g.is_null());
         assert_eq!(
             u3,
-            malloc_usable_size(g, vstd::prelude::Tracked::assume_new())
+            malloc_usable_size(
+                g,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new()
+            )
         );
         assert!(u3 >= grown);
         check(g, u.min(grown), 4);
@@ -834,7 +909,11 @@ fn usable_entry_points_null_and_failure_cases() {
     assert!(!p.is_null());
     assert_eq!(
         u,
-        malloc_usable_size(p, vstd::prelude::Tracked::assume_new())
+        malloc_usable_size(
+            p,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        )
     );
     fill(p, 300, 8);
     set_errno(0, vstd::prelude::Tracked::assume_new());

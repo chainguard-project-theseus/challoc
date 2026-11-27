@@ -1032,7 +1032,8 @@ fn theorem_no_user_reads(which: u8, n: usize, m: usize, flags: c_int, p: *mut u8
             super::jemalloc::sdallocx_block(p, n, flags, Tracked(b), Tracked(errno), Tracked(ord));
         },
         _ => {
-            let _ = malloc_usable_size(p, Tracked(ord));
+            let tracked mut obs = crate::class::BitLoad::new();
+            let _ = malloc_usable_size(p, Tracked(&mut obs), Tracked(ord));
         },
     }
 }
@@ -1317,9 +1318,13 @@ fn free_before_init(p: *mut u8) -> !
 /// ([`Live::claims`]), the result is the block's usable bytes. With the
 /// token of a live run, `p` is not one of the run's later pages
 /// ([`run_interior`]): a query of an interior page or the guard does
-/// not return.
+/// not return. For a slot start, `obs` gets the record of the bit test's
+/// load ([`heap::slot_checked`]): the slot's bit was set in some value
+/// its bitmap word held, so a query of a slot no refill ever claimed
+/// does not return. The stale-slot case (a bit a release cleared) is
+/// the load's own value, which this record does not pin.
 #[inline(always)]
-pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
+pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tracked(obs): Tracked<&mut crate::class::BitLoad>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort() || (crate::sys::valid_aborts() && blk.block(p)),
         crate::sys::may_syscall(),
@@ -1327,6 +1332,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tr
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
+        heap::slot_start(p) ==> heap::slot_checked(p, *final(obs)),
         heap::free_target(p),
         crate::layout::process_regions().is_huge_block(p as usize, 1) ==> shared.huge_run_usable(p as usize, r),
         usable_of(p, r as int),
@@ -1352,9 +1358,16 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tr
                     // The live slot, whose token `blk` holds.
                     blk.lemma_block_slot_addr(p, class as int);
                 }
+                *obs = crate::class::BitLoad::new();
             }
-            let tracked mut obs = crate::class::BitLoad::new();
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut obs));
+            let table = shared.table(class);
+            table.check_live(slab as usize, slot as usize, p as usize, Tracked(blk.slot_ref()), Tracked(&mut *obs));
+            proof {
+                // The load's record, at the slab and slot of `p`: the bit
+                // was set in a value its word held.
+                assert(table.load_seen(slab as int, slot as int, *obs));
+                assert(crate::class::bit_seen_at(*table, p@.addr as int, *obs));
+            }
             shared.check_not_cached(class, p);
             proof {
                 // `check_live` returned: not a guard slab.
@@ -1386,6 +1399,12 @@ pub fn usable_size(shared: &Shared, p: *mut u8, Tracked(blk): Tracked<&Live>, Tr
                 crate::vspec::usable::lemma_usable_of_pos(p, r as int);
                 if blk.claims(p) {
                     shared.lemma_run_page(p, page, *blk);
+                }
+                // A page of the huge region is no slot start.
+                if heap::slot_start(p) {
+                    let c = choose|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr);
+                    assert(shared.regions.is_slot_addr(c, p@.addr));
+                    crate::vspec::zero::lemma_slot_not_huge(c, p as usize);
                 }
             }
             r
@@ -1420,9 +1439,10 @@ fn not_an_allocation(p: *mut u8) -> !
 }
 
 
-/// `malloc_usable_size`. Zero for null.
+/// `malloc_usable_size`. Zero for null. For a slot start, `obs` gets the
+/// record of [`usable_size`]'s bit test ([`heap::slot_checked`]).
 #[inline(always)]
-pub fn malloc_usable_size(p: *mut u8, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
+pub fn malloc_usable_size(p: *mut u8, Tracked(obs): Tracked<&mut crate::class::BitLoad>, Tracked(ord): Tracked<&mut crate::lock::LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort() || p@.addr == 0,
         crate::sys::may_syscall(),
@@ -1432,6 +1452,7 @@ pub fn malloc_usable_size(p: *mut u8, Tracked(ord): Tracked<&mut crate::lock::Lo
         p@.addr != 0 ==> heap::free_target(p),
         p@.addr != 0 ==> usable_of(p, r as int),
         p@.addr != 0 ==> 0 < r,
+        p@.addr != 0 && heap::slot_start(p) ==> heap::slot_checked(p, *final(obs)),
         *final(ord) == *old(ord),
 {
     if p.is_null() {
@@ -1439,7 +1460,7 @@ pub fn malloc_usable_size(p: *mut u8, Tracked(ord): Tracked<&mut crate::lock::Lo
     }
     let tracked none = Live::empty();
     match super::shared_if_ready() {
-        Some(shared) => usable_size(shared, p, Tracked(&none), Tracked(ord)),
+        Some(shared) => usable_size(shared, p, Tracked(&none), Tracked(obs), Tracked(ord)),
         None => free_before_init(p),
     }
 }
@@ -2319,7 +2340,8 @@ fn theorem_realloc_to_usable_size(p: *mut u8, Tracked(blk): Tracked<Live>, Track
         r.1@.addr == p@.addr <==> heap::slot_start(p) || r.0 > MEDIUM_MAX,
 {
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
-    let n = usable_size(shared, p, Tracked(&blk), Tracked(&mut *ord));
+    let tracked mut obs = crate::class::BitLoad::new();
+    let n = usable_size(shared, p, Tracked(&blk), Tracked(&mut obs), Tracked(&mut *ord));
     proof {
         shared.lemma_regions_ok();
         blk.lemma_len_pos();
@@ -2365,7 +2387,8 @@ fn theorem_valid_lookups_never_abort(shared: &Shared, p: *mut u8, size: usize, T
         shared.lemma_regions_ok();
         blk.lemma_claims(p);
     }
-    let _ = usable_size(shared, p, Tracked(&blk), Tracked(&mut *ord));
+    let tracked mut obs = crate::class::BitLoad::new();
+    let _ = usable_size(shared, p, Tracked(&blk), Tracked(&mut obs), Tracked(&mut *ord));
     let tracked mut claim = Claim::held(blk);
     let _ = old_size_or_keep(shared, "realloc", p, size, 1, Tracked(&mut claim), Tracked(&mut *ord));
     let _ = realloc_old(shared, p, size, Tracked(&mut claim), Tracked(ord));
@@ -2642,7 +2665,8 @@ fn malloc_usable_huge(size: usize, usable: *mut usize, grow: bool, Tracked(uout)
         let s = store_usable(usable, 0, Tracked(uout));
         return (enomem(Tracked(errno)), s);
     }
-    let s = store_usable(usable, usable_size(shared, p, Tracked(&*blk), Tracked(&mut *ord)), Tracked(uout));
+    let tracked mut obs = crate::class::BitLoad::new();
+    let s = store_usable(usable, usable_size(shared, p, Tracked(&*blk), Tracked(&mut obs), Tracked(&mut *ord)), Tracked(uout));
     proof {
         // The run `alloc_huge` just returned, with its token: its
         // descriptor records `size` rounded up to whole pages.
@@ -2789,7 +2813,8 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize, Tracked(uout
                     blk.lemma_claims(p);
                 }
             }
-            let u = if p.is_null() { 0 } else { usable_size(shared, p, Tracked(&*blk), Tracked(&mut *ord)) };
+            let tracked mut obs = crate::class::BitLoad::new();
+            let u = if p.is_null() { 0 } else { usable_size(shared, p, Tracked(&*blk), Tracked(&mut obs), Tracked(&mut *ord)) };
             proof {
                 if p@.addr != 0 {
                     // The run `alloc_huge` just returned, with its token.
@@ -4311,7 +4336,8 @@ mod exports {
             p@.addr != 0 ==> 0 < r,
         ] {
             let tracked mut ord = crate::lock::axiom_c_entry();
-            super::malloc_usable_size(p as *mut u8, Tracked(&mut ord))
+            let tracked mut obs = crate::class::BitLoad::new();
+            super::malloc_usable_size(p as *mut u8, Tracked(&mut obs), Tracked(&mut ord))
         }
     }
 

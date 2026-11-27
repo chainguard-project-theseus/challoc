@@ -204,7 +204,7 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
 
 ## `init_slow`
 
-src/api/mod.rs:1495. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1496. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: init::loom_init_free_races_init, init::loom_init_two_callers and init::loom_init_reentry_aborts, and GenMC: init1 [rc11+live imm+live], init3 [rc11+live imm+live arm8+live] and init3_reenter [rc11+live imm+live]; not checked: this body, which the models replace with a copy, with the callers tests/loom/src/init.rs states and one waiter at a time, and the GenMC cases with a copy too (its lines pinned by tests/loom/tests/pins.rs), with the callers tests/genmc/init.rs states (up to three, two waiting at once), each case only under the memory models its citation names (verus/WEAKMEM.md, "GenMC": no race report under ARMv8, and the `-Copt-level=1` IR, not the release build); termination itself, which rests on `init` returning, a fair scheduler and visible stores, as loom models them and GenMC's liveness check (`+live`) assumes, and which that check cannot see for a wait the compiler emptied of loads (verus/WEAKMEM.md, "GenMC"); the fork gate (`init_gate_enter`, `init_gate_done`), which these cases do not run (the forkgate cases run a copy of it, see `init_gate_enter`); a child forked while `init` runs, or a signal handler on the initialising thread that allocates before its `INIT_TID` store, spins for ever, outside the C contract).
 
 > The first caller runs `init` and publishes `READY`; a concurrent one waits for it (termination is not claimed: the wait ends when the other thread's `init` does); the initialising thread re-entering aborts.
@@ -227,7 +227,7 @@ fn init_slow() -> (r: (&'static Shared, Tracked<&'static ReadyMark>))
 
 ## `shared_storage_ptr`
 
-src/api/mod.rs:1553. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1554. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::shared_ptrs_agree).
 
 > The storage of [`SHARED`], the process's [`Shared::storage`].
@@ -245,7 +245,7 @@ fn shared_storage_ptr() -> (p: *mut Shared)
 
 ## `features_ptr`
 
-src/api/mod.rs:1569. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1570. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURES`].
@@ -263,7 +263,7 @@ fn features_ptr() -> (p: *mut Features)
 
 ## `line_ptr`
 
-src/api/mod.rs:1581. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/api/mod.rs:1582. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: api::kani_statics::feature_ptrs_fixed).
 
 > The storage of [`FEATURE_LINE`].
@@ -281,7 +281,7 @@ fn line_ptr() -> (p: *mut FeatureLine)
 
 ## `pthread_atfork_handlers`
 
-src/api/mod.rs:1630. Kind: external_body. Category: function pointer.
+src/api/mod.rs:1631. Kind: external_body. Category: function pointer.
 Tool: Kani. Status: discharged on premises (Kani: api::kani_atfork::atfork_registers_the_handlers; premises: C8 (glibc's pthread_atfork records the three handlers and returns 0 without calling into challoc)).
 
 > The `pthread_atfork` call itself, which may wait on glibc's atfork lock (a futex).
@@ -298,7 +298,7 @@ fn pthread_atfork_handlers() -> i32
 
 ## `init_gate_enter`
 
-src/api/mod.rs:1664. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1665. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: forkgate::loom_forkgate_two_forks, forkgate::loom_forkgate_two_forks_both_allocate and forkgate::loom_forkgate_fork_races_init; not checked: this body, which the models replace with a copy, with the two threads tests/loom/src/forkgate.rs states and one waiter at a time; termination itself, which rests on the other thread's init or fork returning, a fair scheduler and visible stores, as loom models them; a fork from a signal handler (design 9, residuals)).
 
 > Before init's claim: open an init under way as this thread's (`GATE_IDLE` to its `sys::pthread_self`), or go on to the claim when challoc is initialised (`GATE_DONE`), when this thread already holds the gate (a re-entrant call: the claim finds `INITIALISING` and aborts), or when a `fork` holds it and this is the forking thread; wait while another thread's init or another thread's `fork` holds it.
@@ -311,7 +311,7 @@ fn init_gate_enter()
 
 ## `fork_gate_enter`
 
-src/api/mod.rs:1711. Kind: no_decreases. Category: termination.
+src/api/mod.rs:1712. Kind: no_decreases. Category: termination.
 Tool: loom/GenMC. Status: trusted (partly checked, loom: forkgate::loom_forkgate_two_forks, forkgate::loom_forkgate_two_forks_both_allocate and forkgate::loom_forkgate_fork_races_init; not checked: this body, which the models replace with a copy, with the two threads tests/loom/src/forkgate.rs states and one waiter at a time; termination itself, which rests on the other thread's init or fork returning, a fair scheduler and visible stores, as loom models them; a prepare handler registered before challoc's that waits on a thread which is itself forking while the gate is closed, and a fork from a signal handler (design 9, residuals)).
 
 > The prepare handler, before it looks at `STATE`: with challoc initialised (`GATE_DONE`) nothing; with an init under way on another thread, wait until it publishes, so the child gets the finished state; with this thread's own init under way (a `fork` from a signal handler that interrupted it), nothing (design 9, residuals); with none (`GATE_IDLE`), close the gate (`GATE_FORKING`) so that none starts until the parent and child handlers (`fork_gate_exit`): it claims the forker slot (`GATE_FORKER`, 0 to its own `pthread_self`) and then closes the gate, giving the slot back if the close fails.
@@ -324,7 +324,7 @@ fn fork_gate_enter()
 
 ## `axiom_fork_resumed_state`
 
-src/api/mod.rs:2251. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2252. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_holds`] (glibc runs them on the forking thread, after `_Fork`; in the child that thread is the copy of the forking one), and nothing released a lock in between (the handlers call this only when `fork_was_locked` says the calling thread holds the fork window: the window's holder record (`lock::FORK_HOLDER`) is the thread's own `pthread_self` only from its prepare's last step, with every lock held, until its release's first step, and no other thread writes it meanwhile, since another prepare writes it only once it holds every lock.
@@ -346,7 +346,7 @@ axiom fn axiom_fork_resumed_state(l: &Lock<State>) -> (tracked state: StateHold)
 
 ## `axiom_fork_resumed_sig`
 
-src/api/mod.rs:2285. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:2286. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork handler handoff, its signal half; see [`axiom_fork_resumed_state`]): the parent and child handlers run on the thread whose prepare handler returned holding [`fork_sig_holds`] (in the child, its copy, which inherits the mask), whose mask has stayed as that handler left it, every blockable signal blocked: glibc's `_Fork` restores the mask it found, and the atfork handlers registered before ours (whose prepare runs after ours and whose parent and child handlers run before ours) leave the mask as they found it.
@@ -364,7 +364,7 @@ axiom fn axiom_fork_resumed_sig() -> (tracked sig: SigMask)
 
 ## `axiom_line_orphaned`
 
-src/api/mod.rs:3039. Kind: axiom. Category: allocator invariant.
+src/api/mod.rs:3040. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > Premise (the fork child's orphaned line): in the child of a `fork`, a line whose state the child's reset found `LINE_BUILDING` (`before`, the line word's permission just before the reset, and `perm`, just after it, at `LINE_UNBUILT`) was being built by a thread of the parent, which holds the permissions to [`FEATURES`] and [`FEATURE_LINE`] between its winning exchange and its `LINE_READY` store ([`claim_line`], [`publish_line`]), and they satisfy [`LineCell::unbuilt`] throughout (the build writes the features through `ptr_mut_ref`, which keeps them initialised).
@@ -388,7 +388,7 @@ axiom fn axiom_line_orphaned(before: BytePerm, tracked perm: &BytePerm, tracked 
 
 ## `axiom_fork_resumed`
 
-src/api/mod.rs:3125. Kind: axiom. Category: platform/kernel fact.
+src/api/mod.rs:3126. Kind: axiom. Category: platform/kernel fact.
 Tool: none (assumption). Status: trusted.
 
 > Premise (see `api::axiom_fork_resumed_state`): the rest of the hold, with the permission to `slot`, which must be the word the prepare stored its mask to: [`resumed`] passes [`fork_slot`]'s `&FORK_SIGMASK`, as the prepare's store did, and a static has one address; passed any other word, it would mint a second permission to it, which is why it is private to this module.

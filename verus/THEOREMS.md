@@ -235,6 +235,10 @@ leave out (theorem 33). Remaining work is tracked in
 - **mallctl argument errors** ([The `mallctl` entry points state their argument errors](#the-mallctl-entry-points-state-their-argument-errors)):
   `mallctlnametomib`'s, `mallctl`'s, `mallctlbymib`'s, `ctl`'s and
   `cstr`'s `ensures`, `api/mallctl.rs`.
+- **Query bit test** ([The usable-size queries state their slot bit test](#the-usable-size-queries-state-their-slot-bit-test)):
+  `usable_size`'s and `malloc_usable_size`'s `ensures`
+  (`heap::slot_checked`), `api/libc.rs`; `sallocx`'s and `xallocx`'s,
+  `api/jemalloc.rs`.
 
 ## Configuration
 
@@ -4494,8 +4498,11 @@ contract.
   a later flush, or at the call with `double_free_scan` (its checks'
   steps are verified, the state bytes' values a premise,
   `heap/slotstate.rs`); an ABA free is undetectable. The queries'
-  stale-slot abort is not stated; their interior-page abort is, over a
-  run token *(ghost token)*.
+  stale-slot abort is not stated. Their never-claimed-slot abort is,
+  at the cores since chainguard-project-theseus/challoc#1028, over the
+  bit test's record, as *(load)* states it for the frees
+  ([query bit test](#the-usable-size-queries-state-their-slot-bit-test));
+  their interior-page abort is, over a run token *(ghost token)*.
 - Every "abort" is proved as "does not return normally". The abort
   helpers verify and end in `sys::abort_fmt`, but a call may wait on a
   lock before it reaches one, and lock waits are not proved to
@@ -14402,6 +14409,85 @@ in a different function):
 Main verifies all five (`api::mallctl` 155 verified, 0 errors); the PR
 rejects each (150 verified, 5 errors). E1 to E5 are executable: each
 changes an error code a C caller sees.
+
+## The usable-size queries state their slot bit test
+
+A query of a slot start (`malloc_usable_size`, `sallocx`, `xallocx`,
+through `usable_size`) runs `SlabTable::check_live`, which aborts when
+the slot's bitmap bit is clear at its load: a slot no refill claimed,
+or one a release returned to its slab. Before
+chainguard-project-theseus/challoc#1028 that test was not stated: the
+record of its load stayed inside `usable_size`. Now the cores hand it
+out and state it, in the form the plain frees' bit test is stated
+([Bad input](#bad-input), *(load)*, `slot_checked`). As for the frees,
+that form states the never-claimed-slot abort, not the stale-slot one
+(scope, below).
+
+**Statement** (`api/libc.rs`, `api/jemalloc.rs`):
+
+```rust
+// usable_size(shared, p, blk, obs, ord); sallocx and xallocx likewise
+    ensures heap::slot_start(p) ==> heap::slot_checked(p, *final(obs)), ..;
+// malloc_usable_size(p, obs, ord)
+    ensures p@.addr != 0 && heap::slot_start(p) ==> heap::slot_checked(p, *final(obs)), ..;
+
+// heap/theorems.rs (unchanged)
+pub open spec fn slot_checked(p: *mut u8, l: BitLoad) -> bool {
+    exists|t: SlabTable| t.is_process() && #[trigger] bit_seen_at(t, p@.addr as int, l)
+}
+```
+
+`slot_checked(p, l)` holds only of a record a load of `p`'s bitmap word
+made inside the word invariant, finding the slot's bit set in some
+value the word held. A query that returns for a slot start therefore
+found the slot's bit set in some value its word held, so a query of a
+slot no refill ever claimed does not return. That the value is this
+load's own is `bit_word_held`'s body, not a contract (*(load)*).
+
+**Proof.** `usable_size` passes `obs` to `check_live` and asserts
+`load_seen` and `bit_seen_at` at `p`'s slab and slot, as the frees'
+cores do. On the huge path `p` is no slot start
+(`lemma_slot_not_huge`); the invalid path does not return. The callers
+that do not use the record (the token-carrying `usable_size` callers
+in `api/libc.rs`, `theorem_read_only_never_aborts`'s
+`malloc_usable_size(NULL)` in `api/mod.rs`, and the C exports) pass a
+fresh one; the export-shape test
+(`exports_return_their_callees_result`) admits that one ghost line.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- The stale-slot abort is not stated. `p = malloc(16); free(p);
+  malloc_usable_size(p)` aborts, since the load reads the word's current
+  value, but the value the word held before the `free` meets
+  `slot_checked` too. The frees get a partial stale statement from a
+  release record they are passed (`load_after`, `claimed_since`, #843);
+  `usable_size` starts from a fresh record (`BitLoad::new()`) and
+  exports neither, and no query caller holds a release record.
+- A fact about one load, as for the frees: not that the slot is still
+  claimed when the query returns, nor that the caller allocated it.
+- The C exports keep the record; their `ensures` are unchanged.
+- The cached-copy test (`check_not_cached`, under `double_free_scan`)
+  is not stated here.
+- Ghost only: the release library's machine code is unchanged (new
+  `Tracked` parameters, `ensures` and proof only).
+
+**Mutations** (`cargo verus focus -- --verify-module api::libc
+--verify-module api::jemalloc`, on this tree; unmutated: 180 verified,
+0 errors):
+
+| id | change | PR | main 94b4811f |
+|---|---|---|---|
+| Q1 | `usable_size`'s `check_live` writes a fresh local record, not `obs` | rejected (the `bit_seen_at` assertion behind `usable_size`'s postcondition) | not applicable (no record handed out) |
+| Q2 | `sallocx` passes `usable_size` a fresh local record, not `obs` | rejected (`sallocx`'s postcondition) | not applicable |
+| Q3 | `usable_size` drops `check_live` | rejected (the assertion) | rejected (`lemma_is_slot`'s precondition: no "not a guard slab") |
+| Q4 | `usable_size` tests the previous slot's bit (`slot - 1` when `slot > 0`) | rejected (`check_live`'s precondition) | rejected (same) |
+
+No executable mutant was found that main accepts and this PR rejects:
+on main the query's guard-slab and slot facts already come from
+`check_live`, whose precondition pins the slot it tests, so skipping or
+moving the test fails there too. This PR exports what that call
+already implies.
 
 ## Interface contract
 
