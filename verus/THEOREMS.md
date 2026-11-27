@@ -2061,6 +2061,61 @@ has no such theorem, so each is PR-only):
 
 Ghost only: the release library's machine code is unchanged.
 
+**Huge guards against slots** (chainguard-project-theseus/challoc#1061;
+`huge/kernel.rs`). The statements above say a huge run's guard pages
+are no other run's usable bytes. They did not say the guard pages are
+no slab's bytes. At the huge lock they are not:
+
+```rust
+pub(super) proof fn theorem_run_guards_off_classes(h: Huge, g: Inner, d: *mut HugeDesc)
+    requires
+        h.inv(),
+        g.wf(),
+        g.spec_np() == h.npages,
+        g.descs@.contains_key(d),
+        g.descs@[d].value().state == RunState::Active as u8,
+        h.is_process(),
+    ensures
+        ({
+            let (v, p) = (g.descs@[d].value(), h.spec_page());
+            let (r, region) = (process_regions(), (1usize << process_regions().lg_region) as int);
+            let guard = h.spec_base() + (v.start + v.pages - GUARD_PAGES) * p;
+            &&& forall|c: int| 0 <= c < NCLASSES ==>
+                disjoint(guard, GUARD_PAGES * p, #[trigger] r.class_base[c] as int, region)
+            &&& disjoint(guard, GUARD_PAGES * p, r.meta_base as int, r.meta_len as int)
+        }),
+```
+
+In words: for the process's huge allocator, the guard pages of every
+live run of a well-formed huge lock value share no byte with any class
+region, so with no slab slot or class guard slab, and none with the
+metadata region. The proof: `lemma_freed_guard_apart` puts the guard
+inside `h`'s pages (`spares_guards`'s bounds: the run ends by the
+lock's `next_page`, at most `npages`). For the process's allocator
+(`is_process`: `h`'s base is the huge base, and `npages` pages fit in
+`huge_len`), those pages are in the huge region, which `separated`
+keeps apart from the superblock's strides and the metadata region.
+This is the same arithmetic as `theorem_huge_commit_avoids_guards`'s
+`is_process` half. It is a statement about where each run's counted
+guard pages lie, not that they fault (that `prepare` guards them is
+read from its body, as above).
+
+| Seam | Kind | Why |
+|---|---|---|
+| none added | | Ghost only: a proof function over `Inner::wf`, `Huge::inv` and `Huge::is_process`. |
+
+**Mutations** (`cargo verus focus -- --verify-module huge::kernel`;
+main has no such theorem, so each is PR-only; unmutated: 14 verified,
+0 errors on this tree):
+
+| | Mutation | PR |
+|---|---|---|
+| K1 | `h.is_process()` dropped from the `requires` | rejected (the page-size lemmas' preconditions and the `ensures`): the proof needs `h`'s pages to be the huge region's |
+| K2 | `g.spec_np() == h.npages` dropped | rejected (`lemma_freed_guard_apart`'s precondition): the run's end is bounded by the lock's page count, which must be `h`'s |
+| K3 | the guard one page longer in the class conjunct, `(GUARD_PAGES + 1) * p` | rejected (`ensures`): the page past a run's guard is not shown apart from the classes (a run may end at `npages`) |
+
+Ghost only: the release library's machine code is unchanged.
+
 **Premises beyond the common ones.**
 - `heap::shared::axiom_shared_built` (`heap/shared.rs`) also states the
   stored class lines, which carry the guard tests, as it states the
@@ -2087,8 +2142,10 @@ Ghost only: the release library's machine code is unchanged.
   block. No entry point's `ensures` carries it: the C entry points
   return a pointer, and the run token stays in the block's `Live` token
   (`heap/live.rs`). A slot against a huge run's guard page is not
-  stated: `Live::wf` puts a run's usable bytes in the huge region, not
-  its guard page. A freed run's guard is made read-write again, or its marker
+  stated per block: `Live::wf` puts a run's usable bytes in the huge
+  region, not its guard page. At the huge lock it is stated of every
+  live run's descriptor (`theorem_run_guards_off_classes`,
+  [huge guards against slots](#7-guard-pages), #1061). A freed run's guard is made read-write again, or its marker
   removed, so its VMA merges back; freed runs' guards are not modelled
   (`theorem_huge_commit_avoids_guards` covers live runs' guards only).
 - `theorem_guard_free` says that a pointer into a guard slab aborts,
@@ -16001,8 +16058,11 @@ alone):
   `huge/mod.rs`) and of each live block's run token
   (`Live::theorem_run_guards`, `heap/live.rs`: its bytes miss every
   run token's guard pages), but no entry point's `ensures` carries it,
-  a slot against a run's guard is not stated, and fallback-mode stale
-  `PROT_NONE` guards are not modelled.
+  and fallback-mode stale `PROT_NONE` guards are not modelled. A slot
+  against a run's guard is stated at the huge lock: every live run's
+  guard pages share no byte with any class region
+  (`huge::kernel::theorem_run_guards_off_classes`,
+  chainguard-project-theseus/challoc#1061).
 - I5: theorem 19. Every flush discards
   only bytes its batch's ghost `free` admits (`purge::discard`). Huge
   purges admit pages of no live run, proved against the run tokens
@@ -16095,8 +16155,11 @@ What each partial or missing cell leaves out, and what it rests on:
   lock's values, and `Live::theorem_run_guards` of each live block's
   run token (no usable byte in any run token's guard pages), but the
   entry points take and return no token, so their `ensures` do not
-  carry it (as for the **U** cells), and a slot against a run's guard
-  page is not stated.
+  carry it (as for the **U** cells). A slot against a run's guard page
+  is stated of the huge lock's values only
+  (`huge::kernel::theorem_run_guards_off_classes`, #1061: every live
+  run's guard pages miss every class region and the metadata region),
+  not per result at the entry points.
 - **I5, slabs**: class batches admit only slabs idle in the class lock's
   ghost state; the link from idleness to the slot tokens needs the
   descriptor's `live` counter as ghost-tracked state. Theorem 6's purge

@@ -1553,9 +1553,10 @@ impl Live {
     /// This is [`RunToken::theorem_token_guards`] in bytes. It is page
     /// separation, not protection: that the huge allocator's `prepare`
     /// guards that page, and whether it faults, is read from its body.
-    /// A slot against a run's guard is
-    /// not stated: [`Live::wf`] keeps a run's usable bytes in the huge
-    /// region, not its guard.
+    /// A slot against a run's guard is not stated here: [`Live::wf`]
+    /// keeps a run's usable bytes in the huge region, not its guard. It
+    /// is stated at the huge lock, of every live run's descriptor
+    /// (`huge::kernel::theorem_run_guards_off_classes`, #1061).
     pub proof fn theorem_run_guards(tracked &mut self, tracked other: &RunToken)
         requires
             old(self).wf(),
