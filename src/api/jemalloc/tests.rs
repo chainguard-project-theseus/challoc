@@ -42,7 +42,12 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
                 0,
                 "mallocx({size}, lg_align {la}) = {p:p}"
             );
-            let usable = sallocx(p, flags, vstd::prelude::Tracked::assume_new());
+            let usable = sallocx(
+                p,
+                flags,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             assert!(usable >= size);
             assert_eq!(
                 usable,
@@ -51,7 +56,11 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
             );
             assert_eq!(
                 usable,
-                crate::api::libc::malloc_usable_size(p, vstd::prelude::Tracked::assume_new())
+                crate::api::libc::malloc_usable_size(
+                    p,
+                    vstd::prelude::Tracked::assume_new(),
+                    vstd::prelude::Tracked::assume_new()
+                )
             );
             // Every class is a multiple of the quantum, so up to it the
             // alignment leaves the class alone.
@@ -78,7 +87,12 @@ fn mallocx_honours_size_alignment_and_zero_and_matches_nallocx() {
                 vstd::prelude::Tracked::assume_new(),
             );
             assert!(!z.is_null());
-            let n = sallocx(z, 0, vstd::prelude::Tracked::assume_new());
+            let n = sallocx(
+                z,
+                0,
+                vstd::prelude::Tracked::assume_new(),
+                vstd::prelude::Tracked::assume_new(),
+            );
             for i in 0..n {
                 assert_eq!(
                     // SAFETY: `i < sallocx(z)`, inside the live allocation `z`.
@@ -210,7 +224,12 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert_ne!(q, p);
-    let n = sallocx(q, 0, vstd::prelude::Tracked::assume_new());
+    let n = sallocx(
+        q,
+        0,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     for i in 0..n {
         let want = if i < 10 { i as u8 } else { 0 };
         // SAFETY: `i < sallocx(q)`, inside the live allocation `q`.
@@ -267,7 +286,12 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
     assert_ne!(h2, h);
     // SAFETY: `h2` is a live huge allocation.
     assert_eq!(unsafe { *h2.add(9) }, 9);
-    let n = sallocx(h2, 0, vstd::prelude::Tracked::assume_new());
+    let n = sallocx(
+        h2,
+        0,
+        vstd::prelude::Tracked::assume_new(),
+        vstd::prelude::Tracked::assume_new(),
+    );
     for i in (MEDIUM_MAX + page)..n {
         // SAFETY: `i < sallocx(h2)`, inside the live allocation `h2`.
         assert_eq!(unsafe { *h2.add(i) }, 0, "huge rallocx ZERO tail byte {i}");
@@ -281,7 +305,12 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
         vstd::prelude::Tracked::assume_new(),
     );
     assert_eq!(
-        sallocx(s, 0, vstd::prelude::Tracked::assume_new()),
+        sallocx(
+            s,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         class_size_of(24).unwrap()
     );
     // SAFETY: `s` is live with 24 bytes.
@@ -290,19 +319,47 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
     // or without `extra` (jemalloc may grow into `size + extra`;
     // challoc never grows in place, so `extra` changes nothing).
     assert_eq!(
-        xallocx(s, 1 << 20, 0, 0, vstd::prelude::Tracked::assume_new()),
+        xallocx(
+            s,
+            1 << 20,
+            0,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         class_size_of(24).unwrap()
     );
     assert_eq!(
-        xallocx(s, 1, 0, 0, vstd::prelude::Tracked::assume_new()),
+        xallocx(
+            s,
+            1,
+            0,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         class_size_of(24).unwrap()
     );
     assert_eq!(
-        xallocx(s, 1, 100, 0, vstd::prelude::Tracked::assume_new()),
+        xallocx(
+            s,
+            1,
+            100,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         class_size_of(24).unwrap()
     );
     assert_eq!(
-        xallocx(s, 24, 1 << 20, 0, vstd::prelude::Tracked::assume_new()),
+        xallocx(
+            s,
+            24,
+            1 << 20,
+            0,
+            vstd::prelude::Tracked::assume_new(),
+            vstd::prelude::Tracked::assume_new()
+        ),
         class_size_of(24).unwrap()
     );
     assert_eq!(
@@ -311,6 +368,7 @@ fn rallocx_keeps_moves_zeroes_and_preserves_content() {
             1 << 20,
             1 << 20,
             MALLOCX_ZERO as c_int,
+            vstd::prelude::Tracked::assume_new(),
             vstd::prelude::Tracked::assume_new()
         ),
         class_size_of(24).unwrap()

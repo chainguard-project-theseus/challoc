@@ -73,7 +73,7 @@ fn call_hook(cb: Hook, buf: &[u8; 512], Tracked(ord): Tracked<&LockOrder>)
 
 ## `axiom_c_call`
 
-src/api/jemalloc.rs:1379. Kind: axiom. Category: C-program contract.
+src/api/jemalloc.rs:1383. Kind: axiom. Category: C-program contract.
 Tool: none (assumption). Status: trusted.
 
 > The token of a C call that hands over the block at `p` to `rallocx`, `dallocx` or `sdallocx` ([`CCall`], [`CEntry::Frees`]).
@@ -93,7 +93,7 @@ axiom fn axiom_c_call(e: CEntry) -> (tracked c: CCall)
 
 ## `mallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -109,7 +109,7 @@ pub extern "C" fn mallocx (verified_export_pair!)
 
 ## `je_mallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -125,7 +125,7 @@ pub extern "C" fn je_mallocx (verified_export_pair!)
 
 ## `rallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -141,7 +141,7 @@ pub extern "C" fn rallocx (verified_export_pair!)
 
 ## `je_rallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -157,7 +157,7 @@ pub extern "C" fn je_rallocx (verified_export_pair!)
 
 ## `xallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -173,7 +173,7 @@ pub extern "C" fn xallocx (verified_export_pair!)
 
 ## `je_xallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -189,7 +189,7 @@ pub extern "C" fn je_xallocx (verified_export_pair!)
 
 ## `sallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -205,7 +205,7 @@ pub extern "C" fn sallocx (verified_export_pair!)
 
 ## `je_sallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -221,7 +221,7 @@ pub extern "C" fn je_sallocx (verified_export_pair!)
 
 ## `dallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -237,7 +237,7 @@ pub extern "C" fn dallocx (verified_export_pair!)
 
 ## `je_dallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -253,7 +253,7 @@ pub extern "C" fn je_dallocx (verified_export_pair!)
 
 ## `sdallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -269,7 +269,7 @@ pub extern "C" fn sdallocx (verified_export_pair!)
 
 ## `je_sdallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -285,7 +285,7 @@ pub extern "C" fn je_sdallocx (verified_export_pair!)
 
 ## `nallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -301,7 +301,7 @@ pub extern "C" fn nallocx (verified_export_pair!)
 
 ## `je_nallocx`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -317,7 +317,7 @@ pub extern "C" fn je_nallocx (verified_export_pair!)
 
 ## `get_defrag_hint`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.
@@ -333,7 +333,7 @@ pub extern "C" fn get_defrag_hint (verified_export_pair!)
 
 ## `je_get_defrag_hint`
 
-src/api/jemalloc.rs:1386. Kind: unsupported-attribute. Category: C ABI export.
+src/api/jemalloc.rs:1390. Kind: unsupported-attribute. Category: C ABI export.
 Tool: ABI tests. Status: trusted.
 
 > Verus takes every attribute it refuses on this item on trust (`#[verifier::assume_unsupported_attributes]`), its symbol and section attributes among them; the C and C++ programs under tests/c, which `make test` links and preloads against the library, call the symbol.

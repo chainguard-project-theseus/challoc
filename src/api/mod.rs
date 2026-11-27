@@ -1335,7 +1335,8 @@ fn theorem_read_only_never_aborts(shared: &Shared, size: usize, flags: core::ffi
         shared.lemma_wf();
     }
     // `malloc_usable_size(NULL)`, whole.
-    let _ = libc::malloc_usable_size(core::ptr::null_mut(), Tracked(&mut *ord));
+    let tracked mut obs = crate::class::BitLoad::new();
+    let _ = libc::malloc_usable_size(core::ptr::null_mut(), Tracked(&mut obs), Tracked(&mut *ord));
     // `nallocx` after its `shared()`.
     let f = crate::heap::mallocx::Flags::decode(flags as u32);
     let _ = jemalloc::usable_for(shared, size, &f).unwrap_or(0);
