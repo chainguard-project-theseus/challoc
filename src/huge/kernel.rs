@@ -325,6 +325,52 @@ pub(super) proof fn lemma_freed_guard_apart(h: Huge, g: Inner, d: *mut HugeDesc)
     lemma_pages_spare_guards(h, g, d, v.start + v.pages - GUARD_PAGES, v.start + v.pages);
 }
 
+/// A live huge run's guard pages hold no byte of a class region or of
+/// the metadata region (#1061): for the process's huge allocator
+/// ([`Huge::is_process`]), the [`GUARD_PAGES`] guard pages of every live
+/// run (`Active`) of a well-formed lock value lie in the huge region
+/// ([`lemma_freed_guard_apart`]: inside `h`'s pages), which
+/// `Regions::separated` keeps apart from every class region, so from every
+/// slab slot and class guard slab, and from the metadata region. This is
+/// the slot half of the guard exclusion for huge runs, which
+/// `Live::theorem_run_guards` states only against other runs' usable
+/// bytes. It is placement, not protection: that `prepare` guards that
+/// page is read from its body.
+pub(super) proof fn theorem_run_guards_off_classes(h: Huge, g: Inner, d: *mut HugeDesc)
+    requires
+        h.inv(),
+        g.wf(),
+        g.spec_np() == h.npages,
+        g.descs@.contains_key(d),
+        g.descs@[d].value().state == RunState::Active as u8,
+        h.is_process(),
+    ensures
+        ({
+            let (v, p) = (g.descs@[d].value(), h.spec_page());
+            let (r, region) = (crate::layout::process_regions(), (1usize << crate::layout::process_regions().lg_region) as int);
+            let guard = h.spec_base() + (v.start + v.pages - GUARD_PAGES) * p;
+            &&& forall|c: int| 0 <= c < crate::layout::NCLASSES ==>
+                crate::layout::disjoint(guard, GUARD_PAGES * p, #[trigger] r.class_base[c] as int, region)
+            &&& crate::layout::disjoint(guard, GUARD_PAGES * p, r.meta_base as int, r.meta_len as int)
+        }),
+{
+    lemma_freed_guard_apart(h, g, d);
+    let (v, p) = (g.descs@[d].value(), pow2(h.lg_page as nat) as int);
+    let (addr, len) = (h.base + (v.start + v.pages - GUARD_PAGES) * p, GUARD_PAGES * p);
+    assert(h.base <= addr && addr + len <= h.base + h.npages * p);
+    let r = crate::layout::process_regions();
+    let (stride, region) = ((1usize << r.lg_stride) as int, (1usize << r.lg_region) as int);
+    let lg = r.lg_page as usize;
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(r.huge_len >> lg, lg, r.huge_len);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    assert(h.npages * h.spec_page() <= r.huge_len);
+    assert forall|c: int| 0 <= c < crate::layout::NCLASSES implies crate::layout::disjoint(addr, len, #[trigger] r.class_base[c] as int, region) by {
+        assert(r.superblock + c * stride <= r.class_base[c] && r.class_base[c] + region <= r.superblock + (c + 1) * stride);
+        vstd::arithmetic::mul::lemma_mul_inequality(c + 1, crate::layout::NCLASSES as int, stride);
+    }
+}
+
 /// Commits keep the guard pages of live huge runs inaccessible: every
 /// call of [`commit`] (`mprotect` read-write) or [`guard_remove`]
 /// (`MADV_GUARD_REMOVE`) is made holding the huge lock, whose cell's
