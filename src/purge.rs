@@ -2296,14 +2296,6 @@ pub ghost struct Left {
     pub refused_extents: ISet<int>,
 }
 
-/// Class `c`'s slabs are smaller than the process's page, so a page holds
-/// several (`SlabTable::slabs_per_page`, the class's guard geometry): only
-/// for a page above 64 KiB, which no supported kernel has
-/// (`layout::lg_slab_at`).
-pub open spec fn paged(c: int) -> bool {
-    crate::layout::guard_geom(c).0 != 0
-}
-
 impl Left {
     /// Nothing purged.
     pub open spec fn none() -> Left {
@@ -2334,13 +2326,12 @@ impl Left {
     }
 
     /// An explicit purge's guarantee: no slab was left `Empty` in a class
-    /// lock value released, except in a class with several slabs per page
-    /// (whose page group another slab can keep from being discarded) or in
-    /// a range `madvise` refused, and no huge extent was left `Empty`
+    /// lock value released, except in a range `madvise` refused, and no
+    /// huge extent was left `Empty`
     /// except in a range `madvise` refused; the byte count is not
     /// negative.
     pub open spec fn clean(self) -> bool {
-        &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1) || self.refused.contains(t)
+        &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> self.refused.contains(t)
         &&& forall|a: int| #[trigger] self.extents.contains(a) ==> self.refused_extents.contains(a)
         &&& self.bytes >= 0
     }
@@ -2374,7 +2365,7 @@ impl Left {
                     assert(b.extents.contains(x));
                 }
             }
-            assert forall|t: (int, int, int)| #[trigger] j.slabs.contains(t) implies paged(t.1) || j.refused.contains(t) by {
+            assert forall|t: (int, int, int)| #[trigger] j.slabs.contains(t) implies j.refused.contains(t) by {
                 if a.slabs.contains(t) {
                 } else {
                     assert(b.slabs.contains(t));
@@ -2547,8 +2538,7 @@ fn arena_count(shared: &Shared) -> (n: usize)
 /// `left` gets what was purged: the bytes discarded, nonzero iff anything
 /// was purged, the arenas visited, every class of each, and the huge
 /// allocator, with no slab or extent `Empty` in the lock value each purge
-/// released, except in a class with several slabs per page or in a range
-/// `madvise` refused ([`Left::clean`]).
+/// released, except in a range `madvise` refused ([`Left::clean`]).
 pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
     requires
         crate::sys::may_abort() || crate::sys::valid_aborts(),

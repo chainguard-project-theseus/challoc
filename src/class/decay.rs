@@ -857,8 +857,8 @@ impl ClassState {
     ///
     /// `left` gets the bytes discarded, nonzero iff a slab was purged, and
     /// the slabs `Empty` in the lock value released: with `cutoff ==
-    /// u64::MAX`, none unless the class has several slabs per page or
-    /// `madvise` refused the slab's range ([`Left::clean`]).
+    /// u64::MAX`, none unless `madvise` refused the slab's range
+    /// ([`Left::clean`]).
     pub fn purge_empty(
         &self,
         cutoff: u64,
@@ -943,26 +943,19 @@ impl ClassState {
                 },
             );
             if cutoff == u64::MAX {
-                if spp == 1 {
-                    // Every member is at or below the last slab visited,
-                    // and none is pending once the batch is flushed.
-                    reveal(none_above);
-                    assert(t.full@);
-                    assert(t.inv(self, lv, crate::purge::none()));
-                    assert forall|x: (int, int, int)| #[trigger] slabs.contains(x) implies refused.contains(x) by {
-                        let s = x.2 as nat;
-                        assert(lv.slab_ok(s));
-                        assert(lv.empty.map@.contains(s));
-                        assert(s <= t.top@);
-                        assert(!(crate::purge::none())(group_piece(self, s as int, 1)));
-                        assert(t.refused@.contains(s));
-                    }
-                } else {
-                    let x = crate::layout::guard_geom(c).0;
-                    if x == 0 {
-                        assert(1usize << x == 1usize) by (bit_vector)
-                            requires x == 0u8;
-                    }
+                // One slab per page (`slabs_per_page`): every member is at
+                // or below the last slab visited, and none is pending once
+                // the batch is flushed.
+                reveal(none_above);
+                assert(t.full@);
+                assert(t.inv(self, lv, crate::purge::none()));
+                assert forall|x: (int, int, int)| #[trigger] slabs.contains(x) implies refused.contains(x) by {
+                    let s = x.2 as nat;
+                    assert(lv.slab_ok(s));
+                    assert(lv.empty.map@.contains(s));
+                    assert(s <= t.top@);
+                    assert(!(crate::purge::none())(group_piece(self, s as int, 1)));
+                    assert(t.refused@.contains(s));
                 }
             }
         }

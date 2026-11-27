@@ -1763,6 +1763,86 @@ pub(crate) proof fn lemma_spec_ok_table_ok()
     }
 }
 
+/// [`spec_ceil_lg`]`(x)` is at most any `k` with `x <= pow2(k)`.
+proof fn lemma_ceil_lg_le(x: int, k: nat)
+    requires
+        1 <= x <= vstd::arithmetic::power2::pow2(k),
+    ensures
+        spec_ceil_lg(x) <= k,
+    decreases k,
+{
+    if k > 0 && x <= vstd::arithmetic::power2::pow2((k - 1) as nat) {
+        lemma_ceil_lg_le(x, (k - 1) as nat);
+    } else {
+        lemma_ceil_lg(x, k);
+    }
+}
+
+/// [`spec_small_lg`]`(size, lg)` is at most [`LG_SMALL_SLAB`].
+proof fn lemma_small_lg_le(size: usize, lg: u32)
+    requires
+        lg <= LG_SMALL_SLAB,
+    ensures
+        spec_small_lg(size, lg) <= LG_SMALL_SLAB,
+    decreases LG_SMALL_SLAB - lg,
+{
+    if lg < LG_SMALL_SLAB && !((1usize << lg) % size <= (1usize << lg) / SLAB_WASTE_DIV) {
+        lemma_small_lg_le(size, (lg + 1) as u32);
+    }
+}
+
+/// A slab of [`spec_lg_slab_at`]`(size, lg_page)` is at least the page,
+/// for a page of at most `1 << LG_SMALL_SLAB` (64 KiB), and its exponent
+/// is at most [`LG_MAX_SLAB`].
+proof fn lemma_lg_slab_at_page(size: usize, lg_page: u32)
+    requires
+        1 <= size <= MEDIUM_MAX,
+        lg_page <= LG_SMALL_SLAB,
+    ensures
+        lg_page <= spec_lg_slab_at(size, lg_page) <= LG_MAX_SLAB,
+{
+    if size < SMALL_SLAB_BELOW {
+    } else if size <= SMALL_MAX {
+        lemma_small_lg_le(size, LG_MIN_SLAB);
+    } else {
+        vstd::arithmetic::power2::lemma2_to64();
+        lemma_ceil_lg_le(16 * size as int, 22);
+    }
+}
+
+/// Every class of the process's table ([`class_table`]) has a slab at
+/// least the process's page, when that page is at most
+/// `1 << LG_SMALL_SLAB` (64 KiB; `Regions::separated` carries it for the
+/// process's regions): one slab per page. The adopted table's entries take
+/// [`spec_lg_slab_at`]'s exponent ([`adopt_entry`]), which raises every
+/// slab to the page up to 64 KiB; the fallback's are [`LG_MAX_SLAB`].
+pub proof fn lemma_class_table_slab_page(c: int)
+    requires
+        0 <= c < NCLASSES,
+        crate::layout::process_regions().lg_page <= LG_SMALL_SLAB,
+    ensures
+        class_table()[c].lg_slab >= crate::layout::process_regions().lg_page,
+{
+    reveal(class_table);
+    let lp = crate::layout::process_regions().lg_page;
+    let t = adopt_spec(base_value(), lp);
+    if table_ok(t) {
+        lemma_spec_fill(adopt_entries(base_value(), lp), NCLASSES as int);
+        assert(t[c] == adopt_entry(base_value()[c], spec_entry(c, lp)));
+        lemma_last_class_size();
+        if c > 0 {
+            lemma_class_size_mono(0, c);
+        }
+        if c < NCLASSES - 1 {
+            lemma_class_size_mono(c, NCLASSES - 1);
+        }
+        lemma_lg_slab_at_page(spec_class_size(c) as usize, lp);
+    } else {
+        lemma_spec_fill(ok_entries(), NCLASSES as int);
+        assert(spec_ok_table(NCLASSES as int)[c] == spec_ok_entry(c));
+    }
+}
+
 impl ClassTable {
     #[verifier::external_body]
     const fn new(table: [Class; NCLASSES]) -> ClassTable {

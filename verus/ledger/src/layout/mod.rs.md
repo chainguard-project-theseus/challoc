@@ -26,7 +26,7 @@ pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
 
 ## `ClassTable::new`
 
-src/layout/mod.rs:1768. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1848. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::class_table_new).
 
 Hashes: contract 3932435869, body 785407001.
@@ -37,7 +37,7 @@ const fn new(table: [Class; NCLASSES]) -> ClassTable
 
 ## `classes_ptr`
 
-src/layout/mod.rs:1867. Kind: external_body. Category: UnsafeCell/volatile/transmute.
+src/layout/mod.rs:1947. Kind: external_body. Category: UnsafeCell/volatile/transmute.
 Tool: Kani. Status: discharged (Kani: layout::kani_classes::classes_ptr_fixed).
 
 > The storage of [`CLASSES`]' table, as a raw pointer.

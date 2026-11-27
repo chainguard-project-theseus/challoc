@@ -5258,7 +5258,15 @@ split: it is `split_component`'s, and the tail splits into the rest.
 So the `MAX_MIB` exit, `child`'s `None` (no entry names the
 component), and a non-directory node with components left (no child
 names anything) each contradict such a walk, and the entry `child`
-returns is the walk's, since it is the only one.
+returns is the walk's, since it is the only one. The loop carries that
+invariant as the opaque `walks_continue`; `lemma_walks_next` (each
+walk's next entry is the one naming the component, and none exists when
+no entry does) and `lemma_walks_entry` (the walk has the entry `child`
+returned, and continues from its child) take the two steps of a pass,
+and `name_to_mib` runs on its own prover (`spinoff_prover`). Before
+chainguard-project-theseus/challoc#1036 the quantifiers sat in the loop
+body, which ran out of rlimit at quantum 16 when an unrelated purge
+change moved the context (README "Headroom", the first two remedies).
 
 **Mutations** (`cargo verus focus -- --verify-module api::mallctl`;
 each verifies on main, where only success was stated, and is rejected
@@ -8496,14 +8504,12 @@ are empty.
 
 An explicit purge (`malloc_trim`, `arena.<i>.purge`) discards every
 empty slab and every empty huge extent it finds, except where `madvise`
-refuses or a page holds several slabs, and `malloc_trim` returns 1
-exactly when it discarded a byte.
+refuses, and `malloc_trim` returns 1 exactly when it discarded a byte.
 
 Stated per lock release, over a ghost record (`purge::Left`) the purges
 set themselves: when `purge::purge_all` or `purge_arena` returns, no
 class of an arena it visited had an `Empty` slab in the class lock value
-its purge released, except in a class with several slabs per page or in
-a range `madvise` refused during the purge (`mlock`ed memory),
+its purge released, except in a range `madvise` refused during the purge (`mlock`ed memory),
 and the huge allocator had no `Empty` extent in the huge lock
 value its purge released except in such a range; the count returned
 is nonzero iff `madvise` took a byte and a flush reported it discarded,
@@ -8531,12 +8537,9 @@ pub ghost struct Left {
     pub refused_extents: ISet<int>,         // descriptors of an extent `madvise` refused
 }
 
-// purge.rs: class `c` has several slabs per page.
-pub open spec fn paged(c: int) -> bool { crate::layout::guard_geom(c).0 != 0 }
-
 // purge.rs
 pub open spec fn clean(self) -> bool {
-    &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> paged(t.1) || self.refused.contains(t)
+    &&& forall|t: (int, int, int)| #[trigger] self.slabs.contains(t) ==> self.refused.contains(t)
     &&& forall|a: int| #[trigger] self.extents.contains(a) ==> self.refused_extents.contains(a)
     &&& self.bytes >= 0
 }
@@ -8580,8 +8583,7 @@ pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<Left>>) -> (r:
 purge in `purge::decay`) visits the arenas in `left.arenas`, all below
 `MAX_ARENAS`, and for each purges every class (`covers`), then the huge
 allocator (`huge`); each class purge leaves no slab `Empty` in the value
-its lock releases unless the class is `paged` or the slab is in
-`left.refused`, and the huge purge leaves no extent `Empty` outside
+its lock releases unless the slab is in `left.refused`, and the huge purge leaves no extent `Empty` outside
 `left.refused_extents` (`clean`, which also says `bytes >= 0`). `bytes`,
 the sum over every batch of the bytes `madvise` took and a flush
 reported discarded (`Batch::sent`), is positive iff the returned count
@@ -8611,9 +8613,20 @@ How it is proved:
   exactly the owned `Empty` slabs, so `ClassState::purge_empty` sets
   `left.slabs` to the released value's owned `Empty` slabs and
   `left.refused` to the tally's `refused`, tagged with its arena and
-  class, and proves the first inside the second, or, when `spp != 1`,
-  the class `paged` (`slabs_per_page` ensures `spp == 1 <<
-  guard_geom(c).0`).
+  class, and proves the first inside the second (a full-cutoff purge
+  is always `full`: `slabs_per_page` ensures `spp == 1`, below).
+- **One slab per page.** `layout::lemma_class_table_slab_page`
+  (`layout/mod.rs`): with the process's page at most 64 KiB, every
+  entry of `class_table()` has `lg_slab >= process_regions().lg_page`.
+  The adopted table's entries take `spec_lg_slab_at`'s exponent
+  (`adopt_entry` keeps `w.lg_slab` either way), which is at least
+  `min(lg_page, LG_SMALL_SLAB)` and at most `LG_MAX_SLAB`
+  (`lemma_lg_slab_at_page`, with `lemma_small_lg_le` and
+  `lemma_ceil_lg_le` bounding `spec_lg_slab_for`); the fallback
+  table's are `LG_MAX_SLAB`. `SlabTable::new` (`class/table.rs`) uses
+  it with `Regions::separated`'s `lg_page <= 16` to show `(page /
+  slab).max(1) == 1`, and the type invariant (`SlabTable::inv`) now
+  carries `slabs_per_page == 1`, which `slabs_per_page` ensures.
 - **The huge purge visits the whole `Empty` list.** `Huge::purge_empty`
   walks the list from its head without unlinking (`push_extent`; a
   flush's `Huge::settle` unlinks only extents reported discarded,
@@ -8658,19 +8671,11 @@ How it is proved:
   flush reported refused: that the report is `discard`'s result is read
   from `Batch::flush`'s body, not stated in a contract. A refused range
   stays `Empty`, and the next explicit purge retries it.
-- One slab per page, for the class half: `paged(c)` is false exactly
-  when `slabs_per_page` is 1. That holds for every class on every
-  supported page size (`layout::lg_slab_at`, `layout/mod.rs`,
-  raises every slab to the page up to 64 KiB, and the process page is at
-  most 64 KiB: `Regions::separated`, `layout/regions.rs`, carries
-  `lg_page <= 16`, proved from `getauxval`'s specification at
-  init), but nothing
-  proves it of the process's table: `guard_geom` is the stored `Shared`'s
-  table's geometry, and
-  no lemma derives one slab per page from `class_table()`'s definition
-  from `classes_for_page`'s spec (`layout::adopt_spec`; `SlabTable::new`
-  computes `slabs_per_page = (page / slab).max(1)`, `class/table.rs`).
-  The statement keeps it as the `paged` exception instead.
+- The process page is at most 64 KiB: `Regions::separated`
+  (`layout/regions.rs`) carries `lg_page <= 16`, proved at init from
+  `getauxval`'s trusted specification (an existing premise). One slab
+  per page is proved from it and `class_table()`'s definition; it is no
+  longer a separate exception. No seam is added or removed.
 
 **Scope and where the statement is weaker than the code.**
 - At each lock release, not at return: the record is set from the lock
@@ -8678,13 +8683,14 @@ How it is proved:
   slab back to `Empty` (`on_live_zero`) or free a huge run into an
   `Empty` extent. At quiescence (no other thread allocating or freeing)
   the values released are the values at return.
-- With several slabs per page (a page above 64 KiB), an `Empty` slab
-  whose page group holds an `Active` slab stays `Empty` by design
-  (`page_group_is_idle` vetoes the discard; the page group is the
-  arena's whole and handed out, `class::whole_groups`, so its watermark
-  and arena checks are run-time defences that never veto for the real
-  lock value): the code's behaviour, not a bug, and the `paged`
-  exception.
+- The code keeps a path for several slabs per page (a page above
+  64 KiB: `page_group_is_idle` vetoes discarding an `Empty` slab whose
+  page group holds an `Active` slab). The statement does not cover it:
+  `getauxval`'s trusted specification bounds the page at 64 KiB
+  (`sys::features::page_size`; no Linux kernel on x86_64 or aarch64 has
+  a larger page), so every process table has `slabs_per_page == 1`.
+  At run time `reserve_owning` accepts pages up to `MAX_SLAB`; on a
+  kernel with a larger page the premise, not the code, would fail.
 - The arenas visited are those `get_existing` finds below the count
   `arena_count` read once: an arena built during the purge may be
   skipped; `left.arenas` is not stated to contain every built arena.

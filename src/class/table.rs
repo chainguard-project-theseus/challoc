@@ -397,8 +397,10 @@ pub struct SlabTable {
     /// raises a class's slab to the page at init, up to 64 KiB: a group of
     /// `Empty` sub-page slabs was never all idle under Valkey and held
     /// 79.5 MiB after its delete phase at 64 KiB pages), so this is 1
-    /// everywhere but in the tests that fake a page above the slab, which
-    /// keep the path working for a page above 64 KiB.
+    /// (the type invariant states it, from
+    /// `layout::lemma_class_table_slab_page`) everywhere but in the tests
+    /// that fake a page above the slab, which keep the path working for a
+    /// page above 64 KiB.
     pub(super) slabs_per_page: u32,
     /// Slabs handed to an arena at a time: `max(slabs_per_line,
     /// slabs_per_page)`, a power of two, so a group is whole bitmap lines
@@ -1541,7 +1543,7 @@ impl SlabTable {
         &&& self.lg_slabs_per_page <= 26
         &&& self.lg_group < 64
         &&& self.lg_page < 64
-        &&& self.slabs_per_page >= 1
+        &&& self.slabs_per_page == 1
         &&& self.page_groups_ok()
         &&& self.nslabs <= (usize::MAX - self.base) as usize >> class_table()[self.class as int].lg_slab
         &&& self.base < 1usize << 57
@@ -2162,6 +2164,15 @@ impl SlabTable {
             let l = cls.lg_slab;
             assert((1usize << l) == (1usize << (l as u32))) by (bit_vector);
             lemma_new_geometry(regions.lg_page, l as u32, regions.lg_region, page, 1usize << l, nslabs, slabs_per_page);
+            // One slab per page: the slab is at least the page, at most
+            // 64 KiB (`Regions::separated`).
+            crate::layout::lemma_class_table_slab_page(class as int);
+            let (lp, lu) = (regions.lg_page, l as u32);
+            assert(page <= (1usize << lu)) by (bit_vector)
+                requires page == 1usize << lp, lp <= lu, lu <= 22;
+            vstd::arithmetic::div_mod::lemma_div_is_ordered(page as int, (1usize << l) as int, (1usize << l) as int);
+            vstd::arithmetic::div_mod::lemma_div_by_self((1usize << l) as int);
+            assert(slabs_per_page == 1);
         }
         assert!(slabs_per_page.is_power_of_two() && nslabs.is_multiple_of(slabs_per_page));
         let group = cls.slabs_per_line().max(slabs_per_page);
@@ -3859,13 +3870,13 @@ impl SlabTable {
 verus! {
 
 impl SlabTable {
-    /// Slabs per page group; 1 unless the page is larger than the slab. A
-    /// power of two that divides the slab count, so page groups tile the
-    /// region.
+    /// Slabs per page group: 1, since every slab is at least the page on
+    /// every supported page (at most 64 KiB; the type invariant). A power
+    /// of two that divides the slab count, so page groups tile the region.
     #[inline]
     pub fn slabs_per_page(&self) -> (r: usize)
         ensures
-            r >= 1,
+            r == 1,
             r == self.spec_slabs_per_page(),
             r & sub(r, 1) == 0,
             self.spec_nslabs() & sub(r, 1) == 0,
