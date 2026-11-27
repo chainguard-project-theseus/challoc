@@ -757,6 +757,14 @@ pub open spec fn frees(free: spec_fn(int) -> bool, addr: int, len: int) -> bool 
     forall|b: int| addr <= b < addr + len ==> #[trigger] free(b)
 }
 
+/// Each range of `gone` (a batch's [`Batch::discarded`]) is
+/// [`well_formed`] and of bytes `free` admits ([`frees`]).
+pub open spec fn gone_ok(gone: Seq<(usize, usize)>, free: Bytes) -> bool {
+    forall|i: int|
+        #![trigger gone[i]]
+        0 <= i < gone.len() ==> well_formed(gone[i].0 as int, gone[i].1 as int) && frees(free, gone[i].0 as int, gone[i].1 as int)
+}
+
 /// Total length of the first `k` of `ranges`.
 pub open spec fn lens(ranges: Seq<(usize, usize, usize)>, k: int) -> int
     decreases k,
@@ -1310,12 +1318,26 @@ impl Batch {
     /// space and no two of which share a byte, each of bytes `free`
     /// admits, [`well_formed`], and a whole number of its pieces, each
     /// well formed too ([`range_ok`]); every range handed to [`discard`]
-    /// was well formed.
+    /// was well formed and of bytes `free` admits ([`gone_ok`]).
     pub closed spec fn wf(&self) -> bool {
         &&& self.n <= MAX_BATCH
         &&& forall|i: int| 0 <= i < self.n ==> #[trigger] range_ok(self.ranges@[i], self.free@)
         &&& disjoint_upto(self.ranges@, self.n as int)
-        &&& forall|i: int| #![auto] 0 <= i < self.gone@.len() ==> well_formed(self.gone@[i].0 as int, self.gone@[i].1 as int)
+        &&& gone_ok(self.gone@, self.free@)
+    }
+
+    /// Every range the batch handed to [`discard`] ([`Batch::discarded`])
+    /// is [`well_formed`] and of bytes its `free` admits ([`frees`]): what
+    /// `discard`'s precondition checked at the call, read out above the
+    /// batch.
+    pub proof fn lemma_discarded(&self, i: int)
+        requires
+            self.wf(),
+            0 <= i < self.discarded().len(),
+        ensures
+            well_formed(self.discarded()[i].0 as int, self.discarded()[i].1 as int),
+            frees(self.free(), self.discarded()[i].0 as int, self.discarded()[i].1 as int),
+    {
     }
 
     /// The bytes the batch may discard, fixed by its maker
@@ -1747,7 +1769,7 @@ impl Batch {
                     lens(r, n) <= usize::MAX,
                     self.gone@.len() >= gone0.len(),
                     forall|k: int| 0 <= k < gone0.len() ==> #[trigger] self.gone@[k] == gone0[k],
-                    forall|k: int| #![auto] 0 <= k < self.gone@.len() ==> well_formed(self.gone@[k].0 as int, self.gone@[k].1 as int),
+                    gone_ok(self.gone@, free),
                 decreases n - i,
             {
                 let (addr, len, piece) = self.ranges[i];
@@ -1834,7 +1856,7 @@ impl Batch {
                         lens(r, n) <= usize::MAX,
                         self.gone@.len() >= gone0.len(),
                         forall|k: int| 0 <= k < gone0.len() ==> #[trigger] self.gone@[k] == gone0[k],
-                        forall|k: int| #![auto] 0 <= k < self.gone@.len() ==> well_formed(self.gone@[k].0 as int, self.gone@[k].1 as int),
+                        gone_ok(self.gone@, free),
                     decreases addr + len - at,
                 {
                     proof {
