@@ -4434,7 +4434,10 @@ impl ClassState {
             let tracked mut ptoks: Map<int, GhostSubset<int>> = Map::tracked_empty();
             let tracked mut pz: Map<int, Zeroed> = Map::tracked_empty();
             let tracked mut pm: Map<int, GhostPersistentSubset<int>> = Map::tracked_empty();
-            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(&mut *ex), pubw, Tracked(ord));
+            // One hold's order (`hold_ordered`); each hold starts a new scan,
+            // so the loop does not carry it.
+            let tracked mut hold = Ghost(arbitrary());
+            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm), Tracked(&mut *ex), Tracked(&mut hold), pubw, Tracked(ord));
             #[cfg(test)]
             after_plan_hook(self);
             if np == 0 {
@@ -5417,6 +5420,25 @@ impl ClassState {
         &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) ==> p0.contains(x) || picked(p, np, x)
     }
 
+    /// What one refill lock hold at `floor` states about its `np` picks
+    /// `p` ([`ClassState::plan_at`]'s order and distinctness `ensures`):
+    /// `sc` is its [`PlanOrder`] and `ex` the lock value it released with
+    /// its `live` loads. The partial scan ascends from `floor`
+    /// ([`ClassState::refill_ordered`]), the `Empty`, `Purged` and fresh
+    /// idle picks ascend in that order ([`idle_ordered`],
+    /// [`purged_ordered`], [`fresh_ordered`]) and no slab is taken twice
+    /// ([`picks_distinct`]). [`ClassState::plan`] and
+    /// [`ClassState::plan_epoch`] restate it for the hold whose picks they
+    /// return.
+    spec fn hold_ordered(&self, sc: PlanOrder, ex: (Inner, Map<nat, usize>), p: Seq<Pick>, np: int, floor: int) -> bool {
+        &&& self.refill_ordered(sc.0, ex.1, ex.0, p, sc.1, np, floor, sc.2)
+        &&& idle_ordered(sc.3, ex.0.empty.map@, p, sc.1, sc.4, np, floor)
+        &&& (purged_ordered(sc.5, ex.0.purged.map@, p, sc.1 + sc.4, sc.6, np, 0)
+            || purged_ordered(sc.5, ex.0.purged.map@, p, sc.1 + sc.4, sc.6, np, floor))
+        &&& fresh_ordered(p, np, sc.7, ex.0.group_next as int)
+        &&& picks_distinct(p, np)
+    }
+
     /// [`picks_distinct`] for the partial scan's picks, which ascend
     /// ([`ClassState::scan_ordered`]).
     proof fn lemma_scan_distinct(&self, p0: VSet<nat>, seen: Map<nat, usize>, p: Seq<Pick>, npart: int, lo: int, lim: int)
@@ -5625,7 +5647,11 @@ impl ClassState {
     /// ([`ClassState::cow_floor`]; design 5, "Fork epochs") the out-of-line
     /// [`ClassState::plan_epoch`]. One load and a predicted branch is all
     /// the epochs cost a refill outside them.
-    // The last six arguments are ghost and tracked state.
+    ///
+    /// `hold` is the returned hold's [`PlanOrder`] and the floor it ran
+    /// at (0, or the epoch's floor), over which it restates `plan_at`'s
+    /// order and distinctness ([`ClassState::hold_ordered`]).
+    // The last seven arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn plan(
@@ -5637,6 +5663,7 @@ impl ClassState {
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
         Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        Tracked(hold): Tracked<&mut Ghost<(PlanOrder, int)>>,
         pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (np: usize)
@@ -5649,6 +5676,9 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
             np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
+            self.hold_ordered(final(hold)@.0, final(ex)@, final(picks)@, np as int, final(hold)@.1),
+            // The floor is a slab index (the theorems' `0 <= f <= floor`).
+            0 <= final(hold)@.1,
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
@@ -5659,10 +5689,14 @@ impl ClassState {
     {
         let floor = self.cow_floor();
         if floor != 0 {
-            return self.plan_epoch(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), pubw, Tracked(&mut *ord));
+            return self.plan_epoch(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut *hold), pubw, Tracked(&mut *ord));
         }
         let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int, VSet::<nat>::empty(), 0int, 0int));
-        self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord))
+        let np = self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
+        proof {
+            *hold = Ghost((sc@, 0int));
+        }
+        np
     }
 
     /// [`ClassState::plan`] under a fork epoch's `floor`: above the floor
@@ -5672,7 +5706,10 @@ impl ClassState {
     /// the floor count towards the epoch's cap
     /// ([`crate::cow::note_claimed`]). Cold and out of line, so that the
     /// refill path outside an epoch keeps its code.
-    // The last six arguments are ghost and tracked state.
+    ///
+    /// `hold` is as for [`ClassState::plan`]: the first hold's, at
+    /// `floor`, when it found picks, else the retry's, at 0.
+    // The last seven arguments are ghost and tracked state.
     #[allow(clippy::too_many_arguments)]
     #[cold]
     #[inline(never)]
@@ -5686,6 +5723,7 @@ impl ClassState {
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
         Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
         Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        Tracked(hold): Tracked<&mut Ghost<(PlanOrder, int)>>,
         pubw: Tracked<&'static Published>,
         Tracked(ord): Tracked<&mut LockOrder>,
     ) -> (np: usize)
@@ -5698,6 +5736,8 @@ impl ClassState {
         ensures
             *final(ord) == *old(ord),
             np == 0 && want > 0 ==> self.exhausted(final(ex)@.0, final(ex)@.1),
+            self.hold_ordered(final(hold)@.0, final(ex)@, final(picks)@, np as int, final(hold)@.1),
+            final(hold)@.1 == floor as int || final(hold)@.1 == 0,
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
             picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_owned(self.spec_class() as int, self.spec_arena(), final(picks)@, 0, np as int),
@@ -5709,7 +5749,14 @@ impl ClassState {
         let tracked mut sc = Ghost((VSet::<nat>::empty(), 0int, 0int, VSet::<nat>::empty(), 0int, VSet::<nat>::empty(), 0int, 0int));
         let np = self.plan_at(floor, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
         if np == 0 && want > 0 {
-            return self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
+            let r = self.plan_at(0, meta, want, picks, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm), Tracked(&mut *ex), Tracked(&mut sc), pubw, Tracked(&mut *ord));
+            proof {
+                *hold = Ghost((sc@, 0int));
+            }
+            return r;
+        }
+        proof {
+            *hold = Ghost((sc@, floor as int));
         }
         let mut slots: u64 = 0;
         let mut i: usize = 0;

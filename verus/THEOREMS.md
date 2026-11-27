@@ -158,6 +158,10 @@ leave out (theorem 33). Remaining work is tracked in
 - **No slab twice in a hold** ([A refill's lock hold takes each slab at most once](#a-refills-lock-hold-takes-each-slab-at-most-once)):
   `class::theorem_picks_distinct`, `class/mod.rs`, with
   `ClassState::plan_at`'s contract.
+- **A refill's hold, as `plan` returns it** ([A refill's `plan` restates its lock hold's order and distinctness](#a-refills-plan-restates-its-lock-holds-order-and-distinctness)):
+  `ClassState::plan`'s and `ClassState::plan_epoch`'s `ensures`
+  (`ClassState::hold_ordered`, and a floor of at least 0), `class/mod.rs`:
+  the five refill-order rows above, for the hold whose picks they return.
 - **Statistics coherence** ([The stored statistics totals sum the counted arenas' stored figures](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant)):
   `StoredSnapshot`'s and `StoredArena`'s `LockSpec` impls, with
   `stats::lemma_stored_agree`, `stats.rs`.
@@ -12024,8 +12028,10 @@ concurrent slots, as in theorem 37. No seam is added.
   stated: the lock's value is not constrained across acquisitions.
 - One lock hold. `plan` and `plan_epoch` call `plan_at` (`plan_epoch`
   twice, the second time without the floor when the first found
-  nothing). Neither they nor `claim_with` restate the result, and a
-  refill's later holds start a new scan.
+  nothing). Since chainguard-project-theseus/challoc#1030 both restate
+  the result for the hold whose picks they return
+  ([`plan` restates its lock hold](#a-refills-plan-restates-its-lock-holds-order-and-distinctness));
+  `claim_with` does not, and a refill's later holds start a new scan.
 - Slab order only. Which slots a pick claims inside its slab
   (`claim_prefix`, the bitmap's own scan, or a shuffled order) is not
   covered. Which idle slab `next_slab` returns is the next section's
@@ -12501,8 +12507,10 @@ sequentially consistent model; `vspec/byte.rs`). No seam is added.
   for an empty `p0`. Which picks are `Purged`, that they follow the
   `Empty` ones and precede the fresh ones, and that they ascend, are
   about the picks alone.
-- `plan`, the floor-0 caller, discards `plan_at`'s ghost outputs, as for
-  the previous sections; the theorem is about `plan_at`'s contract.
+- The theorem is about `plan_at`'s contract; since
+  chainguard-project-theseus/challoc#1030 `plan` and `plan_epoch`
+  restate it for the hold whose picks they return
+  ([`plan` restates its lock hold](#a-refills-plan-restates-its-lock-holds-order-and-distinctness)).
   `plan_floor` calls it with the fork floor.
 - Not ghost only since #971: `LAZY_EVER`'s loads and its store are
   vstd's, which are `SeqCst` where the `core` ones were `Relaxed` (an
@@ -12643,8 +12651,10 @@ rlimit.
 - A fresh pick is a slab the cursor passed, not every slab it passed:
   guard slabs and slabs whose commit reported them unusable are passed
   and not handed out, so the fresh picks need not be consecutive.
-- `plan`, the floor-0 caller, discards `plan_at`'s ghost outputs, as for
-  the previous sections; the theorem is about `plan_at`'s contract.
+- The theorem is about `plan_at`'s contract; since
+  chainguard-project-theseus/challoc#1030 `plan` and `plan_epoch`
+  restate it for the hold whose picks they return
+  ([`plan` restates its lock hold](#a-refills-plan-restates-its-lock-holds-order-and-distinctness)).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures`, a loop invariant, a widened ghost tuple and proof blocks
   only).
@@ -12728,8 +12738,10 @@ them as atoms.
   is not a repeat within a hold.
 - The slab is the pick's `slab` field; a pick's slot count `n` is not
   involved.
-- `plan`, the floor-0 caller, discards `plan_at`'s ghost outputs, as for
-  the previous sections; the theorem is about `plan_at`'s contract.
+- The theorem is about `plan_at`'s contract; since
+  chainguard-project-theseus/challoc#1030 `plan` and `plan_epoch`
+  restate it for the hold whose picks they return
+  ([`plan` restates its lock hold](#a-refills-plan-restates-its-lock-holds-order-and-distinctness)).
 - Ghost only: the release library's machine code is unchanged (a new
   `ensures`, loop invariants and proof blocks only).
 
@@ -12749,6 +12761,100 @@ an idle state inside the hold, which the base's `next_slab`, `take`,
 `reopen_pages` and `clear_partial_full` contracts exclude. #1023's M6,
 `next_slab` handing out the lowest partial slab, is rejected on both.
 This PR exports the fact that those contracts imply.
+
+## A refill's `plan` restates its lock hold's order and distinctness
+
+Five of the six sections above (all but "A refill takes the lowest idle
+slab", which is `next_slab`'s, per call) state their theorems as
+`plan_at`'s contract: one lock hold, at a floor the caller passes. Before
+chainguard-project-theseus/challoc#1030, the two functions a refill
+calls for a hold, `plan` (floor 0, or a fork epoch's `plan_epoch`) and
+`plan_epoch` (the floor, then a retry at 0 when that found nothing),
+passed `plan_at` a local `PlanOrder` and dropped it. So `claim_with`,
+which calls `plan` once per hold, got none of those statements.
+
+**Statement.**
+
+```rust
+// class/mod.rs
+spec fn hold_ordered(&self, sc: PlanOrder, ex: (Inner, Map<nat, usize>), p: Seq<Pick>, np: int, floor: int) -> bool {
+    &&& self.refill_ordered(sc.0, ex.1, ex.0, p, sc.1, np, floor, sc.2)
+    &&& idle_ordered(sc.3, ex.0.empty.map@, p, sc.1, sc.4, np, floor)
+    &&& (purged_ordered(sc.5, ex.0.purged.map@, p, sc.1 + sc.4, sc.6, np, 0)
+        || purged_ordered(sc.5, ex.0.purged.map@, p, sc.1 + sc.4, sc.6, np, floor))
+    &&& fresh_ordered(p, np, sc.7, ex.0.group_next as int)
+    &&& picks_distinct(p, np)
+}
+
+fn plan(&self, .., Tracked(ex): Tracked<&mut Ghost<(Inner, Map<nat, usize>)>>,
+        Tracked(hold): Tracked<&mut Ghost<(PlanOrder, int)>>, ..) -> (np: usize)
+    ensures
+        self.hold_ordered(final(hold)@.0, final(ex)@, final(picks)@, np as int, final(hold)@.1),
+        0 <= final(hold)@.1, ..;
+
+fn plan_epoch(&self, floor: usize, .., Tracked(hold): Tracked<&mut Ghost<(PlanOrder, int)>>, ..) -> (np: usize)
+    ensures
+        self.hold_ordered(final(hold)@.0, final(ex)@, final(picks)@, np as int, final(hold)@.1),
+        final(hold)@.1 == floor as int || final(hold)@.1 == 0, ..;
+```
+
+In words: the picks `plan` returns are those of one lock hold, at the
+floor `hold` names, and they meet every statement of the five sections
+above for that hold: the partial scan ascends from that floor and
+skipped no slab it read with an open free slot; the `Empty`, `Purged`
+and fresh idle picks follow it, each ascending; the idle picks after
+the `Empty` ones are outside the `Empty` set the hold read; and no slab
+is taken twice. `hold_ordered` is the conjunction of `plan_at`'s
+`ensures` (with `ex`, the lock value the hold released, in place of
+its fields), so the five sections' theorems (`theorem_refill_address_ordered`,
+`theorem_idle_empty_ascending`, `theorem_idle_purged_ascending`,
+`theorem_fresh_ascending`, `theorem_picks_distinct`) apply to `plan`'s
+result as they do to `plan_at`'s. `theorem_idle_purged_ascending` also
+needs `0 <= f <= floor`, which `plan_at` gets from its `usize` floor;
+`plan` states `0 <= final(hold)@.1` for it (review of #1031: without it
+the `Purged` theorem's precondition fails after `plan`). Calling all
+five theorems in `claim_with` right after `plan`, with `hold`'s fields,
+verifies (checked on the PR's tree, not kept).
+
+The proof: `plan` sets `hold` from `plan_at`'s `PlanOrder` and floor 0;
+`plan_epoch` sets it from the hold whose picks it returns (the first,
+at `floor`, when it found picks; else the retry, at 0). `plan_epoch`'s
+slot count loop only reads the picks.
+
+**Premises (seams).** None beyond the common ones. No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- One lock hold: the one whose picks are returned. When `plan_epoch`'s
+  first hold finds nothing and the retry runs, the statement is the
+  retry's; the first hold took no slab.
+- `plan`'s floor is the fork floor `cow_floor` read, or 0, but its
+  `ensures` does not name the floor read (`cow_floor` has no spec of its
+  value), only that it is at least 0; `plan_epoch`'s names it, against
+  its `floor` argument.
+- `claim_with` passes a local `hold` and does not restate it: each of
+  its holds starts a new scan, and a later hold may take a slab an
+  earlier one took and left partial. Its contract is unchanged.
+- The other limits of the five sections (over the sets and values read,
+  ghost outputs pinned only as those sections say) carry over unchanged.
+- Ghost only: the release library's machine code is unchanged (a new
+  `Tracked` argument of `plan`, `inline(always)`, and of `plan_epoch`,
+  erased, a spec function and proof blocks).
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module class
+--verify-function F`, on the PR's tree):
+
+| id | change | PR | main |
+|---|---|---|---|
+| G1 | `plan`'s floor-0 path does not set `hold` | rejected (`plan`'s `hold_ordered` postcondition) | not applicable (no such clause) |
+| G2 | `plan_epoch`'s retry records the epoch's floor instead of 0 | rejected (`plan_epoch`'s `hold_ordered` postcondition) | not applicable |
+| G3 | `plan_epoch`'s first hold records floor 0 instead of its floor | rejected (`plan_epoch`'s `hold_ordered` postcondition) | not applicable |
+| G4 | `plan_epoch` drops its "floor is `floor` or 0" `ensures` | rejected (`plan`'s `0 <= final(hold)@.1` postcondition) | not applicable |
+
+No executable mutant was found that main accepts and this PR rejects.
+`plan` and `plan_epoch` only choose a floor and pass `plan_at`'s picks
+on; a change to the order of the picks is inside `plan_at`, whose own
+`ensures` on main already reject it (the five sections' mutants). This
+PR moves those statements to the functions `claim_with` calls.
 
 ## The stored statistics totals sum the counted arenas' stored figures (at the process statistics lock's invariant)
 
