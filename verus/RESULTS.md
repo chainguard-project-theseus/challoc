@@ -46,7 +46,7 @@ Every block an allocation returns fits its request and alignment, lies wholly in
 | `Live::theorem_distinct` | The addresses of 2 live blocks are different and non-null. | [heap/live.rs](../src/heap/live.rs) | Tokens for 2 live blocks. |
 | `Live::theorem_interior` | An interior pointer into a live block is not a free target, except a page start inside a huge run. | [heap/live.rs](../src/heap/live.rs) | A live block; the C caller contract excludes freeing the huge-run exception. |
 | `Live::theorem_purge_huge` | A huge purge does not discard the usable bytes of a live block. | [heap/live.rs](../src/heap/live.rs) | A live block and the huge-run authority. |
-| `Live::theorem_purge_class_apart` | A byte placed in class `c`'s region (`class_placed`, which `Purger::new` ensures of every byte the batches of the decay walks `purge_empty` and `purge_curve` may discard) is no usable byte of a live run or of a live slot of another class. Live slots of class `c` itself are not covered, nor is the slab-pages walk's `close_page` discard. | [heap/live.rs](../src/heap/live.rs) | `regions_ok`, a live block that is not a slot of class `c` (`!slot_of(c)`), `class_placed(c, b)`. |
+| `Live::theorem_purge_class_apart` | A byte placed in class `c`'s region (`class_placed`, which `Purger::new` ensures of every byte the batches of the decay walks `purge_empty` and `purge_curve` may discard, and `SlabTable::page_range` of every byte of the slab-pages walk's `close_page` discard) is no usable byte of a live run or of a live slot of another class. Live slots of class `c` itself are not covered. | [heap/live.rs](../src/heap/live.rs) | `regions_ok`, a live block that is not a slot of class `c` (`!slot_of(c)`), `class_placed(c, b)`. |
 
 ### Free paths and bad input
 
