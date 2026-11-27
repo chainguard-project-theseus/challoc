@@ -54,7 +54,7 @@ use super::libc::{class_for, grow_kept, old_size_or_keep, shrink_kept, usable_si
 #[cfg(verus_keep_ghost)]
 use super::libc::{
     class_slot_at, grew_in_place, keeps, lemma_class_aligned, lemma_class_named, lemma_huge_named,
-    shrank_in_place, spec_class_for,
+    lemma_no_class_above, shrank_in_place, spec_class_for,
 };
 use super::print::{cancel_disable, cancel_restore};
 #[cfg(verus_keep_ghost)]
@@ -496,6 +496,8 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int, Tracked(c): Tracked<CCall>
     ensures
         *final(ord) == *old(ord),
         crate::heap::fits(r, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+        r@.addr != 0 ==> crate::heap::hint_ok(r, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+        r@.addr != 0 ==> class_slot_at(r, size, 1usize << ((flags as u32) & 0x3f)),
         p@.addr != 0 ==> crate::heap::free_target(p),
         p@.addr != 0 && r@.addr != 0 && r != p ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
 {
@@ -556,6 +558,9 @@ pub fn rallocx_zeroed(
                 ==> r.1@ == (if class_table()[c].size < size { class_table()[c].size as int } else { size as int })
         },
         final(out).gives(r.0, size as int),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+        r.0@.addr != 0 ==> class_slot_at(r.0, size, 1usize << ((flags as u32) & 0x3f)),
+        r.0@.addr != 0 ==> crate::heap::huge_hint_ok(*final(out), r.0, size),
         r.0@.addr != 0 && r.0 != p && (flags as u32) & MALLOCX_ZERO != 0 ==> final(out).reads_zero(r.1@, final(out).len() - r.1@),
         // A move frees `p` through the flags' cache, which exists.
         p@.addr != 0 && r.0@.addr != 0 && r.0 != p ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
@@ -614,6 +619,8 @@ pub fn rallocx_zeroed(
     ).is_some() {
         proof {
             out.set(blk);
+            // A run's size: no class serves it at `align` (#1020).
+            lemma_no_class_above(size, align);
         }
         return (p, Ghost(0), Tracked(Zeroed::empty(0)), Ghost(b));
     }
@@ -630,6 +637,7 @@ pub fn rallocx_zeroed(
     ).is_some() {
         proof {
             out.set(blk);
+            lemma_no_class_above(size, align);
         }
         return (p, Ghost(0), Tracked(Zeroed::empty(0)), Ghost(b));
     }
@@ -651,7 +659,11 @@ pub fn rallocx_zeroed(
         assert(q@.addr != p@.addr);
         // The copy reads `p`'s bytes: rallocx's one read of user memory.
         crate::vspec::user::grant_user_reads();
+        // The new token claims `q`, so its run check holds outright; the
+        // copy keeps its length (#1020).
+        out.lemma_claims(q);
     }
+    let ghost moved = *out;
     let ghost k = if old < size { old as int } else { size as int };
     proof {
         // `old` is the usable size a query of `p` reads.
@@ -673,6 +685,9 @@ pub fn rallocx_zeroed(
             Tracked(out),
         )
     };
+    proof {
+        assert(crate::heap::huge_hint_ok(moved, q, size));
+    }
     mallocx::free(shared, p, f.tcache, Tracked(crate::heap::Claim::held(blk)), Tracked(errno), Tracked(ord));
     (q, Ghost(k), Tracked(tail), Ghost(b))
 }
@@ -1382,6 +1397,8 @@ mod exports {
         }
         fn rallocx / je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> (r: *mut c_void) ensures [
             crate::heap::fits(r as *mut u8, size as int, (1usize << ((flags as u32) & 0x3f)) as int),
+            r@.addr != 0 ==> crate::heap::hint_ok(r as *mut u8, super::spec_class_for(size, 1usize << ((flags as u32) & 0x3f))),
+            r@.addr != 0 ==> super::class_slot_at(r as *mut u8, size, 1usize << ((flags as u32) & 0x3f)),
             p@.addr != 0 ==> crate::heap::free_target(p as *mut u8),
             p@.addr != 0 && r@.addr != 0 && r as *mut u8 != p as *mut u8 ==> !crate::heap::mallocx::bad_tcache(crate::heap::mallocx::decode_spec(flags as u32).tcache),
         ] {

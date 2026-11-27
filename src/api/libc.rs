@@ -668,6 +668,9 @@ fn malloc_grown(shared: &Shared, size: usize, Tracked(blk): Tracked<&mut Live>, 
     ensures
         heap::fits(r, size as int, QUANTUM as int),
         final(blk).gives(r, size as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1)),
+        r@.addr != 0 ==> class_slot(r, size),
+        r@.addr != 0 ==> heap::huge_hint_ok(*final(blk), r, size),
         r@.addr == 0 ==> final(errno).val() == ENOMEM,
         *final(ord) == *old(ord),
 {
@@ -681,6 +684,7 @@ fn malloc_grown(shared: &Shared, size: usize, Tracked(blk): Tracked<&mut Live>, 
     let p = alloc_huge_placed(shared, size, 1, false, true, Tracked(blk), Tracked(ord)).0;
     proof {
         lemma_huge_result(p, size, 1);
+        lemma_huge_named(shared, *blk, p, size, 1);
     }
     if p.is_null() { enomem(Tracked(errno)) } else { p }
 }
@@ -1568,6 +1572,63 @@ proof fn lemma_keeps_run(p: *mut u8, size: usize, align: usize, len: int)
     }
 }
 
+/// No class serves a run's size, at any alignment: every class is at
+/// most `MEDIUM_MAX` bytes (#1020).
+pub(super) proof fn lemma_no_class_above(size: usize, align: usize)
+    requires
+        size > MEDIUM_MAX,
+    ensures
+        spec_class_for(size, align) is None,
+{
+    lemma_class_of_for(size);
+    assert forall|c: int| !#[trigger] least_class(c, size as int, align) by {
+        if least_class(c, size as int, align) {
+            // A class serving `size` at `align` serves it at 1 too.
+            lemma_class_for_one(size, c);
+        }
+    }
+}
+
+/// A block `realloc` keeps ([`keeps`]) for `size` bytes at `align` is
+/// named by them, as a new one is ([`lemma_class_named`],
+/// [`lemma_huge_named`]): a slot of the class they pick, or a run with no
+/// class for them whose usable bytes `blk.len()` ([`usable_of`]) are
+/// `size` rounded up to whole pages (#1020).
+proof fn lemma_kept_named(shared: &Shared, blk: Live, p: *mut u8, size: usize, align: usize, old: usize)
+    requires
+        shared.wf(),
+        blk.block(p),
+        old == blk.len(),
+        keeps(p, size, align, blk.len()),
+        usable_of(p, old as int),
+    ensures
+        heap::hint_ok(p, spec_class_for(size, align)),
+        class_slot_at(p, size, align),
+        heap::huge_hint_ok(blk, p, size),
+{
+    shared.lemma_wf();
+    shared.lemma_wf_slow();
+    shared.lemma_wf_ready();
+    shared.lemma_regions_ok();
+    let r = crate::layout::process_regions();
+    if exists|c: int| #[trigger] r.is_slot(c, p@.addr) && spec_class_for(size, align) == Some(c as usize) {
+        let c = choose|c: int| #[trigger] r.is_slot(c, p@.addr) && spec_class_for(size, align) == Some(c as usize);
+        crate::vspec::class::lemma_class_table_wf(c);
+        blk.lemma_claims(p);
+        blk.lemma_claims_slot(p, c);
+        lemma_class_named(blk, p, c, size, align);
+    } else {
+        lemma_keeps_run(p, size, align, blk.len());
+        lemma_usable_for_run(shared, p, size, old);
+        assert(shared.huge.spec_page() == heap::live::page_size());
+        assert forall|k: int| !#[trigger] r.is_slot(k, p@.addr) by {
+            if r.is_slot(k, p@.addr) {
+                crate::vspec::zero::lemma_slot_not_huge(k, p@.addr);
+            }
+        }
+    }
+}
+
 /// What `Huge::usable_for(size)` reads against a run's usable bytes
 /// `old` ([`usable_of`]): when it is defined it is `size` rounded up to
 /// whole pages, and when `size` rounded up overflows it is no run's usable
@@ -1762,6 +1823,9 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
         r is None <==> keeps(p, size, align, final(claim).held->0.len()),
         r matches Some(o) ==> usable_of(p, o as int),
         r is None ==> final(claim).held->0.gives(p, size as int),
+        r is None ==> heap::hint_ok(p, spec_class_for(size, align)),
+        r is None ==> class_slot_at(p, size, align),
+        r is None ==> heap::huge_hint_ok(final(claim).held->0, p, size),
         r matches Some(o) ==> final(claim).held->0.block(p) && o == final(claim).held->0.len(),
 {
     proof {
@@ -1819,6 +1883,9 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                     lemma_class_aligned(class, align);
                     heap::lemma_slot_fits(p, class as int, size as int, align);
                     heap::lemma_slot_fits_quantum(p, class as int, size as int);
+                    // The kept slot is of the class `size` at `align`
+                    // names (#1020).
+                    lemma_class_named(blk, p, class as int, size, align);
                 }
                 return None;
             }
@@ -1882,6 +1949,14 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
                     // `size` is at most the run's usable bytes, which lie
                     // in the region.
                     crate::vspec::usable::lemma_run_bytes_block(p@.addr, old as int, size as int);
+                    // No slot starts at the kept run, and its usable
+                    // bytes are `size` rounded up to whole pages (#1020).
+                    assert(shared.huge.spec_page() == heap::live::page_size());
+                    assert forall|k: int| !#[trigger] crate::layout::process_regions().is_slot(k, p@.addr) by {
+                        if crate::layout::process_regions().is_slot(k, p@.addr) {
+                            crate::vspec::zero::lemma_slot_not_huge(k, p@.addr);
+                        }
+                    }
                 }
                 return None;
             }
@@ -1928,6 +2003,8 @@ pub fn realloc(p: *mut u8, size: usize, Tracked(errno): Tracked<&mut ThreadErrno
         *final(ord) == *old(ord),
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
         heap::fits(r, size as int, QUANTUM as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1)),
+        r@.addr != 0 ==> class_slot(r, size),
         p@.addr != 0 ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
@@ -2000,6 +2077,9 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tr
         heap::fits(r.0, size as int, QUANTUM as int),
         p@.addr != 0 ==> heap::free_target(p),
         final(out).gives(r.0, size as int),
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, size),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(out), r.0, size),
         p@.addr != 0 && size == 0 ==> (claim.held matches Some(blk) ==> blk.block(p)),
         p@.addr != 0 && size == 0 ==> r.1@.block(p),
         p@.addr != 0 && size != 0 ==> {
@@ -2042,6 +2122,8 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tr
     if grows && grow_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)).is_some() {
         proof {
             out.set(blk);
+            // A run's size: no class serves it (#1020).
+            lemma_class_of_for(size);
         }
         return (p, Ghost(b));
     }
@@ -2050,6 +2132,7 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tr
     if size > MEDIUM_MAX && size < old && shrink_kept(shared, p, size, old, Tracked(&mut blk), Tracked(&mut *ord)).is_some() {
         proof {
             out.set(blk);
+            lemma_class_of_for(size);
         }
         return (p, Ghost(b));
     }
@@ -2074,10 +2157,17 @@ pub fn realloc_block(p: *mut u8, size: usize, Tracked(claim): Tracked<Claim>, Tr
         assert(q@.addr != p@.addr);
         // The copy reads `p`'s bytes: realloc's one read of user memory.
         crate::vspec::user::grant_user_reads();
+        // The new token claims `q`, so its run check holds outright; the
+        // copy keeps its length (#1020).
+        out.lemma_claims(q);
     }
+    let ghost moved = *out;
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
+    proof {
+        assert(heap::huge_hint_ok(moved, q, size));
+    }
     heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(ord));
     (q, Ghost(b))
 }
@@ -2110,6 +2200,8 @@ pub(super) fn grow_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usize
             &&& kept(p, size as int, 1)
             &&& final(blk).gives(p, size as int)
             &&& usable_is(p, size as int, n as int)
+            &&& forall|c: int| !#[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
+            &&& heap::huge_hint_ok(*final(blk), p, size)
             &&& forall|q: *mut u8| #[trigger] old(blk).claims(q) ==> final(blk).claims(q)
         },
 {
@@ -2124,6 +2216,17 @@ pub(super) fn grow_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usize
             assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) implies blk.len() == class_table()[c].size by {
                 crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
             }
+            // No slot at the run, whose usable bytes are `size` rounded
+            // up to whole pages: the sized frees' run check (#1020).
+            assert forall|c: int| !#[trigger] crate::layout::process_regions().is_slot(c, p@.addr) by {
+                if crate::layout::process_regions().is_slot(c, p@.addr) {
+                    crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+                }
+            }
+            shared.lemma_wf();
+            shared.lemma_wf_slow();
+            shared.lemma_wf_ready();
+            assert(shared.huge.spec_page() == heap::live::page_size());
         }
     }
     r
@@ -2160,6 +2263,8 @@ pub(super) fn shrink_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usi
             &&& kept(p, size as int, 1)
             &&& final(blk).gives(p, size as int)
             &&& usable_is(p, size as int, n as int)
+            &&& forall|c: int| !#[trigger] crate::layout::process_regions().is_slot(c, p@.addr)
+            &&& heap::huge_hint_ok(*final(blk), p, size)
             &&& forall|q: *mut u8| #[trigger] old(blk).claims(q) ==> final(blk).claims(q)
         },
 {
@@ -2174,6 +2279,17 @@ pub(super) fn shrink_kept(shared: &Shared, p: *mut u8, size: usize, old_len: usi
             assert forall|c: int| #[trigger] crate::layout::process_regions().is_slot(c, p@.addr) implies blk.len() == class_table()[c].size by {
                 crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
             }
+            // No slot at the run, whose usable bytes are `size` rounded
+            // up to whole pages: the sized frees' run check (#1020).
+            assert forall|c: int| !#[trigger] crate::layout::process_regions().is_slot(c, p@.addr) by {
+                if crate::layout::process_regions().is_slot(c, p@.addr) {
+                    crate::vspec::zero::lemma_slot_not_huge(c, p@.addr);
+                }
+            }
+            shared.lemma_wf();
+            shared.lemma_wf_slow();
+            shared.lemma_wf_ready();
+            assert(shared.huge.spec_page() == heap::live::page_size());
         }
     }
     r
@@ -2266,6 +2382,8 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize, Tracked(errno): Tracked<&mut
         *final(ord) == *old(ord),
         n * m > usize::MAX ==> r@.addr == 0 && final(errno).val() == ENOMEM,
         heap::fits(r, n * m, QUANTUM as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for((n * m) as usize, 1)),
+        r@.addr != 0 ==> class_slot(r, (n * m) as usize),
         p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && n * m == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && n * m == 0 ==> final(errno).val() == old(errno).val(),
@@ -2757,6 +2875,8 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize, Tracked(uout)
         final(uout).opt() matches Some(q) ==> reports_usable(q.opt_value(), r, size as int),
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
         heap::fits(r, size as int, QUANTUM as int),
+        r@.addr != 0 ==> heap::hint_ok(r, spec_class_for(size, 1)),
+        r@.addr != 0 ==> class_slot(r, size),
         p@.addr != 0 ==> heap::free_target(p),
         r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> final(errno).val() == ENOMEM,
         p@.addr != 0 && size == 0 ==> final(errno).val() == old(errno).val(),
@@ -2791,6 +2911,9 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         r.1@.ptr() == usable,
         r.0@.addr != 0 ==> usable_is(r.0, size as int, r.1@.val() as int),
         final(out).gives(r.0, size as int),
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, size),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(out), r.0, size),
         p@.addr != 0 && size == 0 ==> (claim.held matches Some(blk) ==> blk.block(p)),
         p@.addr != 0 && size == 0 ==> r.2@.block(p),
         p@.addr != 0 && size != 0 ==> {
@@ -2824,6 +2947,8 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         let s = store_usable(usable, old, Tracked(uout));
         proof {
             out.set(blk);
+            crate::meta::lemma_is_pow2_one();
+            lemma_kept_named(shared, b, p, size, 1, old);
         }
         return (p, s, Ghost(b));
     }
@@ -2837,6 +2962,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
             let s = store_usable(usable, n, Tracked(uout));
             proof {
                 out.set(blk);
+                lemma_class_of_for(size);
             }
             return (p, s, Ghost(b));
         }
@@ -2849,6 +2975,7 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
             let s = store_usable(usable, n, Tracked(uout));
             proof {
                 out.set(blk);
+                lemma_class_of_for(size);
             }
             return (p, s, Ghost(b));
         }
@@ -2876,10 +3003,17 @@ pub fn realloc_usable_stored(p: *mut u8, size: usize, usable: *mut usize, Tracke
         assert(q@.addr != p@.addr);
         // The copy reads `p`'s bytes: realloc's one read of user memory.
         crate::vspec::user::grant_user_reads();
+        // As in `realloc_block` (#1020); a growth's run has no class.
+        out.lemma_claims(q);
+        lemma_class_of_for(size);
     }
+    let ghost moved = *out;
     // SAFETY: `blk` holds the permission to `p`'s `old` usable bytes and
     // `out` to `q`'s `size` or more; the two share no byte.
     unsafe { copy_moved(p, q, old.min(size), Tracked(&mut blk), Tracked(out)) };
+    proof {
+        assert(heap::huge_hint_ok(moved, q, size));
+    }
     heap::free(shared, p, Tracked(Claim::held(blk)), Tracked(&mut *errno),Tracked(&mut *ord));
     (q, s, Ghost(b))
 }
@@ -4073,6 +4207,8 @@ mod exports {
         fn realloc / je_realloc(p: *mut c_void, size: usize) -> (r: *mut c_void) ensures [
             p@.addr != 0 && size == 0 ==> r@.addr == 0,
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for(size, 1)),
+            r@.addr != 0 ==> class_slot(r as *mut u8, size),
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
             r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> c_errno() == ENOMEM,
         ] {
@@ -4187,6 +4323,8 @@ mod exports {
         ensures
             n * m > usize::MAX ==> r@.addr == 0,
             heap::fits(r as *mut u8, n * m, QUANTUM as int),
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for((n * m) as usize, 1)),
+            r@.addr != 0 ==> class_slot(r as *mut u8, (n * m) as usize),
             p@.addr != 0 && n * m <= usize::MAX ==> heap::free_target(p as *mut u8),
             n * m > usize::MAX ==> c_errno() == ENOMEM,
             r@.addr == 0 && !(p@.addr != 0 && n * m == 0) ==> c_errno() == ENOMEM,
@@ -4314,6 +4452,8 @@ mod exports {
         ensures
             p@.addr != 0 && size == 0 ==> r@.addr == 0,
             heap::fits(r as *mut u8, size as int, QUANTUM as int),
+            r@.addr != 0 ==> heap::hint_ok(r as *mut u8, spec_class_for(size, 1)),
+            r@.addr != 0 ==> class_slot(r as *mut u8, size),
             p@.addr != 0 ==> heap::free_target(p as *mut u8),
             r@.addr == 0 && !(p@.addr != 0 && size == 0) ==> c_errno() == ENOMEM,
             usable@.addr != 0 ==> reports_usable(c_out(usable), r as *mut u8, size as int),

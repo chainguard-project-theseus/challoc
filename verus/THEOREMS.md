@@ -219,6 +219,15 @@ leave out (theorem 33). Remaining work is tracked in
   `pvalloc_block`, `pvalloc` and the `pvalloc` / `je_pvalloc` exports'
   `ensures` (`heap::hint_ok`, `class_slot_at`, and for `pvalloc_block`
   `heap::huge_hint_ok`), `api/libc.rs`.
+- **Realloc's size names its block** ([`realloc(p, n)`'s block is named by `n`](#reallocp-ns-block-is-named-by-n)):
+  `realloc_block`, `realloc_usable_stored`, `old_size_or_keep` (a kept
+  block), `grow_kept`, `shrink_kept`, `malloc_grown`, `realloc`,
+  `reallocarray`, `realloc_usable` and the `realloc` / `je_realloc` /
+  `reallocarray` / `challoc_realloc_usable` exports' `ensures`
+  (`api/libc.rs`); `rallocx_zeroed`, `rallocx` and the `rallocx` /
+  `je_rallocx` exports' (`api/jemalloc.rs`): `heap::hint_ok`,
+  `class_slot` / `class_slot_at`, and for the token-carrying cores
+  `heap::huge_hint_ok`.
 
 ## Configuration
 
@@ -9952,13 +9961,14 @@ listed above.
   The run half is proved only of the token `malloc_block` and the
   other token-carrying cores return. A sized free called from C gets
   its token from `axiom_c_claim`, which states only `claims(p)`, so for
-  a run the round trip through C still rests on this premise. Both
-  halves still rest on it for a block from an entry that states no
-  `hint_ok` of its result: `realloc`, `reallocarray`,
-  `challoc_realloc_usable` and `rallocx` (`challoc_malloc_usable`
-  since chainguard-project-theseus/challoc#1016:
-  [`challoc_malloc_usable(n)`'s block is named by
-  `n`](#challoc_malloc_usablens-block-is-named-by-n)). A block from
+  a run the round trip through C still rests on this premise. Every
+  allocating entry states the slot half of its result:
+  `challoc_malloc_usable` since chainguard-project-theseus/challoc#1016
+  ([`challoc_malloc_usable(n)`'s block is named by
+  `n`](#challoc_malloc_usablens-block-is-named-by-n)), and `realloc`,
+  `reallocarray`, `challoc_realloc_usable` and `rallocx` since
+  chainguard-project-theseus/challoc#1020 ([`realloc(p, n)`'s block is
+  named by `n`](#reallocp-ns-block-is-named-by-n)). A block from
   `pvalloc(n)` is named by `n` rounded up to a page, not by `n`, since
   chainguard-project-theseus/challoc#1018 ([`pvalloc(n)`'s block is
   named by `n` rounded up to a
@@ -13698,7 +13708,10 @@ and `Shared::huge_ok` is the no-overflow conjunct.
   by `n`](#challoc_malloc_usablens-block-is-named-by-n), and, since
   chainguard-project-theseus/challoc#1018, `pvalloc` at its rounded
   size: [`pvalloc(n)`'s block is named by `n` rounded up to a
-  page](#pvallocns-block-is-named-by-n-rounded-up-to-a-page)).
+  page](#pvallocns-block-is-named-by-n-rounded-up-to-a-page), and,
+  since chainguard-project-theseus/challoc#1020, the resizing entries:
+  [`realloc(p, n)`'s block is named by
+  `n`](#reallocp-ns-block-is-named-by-n)).
 - The run half (`huge_hint_ok`) is stated of the token the cores
   return, not across C. `malloc` drops that token, and a sized free
   called from C gets its own from `axiom_c_claim`, whose `ensures` is
@@ -13928,7 +13941,10 @@ the huge path also records that the run's token claims its pointer
   alignment gets a slot, not a run with the same usable bytes.
 - As for `malloc`: the run half is a fact of the token, which `mallocx`
   and the exports drop. Across C it still rests on section 44's premise.
-- `rallocx` is out of scope; `operator new` is covered since
+- `rallocx` is covered since chainguard-project-theseus/challoc#1020
+  ([`realloc(p, n)`'s block is named by
+  `n`](#reallocp-ns-block-is-named-by-n)), at the same alignment flag;
+  `operator new` is covered since
   chainguard-project-theseus/challoc#1014 ([`operator new`'s block is
   named by its size and
   alignment](#operator-news-block-is-named-by-its-size-and-alignment)).
@@ -14112,6 +14128,80 @@ P1 is an executable mutant that main accepts: its block still fits and
 gives both sizes, but a sized free with the rounded size aborts on a
 huge-path run one page too long. V1 and V2 are specification mutants:
 they show the rounded size cannot be replaced by the caller's.
+
+## `realloc(p, n)`'s block is named by `n`
+
+A resize returns the block it kept or a new one. Since
+chainguard-project-theseus/challoc#1020 the resizing entries state what
+[`malloc(n)`'s block is named by
+`n`](#mallocns-block-is-named-by-n-the-sized-free-hint-of-mallocs-own-size)
+states of `malloc`, for the result in every case: the sized frees'
+slot check of `n` (at `rallocx`'s alignment flag), that a size a class
+serves gets a slot of exactly that class, and on the token-carrying
+cores the run half.
+
+**Statement** (`api/libc.rs`; `rallocx_zeroed` in `api/jemalloc.rs`
+at `1usize << ((flags as u32) & 0x3f)` in place of 1):
+
+```rust
+// realloc_block, realloc_usable_stored (r.0), rallocx_zeroed (r.0)
+    ensures
+        r.0@.addr != 0 ==> heap::hint_ok(r.0, spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> class_slot(r.0, size),
+        r.0@.addr != 0 ==> heap::huge_hint_ok(*final(out), r.0, size), ..;
+
+// realloc, realloc_usable, rallocx, reallocarray (at n * m) and the
+// exports: the first two
+```
+
+Along the way: `old_size_or_keep` states the three of a kept block
+(`r is None`), `malloc_grown` of its result, and `grow_kept` /
+`shrink_kept` that no slot starts at the run and `huge_hint_ok` of its
+new token.
+
+**Proof.** Per return path:
+- `p` null: `malloc_block`'s (or `alloc_with`'s) `ensures`.
+- Kept by `old_size_or_keep`: the slot half of `keeps` is a slot of
+  the class `spec_class_for(size, align)` picks (`lemma_class_named`);
+  its run half has no class, no slot at `p`, and `huge_usable(size)`
+  equal to the run's usable bytes, whose page-rounding bound
+  `lemma_usable_for_run` gives. `realloc_old`'s keep, for
+  `realloc_usable_stored`, is the same through the new
+  `lemma_kept_named`.
+- Grown or shrunk in place: the size is above `MEDIUM_MAX`, so no class
+  serves it at any alignment (the new `lemma_no_class_above`); the new
+  token's length and the rounding bound come from
+  `Shared::grow_huge` / `shrink_huge`.
+- Moved: the new block's allocation states the three; `lemma_claims`
+  shows its token claims it, and `copy_moved`'s `same_but_bytes`
+  keeps the length the run half reads.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- As for `malloc`: the run half is a fact of the token, which `realloc`,
+  `reallocarray`, `realloc_usable`, `rallocx` and the exports drop.
+  Across C it still rests on section 44's premise.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures` and proof only).
+
+**Mutations** (`cargo verus focus -- --verify-module api::libc`, on
+this tree and on main 335790d0):
+
+| id | change | PR | main |
+|---|---|---|---|
+| R1 | `realloc_usable_stored`'s move always takes `malloc_usable_huge` (`if grows` becomes `if true`), a run for a size a class serves | rejected (`realloc_usable_stored`'s `class_slot` postcondition) | verifies |
+| R2 | `realloc_block`'s move to a size a class serves allocates 32 bytes when `size <= 16` (`malloc_block(if size <= 16 { 32 } else { size }, ..)`), a slot of a larger class | rejected (`realloc_block`'s `hint_ok` postcondition, and the moved path's `huge_hint_ok` assertion) | verifies |
+
+R1 and R2 are executable mutants that main accepts: the new block fits
+and gives `size` bytes, but a sized free of `size` aborts on it, since
+it is not the slot of `size`'s class. No mutant pins `rallocx_zeroed`
+separately. The same change to its move (`alloc_with` for 32 bytes when
+`size <= 16`) is rejected on main too, by its zeroing postcondition
+(`api::jemalloc` 45 verified, 1 error). Forcing `grows` changes nothing,
+since `alloc_with` picks the class before placement. Its moved result
+is named by `alloc_with`'s own `ensures`, from the `mallocx` section
+above.
 
 ## Interface contract
 
