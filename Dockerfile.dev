@@ -15,7 +15,7 @@
 # gives the full image; `make image IMAGE_TARGET=test` stops at `test`.
 # The base image is pinned by digest: bump it deliberately, then run
 # `make test`.
-FROM cgr.dev/chainguard/wolfi-base@sha256:24f549a7fcace88e69b9557941168c74645688ecc4acf7fb6d734a6b74e9019d AS base
+FROM cgr.dev/chainguard/wolfi-base@sha256:2c12da5496e21e99003b3db3b9246f025e53d533c4df334205391260f1e8f85b AS base
 
 # Toolchain. `rust-1.99` is the stream the package build compiles with:
 # the one the verus and kani packages bring, which the package build
