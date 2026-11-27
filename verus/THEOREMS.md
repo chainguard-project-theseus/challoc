@@ -4982,7 +4982,8 @@ with `free`, and, when `madvise` refuses a merged range, its first, last and mid
 (`lemma_piece_ok`). So every byte any flush hands to `madvise`,
 `MADV_DONTNEED` or `MADV_FREE`, including the flush inside a `push` to a
 full batch and the re-issue of a refused range's pieces, satisfies the
-batch's `free`. A range `madvise` refuses is not discarded: its memory
+batch's `free`; the batch's record of those ranges says so too
+(`Batch::lemma_discarded`, theorem 40). A range `madvise` refuses is not discarded: its memory
 stays `Empty`, which the statement allows (it bounds what may be
 discarded, not what must be). The makers report each range to a settler
 (`purge::Settle`, the walk's `Tally`), which changes the lock value only
@@ -9214,10 +9215,32 @@ region (`Regions::in_meta`), and in no guard slab `s` of any class `c`
 (for every `c` and `s`, as its arguments). A `Batch` (`purge.rs`)
 also records the ranges it handed over, in call order (a ghost `gone`,
 `Batch::discarded`): each `discard` call appends its range, `push` and
-`flush` only extend the record. `Batch::wf` keeps `well_formed` of
-every recorded range, but no lemma reads it out above the batch.
+`flush` only extend the record. `Batch::wf` keeps `gone_ok` of the
+record: every recorded range is `well_formed` and of bytes the batch's
+`free` admits (`frees`), and `Batch::lemma_discarded` reads both out
+above the batch, for any batch a caller holds well formed:
+
+```rust
+// purge.rs
+pub open spec fn gone_ok(gone: Seq<(usize, usize)>, free: Bytes) -> bool {
+    forall|i: int| 0 <= i < gone.len() ==>
+        well_formed(gone[i].0 as int, gone[i].1 as int) && frees(free, gone[i].0 as int, gone[i].1 as int)
+}
+
+// purge.rs, in `impl Batch`
+pub proof fn lemma_discarded(&self, i: int)
+    requires
+        self.wf(),
+        0 <= i < self.discarded().len(),
+    ensures
+        well_formed(self.discarded()[i].0 as int, self.discarded()[i].1 as int),
+        frees(self.free(), self.discarded()[i].0 as int, self.discarded()[i].1 as int),
+```
+
 `discard` requires `well_formed(addr, len)`,
-so every call is checked against it.
+so every call is checked against it. Until
+chainguard-project-theseus/challoc#1048 the record carried only
+`well_formed`, and no lemma read it out.
 
 How it is proved:
 - **The batch.** `Batch::wf` (closed) keeps `well_formed` of every range
@@ -9306,13 +9329,39 @@ so through `purge_arena`'s contract).
   settler once (`Settle`), but a range may reach `madvise` more than
   once: a refused merged range is re-issued piece by piece, and a range
   refused in one purge is pushed again by the next. The record
-  `discarded()` is not exported above the batch (`purge::Left`, theorem
-  38, carries the byte count and the refused slabs and extents).
+  `discarded()` is readable above the batch (`Batch::lemma_discarded`)
+  but no purge entry point exports it: a batch lives inside one walk,
+  and `purge::Left` (theorem 38) carries the byte count and the
+  refused slabs and extents.
+- The record's `frees` comes from the batch's ranges (`range_ok`), not
+  from the predicate a flush passes `discard`: that each flush passes
+  the batch's own `free` is read from `flush_in`'s body. That each
+  recorded range is the one the `discard` before it was handed is also
+  read from the body (the ghost push follows each call); the record
+  states only that each range is well formed and free.
 - Only `purge::Batch` discards are covered; `MADV_GUARD_INSTALL`
   (`class/table.rs`, `huge/kernel.rs`) and `MADV_GUARD_REMOVE` drop or keep
   contents of guard pages outside any batch (theorem 7).
 - The unit tests build batches over an unconstrained ghost predicate
   (`Batch::new_t`) and push arbitrary ranges; they are not verified code.
+
+**Seams of `Batch::lemma_discarded`** (chainguard-project-theseus/challoc#1048).
+
+| Seam | Kind | Why |
+|---|---|---|
+| none added | | The record is ghost (`gone`), kept by `Batch::wf` and the two loop invariants of `flush_in`; the lemma unfolds `wf`. |
+
+**Mutations** (`cargo verus focus -- --verify-module purge`):
+
+| | Mutation | PR | main 07be4703 |
+|---|---|---|---|
+| M1 | `gone_ok` drops its `frees` clause | rejected (`lemma_discarded`'s `ensures`) | not applicable (no `gone_ok`) |
+| M2 | a whole range is recorded one piece too long, `(addr, len + piece)` | rejected (`flush_in`'s loop invariant) | rejected (`well_formed`) |
+
+No mutation separates `frees` from `well_formed` in `flush_in`: every
+range the body can record is one of the batch's ranges or a piece of
+one, both of which `range_ok` makes free. Ghost only: the release
+library's machine code is unchanged.
 
 ## 41. Seal targets stay inside challoc's reservations
 
