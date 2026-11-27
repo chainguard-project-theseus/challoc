@@ -2027,12 +2027,15 @@ share no page with the guard pages of any live run, its own included.
   for the class lines and the table geometry the free paths read.
 
 **Where the statement is weaker than the code.**
-- Huge runs are covered only at the lock invariant: `alloc_run`
-  returns its run's token (a `RunToken`, an `Active` descriptor's
-  extent in the authorities `Inner::wf` holds), but no lemma turns
-  `theorem_run_guards` into a per-result statement over the token, so no
-  entry point states that a returned huge block avoids other runs' guard
-  pages. A freed run's guard is made read-write again, or its marker
+- Huge runs: `alloc_run` returns its run's token (a `RunToken`, an
+  `Active` descriptor's extent in the authorities `Inner::wf` holds),
+  and `RunToken::theorem_token_guards` (`huge/mod.rs`) is the per-call
+  form of `theorem_run_guards` over two such tokens: one run's usable
+  pages share no page with the other's guard pages
+  ([same-region overflow reach](#same-region-overflow-reach-guards-on)).
+  No entry point states it of its result: the C entry points return a
+  pointer, and the run token stays in the block's `Live` token
+  (`heap/live.rs`). A freed run's guard is made read-write again, or its marker
   removed, so its VMA merges back; freed runs' guards are not modelled
   (`theorem_huge_commit_avoids_guards` covers live runs' guards only).
 - `theorem_guard_free` says that a pointer into a guard slab aborts,
@@ -3466,9 +3469,15 @@ build a token; the handoff axioms below are the other source.
   goes through the accessor path its key names (two locks' values cannot
   be proved equal, so a swapped token fails), not that the paths reach
   distinct addresses.
-- The arenas are those `fork_prepare` found, not proved to be every
-  arena that exists: `get_existing` ensures only the index of an arena
-  it returns, not that `None` means none exists.
+- The arenas are every arena published while the creation lock is
+  held, not only those a scan happened to find: `fork_prepare` scans
+  with `Arenas::count_frozen` and `Arenas::get_frozen`, which return
+  the lock value's half of the registry's snapshot (`get_frozen`
+  ensures `r is Some` exactly when the snapshot has an arena at the
+  index), and the registry's invariant (`arena::entry_ok`) makes a table
+  entry non-null exactly when the snapshot has an arena there. The scan
+  ends with the hold's arenas equal to the snapshot's. An arena built
+  after the release is outside the handoff, as it must be.
 - "Released once" holds given one handoff per handler: a second call of
   `axiom_fork_resumed_state` would hand out a second state-lock token
   and still verify (no lemma says two tokens of one lock are apart); a
