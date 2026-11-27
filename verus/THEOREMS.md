@@ -254,6 +254,13 @@ leave out (theorem 33). Remaining work is tracked in
   `Regions::seal`'s `ensures` (`slack_sealed`, `seal_refused`), with
   `lemma_slack_sealed`, `layout/regions.rs`, and `sys::mseal`'s
   (`mseal_ok`, `mseal_err`), `sys/mod.rs`.
+- **Nothrow new's null comes with a handler-loop end** ([The `nothrow_t` forms of `operator new` return null only when no handler is installed or the handler threw](#the-nothrow_t-forms-of-operator-new-return-null-only-when-no-handler-is-installed-or-the-handler-threw)):
+  `oom`, `new_slow`, `new_block` and `new_nothrow`'s `ensures`
+  (`r.0@.addr == 0 <==> r.1@ is Some`), and `new_aligned_block` and
+  `new_aligned`'s (`is_pow2(align) && r.0@.addr == 0 ==> r.1@ is
+  Some`, `r.1@ is Some ==> r.0@.addr == 0`), with the
+  `obs::HandlerEnd` token and its two minting wrappers
+  `obs::installed` and `obs::call_caught`, `api/cxx.rs`.
 
 ## Configuration
 
@@ -4257,7 +4264,7 @@ fn mallocx(size, flags)  ensures tcache_checked(size, flags), /* and theorem 2's
 fn dallocx(p, flags)     ensures p@.addr != 0 ==> !mallocx::bad_tcache(mallocx::decode_spec(flags as u32).tcache),
 
 // api/cxx.rs
-fn new_aligned(size, align, nothrow)  ensures !is_pow2(align) ==> r@.addr == 0,
+fn new_aligned(size, align, nothrow)  ensures !is_pow2(align) ==> r.0@.addr == 0,
 
 // heap/theorems.rs; heap/live.rs
 pub proof fn theorem_free_target_aligned(p: *mut u8)
@@ -6017,7 +6024,9 @@ fn free_usable_slow(p, blk)           ensures 0 < r.0,
 // new_aligned, new_aligned_block)
 fn new(size)                          ensures r@.addr != 0,
 fn oom, new_slow, new_block, new_aligned, new_aligned_block
-                                      ensures !nothrow ==> r@.addr != 0,
+                                      ensures !nothrow ==> r.0@.addr != 0,
+// (these five return the pointer as `r.0`, beside a ghost token:
+// [the nothrow_t null](#the-nothrow_t-forms-of-operator-new-return-null-only-when-no-handler-is-installed-or-the-handler-threw))
 ```
 
 **Covers / stated in.** The interface contract's rows 1 and 12-15
@@ -15340,6 +15349,123 @@ Main has no `ensures` on `seal`, so every mutant below verifies there:
 | M2 | `mseal(m.addr, m.len, 1)` (flags other than 0) | rejected (the `mseal_ok` invariant) | verifies |
 | M3 | the last listed range dropped (`n - 1` ranges swept) | rejected (`lemma_slack_sealed`'s `seal_covers` premise) | verifies |
 
+## The `nothrow_t` forms of `operator new` return null only when no handler is installed or the handler threw
+
+On a failed attempt, `operator new` runs the standard `new_handler`
+loop (`oom`): ask for the installed handler, call it, retry. The
+throwing forms leave it only with a block or through
+`std::bad_alloc`; the `nothrow_t` forms return null when no handler is
+installed, or when the handler throws (`call_handler_caught`, which
+catches it in `cxx_handler.cpp`). Until
+chainguard-project-theseus/challoc#1065 nothing stated that: the
+`nothrow_t` contracts said only `fits` and the non-null facts, so a
+body that returned null right after one failed attempt, without asking
+for a handler, verified. Now every null of a valid request comes with a
+ghost token that only the two observations of the loop's end can make.
+
+**Statement** (`api/cxx.rs`):
+
+```rust
+// mod obs: the token's field is private to the module, so nothing else
+// in api::cxx can make one.
+pub tracked struct HandlerEnd { ghost threw: bool }
+pub closed spec fn threw(&self) -> bool;
+pub fn installed() -> (r: (Option<Handler>, Tracked<Option<HandlerEnd>>))
+    ensures
+        r.0 is None <==> r.1@ is Some,
+        r.1@ matches Some(e) ==> !e.threw(),
+pub fn call_caught(handler: Handler, ..) -> (r: (bool, Tracked<Option<HandlerEnd>>))
+    ensures
+        !r.0 <==> r.1@ is Some,
+        r.1@ matches Some(e) ==> e.threw(),
+
+// oom, new_slow, new_block, new_nothrow: beside their earlier ensures,
+// now over r.0
+    -> (r: (*mut u8, Tracked<Option<obs::HandlerEnd>>))
+    ensures
+        r.0@.addr == 0 <==> r.1@ is Some,
+
+// new_aligned_block, new_aligned
+    ensures
+        is_pow2(align) && r.0@.addr == 0 ==> r.1@ is Some,
+        r.1@ is Some ==> r.0@.addr == 0,
+```
+
+In words: `installed` wraps `installed_handler` and makes a token
+exactly when it found no handler; `call_caught` wraps
+`call_handler_caught` and makes one exactly when that reported a throw
+(`false`). The `new` paths return the pointer with a token exactly when
+the pointer is null, so a null `new_nothrow` result was returned after
+one of those two observations in that call. `new` (the throwing form)
+drops the token and keeps its `r@.addr != 0`; the eight exports return
+`r.0`.
+
+**Proof.** `oom` returns its two nulls with the token the observation
+just made (`installed`'s on its `None` arm, `call_caught`'s on
+`false`), and a non-null retry with `None`. `new_slow`, `new_block`
+and `new_aligned_block` pass `oom`'s pair through and return their own
+non-null blocks with `None`; `new_aligned_block`'s early null for a
+non-power-of-two alignment carries `None`, hence the `is_pow2`
+guard there. No loop invariant changes.
+
+**Premises (seams).** None added. The trusted calls and their
+contracts are unchanged: what a token records is what
+`installed_handler`'s callees and `call_handler_caught` returned.
+
+| premise | where | status |
+|---|---|---|
+| `call_handler_caught` returns `false` exactly when the handler threw | `challoc_call_new_handler` in `cxx_handler.cpp` | unchanged: partly checked by Kani (`call_handler_caught_reports_shim`, ledger `api/cxx.rs`) |
+| `call_get_new_handler` returns the installed handler | `std::get_new_handler` | unchanged (ledger `api/cxx.rs`) |
+| A null `get_new_handler_addr` means no handler can be installed: no C++ runtime defines `std::get_new_handler`, so no `std::set_new_handler` exists either | `get_new_handler_addr`'s GOT load of a weak undefined symbol (inline assembly) | unchanged (ledger `api/cxx.rs`); `installed_handler` returns `None` on it, so `installed` makes a token on it too |
+
+**Scope and where the statement is weaker than the code.**
+- The token says that the loop could end in that call, not that it
+  ended at the first such observation: a body that ignored a token and
+  kept retrying would still verify (it would return a block, or loop).
+  That the loop stops at once is read from `oom`'s body.
+- The token is not tied to a failed allocation attempt. `obs::installed`
+  is callable anywhere in `api::cxx` with `may_syscall`, so a
+  `new_nothrow` body that asked for the handler before its first attempt
+  and returned null with that token when none is installed would verify
+  (mutant M4 below), returning null while memory is available. That
+  `oom` runs only after `malloc_slow` or `alloc_aligned` returned null is
+  read from the bodies of `new_slow` and `new_aligned_block`: those
+  callees state nothing about a null result, so nothing could serve as
+  evidence of a failed attempt. So rows 24 and 25 keep F at `p`, with
+  row notes naming what is stated and what is left out.
+- The statement is about the internal functions: the C++ exports return
+  only the pointer, and C++ holds no token, so their `ensures` are
+  unchanged (as row 25's B, the interface contract cites
+  `new_nothrow` and `new_aligned`).
+- A non-power-of-two `align_val_t` still fails at once without the
+  loop (`!is_pow2(align) ==> r.0@.addr == 0`, unchanged), and that
+  null carries no token.
+- Ghost only: the token is a zero-sized `Tracked` value. Release
+  machine code is byte-identical to main 3d3a0ae7 (`.text` hash, both
+  quantum variants, `scripts/codegen-diff.sh`).
+
+**Mutations** (`cargo verus focus -- --verify-module api::cxx`;
+unmutated: 35 verified on this tree, 33 on main 3d3a0ae7). Each makes
+a `nothrow_t` call return null without the loop's end:
+
+| id | change | PR | main 3d3a0ae7 |
+|---|---|---|---|
+| M1 | `oom` returns after a failed retry when `nothrow` (`if !p.is_null() \|\| nothrow`) | rejected (`oom`'s `r.0@.addr == 0 <==> r.1@ is Some`) | verifies |
+| M2 | `oom` returns null at the top of the loop when `nothrow`, before asking for a handler | rejected (`oom`'s new `ensures`) | verifies |
+| M3 | `new_slow` skips `oom` when `nothrow` (`if p.is_null() && !nothrow`) | rejected (`new_slow`'s new `ensures`) | verifies |
+
+All three are executable mutants that main accepts. M2 and M3 return
+null to a `nothrow_t` caller while a handler that could free memory is
+still installed, which the C++ standard's `new_handler` protocol
+forbids.
+
+One mutant adds an observation instead of removing one, and verifies
+on both trees (the Scope bullet above):
+
+| id | change | PR | main 3d3a0ae7 |
+|---|---|---|---|
+| M4 | `new_nothrow` calls `obs::installed()` before `new_block` and returns null with its token when no handler is installed (main: `installed_handler()`, returning null) | verifies | verifies |
+
 ## Setting one configuration key writes one field
 
 `Config::set` parses one `key:value` pair of `MALLOC_CONF`,
@@ -16037,14 +16163,27 @@ alone):
 24. `new` `nothrow_t` (`api/cxx.rs`). R: as row 23. F: NULL after
     the handler loop, or at once when the handler throws (`oom` calls it
     through `call_handler_caught`, `cxx_handler.cpp`'s catch, which
-    reports a throw as `false`); not stated beyond `fits`.
+    reports a throw as `false`). Since
+    chainguard-project-theseus/challoc#1065 `new_nothrow` ensures
+    `r.0@.addr == 0 <==> r.1@ is Some`: NULL exactly when it returns an
+    `obs::HandlerEnd`, which only the observation of no installed
+    handler or of a reported throw makes
+    ([the nothrow_t null](#the-nothrow_t-forms-of-operator-new-return-null-only-when-no-handler-is-installed-or-the-handler-threw)).
+    The exports return only the pointer; `errno` is not part of the C++
+    contract. `p`, not `P`: the token is not tied to a failed allocation
+    attempt (a body that asked for the handler before its first attempt
+    and returned null with the token would verify), so that the loop
+    runs only after an attempt failed is read from `new_slow`'s body.
 25. `new` `align_val_t` (`api/cxx.rs`). R: `is_pow2(align) ==>
     fits(r, size, align)`. F: the throwing forms as row 23
-    (`new_aligned` ensures `!nothrow ==> r@.addr != 0`); `p` because
-    the `nothrow_t` forms' NULL is not stated beyond `fits` (row 24). B: a
+    (`new_aligned` ensures `!nothrow ==> r.0@.addr != 0`); the
+    `nothrow_t` forms as row 24, for a power-of-two `align`
+    (`new_aligned` ensures `is_pow2(align) && r.0@.addr == 0 ==>
+    r.1@ is Some` and `r.1@ is Some ==> r.0@.addr == 0`), `p` for the
+    same reason as row 24 (read from `new_aligned_block`'s body). B: a
     non-power-of-two alignment (undefined in C++), 0 included, fails at
     once, without the handler loop; `new_aligned` ensures
-    `!is_pow2(align) ==> r@.addr == 0` (NULL for the `nothrow_t` forms,
+    `!is_pow2(align) ==> r.0@.addr == 0` (NULL for the `nothrow_t` forms,
     `bad_alloc` for the others).
 26. Unsized `delete` forms, with or without `align_val_t` or `nothrow_t`
     (`cxx::delete`, `api/cxx.rs`). B: as `free`; the alignment is
@@ -16240,8 +16379,10 @@ What each partial or missing cell leaves out, and what it rests on:
   call), so the entry points state nothing about contents; the conjunct
   is for verified callers that pass a held claim.
 - **F**: rows 16 and 17 take the `errno` token but state nothing about
-  it (their first call runs init's libc calls); rows 24 and 25 do not
-  state the `nothrow_t` forms' NULL beyond `fits`; row 34 states the
+  it (their first call runs init's libc calls); rows 24 and 25 state
+  the `nothrow_t` forms' NULL on `new_nothrow` and `new_aligned`, whose
+  token the exports drop, as coming with a handler-loop observation,
+  but not that an allocation attempt failed first; row 34 states the
   argument errors its entry points can name (a null or overlong name,
   null MIB pointers, a bad `miblen`), not an unknown name or MIB or an
   arm's error. The frees'

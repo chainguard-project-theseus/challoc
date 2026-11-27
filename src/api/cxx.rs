@@ -259,7 +259,7 @@ fn call_handler_caught(handler: Handler, _errno: Tracked<&mut ThreadErrno>) -> b
 /// `std::bad_alloc` (or return null for the `nothrow_t` forms, also when
 /// the handler throws). `align` is 0 for the unaligned operators, else
 /// the power of two `new_aligned_block` checked. `blk` gets the block's
-/// token.
+/// token. A null comes with the [`obs::HandlerEnd`] that ended the loop.
 #[cold]
 #[inline(never)]
 // Ends only when the program's handler frees memory, is removed or throws.
@@ -271,7 +271,7 @@ fn oom(
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> (r: *mut u8)
+) -> (r: (*mut u8, Tracked<Option<obs::HandlerEnd>>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -279,13 +279,14 @@ fn oom(
         old(ord).top() == 0,
     ensures
         *final(ord) == *old(ord),
-        align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
-        align != 0 ==> crate::heap::fits(r, size as int, align as int),
-        final(blk).gives(r, size as int),
-        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, if align == 0 { 1 } else { align })),
-        r@.addr != 0 ==> libc::class_slot_at(r, size, if align == 0 { 1 } else { align }),
-        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
-        !nothrow ==> r@.addr != 0,
+        align == 0 ==> crate::heap::fits(r.0, size as int, crate::QUANTUM as int),
+        align != 0 ==> crate::heap::fits(r.0, size as int, align as int),
+        final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, libc::spec_class_for(size, if align == 0 { 1 } else { align })),
+        r.0@.addr != 0 ==> libc::class_slot_at(r.0, size, if align == 0 { 1 } else { align }),
+        r.0@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r.0, size),
+        !nothrow ==> r.0@.addr != 0,
+        r.0@.addr == 0 <==> r.1@ is Some,
 {
     loop
         invariant
@@ -295,15 +296,17 @@ fn oom(
             *ord == *old(ord),
             old(ord).top() == 0,
     {
-        let Some(handler) = installed_handler() else {
+        let (handler, Tracked(none)) = obs::installed();
+        let Some(handler) = handler else {
             if nothrow {
-                return ptr::null_mut();
+                return (ptr::null_mut(), Tracked(none));
             }
             throw_bad_alloc()
         };
         if nothrow {
-            if !call_handler_caught(handler, Tracked(&mut *errno)) {
-                return ptr::null_mut();
+            let (ok, Tracked(threw)) = obs::call_caught(handler, Tracked(&mut *errno));
+            if !ok {
+                return (ptr::null_mut(), Tracked(threw));
             }
         } else {
             call_handler(handler, Tracked(&mut *errno));
@@ -314,12 +317,13 @@ fn oom(
             libc::alloc_aligned(align, size, Tracked(blk), Tracked(errno), Tracked(&mut *ord))
         };
         if !p.is_null() {
-            return p;
+            return (p, Tracked(None));
         }
     }
 }
 
-/// `malloc`'s slow path with the `new` failure protocol on top.
+/// `malloc`'s slow path with the `new` failure protocol on top. A null
+/// comes with the [`obs::HandlerEnd`] that ended [`oom`]'s loop.
 #[cold]
 #[inline(never)]
 fn new_slow(
@@ -328,25 +332,26 @@ fn new_slow(
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> (r: *mut u8)
+) -> (r: (*mut u8, Tracked<Option<obs::HandlerEnd>>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
-        crate::heap::fits(r, size as int, crate::QUANTUM as int),
-        final(blk).gives(r, size as int),
-        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, 1)),
-        r@.addr != 0 ==> libc::class_slot(r, size),
-        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
-        !nothrow ==> r@.addr != 0,
+        crate::heap::fits(r.0, size as int, crate::QUANTUM as int),
+        final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, libc::spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> libc::class_slot(r.0, size),
+        r.0@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r.0, size),
+        !nothrow ==> r.0@.addr != 0,
+        r.0@.addr == 0 <==> r.1@ is Some,
         *final(ord) == *old(ord),
 {
     let p = libc::malloc_slow(size, Tracked(blk), Tracked(errno), Tracked(&mut *ord));
     if p.is_null() {
         oom(size, 0, nothrow, Tracked(blk), Tracked(errno), Tracked(ord))
     } else {
-        p
+        (p, Tracked(None))
     }
 }
 
@@ -368,20 +373,27 @@ pub fn new(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord):
         *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
-    new_block(size, false, Tracked(&mut blk), Tracked(errno), Tracked(ord))
+    new_block(size, false, Tracked(&mut blk), Tracked(errno), Tracked(ord)).0
 }
 
-/// The `nothrow_t` forms: null on failure after the handler loop.
+/// The `nothrow_t` forms: null on failure after the handler loop, with
+/// the [`obs::HandlerEnd`] that ended it (no handler installed, or the
+/// handler threw).
 #[inline(always)]
-pub fn new_nothrow(size: usize, Tracked(errno): Tracked<&mut ThreadErrno>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: *mut u8)
+pub fn new_nothrow(
+    size: usize,
+    Tracked(errno): Tracked<&mut ThreadErrno>,
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: (*mut u8, Tracked<Option<obs::HandlerEnd>>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
-        crate::heap::fits(r, size as int, crate::QUANTUM as int),
-        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, 1)),
-        r@.addr != 0 ==> libc::class_slot(r, size),
+        crate::heap::fits(r.0, size as int, crate::QUANTUM as int),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, libc::spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> libc::class_slot(r.0, size),
+        r.0@.addr == 0 <==> r.1@ is Some,
         *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
@@ -397,22 +409,23 @@ pub fn new_block(
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> (r: *mut u8)
+) -> (r: (*mut u8, Tracked<Option<obs::HandlerEnd>>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
-        crate::heap::fits(r, size as int, crate::QUANTUM as int),
-        final(blk).gives(r, size as int),
-        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, 1)),
-        r@.addr != 0 ==> libc::class_slot(r, size),
-        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
-        !nothrow ==> r@.addr != 0,
+        crate::heap::fits(r.0, size as int, crate::QUANTUM as int),
+        final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, libc::spec_class_for(size, 1)),
+        r.0@.addr != 0 ==> libc::class_slot(r.0, size),
+        r.0@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r.0, size),
+        !nothrow ==> r.0@.addr != 0,
+        r.0@.addr == 0 <==> r.1@ is Some,
         *final(ord) == *old(ord),
 {
     match libc::malloc_fast(size, Tracked(blk)) {
-        Some(p) => p,
+        Some(p) => (p, Tracked(None)),
         None => new_slow(size, nothrow, Tracked(blk), Tracked(errno), Tracked(ord)),
     }
 }
@@ -421,24 +434,27 @@ pub fn new_block(
 /// alignment that is not a power of two (0 included; undefined in C++)
 /// never gets a block: it fails here and skips the handler loop, since no
 /// amount of freed memory makes it valid. The `nothrow_t` forms return
-/// null and the others throw.
+/// null and the others throw. For a power of two, a null comes with the
+/// [`obs::HandlerEnd`] that ended the handler loop.
 pub fn new_aligned(
     size: usize,
     align: usize,
     nothrow: bool,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> (r: *mut u8)
+) -> (r: (*mut u8, Tracked<Option<obs::HandlerEnd>>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
-        is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
-        !is_pow2(align) ==> r@.addr == 0,
-        !nothrow ==> r@.addr != 0,
-        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, align)),
-        r@.addr != 0 ==> libc::class_slot_at(r, size, align),
+        is_pow2(align) ==> crate::heap::fits(r.0, size as int, align as int),
+        !is_pow2(align) ==> r.0@.addr == 0,
+        !nothrow ==> r.0@.addr != 0,
+        is_pow2(align) && r.0@.addr == 0 ==> r.1@ is Some,
+        r.1@ is Some ==> r.0@.addr == 0,
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, libc::spec_class_for(size, align)),
+        r.0@.addr != 0 ==> libc::class_slot_at(r.0, size, align),
         *final(ord) == *old(ord),
 {
     let tracked mut blk = Live::empty();
@@ -453,24 +469,26 @@ pub fn new_aligned_block(
     Tracked(blk): Tracked<&mut Live>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> (r: *mut u8)
+) -> (r: (*mut u8, Tracked<Option<obs::HandlerEnd>>))
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
         old(ord).top() == 0,
     ensures
-        is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
-        !is_pow2(align) ==> r@.addr == 0,
-        final(blk).gives(r, size as int),
-        r@.addr != 0 ==> crate::heap::hint_ok(r, libc::spec_class_for(size, align)),
-        r@.addr != 0 ==> libc::class_slot_at(r, size, align),
-        r@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r, size),
-        !nothrow ==> r@.addr != 0,
+        is_pow2(align) ==> crate::heap::fits(r.0, size as int, align as int),
+        !is_pow2(align) ==> r.0@.addr == 0,
+        final(blk).gives(r.0, size as int),
+        r.0@.addr != 0 ==> crate::heap::hint_ok(r.0, libc::spec_class_for(size, align)),
+        r.0@.addr != 0 ==> libc::class_slot_at(r.0, size, align),
+        r.0@.addr != 0 ==> crate::heap::huge_hint_ok(*final(blk), r.0, size),
+        !nothrow ==> r.0@.addr != 0,
+        is_pow2(align) && r.0@.addr == 0 ==> r.1@ is Some,
+        r.1@ is Some ==> r.0@.addr == 0,
         *final(ord) == *old(ord),
 {
     if !align.is_power_of_two() {
         if nothrow {
-            return ptr::null_mut();
+            return (ptr::null_mut(), Tracked(None));
         }
         throw_bad_alloc()
     }
@@ -481,7 +499,7 @@ pub fn new_aligned_block(
     if p.is_null() {
         oom(size, align, nothrow, Tracked(blk), Tracked(errno), Tracked(ord))
     } else {
-        p
+        (p, Tracked(None))
     }
 }
 
@@ -544,6 +562,68 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize, Tracked(c): T
 }
 
 } // verus!
+
+/// The `new_handler` loop's observations ([`obs::HandlerEnd`]), in their
+/// own module so that nothing else in this file can make the token
+/// (crate-visible only for `vspec::notcopy`'s check).
+pub(crate) mod obs {
+    use super::{Handler, ThreadErrno};
+    #[cfg(verus_keep_ghost)]
+    use vstd::prelude::*;
+    use vstd::prelude::{Tracked, verus};
+
+    verus! {
+
+    /// Ghost: the record that the `new_handler` loop ([`super::oom`]) may
+    /// stop without a block: [`installed`] found no handler installed
+    /// (`threw()` false), or [`call_caught`] reported that the handler
+    /// threw (`threw()` true). Not `Copy`, and only those two make one
+    /// (its field is private to this module).
+    // Ghost: ordinary builds keep the type but erase the code that reads it.
+    #[allow(dead_code)]
+    pub tracked struct HandlerEnd {
+        ghost threw: bool,
+    }
+
+    impl HandlerEnd {
+        /// The handler threw (else none was installed).
+        pub closed spec fn threw(&self) -> bool {
+            self.threw
+        }
+    }
+
+    /// [`super::installed_handler`], with a [`HandlerEnd`] when it found
+    /// none.
+    #[inline(always)]
+    pub(super) fn installed() -> (r: (Option<Handler>, Tracked<Option<HandlerEnd>>))
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            r.0 is None <==> r.1@ is Some,
+            r.1@ matches Some(e) ==> !e.threw(),
+    {
+        let h = super::installed_handler();
+        let tracked e = if h.is_none() { Some(HandlerEnd { threw: false }) } else { None };
+        (h, Tracked(e))
+    }
+
+    /// [`super::call_handler_caught`], with a [`HandlerEnd`] when it
+    /// reported a throw (`false`).
+    #[inline(always)]
+    pub(super) fn call_caught(handler: Handler, Tracked(errno): Tracked<&mut ThreadErrno>) -> (r: (bool, Tracked<Option<HandlerEnd>>))
+        requires
+            crate::sys::may_syscall(),
+        ensures
+            !r.0 <==> r.1@ is Some,
+            r.1@ matches Some(e) ==> e.threw(),
+    {
+        let ok = super::call_handler_caught(handler, Tracked(errno));
+        let tracked e = if !ok { Some(HandlerEnd { threw: true }) } else { None };
+        (ok, Tracked(e))
+    }
+
+    } // verus!
+}
 
 /// Kani checks of `call_get_new_handler`, `call_throw_bad_alloc`,
 /// `call_handler` and `call_handler_caught`
@@ -782,7 +862,7 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked mut ord = crate::lock::axiom_c_entry();
-        super::new_nothrow(size, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
+        super::new_nothrow(size, Tracked(&mut errno), Tracked(&mut ord)).0 as *mut c_void
     }
 
     /// `operator new[](size_t, const std::nothrow_t&)`
@@ -800,7 +880,7 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked mut ord = crate::lock::axiom_c_entry();
-        super::new_nothrow(size, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
+        super::new_nothrow(size, Tracked(&mut errno), Tracked(&mut ord)).0 as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t)`
@@ -820,7 +900,7 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked mut ord = crate::lock::axiom_c_entry();
-        super::new_aligned(size, align, false, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
+        super::new_aligned(size, align, false, Tracked(&mut errno), Tracked(&mut ord)).0 as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t)`
@@ -840,7 +920,7 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked mut ord = crate::lock::axiom_c_entry();
-        super::new_aligned(size, align, false, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
+        super::new_aligned(size, align, false, Tracked(&mut errno), Tracked(&mut ord)).0 as *mut c_void
     }
 
     /// `operator new(size_t, std::align_val_t, const std::nothrow_t&)`
@@ -863,7 +943,7 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked mut ord = crate::lock::axiom_c_entry();
-        super::new_aligned(size, align, true, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
+        super::new_aligned(size, align, true, Tracked(&mut errno), Tracked(&mut ord)).0 as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t, const std::nothrow_t&)`
@@ -886,7 +966,7 @@ mod exports {
         }
         let Tracked(mut errno) = crate::vspec::errno::lend();
         let tracked mut ord = crate::lock::axiom_c_entry();
-        super::new_aligned(size, align, true, Tracked(&mut errno), Tracked(&mut ord)) as *mut c_void
+        super::new_aligned(size, align, true, Tracked(&mut errno), Tracked(&mut ord)).0 as *mut c_void
     }
 
     /// `operator delete(void*)`
