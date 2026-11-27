@@ -1606,9 +1606,11 @@ proof fn lemma_idle_start(e: VSet<nat>, p: Seq<Pick>, lo: int, floor: int)
 }
 
 /// The picks `[lo, hi)` are of owned `Active` slabs in the state map
-/// `st`: [`ClassState::plan_at`]'s idle loop carries it for its idle
-/// picks, which `take` made `Active` and `next_slab` keeps so. Opaque:
-/// the loop carries it as an atom, and only [`lemma_held_step`] opens it.
+/// `st`: both loops of [`ClassState::plan_at`] carry it from pick 0, the
+/// partial scan's picks and the idle ones, which `take` made `Active` and
+/// `next_slab` keeps so. Opaque: the loops carry it as an atom, and only
+/// [`lemma_held_start`], [`lemma_held_take`] and [`lemma_held_step`] open
+/// it.
 #[verifier::opaque]
 spec fn picks_held(st: Map<nat, State>, p: Seq<Pick>, lo: int, hi: int) -> bool {
     forall|j: int| #![trigger p[j]] lo <= j < hi ==> fresh::is_active(st, p[j].slab as nat)
@@ -1665,6 +1667,75 @@ proof fn lemma_held_start(st: Map<nat, State>, p: Seq<Pick>, lo: int)
     reveal(picks_held);
 }
 
+/// One partial-scan pick of [`ClassState::plan_at`], for [`picks_held`]:
+/// `take` made `s` `Active` (`sb`) and pick `k` of it, so the picks stay
+/// held.
+proof fn lemma_held_take(sa: Map<nat, State>, sb: Map<nat, State>, a: Seq<Pick>, b: Seq<Pick>, k: int, s: usize)
+    requires
+        picks_held(sa, a, 0, k),
+        sb == sa.insert(s as nat, State::Active),
+        0 <= k < b.len() == a.len(),
+        b[k].slab as nat == s as nat,
+        forall|i: int| 0 <= i < k ==> a[i] == b[i],
+    ensures
+        picks_held(sb, b, 0, k + 1),
+{
+    reveal(picks_held);
+    assert forall|j: int| #![trigger b[j]] 0 <= j < k + 1 implies fresh::is_active(sb, b[j].slab as nat) by {
+        if j < k {
+            assert(a[j] == b[j]);
+            assert(fresh::is_active(sa, a[j].slab as nat));
+        }
+    }
+}
+
+/// No two of the first `np` picks of a refill's lock hold are of one slab.
+/// Opaque: [`ClassState::plan_at`] carries it as an atom, and only the
+/// lemmas below open it.
+#[verifier::opaque]
+spec fn picks_distinct(p: Seq<Pick>, np: int) -> bool {
+    forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < np ==> p[i].slab != p[j].slab
+}
+
+/// One idle pick, for [`picks_distinct`]: pick `k` is of `s`, which is no
+/// earlier pick.
+proof fn lemma_distinct_step(a: Seq<Pick>, b: Seq<Pick>, k: int, s: usize)
+    requires
+        picks_distinct(a, k),
+        !taken_in(a, 0, k, s as nat),
+        0 <= k < b.len() == a.len(),
+        b[k].slab as nat == s as nat,
+        forall|i: int| 0 <= i < k ==> a[i] == b[i],
+    ensures
+        picks_distinct(b, k + 1),
+{
+    reveal(picks_distinct);
+    reveal(taken_in);
+    assert forall|i: int, j: int| #![trigger b[i], b[j]] 0 <= i < j < k + 1 implies b[i].slab != b[j].slab by {
+        assert(a[i] == b[i]);
+        if j < k {
+            assert(a[j] == b[j]);
+        } else {
+            assert(a[i].slab as nat != s as nat);
+        }
+    }
+}
+
+/// Theorem: a refill's lock hold never takes one slab twice (THEOREMS.md,
+/// "A refill's lock hold takes each slab at most once"). For the picks
+/// [`ClassState::plan_at`] hands out ([`picks_distinct`]), no two are of
+/// one slab: the partial scan's ascend, and each idle pick is of a slab
+/// no earlier pick took (the picks are `Active`, which `next_slab` never
+/// returns).
+proof fn theorem_picks_distinct(p: Seq<Pick>, np: int)
+    requires
+        picks_distinct(p, np),
+    ensures
+        forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < np ==> p[i].slab != p[j].slab,
+{
+    reveal(picks_distinct);
+}
+
 /// One idle pick of [`ClassState::plan_at`]: `next_slab` returned `s` for
 /// the `Empty` set `ea` and the `Purged` set `pa` ([`fresh::idle_pick`]),
 /// removing it from the `Empty` set (`eb`) only when it was the lowest
@@ -1690,7 +1761,7 @@ proof fn lemma_idle_step(
         fresh::idle_pick(ea, pa, floor, Some(s)),
         eb == (if fresh::lowest_from(ea, floor, s as nat) { ea.remove(s as nat) } else { ea }),
         !eb.contains(s as nat),
-        !taken_in(a, lo, k, s as nat),
+        !taken_in(a, 0, k, s as nat),
         k < b.len() == a.len(),
         b[k].slab as nat == s as nat,
         (b[k].state == State::Empty) == fresh::lowest_from(ea, floor, s as nat),
@@ -1759,7 +1830,7 @@ proof fn lemma_idle_step(
                 assert(a[i] == b[i]);
             } else if e0.contains(s as nat) {
                 let j = choose|j: int| #![trigger a[j]] lo <= j < lo + m && a[j].slab as nat == s as nat;
-                assert(lo <= j < k);
+                assert(0 <= j < k);
             }
         }
         assert forall|i: int, j: int| #![trigger b[i], b[j]] lo <= i < j < lo + m implies b[i].slab < b[j].slab by {
@@ -5346,6 +5417,21 @@ impl ClassState {
         &&& forall|x: nat| #[trigger] g.partial.map@.contains(x) ==> p0.contains(x) || picked(p, np, x)
     }
 
+    /// [`picks_distinct`] for the partial scan's picks, which ascend
+    /// ([`ClassState::scan_ordered`]).
+    proof fn lemma_scan_distinct(&self, p0: VSet<nat>, seen: Map<nat, usize>, p: Seq<Pick>, npart: int, lo: int, lim: int)
+        requires
+            self.scan_ordered(p0, seen, p, npart, lo, lim),
+        ensures
+            picks_distinct(p, npart),
+    {
+        reveal(ClassState::scan_ordered);
+        reveal(picks_distinct);
+        assert forall|i: int, j: int| #![trigger p[i], p[j]] 0 <= i < j < npart implies p[i].slab != p[j].slab by {
+            assert(p[i].slab < p[j].slab);
+        }
+    }
+
     /// [`ClassState::plan_at`]'s scan before its first slab: no pick yet,
     /// and `next`, the lowest slab of the partial set `p0` at or above
     /// `lo`, has none of `p0` below it from `lo`.
@@ -5708,6 +5794,8 @@ impl ClassState {
             np <= MAX_PICKS,
             picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
             picks_sum(final(picks)@, np as int) <= want,
+            // No slab is taken twice.
+            picks_distinct(final(picks)@, np as int),
     {
         let cls = self.class();
         proof {
@@ -5731,6 +5819,7 @@ impl ClassState {
         let ghost p0 = g@.partial.map@;
         proof {
             self.lemma_scan_start(p0, picks@, floor as int, next);
+            lemma_held_start(g@.states@, picks@, 0);
         }
         while let Some(s) = next
             invariant
@@ -5763,6 +5852,8 @@ impl ClassState {
                 picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
                 picks_owned(self.spec_class() as int, self.arena, picks@, 0, np as int),
                 picks_active(picks@, np as int),
+                // Every pick so far is `Active` (`take` makes it so).
+                picks_held(g@.states@, picks@, 0, np as int),
                 next matches Some(x) ==> x < self.spec_nslabs() && g@.partial.map@.contains(x as nat),
             decreases
                 match next {
@@ -5776,6 +5867,7 @@ impl ClassState {
                     lemma_idle_start(g@.empty.map@, picks@, np as int, floor as int);
                     lemma_purged_start(g@.purged.map@, picks@, np as int, floor as int);
                     lemma_fresh_start(picks@, np as int, g@.group_next as int);
+                    self.lemma_scan_distinct(p0, seen, picks@, np as int, floor as int, s as int);
                     *scan = Ghost((p0, np as int, s as int, g@.empty.map@, 0, g@.purged.map@, 0, g@.group_next as int));
                 }
                 g.unlock();
@@ -5826,12 +5918,14 @@ impl ClassState {
                 let ghost z0 = *pz;
                 let ghost t0 = *ptoks;
                 let ghost m0 = *pm;
+                let ghost st0 = g@.states@;
                 self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm));
                 proof {
                     lemma_picks_zero_step(self.spec_table(), before, picks@, k as int, z0, *pz);
                     lemma_picks_sum(before, picks@, k as int);
                     lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
                     lemma_picks_marks_step(self.spec_table(), before, picks@, k as int, m0, *pm);
+                    lemma_held_take(st0, g@.states@, before, picks@, k as int, s);
                     assert forall|j: int| 0 <= j < k + 1 implies slab_owner(self.spec_class() as int, (#[trigger] picks@[j]).slab as int) == self.arena by {
                         if j < k {
                             assert(picks@[j] == before[j]);
@@ -5872,7 +5966,7 @@ impl ClassState {
         let ghost gn0 = g@.group_next as int;
         proof {
             lemma_idle_start(e0, picks@, npart, floor as int);
-            lemma_held_start(g@.states@, picks@, npart);
+            self.lemma_scan_distinct(p0, seen, picks@, npart, floor as int, self.spec_nslabs() as int);
             lemma_purged_start(p_idle, picks@, npart, 0);
             lemma_fresh_start(picks@, npart, gn0);
         }
@@ -5901,9 +5995,10 @@ impl ClassState {
                 self.scan_ordered(p0, seen, picks@, npart, floor as int, self.spec_nslabs() as int),
                 forall|x: nat| #[trigger] g@.partial.map@.contains(x) ==> p0.contains(x) || picked(picks@, np as int, x),
                 idle_ordered(e0, g@.empty.map@, picks@, npart, m, np as int, floor as int),
-                // The idle picks so far are `Active`, which `next_slab`
-                // never returns: no idle pick repeats an earlier one.
-                picks_held(g@.states@, picks@, npart, np as int),
+                // Every pick so far is `Active`, which `next_slab` never
+                // returns: no idle pick repeats an earlier pick of the hold.
+                picks_held(g@.states@, picks@, 0, np as int),
+                picks_distinct(picks@, np as int),
                 lz.wf(),
                 mark.of(lz),
                 purged_ordered(p_idle, g@.purged.map@, picks@, npart + m, q, np as int, purged_floor(floor as int, mark.lazy())),
@@ -5941,9 +6036,10 @@ impl ClassState {
                         assert(picks@[j] == before[j]);
                     }
                 }
-                // `s` is no earlier idle pick, and every idle pick stays
+                // `s` is no earlier pick of the hold, and every pick stays
                 // `Active`.
-                lemma_held_step(g_idle.states@, g_got.states@, g@.states@, before, picks@, npart, k as int, s);
+                lemma_held_step(g_idle.states@, g_got.states@, g@.states@, before, picks@, 0, k as int, s);
+                lemma_distinct_step(before, picks@, k as int, s);
                 // The `Empty` picks stay lowest first.
                 let m_prev = m;
                 m = lemma_idle_step(e0, g_idle.empty.map@, g@.empty.map@, g_idle.purged.map@, before, picks@, npart, m, k as int, floor as int, s);

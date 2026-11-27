@@ -155,6 +155,9 @@ leave out (theorem 33). Remaining work is tracked in
 - **Fresh slab order in a hold** ([A refill takes fresh slabs in ascending order](#a-refill-takes-fresh-slabs-in-ascending-order-from-the-group-cursor)):
   `class::theorem_fresh_ascending`, `class/mod.rs`, with
   `ClassState::plan_at`'s contract.
+- **No slab twice in a hold** ([A refill's lock hold takes each slab at most once](#a-refills-lock-hold-takes-each-slab-at-most-once)):
+  `class::theorem_picks_distinct`, `class/mod.rs`, with
+  `ClassState::plan_at`'s contract.
 - **Statistics coherence** ([The stored statistics totals sum the counted arenas' stored figures](#the-stored-statistics-totals-sum-the-counted-arenas-stored-figures-at-the-process-statistics-locks-invariant)):
   `StoredSnapshot`'s and `StoredArena`'s `LockSpec` impls, with
   `stats::lemma_stored_agree`, `stats.rs`.
@@ -12290,9 +12293,8 @@ set (`next_slab` removes only the lowest from the floor).
   read.
 - The picks past the first `m` are outside `e0` since #1022. That they
   are distinct from one another, and from the partial scan's picks, is
-  not stated here: the loop carries only that the idle picks are
-  `Active`, which rules out a repeat of an idle pick but is not
-  exported.
+  the section "A refill's lock hold takes each slab at most once"
+  (#1024).
 - Ghost only: the release library's machine code is unchanged (new
   `ensures`, a widened ghost tuple and proof blocks only).
 
@@ -12656,6 +12658,85 @@ base accepts and this PR rejects: the lock invariant (the current
 group's remaining slabs are owned and `Fresh`, and a new group starts
 past every owned slab) already confines `next_fresh_slab` to the
 cursor's slab; this PR states it across the hold.
+
+## A refill's lock hold takes each slab at most once
+
+The previous sections order a lock hold's picks by kind: the partial
+scan's picks ascend, then the `Empty`, `Purged` and fresh idle picks
+each ascend, and since chainguard-project-theseus/challoc#1023 the idle
+picks after the `Empty` ones are outside the `Empty` set the hold read.
+Before chainguard-project-theseus/challoc#1024, nothing said that the
+picks of one hold are pairwise distinct: an idle pick was not stated
+to differ from a scan pick, nor a `Purged` pick from a fresh one.
+
+**Statement.**
+
+```rust
+// class/mod.rs
+spec fn picks_held(st: Map<nat, State>, p: Seq<Pick>, lo: int, hi: int) -> bool {  // opaque
+    forall|j: int| lo <= j < hi ==> is_active(st, p[j].slab)
+}
+
+spec fn picks_distinct(p: Seq<Pick>, np: int) -> bool {  // opaque
+    forall|i: int, j: int| 0 <= i < j < np ==> p[i].slab != p[j].slab
+}
+
+fn plan_at(&self, ..) -> (np: usize)
+    ensures
+        picks_distinct(final(picks)@, np as int),
+
+proof fn theorem_picks_distinct(p: Seq<Pick>, np: int)
+    requires
+        picks_distinct(p, np),
+    ensures
+        forall|i: int, j: int| 0 <= i < j < np ==> p[i].slab != p[j].slab,
+```
+
+In words: no two picks of one refill lock hold are of the same slab,
+whatever their kind.
+
+The proof: `plan_at`'s partial scan loop now carries `picks_held` from
+pick 0 (every pick so far is an owned `Active` slab): `take` makes its
+slab `Active` (`lemma_held_take`), `reopen_pages` keeps the states and
+`clear_partial_full` keeps the rest of the lock value. The scan's picks
+ascend (`scan_ordered`), so they are distinct (`lemma_scan_distinct`,
+at the scan's early return and where the idle picks begin). The idle
+loop carries `picks_held` from pick 0 too (#1023 carried it from the
+first idle pick), so with `next_slab`'s "the slab it returns was no
+owned `Active` slab" (#1023), `lemma_held_step` gives that the slab is
+no earlier pick of the hold, and `lemma_distinct_step` extends
+`picks_distinct` by it. Both specs are opaque, so `plan_at` carries
+them as atoms.
+
+**Premises (seams).** None beyond the common ones. No seam is added.
+
+**Scope and where the statement is weaker than the code.**
+- One lock hold. A refill's second hold (the retry without a floor in
+  `plan`) can take a slab the first hold took and left partial; that
+  is not a repeat within a hold.
+- The slab is the pick's `slab` field; a pick's slot count `n` is not
+  involved.
+- `plan`, the floor-0 caller, discards `plan_at`'s ghost outputs, as for
+  the previous sections; the theorem is about `plan_at`'s contract.
+- Ghost only: the release library's machine code is unchanged (a new
+  `ensures`, loop invariants and proof blocks only).
+
+**Mutations** (`cargo verus focus --locked -- --verify-only-module class --verify-only-module class::fresh`,
+on the PR's tree; unmutated: 240 verified, 0 errors):
+
+| id | change | PR | base |
+|---|---|---|---|
+| D1 | the partial scan drops `lemma_held_take` after `take` | rejected (the scan loop's `picks_held` invariant at the end of the body) | not applicable (no such invariant) |
+| D2 | the idle loop carries `picks_held` from the first idle pick only (`npart`, as #1023 did) | rejected (`lemma_distinct_step`'s and `lemma_idle_step`'s `!taken_in(a, 0, k, s)` preconditions) | not applicable |
+
+No executable mutant was found that the base accepts and this PR
+rejects. The base already confines `next_slab` to slabs that are not
+`Active` (#1023), and `take` makes every pick `Active` under the same
+lock, so a repeat would need code that turns an `Active` slab back to
+an idle state inside the hold, which the base's `next_slab`, `take`,
+`reopen_pages` and `clear_partial_full` contracts exclude. #1023's M6,
+`next_slab` handing out the lowest partial slab, is rejected on both.
+This PR exports the fact that those contracts imply.
 
 ## The stored statistics totals sum the counted arenas' stored figures (at the process statistics lock's invariant)
 
