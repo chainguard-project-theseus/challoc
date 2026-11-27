@@ -64,9 +64,9 @@
 # saying why, and its REASON is the one that names no new trust: the
 # deleted functions, that nothing became trusted or outside, and the
 # counts before and after.
-functions 89.0
+functions 89.2
 lines 94.9
-checked-functions 93.0
+checked-functions 93.1
 checked-lines 96.6
 lowered functions 88.5 proved-port kit 0.4.5 (kit #74) classes the 16 exec functions under #[verifier::exec_allows_no_decreases_clause] as trusted, not verified (each already a no_decreases seam in verus/ledger/); no code changed and nothing else became trusted or outside: 1586 of 1791 shipped functions verified, 88.5%, against main's 053c9306 at 1602 of 1791
 lowered lines 94.3 proved-port kit 0.4.5 (kit #74), the same 16 no_decreases functions: 46869 of 49697 shipped lines verified, 94.3%, against main's 053c9306 at 47502 of 49697
