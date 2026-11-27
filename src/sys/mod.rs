@@ -801,15 +801,35 @@ mod linux {
         ok_unit(decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, arg(advice)) }))
     }
 
+    /// The kernel answered an `mseal(addr, len, flags)` with success: the
+    /// word `raw::syscall3` returned for it is not an error. It says only
+    /// that, of some such call; what a sealed range forbids is the
+    /// kernel's side.
+    pub closed spec fn mseal_ok(addr: usize, len: usize, flags: usize) -> bool {
+        exists|w: usize| #[trigger] raw::returned3(nr::MSEAL, addr, len, flags, w) && w <= usize::MAX - MAX_ERRNO
+    }
+
+    /// The kernel answered an `mseal(addr, len, flags)` with an error: the
+    /// word `raw::syscall3` returned for it is one. It says only that, of
+    /// some such call.
+    pub closed spec fn mseal_err(addr: usize, len: usize, flags: usize) -> bool {
+        exists|w: usize| #[trigger] raw::returned3(nr::MSEAL, addr, len, flags, w) && w > usize::MAX - MAX_ERRNO
+    }
+
     /// `mseal(2)`. Forbids `munmap`, `mremap`, `mprotect` and `madvise`
-    /// discards on the range for the life of the process.
+    /// discards on the range for the life of the process. On `Ok` the
+    /// kernel answered with success ([`mseal_ok`]), on `Err` with an error
+    /// ([`mseal_err`]).
     ///
     /// # Safety
     /// Irreversible; the range must never need to change again.
     #[inline]
-    pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> Result<(), Errno>
+    pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> (r: Result<(), Errno>)
         requires
             crate::sys::may_syscall(),
+        ensures
+            r is Ok ==> mseal_ok(addr, len, flags),
+            r is Err ==> mseal_err(addr, len, flags),
     {
         // SAFETY: forwarded to the caller's contract.
         ok_unit(decode(unsafe { raw::syscall3(nr::MSEAL, addr, len, flags) }))

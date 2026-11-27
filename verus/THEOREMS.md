@@ -250,6 +250,10 @@ leave out (theorem 33). Remaining work is tracked in
   `Regions::never_committed`'s `ensures` (`pages_in`), with
   `lemma_pushed_page` and `Regions::reserve_owning`'s `page_lengths`,
   `layout/regions.rs`.
+- **Seal sweep** ([`seal` seals every slack byte or the kernel refused a call](#seal-seals-every-slack-byte-or-the-kernel-refused-a-call)):
+  `Regions::seal`'s `ensures` (`slack_sealed`, `seal_refused`), with
+  `lemma_slack_sealed`, `layout/regions.rs`, and `sys::mseal`'s
+  (`mseal_ok`, `mseal_err`), `sys/mod.rs`.
 
 ## Configuration
 
@@ -9510,7 +9514,7 @@ pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
         self.separated() && self.mapped() ==> forall|i: int| 0 <= i < r.1 ==> self.seal_target(#[trigger] r.0[i]),
 
 // layout/regions.rs: before each `mseal(m.addr, m.len, 0)`.
-pub fn seal(&self) -> u32
+pub fn seal(&self) -> (sealed: u32)
     requires
         crate::sys::may_syscall(),
         self.wf(),
@@ -15064,11 +15068,13 @@ definition of "in a region".
 
 **Scope and where the statement is weaker than the code.**
 - The statement is about the list `never_committed` returns, not about
-  the `mseal` calls. `Regions::seal` has no `ensures` and its loop
-  carries only `seal_target` of each range, so that it hands each range
-  to `mseal` once, and every range, is read from its body, not proved
-  (its sweep stops at the first refusal, and init calls it only when
-  the probe said `mseal=yes`: theorem 41's "Covers").
+  the `mseal` calls. Since chainguard-project-theseus/challoc#1063
+  `Regions::seal` ensures that every slack byte is in a range the
+  kernel sealed with success, or the kernel refused a call
+  ([seal sweep](#seal-seals-every-slack-byte-or-the-kernel-refused-a-call));
+  that it hands each range to `mseal` once and in order is still read
+  from its body (its sweep stops at the first refusal, and init calls
+  it only when the probe said `mseal=yes`: theorem 41's "Covers").
 - Address order is stated nowhere: within a mapping the ranges are
   pushed in ascending order (the proof uses that), but the order of
   the three mappings is the kernel's choice.
@@ -15225,6 +15231,114 @@ or `mapped` already rejects on main. A huge length of `2^lg_huge +
 and on both trees by `ready` and `fenced`. Each run above also reports
 the `lemma_guard_near` assertion described in the section above, which
 comes only alongside another failure in the module.
+
+## `seal` seals every slack byte or the kernel refused a call
+
+`Regions::seal` hands each range `never_committed` lists to `mseal`, in
+order, and stops at the first refusal. The sections above prove what
+the list holds; until chainguard-project-theseus/challoc#1063 nothing
+proved said what the calls achieved: `seal` had no `ensures` and
+`sys::mseal` none either. Now `sys::mseal` states the kernel's answer
+(`mseal_ok`, `mseal_err`, of the shape `madvise` and `mprotect` already
+have), and `seal` ensures that either every byte of reservation slack
+lies in a `seal_target` range the kernel sealed with success, or the
+kernel refused `mseal` of one `seal_target` range.
+
+**Statement** (`sys/mod.rs`, `layout/regions.rs`):
+
+```rust
+// sys/mod.rs
+pub closed spec fn mseal_ok(addr: usize, len: usize, flags: usize) -> bool {
+    exists|w: usize| #[trigger] raw::returned3(nr::MSEAL, addr, len, flags, w) && w <= usize::MAX - MAX_ERRNO
+}
+pub closed spec fn mseal_err(addr: usize, len: usize, flags: usize) -> bool {
+    exists|w: usize| #[trigger] raw::returned3(nr::MSEAL, addr, len, flags, w) && w > usize::MAX - MAX_ERRNO
+}
+pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> (r: Result<(), Errno>)
+    ensures
+        r is Ok ==> mseal_ok(addr, len, flags),
+        r is Err ==> mseal_err(addr, len, flags),
+
+// layout/regions.rs (opaque)
+pub open spec fn slack_sealed(self) -> bool {
+    forall|a: int| #[trigger] self.slack_byte(a) ==> exists|m: Mapping|
+        self.seal_target(m) && m.addr <= a < m.addr + m.len && crate::sys::mseal_ok(m.addr, m.len, 0)
+}
+pub open spec fn seal_refused(self) -> bool {
+    exists|m: Mapping| self.seal_target(m) && #[trigger] crate::sys::mseal_err(m.addr, m.len, 0)
+}
+pub fn seal(&self) -> (sealed: u32)
+    requires
+        crate::sys::may_syscall(),
+        self.wf(),
+        self.separated(),
+        self.mapped(),
+    ensures
+        sealed <= MAX_SEALED,
+        self.slack_sealed() || self.seal_refused(),
+```
+
+In words: of regions that are well formed, separated and inside their
+mappings (what `reserve_owning` returns and `api::init` passes), when
+`seal` returns, either every slack byte (`Regions::slack_byte`: in a
+reservation, outside every region) is inside a range that is a
+`seal_target` and that the kernel answered an `mseal(addr, len, 0)` of
+with success, or the kernel answered an `mseal` of a `seal_target`
+range with an error. The count it returns is at most `MAX_SEALED`.
+
+**Proof.** The loop keeps the count equal to the iterator's index until
+a refusal (`invariant_except_break`), and `mseal_ok` of every range
+below the count. A refusal sets a ghost flag before the `break`, with
+`mseal_err` of the current range, a `seal_target` (`never_committed`'s
+`ensures`), as the witness of `seal_refused`. Without a refusal the
+count reaches `n`, and `lemma_slack_sealed` takes each slack byte's
+range from `seal_covers` (the section above) and gives it as the
+witness. `mseal`'s new `ensures` follow from `ok_unit`, `decode` and
+`raw::syscall3`'s `returned3`, as `madvise`'s do.
+
+**Premises (seams).** None added. `mseal_ok` and `mseal_err` say only
+what the kernel answered; `raw::returned3` is uninterpreted and
+ensured only by `syscall3`, as for `madvise_ok`.
+
+| premise | where | status |
+|---|---|---|
+| A successful `mseal` seals the range for the life of the process | the kernel's side of `mseal` | not stated: `mseal_ok` is the kernel's answer only. Tested by `layout::linux_tests::seal_locks_the_gaps_and_leaves_the_regions_usable` (`munmap` and `mprotect` of every sealed range refused, where the kernel has `mseal`) |
+| `raw::syscall3` returns the kernel's word | `sys/raw.rs` inline assembly | unchanged (the Isla seams) |
+
+**Scope and where the statement is weaker than the code.**
+- After a refusal the statement says nothing about the ranges before or
+  after it: that the sweep stops at the first refusal and that the
+  count is the number sealed before it is read from the body (the loop
+  proves the count equals the prefix, but the `ensures` does not
+  export it).
+- The witnesses are existential: the statement does not say which
+  `mseal` calls `seal` made, how often, or in what order.
+- Whether init calls `seal` at all (only when the probe said
+  `mseal=yes`) is `api::init`'s, unchanged (theorem 41's "Covers").
+- Page alignment is the section above's, conditional on the kernel
+  placing the mappings on page boundaries; `seal` takes no alignment
+  fact. A range whose address is not page-aligned would show here as
+  a refusal (`EINVAL`). A length that is not a page multiple would not:
+  the kernel rounds it up and answers success, so `mseal_ok` would hold
+  while the sealed extent ran past the range's end, and this statement
+  says nothing of those bytes. That case is the section above's
+  (`page_lengths`, which `reserve_owning` proves, with
+  `maps_page_aligned`).
+- The returned count is tied to neither disjunct: it is bounded by
+  `MAX_SEALED` only, and no caller can tell from it which case holds
+  (`api::init` stores it for `malloc_stats_print`).
+- Ghost only: the new `ensures`, specs, ghost flag and lemma add no
+  code to the release library.
+
+**Mutations** (`cargo verus focus -- --verify-module layout::regions`;
+unmutated: 217 verified, 0 errors on this tree, 216 on main c8788e8f).
+Main has no `ensures` on `seal`, so every mutant below verifies there:
+
+| id | change | PR | main c8788e8f |
+|---|---|---|---|
+| M1 | `sealed += 1` deleted (the count never grows) | rejected (the count-equals-index invariant) | verifies |
+| M2 | `mseal(m.addr, m.len, 1)` (flags other than 0) | rejected (the `mseal_ok` invariant) | verifies |
+| M3 | the last listed range dropped (`n - 1` ranges swept) | rejected (`lemma_slack_sealed`'s `seal_covers` premise) | verifies |
 
 ## Setting one configuration key writes one field
 
