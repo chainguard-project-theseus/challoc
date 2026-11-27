@@ -136,8 +136,10 @@ checks:
       scripts/testdata/codegen-fncmp, each pair's verdict line against the
       expected one; the crate-hash and impl-disambiguator pairs run with
       c++filt hidden from PATH and the crate-hash pair also with it; then
-      ci/codegen-notices.sh on two saved compare reports, and ci/codegen.sh
-      with a stand-in compare exiting 0 and 2.
+      ci/codegen-notices.sh on two saved compare reports, ci/codegen.sh
+      with a stand-in compare exiting 0 and 2, and scripts/codegen-diff.sh
+      with stand-in tools: a failed build, a failing objcopy, an empty
+      .text and a failing sha256sum each exit 1 with no verdict.
     trigger: [presubmit, postsubmit]
     environment:
       # git: ci/codegen.sh checks the base out in a worktree.
