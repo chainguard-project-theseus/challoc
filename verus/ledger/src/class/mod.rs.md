@@ -18,7 +18,7 @@ Tool: loom/GenMC. Status: trusted.
 
 > The loop of [`claim`] and [`claim_random`].
 
-Hashes: contract 967227744, body 3357165607.
+Hashes: contract 967227744, body 2060186436.
 
 Specs: `may_abort` (src/sys/mod.rs) 4099677103, `may_syscall` (src/sys/mod.rs) 532674254, `LockOrder::allows` (src/lock.rs) 3944106842, `rank_class` (src/lock.rs) 3172828272, `ClassState::published_by` (src/class/mod.rs) 1904197236, `xorshift_iter` (src/class/mod.rs) 4094812377, `slots_in` (src/layout/regions.rs) 1288072787, `ClassState::spec_class` (src/class/mod.rs) 3035516173, `ClassState::spec_table` (src/class/mod.rs) 1065850696, `claim_zero_ok` (src/class/mod.rs) 1858394033, `ClassState::exhausted` (src/class/mod.rs) 901491849.
 Specs unresolved (spec fns of the name): `is_process` (5), `len` (5), `owns` (3), `frame` (3).
@@ -49,7 +49,7 @@ fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>
 
 ## `axiom_discarded_slots_zero`
 
-src/class/mod.rs:5120. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:5123. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted (requires, checked at its one caller, ClassState::take: some discard advice of a range holding these bytes succeeded, `purge::discard_covers`, from settle's report through the class lock value's purged_ok; not checked: that this discard is the slab's latest, since `discard_covers` holds for any earlier successful discard too, that the advice was MADV_DONTNEED, which the PurgedZero witness's premise covers, and that nothing has written the bytes since).
 
 > The kernel fact of `madvise(2)` (after `MADV_DONTNEED`, private anonymous memory reads as zero) for slots `0..n` of slab `slab` of table `t`: their `n * size` bytes from slot 0 read as zero.
@@ -85,7 +85,7 @@ axiom fn axiom_discarded_slots_zero(
 
 ## `axiom_fresh_slab_mem`
 
-src/class/mod.rs:5181. Kind: axiom. Category: allocator invariant.
+src/class/mod.rs:5184. Kind: axiom. Category: allocator invariant.
 Tool: none (assumption). Status: trusted.
 
 > The permission to the bytes of slots `0..nslots` of slab `slab` of table `g.table`, lent for as long as `held`, the slab's descriptor permission in the class lock value `g` (`Inner::dperms`), is borrowed: what `ClassState::check_fresh_slab_is_zero` reads the slab's slots through (the `check_zero` debug mode), before the slab's first claim.
