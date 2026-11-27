@@ -4917,6 +4917,32 @@ pub(super) proof fn lemma_idle_byte_placed(t: SlabTable, states: Map<nat, State>
     ensures
         crate::layout::process_regions().class_placed(t.spec_class() as int, b),
 
+// class/decay.rs (what lemma_idle_byte_placed calls)
+pub(super) proof fn lemma_slab_byte_placed(t: SlabTable, b: int)
+    requires
+        t.inv(),
+        t.base <= b,
+        (b - t.base) / ((1usize << class_table()[t.spec_class() as int].lg_slab) as int) < t.spec_nslabs(),
+    ensures
+        crate::layout::process_regions().class_placed(t.spec_class() as int, b),
+
+// class/table.rs, in `impl SlabTable` (the range of
+// `ClassState::close_page`'s discard, `class/pages.rs`)
+pub(super) fn page_range(&self, slab: usize, p: usize) -> (r: Option<(usize, usize)>)
+    requires
+        self.is_process(),
+        slab < self.spec_nslabs(),
+        !self.spec_is_guard(slab),
+    ensures
+        r matches Some((a, l)) ==> crate::purge::well_formed(a as int, l as int) && a + l <= usize::MAX,
+        r matches Some((a, l)) ==> {
+            let sz = (1usize << class_table()[self.spec_class() as int].lg_slab) as int;
+            &&& self.base + slab * sz <= a
+            &&& a + l <= self.base + (slab + 1) * sz
+            &&& forall|b: int|
+                a <= b < a + l ==> #[trigger] process_regions().class_placed(self.spec_class() as int, b)
+        },
+
 // class/decay.rs, in `impl Purger` (the maker of the batches of
 // `ClassState::purge_empty` and `purge_curve`)
 fn new(spp: usize, Ghost(t): Ghost<SlabTable>, Ghost(states): Ghost<Map<nat, State>>, /* ghost */) -> (p: Purger)
@@ -5010,6 +5036,29 @@ run authority stay those the batch's `free` was made from. The makers:
   rejected. No executable mutant discriminates: a batch range outside
   the class region already fails `Batch::push`'s `frees` over
   `idle_byte` on main.
+- **The slab-pages walk's page discard** (`ClassState::close_page`,
+  `class/pages.rs`, through `purge::discard_one` with
+  `free = closed_page(..)`, which admits exactly the bytes of the range
+  `page_range` returns): since
+  chainguard-project-theseus/challoc#1042 `page_range` ensures its
+  range lies inside slab `slab` (`[base + slab * sz, base + (slab + 1) *
+  sz)`) and that every byte of it is placed in the table's class region,
+  and `close_page` asserts the placement of every byte `closed_page`
+  admits before the discard. The slab index of each byte is `slab`
+  (`lemma_fundamental_div_mod_converse`), below `nslabs`, so
+  `lemma_slab_byte_placed`, the slab-index half of
+  `lemma_idle_byte_placed` factored out, places it.
+  `Live::theorem_purge_class_apart` therefore applies to these bytes
+  too. That the slab is not live is not claimed: `close_page` discards a
+  page of a partial (`Active`) slab whose slots on the page it found
+  clear (`AtomicBitmap::probe`) after closing the page in the mask, a
+  run-time argument outside the proof. Ghost only: the machine code is
+  unchanged. Premises (seams): none added. Mutants: dropping the
+  `lemma_slab_byte_placed` call in `page_range`, or the arithmetic step
+  that bounds the range by the slab's end, is rejected. No executable
+  mutant discriminates: loosening `page_range`'s in-slab check
+  (`(p + 1) * page > sz` to `> sz + sz`) is already rejected on main, by
+  `lemma_well_formed_sub`'s precondition.
 
 **Premises beyond the common ones.**
 - Huge: none beyond the huge lock's holders reaching
@@ -5061,13 +5110,12 @@ run authority stay those the batch's `free` was made from. The makers:
   `class_placed` premise is what `Purger::new` ensures of the batch's
   `free`; no flush site calls the theorem, as no flush site calls
   `Live::theorem_purge_huge`.
-- The placement covers the decay walks' batches only (`purge_empty`,
-  `purge_curve`, through `Purger::new`). The slab-pages walk's discard,
-  `ClassState::close_page` (`class/pages.rs`) through
-  `purge::discard_one` with `free = closed_page(..)`, is not stated
-  placed in its class's region: `page_range` ensures `well_formed`,
-  whose `discardable` admits a byte of the huge region or of a slab of
-  some class, not of the walking table's class.
+- The placement covers the decay walks' batches (`Purger::new`) and the
+  slab-pages walk's page discard (`page_range`); the other
+  `purge::discard_one` caller, `free_run` (`huge/free.rs`), is the huge
+  half's. For a page discard, a live slot of the walked slab itself is
+  excluded only by the walk's run-time mask and probe protocol (above),
+  not by a proof.
 - The huge half is stated for the run-page authority, not per batch
   range: each flush site proves the batch's `free` from the lock value
   it holds; no lemma states "the bytes of this flush" as a set.

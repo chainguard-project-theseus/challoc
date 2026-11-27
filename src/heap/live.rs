@@ -1550,8 +1550,9 @@ impl Live {
     /// ([`Regions::class_placed`](crate::layout::Regions::class_placed),
     /// what `class::decay::lemma_idle_byte_placed` states of every byte
     /// the batch of a decay walk's class purge, `purge_empty` or
-    /// `purge_curve`, may discard; not of the slab-pages walk's
-    /// `close_page` discard) is no usable byte of a live run,
+    /// `purge_curve`, may discard, and `class::SlabTable::page_range` of
+    /// every byte of the slab-pages walk's `close_page` discard) is no
+    /// usable byte of a live run,
     /// which lies in the huge region, nor of a live slot of another class,
     /// which lies in its own class region, wherever its token is held.
     /// A live slot of class `c` itself is not excluded: that needs the

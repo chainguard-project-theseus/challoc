@@ -397,6 +397,12 @@ impl ClassState {
             assert(((c | (1u16 << pu)) >> pu) & 1u16 == 1u16) by (bit_vector)
                 requires pu < 16;
             assert(crate::purge::frees(closed_page(new, pu, a as int, len as int), a as int, len as int));
+            // What the discard may free lies in slab `slab`, in its class's
+            // region (`page_range`).
+            assert forall|b: int| #[trigger] closed_page(new, pu, a as int, len as int)(b) implies crate::layout::process_regions().class_placed(
+                t.spec_class() as int,
+                b,
+            ) by {}
         }
         if !crate::purge::discard_one(a, len, Ghost(closed_page(new, p as u16, a as int, len as int))) {
             // Refused (`EINVAL`, `mlock`ed pages): the page reopens and keeps

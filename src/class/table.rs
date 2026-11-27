@@ -4713,6 +4713,13 @@ impl SlabTable {
             !self.spec_is_guard(slab),
         ensures
             r matches Some((a, l)) ==> crate::purge::well_formed(a as int, l as int) && a + l <= usize::MAX,
+            r matches Some((a, l)) ==> {
+                let sz = (1usize << class_table()[self.spec_class() as int].lg_slab) as int;
+                &&& self.base + slab * sz <= a
+                &&& a + l <= self.base + (slab + 1) * sz
+                &&& forall|b: int|
+                    a <= b < a + l ==> #[trigger] process_regions().class_placed(self.spec_class() as int, b)
+            },
     {
         proof {
             use_type_invariant(self);
@@ -4751,6 +4758,30 @@ impl SlabTable {
             vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
             assert(p * page + page == (p + 1) * page) by (nonlinear_arith);
             crate::purge::lemma_well_formed_sub(start as int, sz as int, (p * page) as int, page as int);
+            // The page lies in slab `slab`, so its bytes are placed.
+            let (a, szi) = ((start + p * page) as int, sz as int);
+            assert(p * page + page <= szi);
+            assert(szi > 0);
+            assert(szi == (1usize << class_table()[self.spec_class() as int].lg_slab) as int);
+            assert(start == self.base + slab * szi);
+            assert(a + page <= self.base + (slab + 1) * szi) by (nonlinear_arith)
+                requires
+                    a == start + p * page,
+                    start == self.base + slab * szi,
+                    p * page + page <= szi,
+            ;
+            assert forall|b: int| a <= b < a + page implies #[trigger] process_regions().class_placed(
+                self.spec_class() as int,
+                b,
+            ) by {
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                    b - self.base,
+                    szi,
+                    slab as int,
+                    b - start,
+                );
+                super::decay::lemma_slab_byte_placed(*self, b);
+            }
         }
         Some((start + p * page, page))
     }

@@ -167,16 +167,29 @@ pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> b
 /// What a decay walk's class purge (`purge_empty`, `purge_curve`) may
 /// discard lies in its class region
 /// ([`Regions::class_placed`](crate::layout::Regions::class_placed)): a
-/// byte [`idle_byte`] admits for the process's table `t` of class `c` is
-/// below the region's end, since its slab index is below `nslabs`, the
-/// region's slab count, and
-/// [`Regions::separated`](crate::layout::Regions::separated) keeps the
-/// region apart from the other class regions, the huge region and the
-/// metadata region.
+/// a byte of one of its slabs, which [`lemma_slab_byte_placed`] places.
 pub(super) proof fn lemma_idle_byte_placed(t: SlabTable, states: Map<nat, State>, b: int)
     requires
         t.inv(),
         idle_byte(t, states, b),
+    ensures
+        crate::layout::process_regions().class_placed(t.spec_class() as int, b),
+{
+    lemma_slab_byte_placed(t, b);
+}
+
+/// A byte of a slab of the process's table `t` of class `c`, one whose
+/// slab index is below `nslabs`, lies in the class region
+/// ([`Regions::class_placed`](crate::layout::Regions::class_placed)): it
+/// is below the region's end, since `nslabs` is the region's slab count,
+/// and [`Regions::separated`](crate::layout::Regions::separated) keeps the
+/// region apart from the other class regions, the huge region and the
+/// metadata region.
+pub(super) proof fn lemma_slab_byte_placed(t: SlabTable, b: int)
+    requires
+        t.inv(),
+        t.base <= b,
+        (b - t.base) / ((1usize << class_table()[t.spec_class() as int].lg_slab) as int) < t.spec_nslabs(),
     ensures
         crate::layout::process_regions().class_placed(t.spec_class() as int, b),
 {
