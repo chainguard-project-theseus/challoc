@@ -1545,6 +1545,68 @@ impl Live {
         }
     }
 
+    /// Guard pages are never handed out, for huge runs, per result: no
+    /// usable byte of a live run lies in the [`GUARD_PAGES`] guard pages
+    /// of any run token `other`, whoever holds it (another live block's
+    /// run, or a run the huge lock's value holds), and the page the run's
+    /// token counts as its guard starts at the end of its usable bytes.
+    /// This is [`RunToken::theorem_token_guards`] in bytes. It is page
+    /// separation, not protection: that the huge allocator's `prepare`
+    /// guards that page, and whether it faults, is read from its body.
+    /// A slot against a run's guard is
+    /// not stated: [`Live::wf`] keeps a run's usable bytes in the huge
+    /// region, not its guard.
+    pub proof fn theorem_run_guards(tracked &mut self, tracked other: &RunToken)
+        requires
+            old(self).wf(),
+            old(self).run_opt() is Some,
+            other.wf(),
+        ensures
+            final(self).wf(),
+            final(self).addr() == old(self).addr(),
+            final(self).len() == old(self).len(),
+            final(self).mem() == old(self).mem(),
+            final(self).run_opt() is Some,
+            final(self).run_opt()->0.start() == old(self).run_opt()->0.start(),
+            final(self).run_opt()->0.npages() == old(self).run_opt()->0.npages(),
+            forall|p: *mut u8| #[trigger] old(self).claims(p) ==> final(self).claims(p),
+            disjoint(
+                final(self).addr() as int,
+                final(self).len(),
+                page_addr(other.start() + other.npages() - GUARD_PAGES),
+                GUARD_PAGES * page_size(),
+            ),
+            page_addr(final(self).run_opt()->0.start() + final(self).run_opt()->0.npages() - GUARD_PAGES)
+                == final(self).addr() + final(self).len(),
+    {
+        let ghost o = *self;
+        let tracked mut t = self.run.tracked_take();
+        t.theorem_token_guards(other);
+        self.run = Some(t);
+        let pg = page_size();
+        let (s, n) = (t.start(), t.npages());
+        let g = other.start() + other.npages() - GUARD_PAGES;
+        assert(s * pg + (n - GUARD_PAGES) * pg == (s + n - GUARD_PAGES) * pg) by (nonlinear_arith);
+        if s + (n - GUARD_PAGES) <= g {
+            assert((s + n - GUARD_PAGES) * pg <= g * pg) by (nonlinear_arith)
+                requires
+                    s + (n - GUARD_PAGES) <= g,
+                    pg >= 0,
+            ;
+        } else {
+            assert(g * pg + GUARD_PAGES * pg <= s * pg) by (nonlinear_arith)
+                requires
+                    g + GUARD_PAGES <= s,
+                    pg >= 0,
+            ;
+        }
+        assert forall|p: *mut u8| #[trigger] o.claims(p) implies self.claims(p) by {
+            if crate::heap::slot_start(p) {
+                assert(o.slot_of(o.class));
+            }
+        }
+    }
+
     /// Purge never discards live data, for class purges, short of the
     /// purged class's own slots: a byte placed in class `c`'s region
     /// ([`Regions::class_placed`](crate::layout::Regions::class_placed),
