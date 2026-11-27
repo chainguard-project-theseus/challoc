@@ -3793,7 +3793,7 @@ impl Arenas {
             r.0 as usize <= MAX_ARENAS,
             self.is_process() ==> r.1@.id() == process_floor_loc(),
             r.1@@.dom() == Set::range(0, r.0 as int),
-            prev matches Some(f) ==> forall|i: int| #[trigger] f@.contains_key(i) ==> i < r.0,
+            prev matches Some(f) ==> forall|i: int| #[trigger] f@.contains_key(i) ==> 0 <= i < r.0,
     {
         proof {
             use_type_invariant(self);
@@ -3804,7 +3804,7 @@ impl Arenas {
             proof {
                 if let Some(f) = prev {
                     f.agree(&v.lows);
-                    assert forall|i: int| #[trigger] f@.contains_key(i) implies i < v.count.value() by {
+                    assert forall|i: int| #[trigger] f@.contains_key(i) implies 0 <= i < v.count.value() by {
                         assert(v.lows@.dom().contains(i));
                     }
                 }

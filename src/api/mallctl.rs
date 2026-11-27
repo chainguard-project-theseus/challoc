@@ -3312,7 +3312,7 @@ fn ctl(
             let i = at(mib, 1);
             if all_arenas(shared, i) {
                 let tracked mut left = Ghost(purge::Left::none());
-                purge::purge_all(shared, Tracked(&mut left), Tracked(&mut *ord));
+                purge::purge_all(shared, Tracked(Map::tracked_empty()), Tracked(None), Tracked(&mut left), Tracked(&mut *ord));
             } else {
                 let tracked mut left = Ghost(purge::Left::none());
                 purge::purge_arena(shared, arena_index(i)?, Tracked(&mut left), Tracked(&mut *ord)).ok_or(ENOENT)?;

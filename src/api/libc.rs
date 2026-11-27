@@ -3896,7 +3896,7 @@ pub fn cow_begin(flags: u32, Tracked(ord): Tracked<&mut crate::lock::LockOrder>)
             h.flush_all(shared, Tracked(&mut *ord));
         }
         let tracked mut left = Ghost(crate::purge::Left::none());
-        crate::purge::purge_all(shared, Tracked(&mut left), Tracked(&mut *ord));
+        crate::purge::purge_all(shared, Tracked(Map::tracked_empty()), Tracked(None), Tracked(&mut left), Tracked(&mut *ord));
     }
     crate::cow::begin(shared, Tracked(&mut *ord))
 }
@@ -3967,7 +3967,7 @@ pub fn malloc_trim(_pad: usize, Tracked(left): Tracked<&mut Ghost<crate::purge::
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
         h.flush_all(shared, Tracked(&mut *ord));
     }
-    (crate::purge::purge_all(shared, Tracked(&mut *left), Tracked(&mut *ord)) > 0) as c_int
+    (crate::purge::purge_all(shared, Tracked(Map::tracked_empty()), Tracked(None), Tracked(&mut *left), Tracked(&mut *ord)) > 0) as c_int
 }
 
 } // verus!
