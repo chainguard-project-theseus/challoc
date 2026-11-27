@@ -1811,8 +1811,8 @@ impl Arena {
     /// Purge every `Empty` slab of every class whatever its age. Returns
     /// how many were purged. `left` gets the bytes discarded, nonzero iff
     /// a slab was purged, and every class of this arena, none with an
-    /// `Empty` slab in the lock value its purge released unless it has
-    /// several slabs per page or `madvise` refused the slab's range
+    /// `Empty` slab in the lock value its purge released unless `madvise`
+    /// refused the slab's range
     /// ([`Left::clean`]).
     pub fn purge_all(&self, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
         requires
