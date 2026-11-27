@@ -182,6 +182,67 @@ proof fn lemma_pushed(o: [Mapping; MAX_SEALED], out: [Mapping; MAX_SEALED], n0: 
     }
 }
 
+/// `m` starts and ends on a boundary of the page `2^lg_page`: its address
+/// and length are page multiples. `mseal` refuses an address that is not
+/// (`EINVAL`) and rounds a length up to the page, so the length half is
+/// what makes the sealed extent the range itself.
+pub open spec fn page_range(m: Mapping, lg_page: u32) -> bool {
+    let page = (1usize << lg_page) as int;
+    &&& (m.addr as int) % page == 0
+    &&& (m.len as int) % page == 0
+}
+
+/// Every range of `out[..n]` is a [`page_range`].
+pub open spec fn pages_in(out: [Mapping; MAX_SEALED], n: int, lg_page: u32) -> bool {
+    forall|i: int| 0 <= i < n ==> page_range(#[trigger] out[i], lg_page)
+}
+
+/// What [`push_range`] of `lo..hi` onto `o[..n0]` leaves in `out[..n1]`
+/// when `lo` and `hi` are page multiples: every range is still a
+/// [`page_range`].
+proof fn lemma_pushed_page(o: [Mapping; MAX_SEALED], out: [Mapping; MAX_SEALED], n0: int, n1: int, lo: usize, hi: usize, lg_page: u32)
+    requires
+        lg_page < 64,
+        n1 == if hi > lo { n0 + 1 } else { n0 },
+        hi > lo ==> out[n0] == (Mapping { addr: lo, len: (hi - lo) as usize }),
+        forall|i: int| 0 <= i < n0 ==> out[i] == o[i],
+        pages_in(o, n0, lg_page),
+        (lo as int) % ((1usize << lg_page) as int) == 0,
+        (hi as int) % ((1usize << lg_page) as int) == 0,
+    ensures
+        pages_in(out, n1, lg_page),
+{
+    let page = (1usize << lg_page) as int;
+    assert((1usize << lg_page) > 0) by (bit_vector)
+        requires lg_page < 64;
+    if hi > lo {
+        vstd::arithmetic::div_mod::lemma_sub_mod_noop(hi as int, lo as int, page);
+        assert(((hi - lo) as usize) as int == hi as int - lo as int);
+        vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+        assert(page_range(out[n0], lg_page));
+    }
+    assert forall|i: int| 0 <= i < n1 implies page_range(#[trigger] out[i], lg_page) by {
+        if i < n0 {
+            assert(out[i] == o[i]);
+        }
+    }
+}
+
+/// `2^k` is a multiple of the page `2^lg_page` when `lg_page <= k`
+/// (and the page is not zero).
+proof fn lemma_shl_page(k: u32, lg_page: u32)
+    requires
+        lg_page <= k < 64,
+    ensures
+        (1usize << lg_page) > 0,
+        ((1usize << k) as int) % ((1usize << lg_page) as int) == 0,
+{
+    let (a, p) = (1usize << k, 1usize << lg_page);
+    assert(a & sub(a, 1) == 0 && p > 0 && p & sub(p, 1) == 0 && a >= p) by (bit_vector)
+        requires a == 1usize << k, p == 1usize << lg_page, lg_page <= k < 64;
+    crate::meta::lemma_pow2_divides(a, p);
+}
+
 /// The first byte of the process's `Shared` (`api`'s `SHARED` static,
 /// [`shared_storage`](crate::heap::shared_storage)): the lock values of
 /// `Meta`, the huge allocator and the class tables, arena 0 and the
@@ -596,6 +657,32 @@ impl Regions {
     #[verifier::opaque]
     pub open spec fn seal_covers(self, out: [Mapping; MAX_SEALED], n: int) -> bool {
         forall|a: int| #[trigger] self.slack_byte(a) ==> in_ranges(out, n, a)
+    }
+
+    /// The lengths the seal ranges are cut from, beyond what
+    /// [`Regions::separated`] and [`Regions::ready`] state, are page
+    /// multiples: the three mappings' and the huge region's.
+    /// [`Regions::reserve_owning`] ensures it (each is a power of two of
+    /// at least `2^30`, plus `MAX_SLAB` and the slide for a mapping).
+    pub open spec fn page_lengths(self) -> bool {
+        let page = (1usize << self.lg_page) as int;
+        &&& (self.superblock_map.len as int) % page == 0
+        &&& (self.huge_map.len as int) % page == 0
+        &&& (self.meta_map.len as int) % page == 0
+        &&& (self.huge_len as int) % page == 0
+    }
+
+    /// The three mappings start on page boundaries. This is the kernel's
+    /// `mmap` contract (a mapping placed without `MAP_FIXED` starts at a
+    /// multiple of the kernel's page, which [`Regions::reserve_owning`] is
+    /// given); `try_reserve` does not state it and no verified fact
+    /// establishes it. [`Regions::never_committed`] takes it as the
+    /// premise of its alignment `ensures`; it is not assumed anywhere.
+    pub open spec fn maps_page_aligned(self) -> bool {
+        let page = (1usize << self.lg_page) as int;
+        &&& (self.superblock_map.addr as int) % page == 0
+        &&& (self.huge_map.addr as int) % page == 0
+        &&& (self.meta_map.addr as int) % page == 0
     }
 
     /// Class `j`'s region ends at or before class `k`'s starts, for `j <
@@ -1198,8 +1285,14 @@ impl Regions {
             self.separated() && self.mapped() ==> forall|i: int| 0 <= i < r.1 ==> self.seal_target(#[trigger] r.0[i]),
             self.separated() && self.mapped() ==> ranges_disjoint(r.0, r.1 as int),
             self.separated() && self.mapped() ==> self.seal_covers(r.0, r.1 as int),
+            // Page-aligned, as `mseal` needs, when the mappings start on
+            // page boundaries (the kernel's, `maps_page_aligned`).
+            self.separated() && self.mapped() && self.ready() && self.page_lengths() && self.maps_page_aligned()
+                ==> pages_in(r.0, r.1 as int, self.lg_page),
     {
         let ghost ok = self.separated() && self.mapped();
+        let ghost ap = ok && self.ready() && self.page_lengths() && self.maps_page_aligned();
+        let ghost page = (1usize << self.lg_page) as int;
         let ghost stride = (1usize << self.lg_stride) as int;
         let ghost region = (1usize << self.lg_region) as int;
         let ghost (sm, hm, mm) = (self.superblock_map, self.huge_map, self.meta_map);
@@ -1227,6 +1320,11 @@ impl Regions {
                 ok ==> ranges_disjoint(out, n as int),
                 ok ==> forall|i: int| 0 <= i < n ==> sm.addr <= #[trigger] out[i].addr && out[i].addr + out[i].len <= start,
                 ok ==> forall|a: int| sm.addr <= a < start && self.slack_byte(a) ==> #[trigger] in_ranges(out, n as int, a),
+                // Page-aligned so far, and `start` a page multiple.
+                ap == (ok && self.ready() && self.page_lengths() && self.maps_page_aligned()),
+                page == (1usize << self.lg_page) as int,
+                ap ==> (start as int) % page == 0,
+                ap ==> pages_in(out, n as int, self.lg_page),
         {
             proof {
                 if ok {
@@ -1240,6 +1338,19 @@ impl Regions {
             let ghost (o, n0, s0) = (out, n as int, start);
             push_range(&mut out, &mut n, start, self.class_base[c]);
             start = self.class_base[c] + self.region_len();
+            proof {
+                if ap {
+                    // A class base (`base_aligned`) and the region length
+                    // are page multiples.
+                    let cb = self.class_base[c as int] as int;
+                    assert(base_aligned(cb, c as int, self.lg_page));
+                    lemma_pushed_page(o, out, n0, n as int, s0, self.class_base[c as int], self.lg_page);
+                    lemma_shl_page(self.lg_region, self.lg_page);
+                    vstd::arithmetic::div_mod::lemma_add_mod_noop(cb, region, page);
+                    assert(start as int == cb + region);
+                    vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+                }
+            }
             proof {
                 if ok {
                     let cc = c as int;
@@ -1380,6 +1491,28 @@ impl Regions {
                         assert(in_ranges(o3, n3, a));
                     }
                 }
+            }
+        }
+        proof {
+            if ap {
+                // Each later range's ends are a mapping's start or end
+                // (`maps_page_aligned`, `page_lengths`) or a region's
+                // (`MAX_SLAB`-aligned huge base, `page_lengths`, `ready`).
+                lemma_shl_page(LG_MAX_SLAB, self.lg_page);
+                assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+                assert((1usize << 22u32) == 0x40_0000) by (bit_vector);
+                vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+                crate::meta::lemma_mod_trans(self.huge_base as int, MAX_SLAB as int, page);
+                vstd::arithmetic::div_mod::lemma_add_mod_noop(sm.addr as int, sm.len as int, page);
+                vstd::arithmetic::div_mod::lemma_add_mod_noop(self.huge_base as int, self.huge_len as int, page);
+                vstd::arithmetic::div_mod::lemma_add_mod_noop(hm.addr as int, hm.len as int, page);
+                vstd::arithmetic::div_mod::lemma_add_mod_noop(self.meta_base as int, self.meta_len as int, page);
+                vstd::arithmetic::div_mod::lemma_add_mod_noop(mm.addr as int, mm.len as int, page);
+                lemma_pushed_page(o, os, n0, ns, s0, (sm.addr + sm.len) as usize, self.lg_page);
+                lemma_pushed_page(os, o1, ns, n1, hm.addr, self.huge_base, self.lg_page);
+                lemma_pushed_page(o1, o2, n1, n2, (self.huge_base + self.huge_len) as usize, (hm.addr + hm.len) as usize, self.lg_page);
+                lemma_pushed_page(o2, o3, n2, n3, mm.addr, self.meta_base, self.lg_page);
+                lemma_pushed_page(o3, out, n3, n as int, (self.meta_base + self.meta_len) as usize, (mm.addr + mm.len) as usize, self.lg_page);
             }
         }
         (out, n)
@@ -3077,6 +3210,7 @@ mod linux {
                 res.0.ready(),
                 res.0.mapped(),
                 res.0.fenced(),
+                res.0.page_lengths(),
                 res.1@.addr() == res.0.meta_base,
                 res.1@.len() == res.0.meta_len,
         {
@@ -3350,6 +3484,29 @@ mod linux {
                     assert((c + 1) * stride == c * stride + stride) by (nonlinear_arith);
                 }
                 reveal(Regions::fenced);
+                // `Regions::page_lengths`: each length is a multiple of
+                // `MAX_SLAB`, so of the page.
+                let (lp, ls, lh, lm, n) = (lg_page, lg_stride, lg_huge, lg_meta, NCLASSES);
+                let pu = 1usize << lp;
+                let (a, b, m, h) = (sb_map.len, huge_map.len, meta_map.len, 1usize << lh);
+                assert(n <= 64);
+                assert(pu > 0 && pu & sub(pu, 1) == 0 && a & sub(pu, 1) == 0 && b & sub(pu, 1) == 0
+                    && m & sub(pu, 1) == 0 && h & sub(pu, 1) == 0) by (bit_vector)
+                    requires
+                        pu == 1usize << lp,
+                        12 <= lp <= 22,
+                        n <= 64,
+                        32 <= ls <= 40,
+                        34 <= lh <= 40,
+                        30 <= lm <= 40,
+                        a == add(n << ls, 0x40_0000),
+                        b == add(add(1usize << lh, 0x4000_0000), 0x40_0000),
+                        m == add(add(1usize << lm, 0x4000_0000), 0x40_0000),
+                        h == 1usize << lh;
+                crate::meta::lemma_mod_mask(a, pu);
+                crate::meta::lemma_mod_mask(b, pu);
+                crate::meta::lemma_mod_mask(m, pu);
+                crate::meta::lemma_mod_mask(h, pu);
             }
             // Design 2: every region keeps `MAX_SLAB` of its reservation's
             // never-committed slack on both sides, whatever was drawn.

@@ -2032,6 +2032,30 @@ spec fn tail_ok(tails: Map<*mut FreeNode, PointsToRaw>, p: *mut FreeNode, b: int
     &&& tails[p].provenance() == p@.provenance
 }
 
+/// A block at or above the bump pointer is on no free list: every entry
+/// ends by it ([`node_ok`]). [`Inner::alloc`]'s bump path, as a lemma of
+/// its own so that the list quantifiers stay out of `alloc`'s query.
+proof fn lemma_unlisted(
+    free: Seq<*mut FreeNode>,
+    lists: Seq<Seq<*mut FreeNode>>,
+    perms: Map<*mut FreeNode, PointsTo<FreeNode>>,
+    base: usize,
+    bump: usize,
+    k: *mut FreeNode,
+)
+    requires
+        forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(free, lists, perms, base, bump, b),
+        bump <= k as usize,
+    ensures
+        forall|b: int, i: int| 0 <= b < NBINS && 0 <= i < lists[b].len() ==> #[trigger] lists[b][i] != k,
+{
+    assert forall|b: int, i: int| 0 <= b < NBINS && 0 <= i < lists[b].len() implies #[trigger] lists[b][i] != k by {
+        assert(list_ok(free, lists, perms, base, bump, b));
+        assert(node_ok(lists, perms, base, bump, b, i));
+        lemma_bin(b);
+    }
+}
+
 /// Move the permission out of `r`, leaving an empty one of its
 /// provenance.
 proof fn take_raw(tracked r: &mut PointsToRaw) -> (tracked out: PointsToRaw)
@@ -2930,13 +2954,7 @@ impl Inner {
             let k = p as *mut FreeNode;
             let ghost m0 = self.live@@;
             assert(k as usize == start);
-            assert forall|b: int, i: int|
-                0 <= b < NBINS && 0 <= i < self.lists@[b].len() implies self.lists@[b][i] != k by {
-                let o = old(self);
-                assert(list_ok(o.free@, o.lists@, o.perms@, o.base, o.bump, b));
-                assert(node_ok(o.lists@, o.perms@, o.base, o.bump, b, i));
-                lemma_bin(b);
-            }
+            lemma_unlisted(old(self).free@, old(self).lists@, old(self).perms@, old(self).base, old(self).bump, k);
             assert(!m0.contains_key(k)) by {
                 if m0.contains_key(k) {
                     lemma_bin(m0[k] as int);

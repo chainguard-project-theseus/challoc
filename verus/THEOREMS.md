@@ -246,6 +246,10 @@ leave out (theorem 33). Remaining work is tracked in
   `Regions::never_committed`'s `ensures` (`ranges_disjoint`,
   `Regions::seal_covers`), with `push_range`'s and `lemma_pushed`,
   `layout/regions.rs`.
+- **Seal ranges page-aligned** ([The seal ranges are page-aligned when the reservations start on page boundaries](#the-seal-ranges-are-page-aligned-when-the-reservations-start-on-page-boundaries)):
+  `Regions::never_committed`'s `ensures` (`pages_in`), with
+  `lemma_pushed_page` and `Regions::reserve_owning`'s `page_lengths`,
+  `layout/regions.rs`.
 
 ## Configuration
 
@@ -9518,13 +9522,16 @@ stops the sweep.
   fields to a live `Reserved` token.
 
 **Scope and where the statement is weaker than the code.**
-- Nothing states the ranges page-aligned, which `mseal` needs to
-  succeed: the mapping addresses `try_reserve` returns are not stated
-  page multiples (they are, from the kernel), and the class bases (page
-  multiples, `base_aligned`), the region lengths and the huge and
-  metadata bases are `MAX_SLAB` or page multiples. A misaligned range
-  would fail with `EINVAL` and stop the
-  sweep, not seal anything else.
+- Page alignment is stated only given the mappings start on page
+  boundaries
+  ([seal ranges page-aligned](#the-seal-ranges-are-page-aligned-when-the-reservations-start-on-page-boundaries),
+  chainguard-project-theseus/challoc#1057): the mapping addresses
+  `try_reserve` returns are not stated page multiples (they are, from
+  the kernel), and `seal` takes no alignment fact. A range whose
+  address is not page-aligned would fail with `EINVAL` and stop the
+  sweep, not seal anything else. A length that is not a page multiple
+  would not be refused: `mseal` rounds it up to the page, so the call
+  would seal past the range's end.
 - "Never committed" itself is not proved: the statement is that the
   ranges avoid the class, huge and metadata regions, which is where the
   allocator commits, purges and reprotects (theorem 40 for purges); that
@@ -15008,8 +15015,10 @@ definition of "in a region".
 - Address order is stated nowhere: within a mapping the ranges are
   pushed in ascending order (the proof uses that), but the order of
   the three mappings is the kernel's choice.
-- Page alignment, which `mseal` needs, is still not stated (theorem
-  41's scope).
+- Page alignment, which `mseal` needs, was not stated here. Since
+  chainguard-project-theseus/challoc#1057 it is, given the mappings
+  start on page boundaries
+  ([seal ranges page-aligned](#the-seal-ranges-are-page-aligned-when-the-reservations-start-on-page-boundaries)).
 - `print`'s `never_committed().1` holds no `mapped` fact and gets only
   the bound, as before.
 - Ghost only: `push_range` is `#[inline(always)]` and the new `ensures`
@@ -15035,6 +15044,130 @@ assertion. It comes only alongside another failure in the module: three
 repeated M1 runs reported it each time, `lemma_guard_near` alone
 (`--verify-function`) verifies in the M1 tree, and the unmutated module
 verifies on this tree and on main.
+
+## The seal ranges are page-aligned when the reservations start on page boundaries
+
+`mseal` treats the two halves of a range differently. It fails with
+`EINVAL` on a start address that is not page-aligned, and that refusal
+stops `Regions::seal`'s sweep. It rounds a length up to the page ("The
+`len` will be paged aligned implicitly by the kernel",
+https://docs.kernel.org/userspace-api/mseal.html). So a length that is
+not a page multiple would seal the rest of the range's last page, which
+for a range ending at a region's base is that region's first page. The
+address half is what lets the call succeed. The length half is what
+makes the sealed extent the listed range. Theorem 41
+and the [section above](#the-seal-ranges-are-pairwise-disjoint-and-with-the-regions-cover-the-reservations)
+said the ranges' alignment was not stated. Since
+chainguard-project-theseus/challoc#1057 `never_committed` states it,
+with the one fact the verified code does not have, that the three
+mappings start on page boundaries (the kernel's), as the premise.
+
+**Statement** (`layout/regions.rs`):
+
+```rust
+pub open spec fn page_range(m: Mapping, lg_page: u32) -> bool {
+    let page = (1usize << lg_page) as int;
+    &&& (m.addr as int) % page == 0
+    &&& (m.len as int) % page == 0
+}
+
+pub open spec fn pages_in(out: [Mapping; MAX_SEALED], n: int, lg_page: u32) -> bool {
+    forall|i: int| 0 <= i < n ==> page_range(#[trigger] out[i], lg_page)
+}
+
+// Regions: the three mappings' lengths and the huge region's.
+pub open spec fn page_lengths(self) -> bool {
+    let page = (1usize << self.lg_page) as int;
+    &&& (self.superblock_map.len as int) % page == 0
+    &&& (self.huge_map.len as int) % page == 0
+    &&& (self.meta_map.len as int) % page == 0
+    &&& (self.huge_len as int) % page == 0
+}
+
+// Regions: the kernel's fact, the premise; assumed nowhere.
+pub open spec fn maps_page_aligned(self) -> bool {
+    let page = (1usize << self.lg_page) as int;
+    &&& (self.superblock_map.addr as int) % page == 0
+    &&& (self.huge_map.addr as int) % page == 0
+    &&& (self.meta_map.addr as int) % page == 0
+}
+
+pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
+    ensures
+        ..,  // theorem 41 and the section above
+        self.separated() && self.mapped() && self.ready() && self.page_lengths() && self.maps_page_aligned()
+            ==> pages_in(r.0, r.1 as int, self.lg_page),
+
+pub fn reserve_owning(..) -> (res: (Regions, Tracked<Unbacked>))
+    ensures
+        ..,  // separated, ready, mapped, fenced, as before
+        res.0.page_lengths(),
+```
+
+In words: every range `never_committed` returns starts and ends on a
+page boundary, for regions that are separated, inside their mappings
+and ready, whose mapping and huge-region lengths are page multiples,
+and whose mappings start on page boundaries. `reserve_owning`, which
+builds the process's regions, ensures every premise but the last, so
+for the process's regions the alignment rests only on the kernel
+placing each `mmap` at a page multiple of the page it is given.
+
+**Proof.** `lemma_pushed_page`: a push of `lo..hi` with both ends page
+multiples keeps every range a `page_range` (the length is
+`hi - lo`, `lemma_sub_mod_noop`). Every range's ends are a mapping's
+start or end, or a region's: the class loop keeps `start` a page
+multiple (a class base is one by `base_aligned`, and the region length
+`2^lg_region` is one by `lemma_shl_page`, as `lg_page <= 16 <=
+lg_region`); after the loop, the huge base is `MAX_SLAB`-aligned
+(`separated`, `lemma_mod_trans`), the huge length is by `page_lengths`,
+the metadata base and length by `ready`, and the mappings' ends by
+`maps_page_aligned` and `page_lengths` (`lemma_add_mod_noop`).
+`reserve_owning` proves `page_lengths` by `bit_vector`: each length is
+a multiple of `MAX_SLAB` (`NCLASSES << lg_stride` plus `MAX_SLAB`; a
+power of two of at least `2^30` plus the slide and `MAX_SLAB`; `2^lg_huge`),
+and the page is at most `MAX_SLAB` (`lemma_mod_mask`).
+
+**Premises (seams).** None added. `maps_page_aligned` is the
+statement's premise, not an assumption: `try_reserve`'s trusted
+contract (the kernel's `mmap`) is unchanged and does not state it.
+
+| premise | where | status |
+|---|---|---|
+| The mappings start on page multiples (`maps_page_aligned`) | the `ensures` premise; the kernel's `mmap` places a mapping without `MAP_FIXED` at a page multiple | not stated by `try_reserve`, not verified. Tested on kernel-placed reservations by `layout::linux_tests::seal_locks_the_gaps_and_leaves_the_regions_usable` (`seal_child`: every listed range sealed, `sealed == n`, where the kernel has `mseal`). `layout::tests::never_committed_is_the_complement_of_the_regions` tests the conclusion on synthetic layouts (page-aligned mappings by construction, one page size) |
+| The page `reserve_owning` is given is the kernel's | `reserve_owning`'s caller (`AT_PAGESZ`) | unchanged (theorem 41) |
+
+**Scope and where the statement is weaker than the code.**
+- Conditional on `maps_page_aligned`: nothing verified discharges it,
+  and `Regions::seal` takes no alignment fact, so that `seal` hands
+  `mseal` only page-aligned ranges is this `ensures` plus the kernel's
+  placement, not a precondition `seal` checks.
+- The page is the one `Regions` records (`lg_page`, from
+  `reserve_owning`'s `page_size`). That it is the kernel's page, the
+  unit `mseal` checks, is the caller's (theorem 41).
+- As in the section above, the statement is about the list, not the
+  `mseal` calls.
+- Ghost only: the new `ensures`, specs and proof add no code to the
+  release library.
+
+**Mutations** (`cargo verus focus -- --verify-module layout::regions`;
+unmutated: 216 verified, 0 errors on this tree, 209 on main 7f3fe4fb).
+Main has no alignment `ensures`, so these test that each premise is
+needed rather than comparing with main:
+
+| id | change | PR |
+|---|---|---|
+| S1 | `maps_page_aligned` dropped from the `ensures` premise (the proof keeps it) | rejected (`never_committed`'s postcondition) |
+| S2 | the huge length dropped from `page_lengths` | rejected (`lemma_pushed_page` for the huge region's upper range) |
+| S3 | `ready` dropped from the premise and the proof | rejected (`lemma_pushed_page` for both metadata ranges) |
+
+No exec mutant separates this tree from main: the ranges are exactly
+the slack (the section above), so a range moves off a page boundary
+only if a region's or a mapping's end does, which `separated`, `ready`
+or `mapped` already rejects on main. A huge length of `2^lg_huge +
+0x800` in `reserve_owning`, for one, is rejected here by `page_lengths`
+and on both trees by `ready` and `fenced`. Each run above also reports
+the `lemma_guard_near` assertion described in the section above, which
+comes only alongside another failure in the module.
 
 ## Setting one configuration key writes one field
 
