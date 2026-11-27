@@ -14,11 +14,8 @@ binary that a disassembly checker (`scripts/perf-budget.sh`, the
 `perf-budget` check) proves, not Verus. "Bad input" (the B column of the
 interface contract), the
 [theorems outside the numbered sections](#theorems-outside-the-numbered-sections),
-nine of which have their own sections after section 46 (thread exit,
-explicit-cache destroy, the explicit-cache registry, the explicit-cache
-entry lent out, `Heap::destroy`'s permission, claims past the check,
-exact sized frees, the double-free window and same-region overflow
-reach),
+the sections after section 46 (each states one such theorem, from
+thread exit onward, under a heading that names it),
 and the interface contract are not numbered. The sections fall into the
 groups [RESULTS.md](RESULTS.md#what-the-proofs-guarantee) uses:
 
