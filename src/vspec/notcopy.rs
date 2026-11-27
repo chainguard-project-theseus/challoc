@@ -40,6 +40,7 @@ use super::usable::Stored;
 use super::user::UserMem;
 use super::word::WordPerm;
 use super::zero::{ZeroRaw, Zeroed};
+use crate::api::cxx::obs::HandlerEnd;
 use crate::api::{ForkHeld, LineCell, LineSeen, LineVal, Published, Seen};
 use crate::api::{Start, StateVal, Statics};
 use crate::arena::{ArenaParts, ArenasParts, Held, Homed, RegVal, SparePerm};
@@ -143,6 +144,10 @@ const _: () = assert!(<Homed as NotCopy<_>>::HOLDS && <Homed as NotClone<_>>::HO
 
 // `ArenasParts` is neither Copy nor Clone: an `Arenas`' field permissions.
 const _: () = assert!(<ArenasParts as NotCopy<_>>::HOLDS && <ArenasParts as NotClone<_>>::HOLDS);
+
+// `HandlerEnd` is neither Copy nor Clone: the record that one `new_handler`
+// loop may end.
+const _: () = assert!(<HandlerEnd as NotCopy<_>>::HOLDS && <HandlerEnd as NotClone<_>>::HOLDS);
 
 // `FullSeen` is neither Copy nor Clone: the record of one read.
 const _: () = assert!(<FullSeen as NotCopy<_>>::HOLDS && <FullSeen as NotClone<_>>::HOLDS);
