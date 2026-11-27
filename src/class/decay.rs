@@ -4,6 +4,8 @@ use super::SlabTable;
 use super::abort::slab_count_underflow;
 use super::{ClassState, Inner};
 #[cfg(verus_keep_ghost)]
+use crate::layout::NCLASSES;
+#[cfg(verus_keep_ghost)]
 use crate::layout::class_table;
 use crate::lock::LockOrder;
 #[cfg(verus_keep_ghost)]
@@ -160,6 +162,63 @@ pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> b
     &&& s < t.spec_nslabs()
     &&& states.contains_key(s as nat)
     &&& states[s as nat] != State::Active
+}
+
+/// What a decay walk's class purge (`purge_empty`, `purge_curve`) may
+/// discard lies in its class region
+/// ([`Regions::class_placed`](crate::layout::Regions::class_placed)): a
+/// byte [`idle_byte`] admits for the process's table `t` of class `c` is
+/// below the region's end, since its slab index is below `nslabs`, the
+/// region's slab count, and
+/// [`Regions::separated`](crate::layout::Regions::separated) keeps the
+/// region apart from the other class regions, the huge region and the
+/// metadata region.
+pub(super) proof fn lemma_idle_byte_placed(t: SlabTable, states: Map<nat, State>, b: int)
+    requires
+        t.inv(),
+        idle_byte(t, states, b),
+    ensures
+        crate::layout::process_regions().class_placed(t.spec_class() as int, b),
+{
+    broadcast use super::table::lemma_spec_class, super::table::lemma_spec_nslabs;
+    t.lemma_regions_ok();
+    let r = crate::layout::process_regions();
+    let c = t.spec_class() as int;
+    let stride = (1usize << r.lg_stride) as int;
+    let sz = (1usize << class_table()[c].lg_slab) as int;
+    crate::vspec::class::lemma_class_table_wf(c);
+    super::table::lemma_slabs_fit_region(r, c);
+    vstd::bits::lemma_usize_pow2_no_overflow(class_table()[c].lg_slab as nat);
+    vstd::arithmetic::power2::lemma_pow2_pos(class_table()[c].lg_slab as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, class_table()[c].lg_slab as usize);
+    assert(sz > 0);
+    let s = (b - t.base) / sz;
+    let n = r.spec_nslabs(c);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b - t.base, sz);
+    vstd::arithmetic::div_mod::lemma_mod_bound(b - t.base, sz);
+    assert(s + 1 <= n);
+    assert((s + 1) * sz <= n * sz) by (nonlinear_arith)
+        requires
+            s + 1 <= n,
+            sz > 0,
+    ;
+    assert(b - t.base < (s + 1) * sz) by (nonlinear_arith)
+        requires
+            b - t.base == sz * s + (b - t.base) % sz,
+            (b - t.base) % sz < sz,
+    ;
+    assert(r.slab_span(c, n).0 == r.class_base[c] + n * sz);
+    assert(r.in_class(c, b));
+    r.lemma_class_in_strides(c);
+    assert forall|c2: int| 0 <= c2 < NCLASSES && c2 != c implies !#[trigger] r.in_class(c2, b) by {
+        if c2 < c {
+            r.lemma_class_before(c2, c);
+        } else {
+            r.lemma_class_before(c, c2);
+        }
+    }
+    assert(crate::layout::disjoint(r.superblock as int, NCLASSES * stride, r.huge_base as int, r.huge_len as int));
+    assert(crate::layout::disjoint(r.superblock as int, NCLASSES * stride, r.meta_base as int, r.meta_len as int));
 }
 
 /// Two lock values that agree on which slabs the arena owns and which of
@@ -676,6 +735,8 @@ impl Purger {
         Ghost(e0): Ghost<int>,
         Ghost(top): Ghost<int>,
     ) -> (p: Purger)
+        requires
+            t.inv(),
         ensures
             p.spp == spp,
             p.pushed == 0,
@@ -683,6 +744,7 @@ impl Purger {
             p.batch.pieces() == crate::purge::none(),
             p.batch.sent() == 0,
             forall|b: int| (p.batch.free())(b) == idle_byte(t, states, b),
+            forall|b: int| #[trigger] (p.batch.free())(b) ==> crate::layout::process_regions().class_placed(t.spec_class() as int, b),
             p.t.purged == 0,
             p.t.oldest == 0,
             p.t.spp@ == spp,
@@ -694,6 +756,11 @@ impl Purger {
             p.t.top@ == top,
             p.t.bytes@ == 0,
     {
+        proof {
+            assert forall|b: int| #[trigger] idle_byte(t, states, b) implies crate::layout::process_regions().class_placed(t.spec_class() as int, b) by {
+                lemma_idle_byte_placed(t, states, b);
+            }
+        }
         Purger {
             spp,
             pushed: 0,

@@ -2135,6 +2135,18 @@ impl Regions {
         &&& x < self.huge_base + self.huge_len
     }
 
+    /// Byte `x` lies in class `c`'s region and in no other region: not in
+    /// another class's region, the huge region or the metadata region.
+    /// What `class::decay::lemma_idle_byte_placed` states of a byte the
+    /// decay walks' class purges (`purge_empty`, `purge_curve`) may
+    /// discard.
+    pub open spec fn class_placed(self, c: int, x: int) -> bool {
+        &&& self.in_class(c, x)
+        &&& forall|c2: int| 0 <= c2 < NCLASSES && c2 != c ==> !#[trigger] self.in_class(c2, x)
+        &&& !self.in_huge(x)
+        &&& !self.in_meta(x, 1)
+    }
+
     /// Byte `g` is reservation slack: inside one of the three reservations
     /// ([`Regions::in_mapping`]) but in no class region, not in the huge
     /// region and not in the metadata region. The reservations are

@@ -1290,7 +1290,7 @@ proof fn theorem_slab_commit_avoids_guards(addr: usize, len: usize, c: int, chun
 
 /// Class `c`'s slabs end inside its region: `spec_nslabs` whole slabs fit
 /// in `2^lg_region` bytes.
-proof fn lemma_slabs_fit_region(r: Regions, c: int)
+pub(super) proof fn lemma_slabs_fit_region(r: Regions, c: int)
     requires
         r.wf(),
         0 <= c < NCLASSES,

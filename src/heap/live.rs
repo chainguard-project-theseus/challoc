@@ -1545,6 +1545,36 @@ impl Live {
         }
     }
 
+    /// Purge never discards live data, for class purges, short of the
+    /// purged class's own slots: a byte placed in class `c`'s region
+    /// ([`Regions::class_placed`](crate::layout::Regions::class_placed),
+    /// what `class::decay::lemma_idle_byte_placed` states of every byte
+    /// the batch of a decay walk's class purge, `purge_empty` or
+    /// `purge_curve`, may discard; not of the slab-pages walk's
+    /// `close_page` discard) is no usable byte of a live run,
+    /// which lies in the huge region, nor of a live slot of another class,
+    /// which lies in its own class region, wherever its token is held.
+    /// A live slot of class `c` itself is not excluded: that needs the
+    /// slot-token link the class lock's idle state lacks (theorem 19).
+    pub proof fn theorem_purge_class_apart(&self, c: int, b: int)
+        requires
+            crate::heap::regions_ok(),
+            self.wf(),
+            process_regions().class_placed(c, b),
+            !self.slot_of(c),
+        ensures
+            !(self.addr() <= b < self.addr() + self.len()),
+    {
+        let r = process_regions();
+        if self.run is Some {
+            self.lemma_huge_block();
+        } else {
+            r.lemma_slot_in_region(self.class, self.addr);
+            crate::vspec::class::lemma_class_table_wf(self.class);
+            assert(!r.in_class(self.class, b));
+        }
+    }
+
     /// An interior pointer of a live block is no free target: a pointer
     /// `k` bytes into the block, `0 < k < len()`, is no slot start and no
     /// huge page start ([`free_target`](crate::heap::free_target)), unless

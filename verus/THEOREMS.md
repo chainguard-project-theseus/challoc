@@ -4900,6 +4900,42 @@ pub closed spec fn idle_byte(t: SlabTable, states: Map<nat, State>, b: int) -> b
     &&& states.contains_key(s as nat)
     &&& states[s as nat] != State::Active
 }
+
+// layout/regions.rs, in `impl Regions`
+pub open spec fn class_placed(self, c: int, x: int) -> bool {
+    &&& self.in_class(c, x)
+    &&& forall|c2: int| 0 <= c2 < NCLASSES && c2 != c ==> !#[trigger] self.in_class(c2, x)
+    &&& !self.in_huge(x)
+    &&& !self.in_meta(x, 1)
+}
+
+// class/decay.rs
+pub(super) proof fn lemma_idle_byte_placed(t: SlabTable, states: Map<nat, State>, b: int)
+    requires
+        t.inv(),
+        idle_byte(t, states, b),
+    ensures
+        crate::layout::process_regions().class_placed(t.spec_class() as int, b),
+
+// class/decay.rs, in `impl Purger` (the maker of the batches of
+// `ClassState::purge_empty` and `purge_curve`)
+fn new(spp: usize, Ghost(t): Ghost<SlabTable>, Ghost(states): Ghost<Map<nat, State>>, /* ghost */) -> (p: Purger)
+    requires
+        t.inv(),
+    ensures
+        // ... as before ...
+        forall|b: int| #[trigger] (p.batch.free())(b)
+            ==> crate::layout::process_regions().class_placed(t.spec_class() as int, b),
+
+// heap/live.rs, in `impl Live`
+pub proof fn theorem_purge_class_apart(&self, c: int, b: int)
+    requires
+        crate::heap::regions_ok(),
+        self.wf(),
+        process_regions().class_placed(c, b),
+        !self.slot_of(c),
+    ensures
+        !(self.addr() <= b < self.addr() + self.len()),
 ```
 
 (Line breaks added.) A `purge::Batch` (`purge.rs`) carries a ghost
@@ -4951,7 +4987,29 @@ run authority stay those the batch's `free` was made from. The makers:
   those of slabs idle in the current lock value. `push_group` pushes a
   page group whose every slab is idle: with one slab per page, the slab
   is in the empty set (`Inner::slab_core`: `Empty`); with more,
-  `page_group_is_idle` says so.
+  `page_group_is_idle` says so. Since
+  chainguard-project-theseus/challoc#1040 the batch's `free` is also
+  stated placed (`Purger::new`, from `lemma_idle_byte_placed`): every
+  byte it admits lies in the class's region of the process's regions
+  and in no other class region, the huge region or the metadata region.
+  The slab index `(b - base) / sz` is below `nslabs`, which
+  `SlabTable::inv` makes the process regions' slab count for the class
+  (`base == class_base[class]`), and those slabs end inside the region
+  (`table::lemma_slabs_fit_region`); `Regions::separated` keeps each
+  class region inside its own stride of the superblock, apart from the
+  huge and metadata regions. `Live::theorem_purge_class_apart` lifts
+  that to live blocks: a placed byte is no usable byte of a live run
+  (in the huge region, `Live::lemma_huge_block`) or of a live slot of
+  another class (in its own class region,
+  `Regions::lemma_slot_in_region`). Ghost only: the machine code is
+  unchanged. Premises (seams): none added. Mutants: dropping
+  `idle_byte`'s bound `s < t.spec_nslabs()` verifies on main and is
+  rejected on the PR (`lemma_idle_byte_placed`'s slab-index bound);
+  dropping the `lemma_slabs_fit_region` call in the lemma, or the
+  `!self.slot_of(c)` premise of `theorem_purge_class_apart`, is
+  rejected. No executable mutant discriminates: a batch range outside
+  the class region already fails `Batch::push`'s `frees` over
+  `idle_byte` on main.
 
 **Premises beyond the common ones.**
 - Huge: none beyond the huge lock's holders reaching
@@ -4996,10 +5054,20 @@ run authority stay those the batch's `free` was made from. The makers:
   by `fetch_and` with each cleared bit, spent by `sub_live`), plus a
   lock-held "frozen" flag for idle slabs; the code has no such ghost
   state.
-- No lemma places the class half's bytes: `idle_byte` bytes lie in the
-  class region, apart from the huge region and the other classes'
-  slots, but nothing states it, so `Live`-level disjointness is proved
-  for huge purges only.
+- `Live`-level disjointness for class purges excludes live runs and
+  live slots of other classes only (`Live::theorem_purge_class_apart`).
+  A live slot of the purged class itself is excluded only at the lock
+  state, by the missing slot-token link above. The theorem's
+  `class_placed` premise is what `Purger::new` ensures of the batch's
+  `free`; no flush site calls the theorem, as no flush site calls
+  `Live::theorem_purge_huge`.
+- The placement covers the decay walks' batches only (`purge_empty`,
+  `purge_curve`, through `Purger::new`). The slab-pages walk's discard,
+  `ClassState::close_page` (`class/pages.rs`) through
+  `purge::discard_one` with `free = closed_page(..)`, is not stated
+  placed in its class's region: `page_range` ensures `well_formed`,
+  whose `discardable` admits a byte of the huge region or of a slab of
+  some class, not of the walking table's class.
 - The huge half is stated for the run-page authority, not per batch
   range: each flush site proves the batch's `free` from the lock value
   it holds; no lemma states "the bytes of this flush" as a set.
