@@ -10,7 +10,10 @@
 #
 # The default DIR is under target/, so in the dev container it lives in the
 # per-architecture target volume next to the builds and `cargo clean`
-# removes it; capture and compare on the same architecture.
+# removes it; capture and compare on the same architecture. Both modes
+# build into target/ (target/q8 for quantum 8) whatever CARGO_TARGET_DIR
+# says, and stop when a build fails, when a library cannot be read, or
+# when its .text is empty.
 #
 # Runs inside the dev container (needs cargo, objdump, readelf, objcopy,
 # python3; c++filt, when present, adds demangled names).
@@ -45,13 +48,31 @@ MODE=${1:-}; DIR=${2:-target/codegen-baseline}
 [ -n "$MODE" ] || { sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 1; }
 mkdir -p "$DIR"
 
+# A failed build fails the script: a pipe into tail would hide cargo's
+# status and compare whatever library an earlier build left behind.
 build() { # build VARIANT -> prints path of the .so
   case "$1" in
-    q16) cargo build --release -q 2>&1 | tail -3 >&2; echo target/release/libchalloc.so;;
-    q8)  CARGO_TARGET_DIR=target/q8 cargo build --release -q --no-default-features --features quantum8 2>&1 | tail -3 >&2; echo target/q8/release/libchalloc.so;;
+    q16) set -- target/release/libchalloc.so;;
+    q8)  set -- target/q8/release/libchalloc.so --no-default-features --features quantum8;;
   esac
+  so=$1; shift
+  if ! CARGO_TARGET_DIR=${so%/release/*} cargo build --release -q "$@" > "$DIR/build.log" 2>&1; then
+    tail -20 "$DIR/build.log" >&2; echo "cargo build failed: no $so to compare" >&2; return 1
+  fi
+  tail -3 "$DIR/build.log" >&2; rm -f "$DIR/build.log"; echo "$so"
 }
-text_hash() { objcopy -O binary --only-section=.text "$1" "$DIR/.text.bin" && sha256sum "$DIR/.text.bin" | cut -c1-16; rm -f "$DIR/.text.bin"; }
+# An unreadable library, an empty .text or a failed digest is an error,
+# never a hash: what it prints is always 16 hex digits.
+text_hash() {
+  objcopy -O binary --only-section=.text "$1" "$DIR/.text.bin" || { echo "objcopy failed on $1" >&2; return 1; }
+  [ -s "$DIR/.text.bin" ] || { echo "$1 has no .text" >&2; rm -f "$DIR/.text.bin"; return 1; }
+  th=$(sha256sum "$DIR/.text.bin" | cut -c1-16); rm -f "$DIR/.text.bin"
+  case $th in
+    *[!0-9a-f]*|'') echo "sha256sum failed on $1's .text" >&2; return 1;;
+  esac
+  [ ${#th} -eq 16 ] || { echo "sha256sum failed on $1's .text" >&2; return 1; }
+  echo "$th"
+}
 sections() { readelf -S -W "$1" | awk '$2 ~ /^\.(text|rodata|data\.rel\.ro|data|bss)$/ {printf "%s=%s ", $2, $6}'; }
 disasm() { objdump -d --no-show-raw-insn "$1"; }
 # Per-function comparison: scripts/codegen-fncmp.py (python3, in the dev
@@ -70,7 +91,8 @@ case "$MODE" in
     for v in q16 q8; do
       so=$(build $v); cp "$so" "$DIR/lib-$v.so"
       disasm "$so" > "$DIR/disasm-$v.txt"
-      echo "$v: .text $(text_hash "$so") $(sections "$so") functions $(grep -c '^[0-9a-f]* <.*>:$' "$DIR/disasm-$v.txt")"
+      h=$(text_hash "$so")
+      echo "$v: .text $h $(sections "$so") functions $(grep -c '^[0-9a-f]* <.*>:$' "$DIR/disasm-$v.txt")"
     done
     echo "captured at $(cat "$DIR/commit.txt")";;
   compare)
