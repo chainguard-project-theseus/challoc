@@ -659,6 +659,48 @@ impl Regions {
         forall|a: int| #[trigger] self.slack_byte(a) ==> in_ranges(out, n, a)
     }
 
+    /// Every byte of reservation slack ([`Regions::slack_byte`]) lies in a
+    /// [`Regions::seal_target`] range that the kernel answered an `mseal`
+    /// of with success ([`crate::sys::mseal_ok`]): what
+    /// [`Regions::seal`] achieves when no call is refused. Opaque, as
+    /// [`Regions::seal_covers`].
+    #[verifier::opaque]
+    pub open spec fn slack_sealed(self) -> bool {
+        forall|a: int| #[trigger] self.slack_byte(a) ==> exists|m: Mapping|
+            #![trigger crate::sys::mseal_ok(m.addr, m.len, 0)]
+            self.seal_target(m) && m.addr <= a < m.addr + m.len && crate::sys::mseal_ok(m.addr, m.len, 0)
+    }
+
+    /// The kernel answered an `mseal` of a [`Regions::seal_target`] range
+    /// with an error ([`crate::sys::mseal_err`]): where [`Regions::seal`]
+    /// stops.
+    pub open spec fn seal_refused(self) -> bool {
+        exists|m: Mapping| self.seal_target(m) && #[trigger] crate::sys::mseal_err(m.addr, m.len, 0)
+    }
+
+    /// Of ranges that cover the slack ([`Regions::seal_covers`]), each a
+    /// [`Regions::seal_target`] the kernel sealed with success, every
+    /// slack byte is sealed ([`Regions::slack_sealed`]).
+    pub proof fn lemma_slack_sealed(self, out: [Mapping; MAX_SEALED], n: int)
+        requires
+            self.seal_covers(out, n),
+            forall|i: int| 0 <= i < n ==> self.seal_target(#[trigger] out[i]),
+            forall|i: int| 0 <= i < n ==> crate::sys::mseal_ok(#[trigger] out[i].addr, out[i].len, 0),
+        ensures
+            self.slack_sealed(),
+    {
+        reveal(Regions::seal_covers);
+        reveal(Regions::slack_sealed);
+        reveal(in_ranges);
+        assert forall|a: int| #[trigger] self.slack_byte(a) implies exists|m: Mapping|
+            #![trigger crate::sys::mseal_ok(m.addr, m.len, 0)]
+            self.seal_target(m) && m.addr <= a < m.addr + m.len && crate::sys::mseal_ok(m.addr, m.len, 0) by {
+            let i = choose|i: int| 0 <= i < n && #[trigger] out[i].addr <= a < out[i].addr + out[i].len;
+            let m = out[i];
+            assert(self.seal_target(m) && m.addr <= a < m.addr + m.len && crate::sys::mseal_ok(m.addr, m.len, 0));
+        }
+    }
+
     /// The lengths the seal ranges are cut from, beyond what
     /// [`Regions::separated`] and [`Regions::ready`] state, are page
     /// multiples: the three mappings' and the huge region's.
@@ -3541,34 +3583,59 @@ mod linux {
         /// unsealed rather than aborting: sealing is a hardening extra, not
         /// a heap invariant, and the count is reported by
         /// `malloc_stats_print`.
-        pub fn seal(&self) -> u32
+        pub fn seal(&self) -> (sealed: u32)
             requires
                 crate::sys::may_syscall(),
                 self.wf(),
                 self.separated(),
                 self.mapped(),
+            ensures
+                sealed <= MAX_SEALED,
+                self.slack_sealed() || self.seal_refused(),
         {
             let (ranges, n) = self.never_committed();
             let mut sealed: u32 = 0;
+            let ghost mut refused = false;
             for m in it: &ranges[..n]
+                invariant_except_break
+                    !refused,
                 invariant
                     crate::sys::may_syscall(),
                     sealed as int <= it.index(),
                     it.seq().len() == n,
                     n <= MAX_SEALED,
                     forall|i: int| 0 <= i < it.seq().len() ==> self.seal_target(*#[trigger] it.seq()[i]),
+                    forall|i: int| 0 <= i < n ==> #[trigger] it.seq()[i] == ranges[i],
+                    // Every range before the count was sealed with success;
+                    // the count is the index until a refusal.
+                    forall|i: int| 0 <= i < sealed ==> crate::sys::mseal_ok(#[trigger] ranges[i].addr, ranges[i].len, 0),
+                    !refused ==> sealed as int == it.index(),
+                    refused ==> self.seal_refused(),
+                ensures
+                    forall|i: int| 0 <= i < sealed ==> crate::sys::mseal_ok(#[trigger] ranges[i].addr, ranges[i].len, 0),
+                    refused ==> self.seal_refused(),
+                    !refused ==> sealed == n,
             {
                 // What `mseal` gets is inside a reservation and apart from
                 // every region and the `Shared` static.
                 assert(self.seal_target(*m));
+                assert(*m == ranges[sealed as int]);
                 // SAFETY: the range is inside a reservation this process
                 // owns and, by construction, is never committed, purged,
                 // reprotected or unmapped (`release` is test-only and is
                 // never called on sealed regions).
                 if unsafe { sys::mseal(m.addr, m.len, 0) }.is_err() {
+                    proof {
+                        refused = true;
+                    }
                     break;
                 }
                 sealed += 1;
+            }
+            proof {
+                if !refused {
+                    self.lemma_slack_sealed(ranges, n as int);
+                }
             }
             sealed
         }
