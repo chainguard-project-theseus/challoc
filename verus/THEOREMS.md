@@ -90,10 +90,12 @@ leave out (theorem 33). Remaining work is tracked in
   `None`, the config unchanged, exactly when no `KEYS` entry is named
   `key` (`get` likewise). Premises: the `core` specifications of
   `u32::is_power_of_two` and `usize::next_power_of_two`
-  (`vspec/core_int.rs`, both discharged by Kani). Weaker than the code:
-  which field an arm writes is not stated; the unit test
-  `the_table_is_the_one_spelling_of_every_key` checks each name against
-  its field.
+  (`vspec/core_int.rs`, both discharged by Kani). Which field each arm
+  writes, and which each `get` reads, is stated since
+  chainguard-project-theseus/challoc#1003
+  ([one key writes one field](#setting-one-configuration-key-writes-one-field)).
+  That the field of index `i` is the one named `KEYS[i]` is the unit
+  test `the_table_is_the_one_spelling_of_every_key`.
 - **Overflow reach** (`heap::theorem_overflow_reach`, `heap/theorems.rs`):
   between any byte of a block that `fits` and any byte of the metadata
   region, the `Shared` static, another class region or the huge region,
@@ -14981,6 +14983,136 @@ assertion. It comes only alongside another failure in the module: three
 repeated M1 runs reported it each time, `lemma_guard_near` alone
 (`--verify-function`) verifies in the M1 tree, and the unmutated module
 verifies on this tree and on main.
+
+## Setting one configuration key writes one field
+
+`Config::set` parses one `key:value` pair of `MALLOC_CONF`,
+`CHALLOC_CONF`, the `malloc_conf` symbols or `/etc/challoc.conf`.
+Before chainguard-project-theseus/challoc#1003 its contract said only
+that the config stays well formed (the "every configuration source"
+bullet above), so a parser arm that also wrote a neighbouring tunable,
+or wrote the wrong one, verified. Now every `set` of a listed key writes
+at most the one field of that key's `KEYS` index, every other key (an
+ignored or unknown one) writes nothing, and `get` reads the field of the
+index it finds.
+
+**Statement** (`config.rs`):
+
+```rust
+// `new` is `self` with at most the field of KEYS index `i` changed
+// (opaque; one struct equality per index, 24 and above `stats_print`)
+pub open spec fn keeps_but(self, new: Config, i: usize) -> bool {
+    match i {
+        0 => new == (Config { background_thread: new.background_thread, ..self }),
+        1 => new == (Config { dirty_decay_ms: new.dirty_decay_ms, ..self }),
+        // .. one arm per field, in KEYS order ..
+        _ => new == (Config { stats_print: new.stats_print, ..self }),
+    }
+}
+
+// set(key, value)
+    ensures
+        final(self).wf(),
+        !listed(key@) ==> *final(self) == *old(self),
+        listed(key@) ==> exists|i: usize|
+            #[trigger] names(i, key@) && old(self).keeps_but(*final(self), i),
+
+// set_at(i, key, value), which set_listed carries up as set does
+    ensures
+        final(self).wf(),
+        old(self).keeps_but(*final(self), i),
+
+// apply_pair(pair): the key is the bytes before the pair's first colon
+    ensures
+        final(self).wf(),
+        *final(self) == *old(self) || exists|i: usize, c: int|
+            0 <= c < pair@.len() && pair@[c] == b':' && (forall|j: int| 0 <= j < c ==> pair@[j] != b':')
+                && #[trigger] names(i, pair@.subrange(0, c)) && old(self).keeps_but(*final(self), i),
+
+// get(key)
+    ensures
+        r is None <==> !listed(key@),
+        r matches Some(v) ==> exists|i: usize| #[trigger] names(i, key@) && v == self.spec_read(i),
+```
+
+`names(i, key)` is "`KEYS` entry `i` is named `key`"; `spec_read(i)` is
+`read_at`'s value for index `i`, one arm per field in the same order as
+`keeps_but`.
+
+**How it is proved.** Each arm of `set_at` is a method of its own
+(`set_background_thread` .. `set_stats_print`, `#[inline(always)]`)
+whose `ensures` is `keeps_but` at its index, so `set_at`'s body holds
+only those opaque atoms and the match on `i`. Written inline, the arms'
+field writes made Z3 split on the boolean fields of every return path's
+config: the frame exceeded `set_at`'s rlimit in every form tried on
+#1003 (per-field clauses, one struct equality, per-arm asserts of the
+opaque predicate). The bool arms and the `pick` arms reveal `keeps_but`
+over their small bodies; the clamped integer arms reveal it only in an
+`assert .. by` after their one write, and take `lemma_keeps_itself` for
+the `?` return before it (revealed over the whole arm they cost 12M to
+21M rlimit each). `set_guard_slab_interval` takes the field (`&mut
+u32`), as `bool_into` does: over `&mut self` the extra goal set off the
+`u32::is_power_of_two` quantifier. `apply_pair` ties the index to its key from
+`position_of`'s first-colon `ensures` and `key@ == pair@.subrange(0,
+colon)`. `config` verifies with 96 functions,
+no function above 3.2M rlimit (`parse_int`, unchanged); the new methods
+use at most 2.2M.
+
+**Seams of `keeps_but`** (chainguard-project-theseus/challoc#1003).
+
+| Seam | Kind | Why |
+|---|---|---|
+| none added | | `keeps_but` and `spec_read` are spec functions over the struct; every arm's contract is proved from its own body. |
+
+**Scope and where the statement is weaker than the code.**
+- Which field index `i` names is the unit test
+  `the_table_is_the_one_spelling_of_every_key`, not Verus. `set_at` is
+  proved against `keeps_but`, and `read_at` against `spec_read`, which
+  mirrors `read_at`'s arms. No Verus statement pairs index `i` of
+  `keeps_but` with index `i` of `spec_read`, or either with the strings
+  in `KEYS`: swapping arms 15 and 16 in both `read_at` and `spec_read`
+  verifies, so that `set("zero_on_free", ..)` writes a field
+  `get("zero_on_free")` does not read. Only the unit test rejects it.
+- The value written is not stated, only that no other field changes
+  (the integer arms' values are clamped, as before, and the `wf` fields
+  stay in range).
+- One read-back couples two keys: `huge_dirty_decay_ms`, while unset,
+  reads back `dirty_decay_ms` (`spec_read(14)`), so a `set` of
+  `dirty_decay_ms` changes what `get("huge_dirty_decay_ms")` returns.
+  No lemma states that every other key's read-back is unchanged by a
+  `set`: over a symbolic pair of indices the unfolding exceeded the
+  rlimit, even split into one query per index. A caller reveals
+  `keeps_but` at a known index instead.
+- `Config::load`'s sources call `set` through `parse_with`; that the
+  loaded config is a sequence of such writes is read from the code
+  (`load`'s contract states well-formedness, as before).
+
+**Runtime.** Not ghost only: the arms moved into methods. The release
+library differs from main in one function in each of the four cells,
+`Config::parse_with` (where `set_at` inlines), and every other function
+is exact or reloc-only. The change is one inlined `parse_bool`, whose
+two compare blocks (the 4-byte `"true"` compare and the 5-byte `"false"`
+one) sit at two places in the function and trade places, one moving
+each way. On x86_64 (q16 and q8) one of the moved branches becomes `je`
+for `jne`, one interior `nopw` becomes a longer `nopw`, and the function
+ends with two more padding instructions (`cs nopw`, `nop`): 1547 to 1549
+instructions, the +2 being that trailing padding. On aarch64 (q16 and
+q8) the swap leaves the instruction count at 1669 and the multiset
+unchanged. The strings are disjoint, so the result is the same. Parsing
+runs once per source at init, so no bench applies.
+
+**Mutations** (`cargo verus focus -- --verify-only-module config`):
+
+| id | change | PR | main |
+|---|---|---|---|
+| M1 | the `tcache` arm also sets `guards = tcache` | rejected (`set_tcache`'s `keeps_but` postcondition) | verifies |
+| M2 | arm 15 (`zero_on_free`) writes `pac_pointers` | rejected (`set_at`'s `keeps_but` postcondition) | verifies |
+| M3 | `read_at` arm 16 (`pac_pointers`) reads `zero_on_free` | rejected (`read_at`'s `spec_read` postcondition) | verifies |
+| M4 | `apply_pair` calls `set` with the fixed key `guards`, not the pair's key | rejected (`apply_pair`'s `names` postcondition) | verifies |
+
+M3 is caught only against `spec_read`, which is a second copy of the
+arm list: a mutation of both copies at once verifies, and the unit tests
+catch it.
 
 ## Interface contract
 

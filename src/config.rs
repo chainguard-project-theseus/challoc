@@ -207,8 +207,57 @@ impl Config {
     pub open spec fn wf(&self) -> bool {
         &&& MIN_CAP <= self.tcache_nslots_small_max <= MAX_NSLOTS
         &&& LG_NSLOTS_MUL_MIN <= self.lg_tcache_nslots_mul <= LG_NSLOTS_MUL_MAX
-        &&& self.guard_slab_interval == 0 || (2 <= self.guard_slab_interval <= MAX_GUARD_SLAB_INTERVAL
-            && crate::meta::is_pow2(self.guard_slab_interval as usize))
+        &&& interval_ok(self.guard_slab_interval)
+    }
+
+    /// `new` is `self` with at most the field of [`KEYS`] index `i`
+    /// changed: the one field [`Config::set_at`]'s arm `i` may write. The
+    /// indices are `set_at`'s and [`Config::read_at`]'s arms, in table
+    /// order (24 and above is the last, `stats_print`, as in their final
+    /// arm); that the field of index `i` is the one named `KEYS[i]` is the
+    /// unit test `the_table_is_the_one_spelling_of_every_key`. Stated as
+    /// one struct equality per index, and opaque. The clamped integer arms
+    /// reveal it only in an `assert .. by` after their one write: revealed
+    /// over a whole clamped arm it cost 12M to 21M rlimit each (up to 72%
+    /// of the limit), against under 2.2M for the other arms.
+    #[verifier::opaque]
+    pub open spec fn keeps_but(self, new: Config, i: usize) -> bool {
+        match i {
+            0 => new == (Config { background_thread: new.background_thread, ..self }),
+            1 => new == (Config { dirty_decay_ms: new.dirty_decay_ms, ..self }),
+            2 => new == (Config { muzzy_decay_ms: new.muzzy_decay_ms, ..self }),
+            3 => new == (Config { narenas: new.narenas, ..self }),
+            4 => new == (Config { percpu_arena: new.percpu_arena, ..self }),
+            5 => new == (Config { tcache: new.tcache, ..self }),
+            6 => new == (Config { tcache_max: new.tcache_max, ..self }),
+            7 => new == (Config { tcache_nslots_small_max: new.tcache_nslots_small_max, ..self }),
+            8 => new == (Config { lg_tcache_nslots_mul: new.lg_tcache_nslots_mul, ..self }),
+            9 => new == (Config { thp: new.thp, ..self }),
+            10 => new == (Config { lazy_band: new.lazy_band, ..self }),
+            11 => new == (Config { guards: new.guards, ..self }),
+            12 => new == (Config { guard_slab_interval: new.guard_slab_interval, ..self }),
+            13 => new == (Config { huge_retain_max: new.huge_retain_max, ..self }),
+            14 => new == (Config { huge_dirty_decay_ms: new.huge_dirty_decay_ms, ..self }),
+            15 => new == (Config { zero_on_free: new.zero_on_free, ..self }),
+            16 => new == (Config { pac_pointers: new.pac_pointers, ..self }),
+            17 => new == (Config { slot_randomize: new.slot_randomize, ..self }),
+            18 => new == (Config { double_free_scan: new.double_free_scan, ..self }),
+            19 => new == (Config { exact_sized_free: new.exact_sized_free, ..self }),
+            20 => new == (Config { abort_conf: new.abort_conf, ..self }),
+            21 => new == (Config { cgroup: new.cgroup, ..self }),
+            22 => new == (Config { check_zero: new.check_zero, ..self }),
+            23 => new == (Config { cow_epoch: new.cow_epoch, ..self }),
+            _ => new == (Config { stats_print: new.stats_print, ..self }),
+        }
+    }
+
+    /// An arm that returns before it writes (a `?` on a value that does
+    /// not parse) keeps every field.
+    pub proof fn lemma_keeps_itself(self, i: usize)
+        ensures
+            self.keeps_but(self, i),
+    {
+        reveal(Config::keeps_but);
     }
 
     /// [`Config::DEFAULT`] is well formed.
@@ -334,6 +383,11 @@ impl Config {
                 ==> r == Err::<(), Issue<'a>>(Issue::Malformed(pair)),
             pair@.len() > 0 && pair@[0] == b':' ==> r == Err::<(), Issue<'a>>(Issue::Malformed(pair)),
             final(self).wf(),
+            // At most the field of the key the pair names: the bytes
+            // before its first colon.
+            *final(self) == *old(self) || exists|i: usize, c: int|
+                0 <= c < pair@.len() && pair@[c] == b':' && (forall|j: int| 0 <= j < c ==> pair@[j] != b':')
+                    && #[trigger] names(i, pair@.subrange(0, c)) && old(self).keeps_but(*final(self), i),
     {
         if pair.is_empty() {
             return Ok(());
@@ -352,6 +406,9 @@ impl Config {
         if key.is_empty() || value.is_empty() {
             return Err(Issue::Malformed(pair));
         }
+        proof {
+            assert(key@ == pair@.subrange(0, colon as int));
+        }
         self.set(key, value)
     }
 
@@ -364,6 +421,9 @@ impl Config {
             old(self).wf(),
         ensures
             final(self).wf(),
+            !listed(key@) ==> *final(self) == *old(self),
+            listed(key@) ==> exists|i: usize|
+                #[trigger] names(i, key@) && old(self).keeps_but(*final(self), i),
     {
         if let Some(r) = self.set_listed(key, value) {
             return r;
@@ -386,8 +446,13 @@ impl Config {
             final(self).wf(),
             r is None <==> !listed(key@),
             r is None ==> *final(self) == *old(self),
+            r is Some ==> exists|i: usize|
+                #[trigger] names(i, key@) && old(self).keeps_but(*final(self), i),
     {
         let i = find(key)?;
+        proof {
+            assert(names(i, key@));
+        }
         Some(self.set_at(i, key, value))
     }
 
@@ -397,119 +462,563 @@ impl Config {
     pub fn get(&self, key: &[u8]) -> (r: Option<Value>)
         ensures
             r is None <==> !listed(key@),
+            r matches Some(v) ==> exists|i: usize| #[trigger] names(i, key@) && v == self.spec_read(i),
     {
         let i = find(key)?;
+        proof {
+            assert(names(i, key@));
+        }
         Some(self.read_at(i))
     }
 
-    /// Parse `value` into the tunable `KEYS[i]` names. The fields of
-    /// [`Config::wf`] are written only by their own arms, clamped to the
-    /// `wf` range; the guard slab interval's then lifts 1 to 2 and rounds
-    /// a value that is not a power of two up to the next, which stays
-    /// within the bound (itself a power of two). The config must be well
-    /// formed: on a value that does not parse the interval keeps its old
-    /// value, which that rounding would overflow past `2^31`.
+    /// The value [`Config::read_at`] gives for [`KEYS`] index `i` (24 and
+    /// above is the last, `stats_print`, as in its final arm).
+    pub open spec fn spec_read(self, i: usize) -> Value {
+        match i {
+            0 => Value::Bool(self.background_thread == Some(true)),
+            1 => Value::Int(self.dirty_decay_ms),
+            2 => Value::Int(self.muzzy_decay_ms),
+            3 => Value::Uint(self.narenas as u64),
+            4 => Value::Str(Name::PercpuArena(self.percpu_arena)),
+            5 => Value::Bool(self.tcache),
+            6 => Value::Size(self.tcache_max),
+            7 => Value::Uint(self.tcache_nslots_small_max as u64),
+            8 => Value::Int(self.lg_tcache_nslots_mul as i64),
+            9 => Value::Str(Name::Thp(self.thp)),
+            10 => Value::Bool(self.lazy_band),
+            11 => Value::Bool(self.guards),
+            12 => Value::Uint(self.guard_slab_interval as u64),
+            13 => Value::Size(self.huge_retain_max),
+            14 => Value::Int(
+                match self.huge_dirty_decay_ms {
+                    Some(ms) => ms,
+                    None => self.dirty_decay_ms,
+                },
+            ),
+            15 => Value::Bool(self.zero_on_free),
+            16 => Value::Bool(self.pac_pointers),
+            17 => Value::Bool(self.slot_randomize),
+            18 => Value::Bool(self.double_free_scan),
+            19 => Value::Bool(self.exact_sized_free),
+            20 => Value::Bool(self.abort_conf),
+            21 => Value::Bool(self.cgroup),
+            22 => Value::Bool(self.check_zero),
+            23 => Value::Bool(self.cow_epoch),
+            _ => Value::Bool(self.stats_print),
+        }
+    }
+
+    /// Parse `value` into the tunable `KEYS[i]` names, writing no field
+    /// but that one (`keeps_but`). Each arm is a method of its own whose
+    /// `ensures` is `keeps_but` at its index, so this body holds only
+    /// opaque atoms: with the field writes inline, proving the frame here
+    /// split on the boolean fields of every return path's config and
+    /// exceeded the rlimit (#1003). The
+    /// fields of [`Config::wf`] are clamped to the `wf` range; the guard
+    /// slab interval's then lifts 1 to 2 and rounds a value that is not a
+    /// power of two up to the next, which stays within the bound (itself a
+    /// power of two). The config must be well formed: on a value that does
+    /// not parse the interval keeps its old value, which that rounding
+    /// would overflow past `2^31`.
     fn set_at<'a>(&mut self, i: usize, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
         requires
             old(self).wf(),
             i < NAMES@.len(),
         ensures
             final(self).wf(),
+            old(self).keeps_but(*final(self), i),
     {
         match i {
-            0 => {
-                // background_thread: unset it starts lazily
-                // (`purge::background::configure`) and reads back
-                // `false`, jemalloc's default: no thread was asked for.
-                self.background_thread = Some(parse_bool(value).ok_or(Issue::BadValue { key, value })?);
-                Ok(())
-            },
-            1 => {
-                let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
-                self.dirty_decay_ms = v;
-                range(cut, key, value)
-            },
-            2 => {
-                let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
-                self.muzzy_decay_ms = v;
-                range(cut, key, value)
-            },
-            3 => {
-                let (v, cut) = clamped(key, value, 0, u32::MAX as i64)?;
-                self.narenas = v as u32;
-                range(cut, key, value)
-            },
-            4 => {
-                self.percpu_arena = pick(
-                    &[
-                        ("disabled", PercpuArena::Disabled),
-                        ("percpu", PercpuArena::Percpu),
-                        ("phycpu", PercpuArena::Phycpu),
-                    ],
-                    key,
-                    value,
-                )?;
-                Ok(())
-            },
-            5 => bool_into(&mut self.tcache, key, value),
-            6 => {
-                let (v, cut) = clamped(key, value, 0, crate::layout::MEDIUM_MAX as i64)?;
-                self.tcache_max = v as usize;
-                range(cut, key, value)
-            },
-            7 => {
-                let (v, cut) = clamped(key, value, MIN_CAP as i64, MAX_NSLOTS as i64)?;
-                self.tcache_nslots_small_max = v as u32;
-                range(cut, key, value)
-            },
-            8 => {
-                let (v, cut) = clamped(key, value, LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64)?;
-                self.lg_tcache_nslots_mul = v as i32;
-                range(cut, key, value)
-            },
-            9 => {
-                // thp: `default` is jemalloc's spelling of `never`.
-                self.thp = pick(
-                    &[
-                        ("never", Thp::Never),
-                        ("default", Thp::Never),
-                        ("auto", Thp::Auto),
-                        ("always", Thp::Always),
-                    ],
-                    key,
-                    value,
-                )?;
-                Ok(())
-            },
-            10 => bool_into(&mut self.lazy_band, key, value),
-            11 => bool_into(&mut self.guards, key, value),
-            12 => self.set_guard_slab_interval(key, value),
-            13 => {
-                proof {
-                    assert(MAX_HUGE_RETAIN_MAX == 0x100_0000_0000) by (compute);
-                }
-                let (v, cut) = clamped(key, value, 0, MAX_HUGE_RETAIN_MAX as i64)?;
-                self.huge_retain_max = v as usize;
-                range(cut, key, value)
-            },
-            14 => {
-                // huge_dirty_decay_ms: unset it follows `dirty_decay_ms`,
-                // which is what it reads back.
-                let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
-                self.huge_dirty_decay_ms = Some(v);
-                range(cut, key, value)
-            },
-            15 => bool_into(&mut self.zero_on_free, key, value),
-            16 => bool_into(&mut self.pac_pointers, key, value),
-            17 => bool_into(&mut self.slot_randomize, key, value),
-            18 => bool_into(&mut self.double_free_scan, key, value),
-            19 => bool_into(&mut self.exact_sized_free, key, value),
-            20 => bool_into(&mut self.abort_conf, key, value),
-            21 => bool_into(&mut self.cgroup, key, value),
-            22 => bool_into(&mut self.check_zero, key, value),
-            23 => bool_into(&mut self.cow_epoch, key, value),
-            _ => bool_into(&mut self.stats_print, key, value),
+            0 => self.set_background_thread(key, value),
+            1 => self.set_dirty_decay_ms(key, value),
+            2 => self.set_muzzy_decay_ms(key, value),
+            3 => self.set_narenas(key, value),
+            4 => self.set_percpu_arena(key, value),
+            5 => self.set_tcache(key, value),
+            6 => self.set_tcache_max(key, value),
+            7 => self.set_tcache_nslots_small_max(key, value),
+            8 => self.set_lg_tcache_nslots_mul(key, value),
+            9 => self.set_thp(key, value),
+            10 => self.set_lazy_band(key, value),
+            11 => self.set_guards(key, value),
+            12 => self.set_guard_slab_interval_at(key, value),
+            13 => self.set_huge_retain_max(key, value),
+            14 => self.set_huge_dirty_decay_ms(key, value),
+            15 => self.set_zero_on_free(key, value),
+            16 => self.set_pac_pointers(key, value),
+            17 => self.set_slot_randomize(key, value),
+            18 => self.set_double_free_scan(key, value),
+            19 => self.set_exact_sized_free(key, value),
+            20 => self.set_abort_conf(key, value),
+            21 => self.set_cgroup(key, value),
+            22 => self.set_check_zero(key, value),
+            23 => self.set_cow_epoch(key, value),
+            _ => self.set_stats_print(key, value),
         }
+    }
+
+    /// Arm 0 of [`Config::set_at`]: `background_thread`, and no other
+    /// field. Unset it starts lazily (`purge::background::configure`)
+    /// and reads back `false`, jemalloc's default: no thread was asked
+    /// for.
+    #[inline(always)]
+    fn set_background_thread<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 0),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        self.background_thread = Some(parse_bool(value).ok_or(Issue::BadValue { key, value })?);
+        Ok(())
+    }
+
+    /// Arm 1 of [`Config::set_at`]: `dirty_decay_ms`, and no other field.
+    #[inline(always)]
+    fn set_dirty_decay_ms<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 1),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(1);
+        }
+        let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
+        self.dirty_decay_ms = v;
+        proof {
+            assert(o.keeps_but(*self, 1)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 2 of [`Config::set_at`]: `muzzy_decay_ms`, and no other field.
+    #[inline(always)]
+    fn set_muzzy_decay_ms<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 2),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(2);
+        }
+        let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
+        self.muzzy_decay_ms = v;
+        proof {
+            assert(o.keeps_but(*self, 2)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 3 of [`Config::set_at`]: `narenas`, and no other field.
+    #[inline(always)]
+    fn set_narenas<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 3),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(3);
+        }
+        let (v, cut) = clamped(key, value, 0, u32::MAX as i64)?;
+        self.narenas = v as u32;
+        proof {
+            assert(o.keeps_but(*self, 3)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 4 of [`Config::set_at`]: `percpu_arena`, and no other field.
+    #[inline(always)]
+    fn set_percpu_arena<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 4),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        self.percpu_arena = pick(
+            &[
+                ("disabled", PercpuArena::Disabled),
+                ("percpu", PercpuArena::Percpu),
+                ("phycpu", PercpuArena::Phycpu),
+            ],
+            key,
+            value,
+        )?;
+        Ok(())
+    }
+
+    /// Arm 6 of [`Config::set_at`]: `tcache_max`, and no other field.
+    #[inline(always)]
+    fn set_tcache_max<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 6),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(6);
+        }
+        let (v, cut) = clamped(key, value, 0, crate::layout::MEDIUM_MAX as i64)?;
+        self.tcache_max = v as usize;
+        proof {
+            assert(o.keeps_but(*self, 6)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 7 of [`Config::set_at`]: `tcache_nslots_small_max`, clamped to
+    /// its [`Config::wf`] range, and no other field.
+    #[inline(always)]
+    fn set_tcache_nslots_small_max<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 7),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(7);
+        }
+        let (v, cut) = clamped(key, value, MIN_CAP as i64, MAX_NSLOTS as i64)?;
+        self.tcache_nslots_small_max = v as u32;
+        proof {
+            assert(o.keeps_but(*self, 7)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 8 of [`Config::set_at`]: `lg_tcache_nslots_mul`, clamped to
+    /// its [`Config::wf`] range, and no other field.
+    #[inline(always)]
+    fn set_lg_tcache_nslots_mul<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 8),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(8);
+        }
+        let (v, cut) = clamped(key, value, LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64)?;
+        self.lg_tcache_nslots_mul = v as i32;
+        proof {
+            assert(o.keeps_but(*self, 8)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 9 of [`Config::set_at`]: `thp`, and no other field. `default`
+    /// is jemalloc's spelling of `never`.
+    #[inline(always)]
+    fn set_thp<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 9),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        self.thp = pick(
+            &[("never", Thp::Never), ("default", Thp::Never), ("auto", Thp::Auto), ("always", Thp::Always)],
+            key,
+            value,
+        )?;
+        Ok(())
+    }
+
+    /// Arm 12 of [`Config::set_at`]: `guard_slab_interval`
+    /// ([`Config::set_guard_slab_interval`]), and no other field.
+    #[inline(always)]
+    fn set_guard_slab_interval_at<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 12),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        Self::set_guard_slab_interval(&mut self.guard_slab_interval, key, value)
+    }
+
+    /// Arm 13 of [`Config::set_at`]: `huge_retain_max`, and no other field.
+    #[inline(always)]
+    fn set_huge_retain_max<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 13),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(13);
+            assert(MAX_HUGE_RETAIN_MAX == 0x100_0000_0000) by (compute);
+        }
+        let (v, cut) = clamped(key, value, 0, MAX_HUGE_RETAIN_MAX as i64)?;
+        self.huge_retain_max = v as usize;
+        proof {
+            assert(o.keeps_but(*self, 13)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 14 of [`Config::set_at`]: `huge_dirty_decay_ms`, and no other
+    /// field. Unset it follows `dirty_decay_ms`, which is what it reads
+    /// back.
+    #[inline(always)]
+    fn set_huge_dirty_decay_ms<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 14),
+    {
+        let ghost o = *self;
+        proof {
+            o.lemma_keeps_itself(14);
+        }
+        let (v, cut) = clamped(key, value, -1, MAX_INTERVAL_MS)?;
+        self.huge_dirty_decay_ms = Some(v);
+        proof {
+            assert(o.keeps_but(*self, 14)) by {
+                reveal(Config::keeps_but);
+            }
+        }
+        range(cut, key, value)
+    }
+
+    /// Arm 5 of [`Config::set_at`]: `tcache`, and no other field.
+    #[inline(always)]
+    fn set_tcache<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 5),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.tcache, key, value)
+    }
+
+    /// Arm 10 of [`Config::set_at`]: `lazy_band`, and no other field.
+    #[inline(always)]
+    fn set_lazy_band<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 10),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.lazy_band, key, value)
+    }
+
+    /// Arm 11 of [`Config::set_at`]: `guards`, and no other field.
+    #[inline(always)]
+    fn set_guards<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 11),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.guards, key, value)
+    }
+
+    /// Arm 15 of [`Config::set_at`]: `zero_on_free`, and no other field.
+    #[inline(always)]
+    fn set_zero_on_free<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 15),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.zero_on_free, key, value)
+    }
+
+    /// Arm 16 of [`Config::set_at`]: `pac_pointers`, and no other field.
+    #[inline(always)]
+    fn set_pac_pointers<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 16),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.pac_pointers, key, value)
+    }
+
+    /// Arm 17 of [`Config::set_at`]: `slot_randomize`, and no other field.
+    #[inline(always)]
+    fn set_slot_randomize<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 17),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.slot_randomize, key, value)
+    }
+
+    /// Arm 18 of [`Config::set_at`]: `double_free_scan`, and no other field.
+    #[inline(always)]
+    fn set_double_free_scan<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 18),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.double_free_scan, key, value)
+    }
+
+    /// Arm 19 of [`Config::set_at`]: `exact_sized_free`, and no other field.
+    #[inline(always)]
+    fn set_exact_sized_free<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 19),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.exact_sized_free, key, value)
+    }
+
+    /// Arm 20 of [`Config::set_at`]: `abort_conf`, and no other field.
+    #[inline(always)]
+    fn set_abort_conf<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 20),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.abort_conf, key, value)
+    }
+
+    /// Arm 21 of [`Config::set_at`]: `cgroup`, and no other field.
+    #[inline(always)]
+    fn set_cgroup<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 21),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.cgroup, key, value)
+    }
+
+    /// Arm 22 of [`Config::set_at`]: `check_zero`, and no other field.
+    #[inline(always)]
+    fn set_check_zero<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 22),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.check_zero, key, value)
+    }
+
+    /// Arm 23 of [`Config::set_at`]: `cow_epoch`, and no other field.
+    #[inline(always)]
+    fn set_cow_epoch<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 23),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.cow_epoch, key, value)
+    }
+
+    /// Arm 24 of [`Config::set_at`]: `stats_print`, and no other field.
+    #[inline(always)]
+    fn set_stats_print<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            old(self).keeps_but(*final(self), 24),
+    {
+        proof {
+            reveal(Config::keeps_but);
+        }
+        bool_into(&mut self.stats_print, key, value)
     }
 
     /// `guard_slab_interval`: 0 is off and N >= 2 is one guard per
@@ -520,11 +1029,15 @@ impl Config {
     /// mask): anything else rounds up and is reported, so `abort_conf`
     /// refuses it and a plain run says what it got. The maximum is a
     /// power of two, so a clamped value needs no rounding.
-    fn set_guard_slab_interval<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
+    ///
+    /// It takes the field, not the config, as [`bool_into`] does, so
+    /// `set_at`'s arm 12 writes no other field by construction: proving
+    /// that frame over `&mut self` here exceeded this body's rlimit.
+    fn set_guard_slab_interval<'a>(slot: &mut u32, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<'a>>)
         requires
-            old(self).wf(),
+            interval_ok(*old(slot)),
         ensures
-            final(self).wf(),
+            interval_ok(*final(slot)),
     {
         proof {
             vstd::arithmetic::power2::lemma2_to64();
@@ -532,20 +1045,20 @@ impl Config {
         }
         let r = match clamped(key, value, 0, MAX_GUARD_SLAB_INTERVAL as i64) {
             Ok((v, cut)) => {
-                self.guard_slab_interval = v as u32;
+                *slot = v as u32;
                 range(cut, key, value)
             },
             Err(e) => Err(e),
         };
-        if self.guard_slab_interval == 1 {
-            self.guard_slab_interval = 2;
+        if *slot == 1 {
+            *slot = 2;
             proof {
                 assert(2usize as nat == pow2(1));
             }
             return Err(Issue::OutOfRange { key, value });
         }
-        if self.guard_slab_interval != 0 && !self.guard_slab_interval.is_power_of_two() {
-            let x = self.guard_slab_interval;
+        if *slot != 0 && !slot.is_power_of_two() {
+            let x = *slot;
             proof {
                 // Not a power of two, so not 2.
                 assert(2u32 as nat == pow2(1));
@@ -554,8 +1067,8 @@ impl Config {
             proof {
                 lemma_round_within(x as usize, p);
             }
-            self.guard_slab_interval = p as u32;
-            return Err(Issue::Rounded { key, value, to: self.guard_slab_interval as u64 });
+            *slot = p as u32;
+            return Err(Issue::Rounded { key, value, to: *slot as u64 });
         }
         r
     }
@@ -565,6 +1078,8 @@ impl Config {
     fn read_at(&self, i: usize) -> (r: Value)
         requires
             i < NAMES@.len(),
+        ensures
+            r == self.spec_read(i),
     {
         match i {
             0 => Value::Bool(self.background_thread == Some(true)),
@@ -732,6 +1247,11 @@ pub closed spec fn listed(key: Seq<u8>) -> bool {
     exists|j: int| 0 <= j < NAMES@.len() && #[trigger] NAMES@[j].spec_bytes() == key
 }
 
+/// Whether [`KEYS`] entry `i` is named `key`.
+pub closed spec fn names(i: usize, key: Seq<u8>) -> bool {
+    i < NAMES@.len() && NAMES@[i as int].spec_bytes() == key
+}
+
 /// The index of the [`KEYS`] entry named `key`, if any.
 fn find(key: &[u8]) -> (r: Option<usize>)
     ensures
@@ -768,6 +1288,12 @@ fn range<'a>(cut: bool, key: &'a [u8], value: &'a [u8]) -> (r: Result<(), Issue<
     } else {
         Ok(())
     }
+}
+
+/// The guard slab intervals [`Config::wf`] accepts: 0 (no guards) or a
+/// power of two from 2 to [`MAX_GUARD_SLAB_INTERVAL`].
+pub open spec fn interval_ok(g: u32) -> bool {
+    g == 0 || (2 <= g <= MAX_GUARD_SLAB_INTERVAL && crate::meta::is_pow2(g as usize))
 }
 
 /// The guard slab interval's round-up stays well formed: the next power
