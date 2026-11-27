@@ -2408,7 +2408,7 @@ pub fn decay(shared: &Shared, now: u64, Tracked(ord): Tracked<&mut LockOrder>) -
     let policy = &shared.policy;
     if policy.take_full_purge() {
         let tracked mut left = Ghost(Left::none());
-        purge_all(shared, Tracked(&mut left), Tracked(ord));
+        purge_all(shared, Tracked(Map::tracked_empty()), Tracked(None), Tracked(&mut left), Tracked(ord));
     }
     let keep16 = policy.keep16();
     let mut next: Option<u64> = None;
@@ -2539,16 +2539,37 @@ fn arena_count(shared: &Shared) -> (n: usize)
 /// was purged, the arenas visited, every class of each, and the huge
 /// allocator, with no slab or extent `Empty` in the lock value each purge
 /// released, except in a range `madvise` refused ([`Left::clean`]).
-pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+///
+/// The arenas visited include every one of `seen`, the caller's
+/// persistent registry records ([`Published`]) of arenas below a count
+/// it read (`prev`, a floor record of that count): an arena once
+/// published stays published and the count only grows, so the count
+/// read here covers them and each lookup finds its arena
+/// (`Arenas::count_seen`, `Arenas::get_existing_seen`). An arena built
+/// during the purge may still be skipped. Callers with no records pass
+/// an empty `seen` and no floor.
+///
+/// [`Published`]: crate::arena::Published
+pub fn purge_all(
+    shared: &Shared,
+    Tracked(seen): Tracked<Map<int, &'static crate::arena::Published>>,
+    Tracked(prev): Tracked<Option<&crate::arena::Floor>>,
+    Tracked(left): Tracked<&mut Ghost<Left>>,
+    Tracked(ord): Tracked<&mut LockOrder>,
+) -> (r: usize)
     requires
         crate::sys::may_abort() || crate::sys::valid_aborts(),
         crate::sys::may_syscall(),
         shared.wf(),
         old(ord).allows(rank_class(0, 0)),
+        prev matches Some(f) ==> f.id() == crate::arena::process_floor_loc(),
+        forall|i: int| #[trigger] seen.contains_key(i) ==> (prev matches Some(f) && f@.contains_key(i)),
+        forall|i: int| #[trigger] seen.contains_key(i) ==> seen[i].id() == crate::arena::process_pub_loc() && seen[i].key() == i,
     ensures
         *final(ord) == *old(ord),
         (r > 0) == (final(left)@.bytes > 0),
         forall|i: int| #[trigger] final(left)@.arenas.contains(i) ==> 0 <= i < crate::arena::MAX_ARENAS,
+        seen.dom() <= final(left)@.arenas,
         final(left)@.covers(),
         final(left)@.huge,
         final(left)@.clean(),
@@ -2557,25 +2578,46 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
     proof {
         *left = Ghost(Left::none());
         Left::lemma_none();
+        shared.lemma_stats_loc();
     }
     let mut n: usize = 0;
-    let count = arena_count(shared);
+    // `arena_count`, through `count_seen` for its floor record: every
+    // index of `seen` is below the count read.
+    let (c, _) = shared.arenas.count_seen(Tracked(prev));
+    let count = (c as usize).min(crate::arena::MAX_ARENAS);
+    proof {
+        assert forall|j: int| #[trigger] seen.contains_key(j) implies 0 <= j < c by {
+            assert(prev is Some && prev->Some_0@.contains_key(j));
+        }
+    }
     for i in 0..count
         invariant
             crate::sys::may_abort() || crate::sys::valid_aborts(),
             crate::sys::may_syscall(),
             shared.wf(),
+            shared.arenas.is_process(),
             ord.allows(rank_class(0, 0)),
             *ord == *old(ord),
             count <= crate::arena::MAX_ARENAS,
+            count == c as int,
+            forall|j: int| #[trigger] seen.contains_key(j) ==> 0 <= j < c,
+            forall|j: int| #[trigger] seen.contains_key(j) ==> seen[j].id() == crate::arena::process_pub_loc() && seen[j].key() == j,
             n <= i * 0x8_0000_0000_0000,
             (n > 0) == (left@.bytes > 0),
             forall|a: int| #[trigger] left@.arenas.contains(a) ==> 0 <= a < i,
+            forall|j: int| #[trigger] seen.contains_key(j) && j < i ==> left@.arenas.contains(j),
             left@.covers(),
             !left@.huge,
             left@.clean(),
     {
-        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+        // The caller's record of arena `i`, if it holds one.
+        let tracked mut w: Option<&'static crate::arena::Published> = None;
+        proof {
+            if seen.contains_key(i as int) {
+                w = Some(seen.tracked_borrow(i as int));
+            }
+        }
+        if let Some((arena, _)) = shared.arenas.get_existing_seen(i as u16, Tracked(w)) {
             let tracked mut la = Ghost(Left::none());
             // At most `NCLASSES * 2^45` slabs an arena.
             proof {
@@ -2591,7 +2633,12 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
                         assert(la@.arenas.contains(a));
                     }
                 }
+                // Arena `i` is now visited.
+                assert(left@.arenas.contains(i as int));
             }
+        } else {
+            // Not found, so the caller has no record of arena `i`.
+            assert(!seen.contains_key(i as int));
         }
     }
     let tracked mut lh = Ghost(Left::none());
@@ -2605,6 +2652,8 @@ pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>, Trac
         *left = Ghost(l0.join(lh@));
         assert(left@.arenas =~= l0.arenas);
         assert(left@.classes =~= l0.classes);
+        assert forall|j: int| #[trigger] seen.contains_key(j) implies left@.arenas.contains(j) by {}
+        assert(seen.dom() <= left@.arenas);
     }
     n + h
 }

@@ -8722,11 +8722,18 @@ pub open spec fn covers(self) -> bool {
 }
 
 // purge.rs
-pub fn purge_all(shared: &Shared, Tracked(left): Tracked<&mut Ghost<Left>>,
+pub fn purge_all(shared: &Shared, Tracked(seen): Tracked<Map<int, &'static Published>>,
+    Tracked(prev): Tracked<Option<&Floor>>, Tracked(left): Tracked<&mut Ghost<Left>>,
     Tracked(ord): Tracked<&mut LockOrder>) -> (r: usize)
+    requires
+        prev matches Some(f) ==> f.id() == process_floor_loc(),
+        forall|i: int| #[trigger] seen.contains_key(i) ==> (prev matches Some(f) && f@.contains_key(i)),
+        forall|i: int| #[trigger] seen.contains_key(i)
+            ==> seen[i].id() == process_pub_loc() && seen[i].key() == i,
     ensures
         (r > 0) == (final(left)@.bytes > 0),
         forall|i: int| #[trigger] final(left)@.arenas.contains(i) ==> 0 <= i < MAX_ARENAS,
+        seen.dom() <= final(left)@.arenas,
         final(left)@.covers(),
         final(left)@.huge,
         final(left)@.clean(),
@@ -8760,9 +8767,26 @@ its lock releases unless the slab is in `left.refused`, and the huge purge leave
 `left.refused_extents` (`clean`, which also says `bytes >= 0`). `bytes`,
 the sum over every batch of the bytes `madvise` took and a flush
 reported discarded (`Batch::sent`), is positive iff the returned count
-(slabs or extents made `Purged`) is.
+(slabs or extents made `Purged`) is. `left.arenas` includes every arena
+of `seen`, the caller's persistent registry records (`arena::Published`)
+of arenas below a count it read (`prev`, an `arena::Floor` record of
+that count); the callers above hold none and pass an empty `seen` and
+no floor.
 
 How it is proved:
+- **Every recorded arena is visited.** `purge_all` reads the count
+  through `Arenas::count_seen(prev)`, which ensures every key of the
+  caller's floor is in `[0, count)` (the count only grows: the floor
+  agrees with the registry's `lows`, whose domain is `[0, count)`;
+  since chainguard-project-theseus/challoc#1044 the lower bound is in
+  its `ensures` too), so every index of `seen` is below the loop's
+  bound. Each lookup is `Arenas::get_existing_seen` with `seen`'s
+  record for the index, which ensures it finds the arena (a record
+  agrees with the registry's published map, whose keys are the
+  non-null entries); `Arena::purge_all` then puts the index in
+  `left.arenas`. `count_seen` and `get_existing_seen` are the code of
+  `Arenas::count` and `Arenas::get_existing`; the machine code is
+  unchanged.
 - **The walk ends past every member** (`class/decay.rs`).
   `ClassState::walk_empty` ensures `none_above(g, last)` (
   opaque): no member of the empty set lies above the last slab visited;
@@ -8864,9 +8888,15 @@ How it is proved:
   a larger page), so every process table has `slabs_per_page == 1`.
   At run time `reserve_owning` accepts pages up to `MAX_SLAB`; on a
   kernel with a larger page the premise, not the code, would fail.
-- The arenas visited are those `get_existing` finds below the count
-  `arena_count` read once: an arena built during the purge may be
-  skipped; `left.arenas` is not stated to contain every built arena.
+- The arenas visited are those `get_existing_seen` finds below the
+  count `count_seen` read once. Since
+  chainguard-project-theseus/challoc#1044 `left.arenas` is stated to
+  contain every arena the caller holds a registry record of below a
+  count it read (`seen`, `prev`); an arena built during the purge, or
+  one the caller has no record of, may still be skipped. The current
+  callers pass no records, so for them the statement adds nothing; it
+  is the contract a caller with records (a scan that read the count
+  and the arenas first, as `stats::collect_into` does) would rely on.
 - The record is ghost and set by the function itself: a caller learns it
   only through the `ensures` (as theorem 22's ghost reads), and that it
   is the released value's is read from the body (`*left = Ghost(..)`
@@ -13438,7 +13468,7 @@ pub fn count_seen(&self, Tracked(prev): Tracked<Option<&Floor>>) -> (r: (u32, Tr
         r.0 as usize <= MAX_ARENAS,
         self.is_process() ==> r.1@.id() == process_floor_loc(),
         r.1@@.dom() == Set::range(0, r.0 as int),
-        prev matches Some(f) ==> forall|i| f@.contains_key(i) ==> i < r.0,
+        prev matches Some(f) ==> forall|i| f@.contains_key(i) ==> 0 <= i < r.0,
 
 // arena.rs: `get_existing_published`'s code; given the arena's record,
 // the arena is found (the record agrees with the registry's authority,
