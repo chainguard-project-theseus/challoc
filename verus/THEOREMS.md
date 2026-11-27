@@ -243,6 +243,10 @@ leave out (theorem 33). Remaining work is tracked in
   `usable_size`'s and `malloc_usable_size`'s `ensures`
   (`heap::slot_checked`), `api/libc.rs`; `sallocx`'s and `xallocx`'s,
   `api/jemalloc.rs`.
+- **Seal ranges disjoint and covering** ([The seal ranges are pairwise disjoint and, with the regions, cover the reservations](#the-seal-ranges-are-pairwise-disjoint-and-with-the-regions-cover-the-reservations)):
+  `Regions::never_committed`'s `ensures` (`ranges_disjoint`,
+  `Regions::seal_covers`), with `push_range`'s and `lemma_pushed`,
+  `layout/regions.rs`.
 
 ## Configuration
 
@@ -9210,10 +9214,13 @@ stops the sweep.
   allocator commits, purges and reprotects (theorem 40 for purges); that
   no code touches a reservation byte outside them is not a verified
   fact.
-- Nothing states the ranges pairwise disjoint or in address order, nor
-  that together with the regions they cover the three mappings
-  (`layout::tests::never_committed_is_the_complement_of_the_regions`
-  tests the cover; it is not verified code).
+- Since chainguard-project-theseus/challoc#1032, `never_committed`
+  also states the ranges pairwise disjoint and, with the regions,
+  covering the three mappings
+  ([seal ranges](#the-seal-ranges-are-pairwise-disjoint-and-with-the-regions-cover-the-reservations)).
+  Address order across the mappings is not stated: the kernel places
+  them (`layout::tests::never_committed_is_the_complement_of_the_regions`
+  tests the cover and the page alignment too; it is not verified code).
 - That every region keeps `MAX_SLAB` of its reservation below and above
   it is a run-time check, not part of the statement: `reserve_owning`
   checks `Regions::slack_ok` (`layout/regions.rs`: `never_committed`
@@ -14594,6 +14601,119 @@ on main the query's guard-slab and slot facts already come from
 `check_live`, whose precondition pins the slot it tests, so skipping or
 moving the test fails there too. This PR exports what that call
 already implies.
+
+## The seal ranges are pairwise disjoint and, with the regions, cover the reservations
+
+[Theorem 41](#41-seal-targets-stay-inside-challocs-reservations) states
+that every range `Regions::never_committed` returns, and `Regions::seal`
+hands `mseal` at init, is a `seal_target`: non-empty, inside one of the
+three reservations and apart from every class region, the huge and
+metadata regions and the `Shared` static. Before
+chainguard-project-theseus/challoc#1032 nothing stated that no byte is
+in two ranges, nor that every byte of a reservation outside the regions
+is in one of them; a unit test checked both on synthetic layouts. Now
+`never_committed` states both, of the list it returns.
+
+**Statement** (`layout/regions.rs`):
+
+```rust
+pub open spec fn in_ranges(out: [Mapping; MAX_SEALED], n: int, a: int) -> bool {  // opaque
+    exists|i: int| 0 <= i < n && #[trigger] out[i].addr <= a < out[i].addr + out[i].len
+}
+
+pub open spec fn ranges_disjoint(out: [Mapping; MAX_SEALED], n: int) -> bool {  // opaque
+    forall|i: int, j: int| 0 <= i < j < n ==>
+        disjoint(#[trigger] out[i].addr as int, out[i].len as int, #[trigger] out[j].addr as int, out[j].len as int)
+}
+
+// Regions (unchanged): in a reservation, in no class region, not in the
+// huge region and not in the metadata region.
+pub open spec fn slack_byte(self, g: int) -> bool {
+    &&& self.in_mapping(g, 1)
+    &&& forall|c: int| 0 <= c < NCLASSES ==> !#[trigger] self.in_class(c, g)
+    &&& !self.in_huge(g)
+    &&& !self.in_meta(g, 1)
+}
+
+// Regions (opaque)
+pub open spec fn seal_covers(self, out: [Mapping; MAX_SEALED], n: int) -> bool {
+    forall|a: int| #[trigger] self.slack_byte(a) ==> in_ranges(out, n, a)
+}
+
+pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
+    ensures
+        ..,  // theorem 41
+        self.separated() && self.mapped() ==> ranges_disjoint(r.0, r.1 as int),
+        self.separated() && self.mapped() ==> self.seal_covers(r.0, r.1 as int),
+```
+
+In words: for separated regions inside their mappings, no byte lies in
+two of the ranges, and every byte of reservation slack (`slack_byte`,
+the definition `lemma_overflow_reach` and `slack_run` use: a byte of the
+superblock's, the huge region's or the metadata region's reservation in
+no region) lies in one of the ranges. With theorem 41 (each range apart from every region
+and inside a reservation), the ranges are exactly the bytes of the
+reservations outside the regions, each such byte in exactly one range
+of the list `seal` walks.
+
+**Proof.** `push_range` now also ensures what it keeps and adds
+(`lemma_pushed`): every byte of an earlier range and every byte of
+`lo..hi` lies in one of the ranges after the push, and the ranges stay
+pairwise disjoint when `lo..hi` misses every earlier one. The class
+loop of `never_committed` keeps three more invariants: the ranges are
+pairwise disjoint, each lies between the superblock mapping's start and
+`start`, and every slack byte from the mapping's start to `start` is in
+a range. The gap `start..class_base[c]` begins at or after every
+earlier range's end, and the bytes from class `c`'s base to the new
+`start` are in its region (`in_class`), so none is slack. After the loop, the superblock's tail
+range ends the superblock's part; the huge mapping's two ranges lie in
+that mapping (disjoint from the superblock's by `mapped`), the first
+ending at `huge_base` and the second starting past the huge region; the
+metadata mapping's two likewise. The cover follows mapping by mapping:
+a slack byte is in the range pushed for its gap, and each later push
+keeps it. `seal_covers` is stated over `slack_byte` (review round 2),
+so the cover is the existing definition of slack rather than a second
+definition of "in a region".
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- The statement is about the list `never_committed` returns, not about
+  the `mseal` calls. `Regions::seal` has no `ensures` and its loop
+  carries only `seal_target` of each range, so that it hands each range
+  to `mseal` once, and every range, is read from its body, not proved
+  (its sweep stops at the first refusal, and init calls it only when
+  the probe said `mseal=yes`: theorem 41's "Covers").
+- Address order is stated nowhere: within a mapping the ranges are
+  pushed in ascending order (the proof uses that), but the order of
+  the three mappings is the kernel's choice.
+- Page alignment, which `mseal` needs, is still not stated (theorem
+  41's scope).
+- `print`'s `never_committed().1` holds no `mapped` fact and gets only
+  the bound, as before.
+- Ghost only: `push_range` is `#[inline(always)]` and the new `ensures`
+  and proof add no code to the release library.
+
+**Mutations** (`cargo verus focus -- --verify-module layout::regions`;
+unmutated: 209 verified, 0 errors on this tree, 208 on main 9bba23af):
+
+| id | change | PR | main 9bba23af |
+|---|---|---|---|
+| M1 | the huge mapping's first range is pushed empty (`huge_map.addr..huge_map.addr`), so the slack below the huge region is in no range of the list | rejected (the cover assertion for the huge mapping, behind `seal_covers`) | verifies |
+| M2 | the metadata mapping's last push repeats the huge mapping's first range (`huge_map.addr..huge_base`), so that range is in the list twice and the slack above the metadata region is in none | rejected (`ranges_disjoint` postcondition and the cover assertion) | verifies |
+
+Both mutants keep every range a `seal_target`, so theorem 41 alone
+accepts them.
+
+The M1 and M2 runs also report an assertion in `lemma_guard_near`
+(`layout/regions.rs`, the `assert((lou >> lg) as u32 == q)` step),
+which neither mutant touches. It is not this change's: on main
+9bba23af, a mutant that makes `never_committed` fail theorem 41 (its
+superblock tail range starting at the mapping's start) reports the same
+assertion. It comes only alongside another failure in the module: three
+repeated M1 runs reported it each time, `lemma_guard_near` alone
+(`--verify-function`) verifies in the M1 tree, and the unmutated module
+verifies on this tree and on main.
 
 ## Interface contract
 
