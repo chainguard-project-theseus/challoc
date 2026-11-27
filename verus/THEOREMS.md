@@ -232,6 +232,9 @@ leave out (theorem 33). Remaining work is tracked in
   `je_rallocx` exports' (`api/jemalloc.rs`): `heap::hint_ok`,
   `class_slot` / `class_slot_at`, and for the token-carrying cores
   `heap::huge_hint_ok`.
+- **mallctl argument errors** ([The `mallctl` entry points state their argument errors](#the-mallctl-entry-points-state-their-argument-errors)):
+  `mallctlnametomib`'s, `mallctl`'s, `mallctlbymib`'s, `ctl`'s and
+  `cstr`'s `ensures`, `api/mallctl.rs`.
 
 ## Configuration
 
@@ -5289,9 +5292,11 @@ loop invariant of `child`; N4, the numeric branch refusing values of
   expected MIBs of selected names.
 - `mallctlnametomib`, `mallctl` and `mallctlbymib` have no
   `ensures` tying their return codes to the round trip (interface row
-  34; `mallctlnametomib` states only that an error writes nothing); the
-  round trip is stated on the cores and required by `ctl`, not stated
-  on the C entry points.
+  34); since chainguard-project-theseus/challoc#1026 they state their
+  argument errors
+  ([argument errors](#the-mallctl-entry-points-state-their-argument-errors)),
+  not which names or MIBs are unknown. The round trip is stated on the
+  cores and required by `ctl`, not stated on the C entry points.
 
 **Compatibility difference (documented, not changed).**
 `mallctlnametomib(name, mibp, miblenp)` resolves the whole
@@ -14317,6 +14322,87 @@ since `alloc_with` picks the class before placement. Its moved result
 is named by `alloc_with`'s own `ensures`, from the `mallocx` section
 above.
 
+## The `mallctl` entry points state their argument errors
+
+Interface row 34 had no F: before
+chainguard-project-theseus/challoc#1026, `mallctl`, `mallctlnametomib`
+and `mallctlbymib` stated nothing about their return code beyond
+`mallctlnametomib`'s "an error writes nothing". Their bodies return
+jemalloc's argument errors; this section states the ones the entry
+points can name.
+
+**Statement** (`api/mallctl.rs`):
+
+```rust
+// cstr(p, call): the caller's name as bytes
+    ensures r is None <==> p@.addr == 0 || call.string().before_nul(MAX_NAME as int), ..;
+
+// mallctlnametomib(name, mibp, miblenp, cc)
+    ensures
+        r != 0 ==> !final(cc).written(),
+        r == 0 || r == EINVAL || r == ENOENT,
+        name@.addr == 0 || mibp@.addr == 0 || miblenp@.addr == 0 ==> r == EINVAL,
+        name@.addr != 0 && old(cc).string().before_nul(MAX_NAME as int) ==> r == EINVAL,
+        r == 0 ==> final(cc).written() && old(cc).len(miblenp as *const usize) >= 1;
+
+// mallctl(name, ..)
+    ensures name@.addr == 0 || cc.string().before_nul(MAX_NAME as int) ==> r == EINVAL;
+
+// mallctlbymib(mib, miblen, ..)
+    ensures mib@.addr == 0 || miblen == 0 || miblen > MAX_MIB ==> r == EINVAL;
+
+// ctl(shared, mark, node, mib, io, ..), the core both reach
+    ensures
+        node.entry is Dir ==> r == Err(ENOENT),
+        node.entry is Read && (io.newp@.addr != 0 || io.newlen != 0) ==> r == Err(EPERM), ..;
+```
+
+A name is overlong when its first `MAX_NAME` (256) bytes hold no NUL
+(`CStr::before_nul`, over the token's view of the string). A capacity
+`*miblenp` of 0 never succeeds, since every MIB has at least one
+component. `MAX_NAME` is now `pub`, as `MAX_MIB` is, for the
+`ensures`.
+
+**Proof.** `cstr`'s loop carries `before_nul(n)`; it stops at
+`MAX_NAME` (so `before_nul(MAX_NAME)`) or at a NUL below it (so not).
+`mib_cap` now states that it returns `cc.len(miblenp)`, which
+`CCall::counted` gives, and `name_to_mib`'s `1 <= len` bounds it. The
+rest are the early returns, and `Io::read_only`'s `ensures` for `ctl`.
+
+**Premises (seams).** None added.
+
+**Scope and where the statement is weaker than the code.**
+- Which names and MIBs are unknown (`ENOENT`) is not stated at the
+  entry points: `name_bytes` states only the slice's length and
+  `mib_in` only the reads' bounds, so their `ensures` cannot name the
+  bytes or words they resolve. The MIB round trip (theorem 21) is about
+  the values read.
+- `ctl`'s `ENOENT` and `EPERM` are stated at the core, over the node it
+  is passed. The entry points do not export them, for the same reason.
+- Every other error of `mallctl` and `mallctlbymib` (a bad `*oldlenp`
+  or `newlen`, an index that does not exist, a write-only key read, an
+  `EAGAIN` or `EFAULT` of an arm) is not stated at the entry points.
+  `Io::read`, `Io::write` and `Io::verify_read` state their `EINVAL`
+  conditions; the arms that call them do not export them.
+- Ghost only: the release library's machine code is unchanged (new
+  `ensures` and one proof assertion; `MAX_NAME`'s visibility).
+
+**Mutations** (`cargo verus focus -- --verify-module api::mallctl`,
+on this tree and on main a16d602e, all five applied together; each is
+in a different function):
+
+| id | change | PR | main |
+|---|---|---|---|
+| E1 | `mallctlnametomib` returns `ENOENT` for a null `mibp` or `miblenp` | rejected (`mallctlnametomib`'s postcondition) | verifies |
+| E2 | `mallctl` returns `ENOENT` for a null or overlong name | rejected (`mallctl`'s postcondition) | verifies |
+| E3 | `mallctlbymib` returns `ENOENT` for a null `mib` or a bad `miblen` | rejected (`mallctlbymib`'s postcondition) | verifies |
+| E4 | `ctl`'s `Read` arm drops `io.read_only()?` (a written read-only key reads) | rejected (`ctl`'s `EPERM` postcondition) | verifies |
+| E5 | `cstr` also refuses the empty name (`n == MAX_NAME \|\| n == 0`) | rejected (`cstr`'s postcondition) | verifies |
+
+Main verifies all five (`api::mallctl` 155 verified, 0 errors); the PR
+rejects each (150 verified, 5 errors). E1 to E5 are executable: each
+changes an error code a C caller sees.
+
 ## Interface contract
 
 The per-call theorems above (1-3, 5-7 and the "Bad input" section)
@@ -14457,7 +14543,7 @@ Codes: `P` proved, `p` partial, `-` missing, `.` not applicable.
 | 31 | `mallinfo`, `mallinfo2`                     | . | . | . | . | . | . | . |
 | 32 | `malloc_stats`, `malloc_info`               | . | . | . | . | P | . | . |
 | 33 | `malloc_stats_print`                        | . | . | . | . | . | - | . |
-| 34 | `mallctl`, `mallctlnametomib`, `..bymib`    | . | . | . | . | - | p | . |
+| 34 | `mallctl`, `mallctlnametomib`, `..bymib`    | . | . | . | . | p | p | . |
 | 35 | `get_defrag_hint`                           | . | . | . | . | P | P | . |
 | 36 | `challoc_version`, `challoc_features`       | . | . | . | . | . | . | . |
 | 37 | `malloc_conf`, `malloc_message`, `je_..`    | . | . | . | . | . | . | . |
@@ -14934,9 +15020,16 @@ alone):
     the private `axiom_c_call` of `print.rs`'s `exports`, and its
     `str_c_byte`), and the callback through trusted code (`call_back`,
     `api/print.rs`; with no callback, `call_hook` through `malloc_write`).
-34. `mallctl`, `mallctlnametomib`, `mallctlbymib` (`api/mallctl.rs`): verified bodies, no `ensures` on the return code
-    beyond `mallctlnametomib`'s `r != 0 ==> !final(cc).written()`
-    (`result`, maps `Err(e)` to `e`); the C exports are verified and state no `ensures`: each mints
+34. `mallctl`, `mallctlnametomib`, `mallctlbymib` (`api/mallctl.rs`): verified bodies. F is `p`
+    since chainguard-project-theseus/challoc#1026
+    ([argument errors](#the-mallctl-entry-points-state-their-argument-errors)):
+    `mallctlnametomib` returns 0, `EINVAL` or `ENOENT`, `EINVAL` for a
+    null or overlong name or a null `mibp` or `miblenp`, writes on
+    success and nothing on an error; `mallctl` states `EINVAL` for a
+    null or overlong name, `mallctlbymib` for a null `mib` or a
+    `miblen` of 0 or above `MAX_MIB` (`result` maps `Err(e)` to `e`);
+    an unknown name or MIB and the arms' errors are not stated at the
+    entry points. The C exports are verified and state no `ensures`: each mints
     its call's token with `axiom_c_call` from its own parameters, and
     `mallctl`'s and `mallctlbymib`'s lend `errno`, so Verus checks the
     bodies' preconditions on the call's token. Every access to the
@@ -14945,7 +15038,7 @@ alone):
     `store_triple`, `mib_cap`, `mib_out` and `mib_in` verify over the C
     contract of their arguments (`vspec::cbuf`). So B (a bad
     `oldlenp` or `newlen`, an unknown name) is
-    not stated as an error result; the batch-query length check (bug #1)
+    not stated as an error result at the entry points; the batch-query length check (bug #1)
     is verified inside the body. B is `p` by theorem 32: once init has
     run, no name, MIB or buffer length that keeps the C contract of the
     pointers (`vspec::cbuf`) makes a read under `opt`,
@@ -15076,8 +15169,10 @@ What each partial or missing cell leaves out, and what it rests on:
   is for verified callers that pass a held claim.
 - **F**: rows 16 and 17 take the `errno` token but state nothing about
   it (their first call runs init's libc calls); rows 24 and 25 do not
-  state the `nothrow_t` forms' NULL beyond `fits`; row 34 states no
-  `ensures` on the return code beyond `mallctlnametomib`'s. The frees'
+  state the `nothrow_t` forms' NULL beyond `fits`; row 34 states the
+  argument errors its entry points can name (a null or overlong name,
+  null MIB pointers, a bad `miblen`), not an unknown name or MIB or an
+  arm's error. The frees'
   `P` cells (rows 10, 11, 15, 26-28) and the unchanged `errno` of rows
   20 and 21 rest on the premise that no libc call in trusted code on
   their paths leaves `errno` changed (*(errno)*).

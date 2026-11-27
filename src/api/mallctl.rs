@@ -128,8 +128,8 @@ verus! {
 
 /// Longest MIB (`stats.arenas.<i>.bins.<j>.curregs` has 6 components).
 pub const MAX_MIB: usize = 8;
-/// Longest name accepted.
-const MAX_NAME: usize = 256;
+/// A name of this many bytes or more is refused (`EINVAL`).
+pub const MAX_NAME: usize = 256;
 
 /// The keys that do something: the arms of [`ctl`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1952,7 +1952,9 @@ fn cstr(p: *const c_char, Tracked(call): Tracked<&CCall>) -> (r: Option<&[u8]>)
         p@.addr != 0 ==> call.reads_str(p as *const u8),
     ensures
         r matches Some(s) ==> s@.len() < MAX_NAME,
-        p@.addr == 0 ==> r is None,
+        // `None` exactly for null or a string with no NUL in its first
+        // `MAX_NAME` bytes.
+        r is None <==> p@.addr == 0 || call.string().before_nul(MAX_NAME as int),
 {
     if p.is_null() {
         return None;
@@ -1980,6 +1982,8 @@ fn cstr(p: *const c_char, Tracked(call): Tracked<&CCall>) -> (r: Option<&[u8]>)
     }
     proof {
         call.string().lemma_in(n as int);
+        // Byte `n < MAX_NAME` is the NUL.
+        assert(call.string().bytes()[n as int] == 0);
     }
     // SAFETY: `n` bytes before the terminator were just read.
     Some(unsafe { name_bytes(p, n, Tracked(call)) })
@@ -3093,6 +3097,9 @@ fn ctl(
         resolve(root_nodes(), mib@) == Some(*node),
         old(ord).top() == 0,
     ensures
+        // An interior node is no key; a read-only key refuses a write.
+        node.entry is Dir ==> r == Err::<(), c_int>(ENOENT),
+        node.entry is Read && (io.newp@.addr != 0 || io.newlen != 0) ==> r == Err::<(), c_int>(EPERM),
         r is Err && !error_after_change(*node, r, final(fx)@) ==> final(fx)@ is Unchanged,
         io.oldp@.addr != 0 && io.oldlenp@.addr != 0 ==> (final(fx)@ matches Change::Set { read_first } ==> read_first),
         *final(ord) == *old(ord),
@@ -3354,7 +3361,7 @@ pub fn mallctl(
     Tracked(cc): Tracked<CCall>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> c_int
+) -> (r: c_int)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -3366,6 +3373,9 @@ pub fn mallctl(
             newp: newp as *mut u8,
             newlen,
         }),
+    ensures
+        // A null or overlong name ([`cstr`]).
+        name@.addr == 0 || cc.string().before_nul(MAX_NAME as int) ==> r == EINVAL,
 {
     let tracked mut cc = cc;
     let tracked mut fx = Ghost(Change::Unchanged);
@@ -3409,6 +3419,7 @@ unsafe fn mib_cap(miblenp: *mut usize, Ghost(mibp): Ghost<*mut usize>, Tracked(c
         cc.has(CArg::Counted(mibp, miblenp as *const usize)),
     ensures
         c_buffer(mibp, r as int * size_of::<usize>()),
+        r == cc.len(miblenp as *const usize),
 {
     let tracked cap = cc.counted(mibp, miblenp as *const usize);
     // SAFETY: guaranteed by the caller.
@@ -3464,12 +3475,19 @@ unsafe fn mib_out(mib: &[usize; MAX_MIB], mibp: *mut usize, miblenp: *mut usize,
 /// these arguments ([`CEntry::NameToMib`]), which the export wrapper
 /// mints from its own parameters. A failure writes nothing through
 /// `mibp` or `miblenp`: every error returns before the token's writes
-/// open.
+/// open. The result is 0, `EINVAL` or `ENOENT`: `EINVAL` for a null or
+/// overlong name ([`cstr`]), a null `mibp` or `miblenp`, or a capacity
+/// below the MIB's length (so a capacity of 0 never succeeds); `ENOENT`
+/// for a name that is not in the tree ([`name_to_mib`]).
 pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize, Tracked(cc): Tracked<&mut CCall>) -> (r: c_int)
     requires
         old(cc).fresh(CEntry::NameToMib { name: name as *const u8, mibp, miblenp: miblenp as *const usize }),
     ensures
         r != 0 ==> !final(cc).written(),
+        r == 0 || r == EINVAL || r == ENOENT,
+        name@.addr == 0 || mibp@.addr == 0 || miblenp@.addr == 0 ==> r == EINVAL,
+        name@.addr != 0 && old(cc).string().before_nul(MAX_NAME as int) ==> r == EINVAL,
+        r == 0 ==> final(cc).written() && old(cc).len(miblenp as *const usize) >= 1,
 {
     let Some(name) = cstr(name, Tracked(&*cc)) else {
         return EINVAL;
@@ -3545,7 +3563,7 @@ pub fn mallctlbymib(
     Tracked(cc): Tracked<CCall>,
     Tracked(errno): Tracked<&mut ThreadErrno>,
     Tracked(ord): Tracked<&mut LockOrder>,
-) -> c_int
+) -> (r: c_int)
     requires
         crate::sys::may_abort(),
         crate::sys::may_syscall(),
@@ -3558,6 +3576,8 @@ pub fn mallctlbymib(
             newp: newp as *mut u8,
             newlen,
         }),
+    ensures
+        mib@.addr == 0 || miblen == 0 || miblen > MAX_MIB ==> r == EINVAL,
 {
     let tracked mut cc = cc;
     let tracked mut fx = Ghost(Change::Unchanged);
