@@ -130,6 +130,58 @@ pub open spec fn disjoint(a: int, alen: int, b: int, blen: int) -> bool {
     a + alen <= b || b + blen <= a
 }
 
+/// Byte `a` lies in one of the ranges `out[..n]`. Opaque, so that the
+/// existential stays out of the queries that only carry it
+/// ([`lemma_pushed`] unfolds it).
+#[verifier::opaque]
+pub open spec fn in_ranges(out: [Mapping; MAX_SEALED], n: int, a: int) -> bool {
+    exists|i: int| 0 <= i < n && #[trigger] out[i].addr <= a < out[i].addr + out[i].len
+}
+
+/// No byte lies in two of the ranges `out[..n]`. Opaque, as
+/// [`in_ranges`].
+#[verifier::opaque]
+pub open spec fn ranges_disjoint(out: [Mapping; MAX_SEALED], n: int) -> bool {
+    forall|i: int, j: int|
+        0 <= i < j < n ==> disjoint(#[trigger] out[i].addr as int, out[i].len as int, #[trigger] out[j].addr as int, out[j].len as int)
+}
+
+/// What [`push_range`] of `lo..hi` onto `o[..n0]` leaves in `out[..n1]`:
+/// every byte of an earlier range and every byte of `lo..hi` lies in one
+/// of the ranges, and they stay pairwise disjoint when `lo..hi` misses
+/// every earlier range.
+proof fn lemma_pushed(o: [Mapping; MAX_SEALED], out: [Mapping; MAX_SEALED], n0: int, n1: int, lo: usize, hi: usize)
+    requires
+        0 <= n0,
+        n1 == if hi > lo { n0 + 1 } else { n0 },
+        hi > lo ==> out[n0] == (Mapping { addr: lo, len: (hi - lo) as usize }),
+        forall|i: int| 0 <= i < n0 ==> out[i] == o[i],
+    ensures
+        forall|a: int| #[trigger] in_ranges(o, n0, a) ==> in_ranges(out, n1, a),
+        forall|a: int| lo <= a < hi ==> #[trigger] in_ranges(out, n1, a),
+        ranges_disjoint(o, n0) && (forall|i: int| 0 <= i < n0 ==> disjoint(#[trigger] o[i].addr as int, o[i].len as int, lo as int, hi - lo))
+            ==> ranges_disjoint(out, n1),
+{
+    reveal(in_ranges);
+    reveal(ranges_disjoint);
+    assert forall|a: int| #[trigger] in_ranges(o, n0, a) implies in_ranges(out, n1, a) by {
+        let i = choose|i: int| 0 <= i < n0 && #[trigger] o[i].addr <= a < o[i].addr + o[i].len;
+        assert(out[i] == o[i]);
+    }
+    assert forall|a: int| lo <= a < hi implies #[trigger] in_ranges(out, n1, a) by {
+        assert(out[n0].addr <= a < out[n0].addr + out[n0].len);
+    }
+    if ranges_disjoint(o, n0) && (forall|i: int| 0 <= i < n0 ==> disjoint(#[trigger] o[i].addr as int, o[i].len as int, lo as int, hi - lo)) {
+        assert forall|i: int, j: int| 0 <= i < j < n1 implies
+            disjoint(#[trigger] out[i].addr as int, out[i].len as int, #[trigger] out[j].addr as int, out[j].len as int) by {
+            assert(out[i] == o[i]);
+            if j < n0 {
+                assert(out[j] == o[j]);
+            }
+        }
+    }
+}
+
 /// The first byte of the process's `Shared` (`api`'s `SHARED` static,
 /// [`shared_storage`](crate::heap::shared_storage)): the lock values of
 /// `Meta`, the huge allocator and the class tables, arena 0 and the
@@ -535,6 +587,15 @@ impl Regions {
         &&& disjoint(self.huge_base as int, self.huge_len as int, m.addr as int, m.len as int)
         &&& disjoint(self.meta_base as int, self.meta_len as int, m.addr as int, m.len as int)
         &&& disjoint(m.addr as int, m.len as int, shared_static_addr(), shared_static_len())
+    }
+
+    /// Every byte of reservation slack ([`Regions::slack_byte`]: in a
+    /// reservation, outside every region) lies in one of the ranges
+    /// `out[..n]`. With [`Regions::seal_target`] of each range, the ranges
+    /// are exactly the slack bytes. Opaque, as [`Regions::seal_target`].
+    #[verifier::opaque]
+    pub open spec fn seal_covers(self, out: [Mapping; MAX_SEALED], n: int) -> bool {
+        forall|a: int| #[trigger] self.slack_byte(a) ==> in_ranges(out, n, a)
     }
 
     /// Class `j`'s region ends at or before class `k`'s starts, for `j <
@@ -1126,29 +1187,46 @@ impl Regions {
     /// mapping. Of separated regions inside their mappings
     /// ([`Regions::separated`], [`Regions::mapped`]), every range returned
     /// is a [`Regions::seal_target`]: non-empty, inside a reservation and
-    /// apart from every region and the `Shared` static.
+    /// apart from every region and the `Shared` static; no byte is in two
+    /// ranges ([`ranges_disjoint`]), and every slack byte
+    /// ([`Regions::slack_byte`]) is in a range ([`Regions::seal_covers`]).
     pub fn never_committed(&self) -> (r: ([Mapping; MAX_SEALED], usize))
         requires
             self.wf(),
         ensures
             r.1 <= MAX_SEALED,
             self.separated() && self.mapped() ==> forall|i: int| 0 <= i < r.1 ==> self.seal_target(#[trigger] r.0[i]),
+            self.separated() && self.mapped() ==> ranges_disjoint(r.0, r.1 as int),
+            self.separated() && self.mapped() ==> self.seal_covers(r.0, r.1 as int),
     {
         let ghost ok = self.separated() && self.mapped();
         let ghost stride = (1usize << self.lg_stride) as int;
+        let ghost region = (1usize << self.lg_region) as int;
+        let ghost (sm, hm, mm) = (self.superblock_map, self.huge_map, self.meta_map);
         let mut out = [Mapping { addr: 0, len: 0 }; MAX_SEALED];
         let mut n = 0;
         let mut start = self.superblock_map.addr;
+        proof {
+            reveal(ranges_disjoint);
+        }
         for c in 0..NCLASSES
             invariant
                 self.wf(),
                 n <= c,
                 ok == (self.separated() && self.mapped()),
                 stride == (1usize << self.lg_stride) as int,
+                region == (1usize << self.lg_region) as int,
+                sm == self.superblock_map,
                 ok ==> self.superblock_map.addr <= start,
                 ok ==> start <= self.superblock + c * stride,
                 ok ==> forall|j: int| 0 <= j < c ==> #[trigger] self.class_base[j] + (1usize << self.lg_region) <= start,
                 ok ==> forall|i: int| 0 <= i < n ==> self.seal_target(#[trigger] out[i]),
+                // The ranges so far are pairwise disjoint, lie between the
+                // mapping's start and `start`, and with the class regions
+                // below `c` hold every byte in between.
+                ok ==> ranges_disjoint(out, n as int),
+                ok ==> forall|i: int| 0 <= i < n ==> sm.addr <= #[trigger] out[i].addr && out[i].addr + out[i].len <= start,
+                ok ==> forall|a: int| sm.addr <= a < start && self.slack_byte(a) ==> #[trigger] in_ranges(out, n as int, a),
         {
             proof {
                 if ok {
@@ -1159,20 +1237,37 @@ impl Regions {
                     }
                 }
             }
+            let ghost (o, n0, s0) = (out, n as int, start);
             push_range(&mut out, &mut n, start, self.class_base[c]);
             start = self.class_base[c] + self.region_len();
             proof {
                 if ok {
                     let cc = c as int;
+                    let cb = self.class_base[cc] as int;
                     assert(self.class_base[cc] + (1usize << self.lg_region) <= self.superblock + (cc + 1) * stride);
                     assert forall|j: int| 0 <= j < cc + 1 implies #[trigger] self.class_base[j] + (1usize << self.lg_region) <= start by {
                         if j < cc {
                             self.lemma_class_before(j, cc);
                         }
                     }
+                    assert(s0 <= cb);
+                    assert forall|i: int| 0 <= i < n0 implies disjoint(#[trigger] o[i].addr as int, o[i].len as int, s0 as int, cb - s0) by {}
+                    assert forall|i: int| 0 <= i < n implies sm.addr <= #[trigger] out[i].addr && out[i].addr + out[i].len <= start by {
+                        if i < n0 {
+                            assert(out[i] == o[i]);
+                        }
+                    }
+                    assert forall|a: int| sm.addr <= a < start && self.slack_byte(a) implies #[trigger] in_ranges(out, n as int, a) by {
+                        if a < s0 {
+                            assert(in_ranges(o, n0, a));
+                        } else if a >= cb {
+                            assert(self.in_class(cc, a));
+                        }
+                    }
                 }
             }
         }
+        let ghost (o, n0, s0) = (out, n as int, start);
         proof {
             if ok {
                 vstd::arithmetic::mul::lemma_mul_nonnegative(NCLASSES as int, stride);
@@ -1182,30 +1277,111 @@ impl Regions {
             }
         }
         push_range(&mut out, &mut n, start, self.superblock_map.addr + self.superblock_map.len);
+        // The superblock's ranges: (`os`, `ns`).
+        let ghost (os, ns) = (out, n as int);
+        proof {
+            if ok {
+                assert forall|i: int| 0 <= i < n0 implies disjoint(#[trigger] o[i].addr as int, o[i].len as int, s0 as int, sm.addr + sm.len - s0) by {}
+                assert forall|i: int| 0 <= i < ns implies sm.addr <= #[trigger] os[i].addr && os[i].addr + os[i].len <= sm.addr + sm.len by {
+                    if i < n0 {
+                        assert(os[i] == o[i]);
+                    }
+                }
+            }
+        }
         proof {
             if ok && self.huge_map.addr < self.huge_base {
                 self.lemma_huge_slack(self.huge_map.addr, self.huge_base);
             }
         }
         push_range(&mut out, &mut n, self.huge_map.addr, self.huge_base);
+        let ghost (o1, n1) = (out, n as int);
+        proof {
+            if ok {
+                assert forall|i: int| 0 <= i < ns implies disjoint(#[trigger] os[i].addr as int, os[i].len as int, hm.addr as int, self.huge_base - hm.addr) by {}
+                assert forall|i: int| 0 <= i < n1 implies
+                    (sm.addr <= #[trigger] o1[i].addr && o1[i].addr + o1[i].len <= sm.addr + sm.len)
+                    || (hm.addr <= o1[i].addr && o1[i].addr + o1[i].len <= self.huge_base) by {
+                    if i < ns {
+                        assert(o1[i] == os[i]);
+                    }
+                }
+            }
+        }
         proof {
             if ok && self.huge_base + self.huge_len < self.huge_map.addr + self.huge_map.len {
                 self.lemma_huge_slack((self.huge_base + self.huge_len) as usize, (self.huge_map.addr + self.huge_map.len) as usize);
             }
         }
         push_range(&mut out, &mut n, self.huge_base + self.huge_len, self.huge_map.addr + self.huge_map.len);
+        let ghost (o2, n2) = (out, n as int);
+        proof {
+            if ok {
+                assert forall|i: int| 0 <= i < n1 implies
+                    disjoint(#[trigger] o1[i].addr as int, o1[i].len as int, self.huge_base + self.huge_len, hm.addr + hm.len - (self.huge_base + self.huge_len)) by {}
+                assert forall|i: int| 0 <= i < n2 implies
+                    (sm.addr <= #[trigger] o2[i].addr && o2[i].addr + o2[i].len <= sm.addr + sm.len)
+                    || (hm.addr <= o2[i].addr && o2[i].addr + o2[i].len <= hm.addr + hm.len) by {
+                    if i < n1 {
+                        assert(o2[i] == o1[i]);
+                    }
+                }
+            }
+        }
         proof {
             if ok && self.meta_map.addr < self.meta_base {
                 self.lemma_meta_slack(self.meta_map.addr, self.meta_base);
             }
         }
         push_range(&mut out, &mut n, self.meta_map.addr, self.meta_base);
+        let ghost (o3, n3) = (out, n as int);
+        proof {
+            if ok {
+                assert forall|i: int| 0 <= i < n2 implies disjoint(#[trigger] o2[i].addr as int, o2[i].len as int, mm.addr as int, self.meta_base - mm.addr) by {}
+                assert forall|i: int| 0 <= i < n3 implies
+                    (sm.addr <= #[trigger] o3[i].addr && o3[i].addr + o3[i].len <= sm.addr + sm.len)
+                    || (hm.addr <= o3[i].addr && o3[i].addr + o3[i].len <= hm.addr + hm.len)
+                    || (mm.addr <= o3[i].addr && o3[i].addr + o3[i].len <= self.meta_base) by {
+                    if i < n2 {
+                        assert(o3[i] == o2[i]);
+                    }
+                }
+            }
+        }
         proof {
             if ok && self.meta_base + self.meta_len < self.meta_map.addr + self.meta_map.len {
                 self.lemma_meta_slack((self.meta_base + self.meta_len) as usize, (self.meta_map.addr + self.meta_map.len) as usize);
             }
         }
         push_range(&mut out, &mut n, self.meta_base + self.meta_len, self.meta_map.addr + self.meta_map.len);
+        proof {
+            if ok {
+                assert forall|i: int| 0 <= i < n3 implies
+                    disjoint(#[trigger] o3[i].addr as int, o3[i].len as int, self.meta_base + self.meta_len, mm.addr + mm.len - (self.meta_base + self.meta_len)) by {}
+                // Every slack byte of a mapping is in a range.
+                reveal(Regions::seal_covers);
+                assert forall|a: int| #[trigger] self.slack_byte(a) implies in_ranges(out, n as int, a) by {
+                    if sm.addr <= a < sm.addr + sm.len {
+                        if a < s0 {
+                            assert(in_ranges(o, n0, a));
+                        }
+                        assert(in_ranges(os, ns, a));
+                        assert(in_ranges(o1, n1, a));
+                        assert(in_ranges(o2, n2, a));
+                        assert(in_ranges(o3, n3, a));
+                    } else if hm.addr <= a < hm.addr + hm.len {
+                        if a < self.huge_base {
+                            assert(in_ranges(o1, n1, a));
+                        } else {
+                            assert(in_ranges(o2, n2, a));
+                        }
+                        assert(in_ranges(o3, n3, a));
+                    } else if a < self.meta_base {
+                        assert(in_ranges(o3, n3, a));
+                    }
+                }
+            }
+        }
         (out, n)
     }
 
@@ -2275,7 +2451,10 @@ pub proof fn lemma_aligned_down(b: int, big: int, m: int)
     lemma_mod_lin3(0, b / big, big, 0, 0, m);
 }
 
-/// Append `lo..hi` to `out[..*n]` when it is not empty.
+/// Append `lo..hi` to `out[..*n]` when it is not empty. Every byte of an
+/// earlier range and of `lo..hi` then lies in one of the ranges
+/// ([`in_ranges`]), and they stay pairwise disjoint ([`ranges_disjoint`])
+/// when `lo..hi` misses every earlier one ([`lemma_pushed`]).
 #[inline(always)]
 fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usize)
     requires
@@ -2284,10 +2463,19 @@ fn push_range(out: &mut [Mapping; MAX_SEALED], n: &mut usize, lo: usize, hi: usi
         *final(n) == if hi > lo { *old(n) + 1 } else { *old(n) as int },
         hi > lo ==> final(out)[*old(n) as int] == (Mapping { addr: lo, len: (hi - lo) as usize }),
         forall|i: int| 0 <= i < *old(n) ==> final(out)[i] == old(out)[i],
+        forall|a: int| #[trigger] in_ranges(*old(out), *old(n) as int, a) ==> in_ranges(*final(out), *final(n) as int, a),
+        forall|a: int| lo <= a < hi ==> #[trigger] in_ranges(*final(out), *final(n) as int, a),
+        ranges_disjoint(*old(out), *old(n) as int)
+            && (forall|i: int| 0 <= i < *old(n) ==> disjoint(#[trigger] old(out)[i].addr as int, old(out)[i].len as int, lo as int, hi - lo))
+            ==> ranges_disjoint(*final(out), *final(n) as int),
 {
+    let ghost (o, n0) = (*out, *n as int);
     if hi > lo {
         out[*n] = Mapping { addr: lo, len: hi - lo };
         *n += 1;
+    }
+    proof {
+        lemma_pushed(o, *out, n0, *n as int, lo, hi);
     }
 }
 
