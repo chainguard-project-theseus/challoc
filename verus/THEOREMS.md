@@ -1817,9 +1817,11 @@ meaning, and no stronger.
 ## 7. Guard pages
 
 For slabs, per result: every `fits` and every `free_target` excludes the
-guard slabs. For huge runs, only at the huge lock invariant: every value
-the huge lock admits keeps live runs' usable pages off every run's
-guard page, but nothing is exported per call ("Huge runs" below).
+guard slabs. For huge runs, per live block: no usable byte of a live
+run lies in the guard page of any run token, wherever it is held, and
+every value the huge lock admits keeps live runs' usable pages off every
+run's guard page; no entry point's `ensures` carries either ("Huge
+runs" below).
 
 **Statement** (`heap/theorems.rs`; `layout/regions.rs`):
 
@@ -2006,9 +2008,54 @@ only past the `is_guard_slab` test.
 **Huge runs (at the huge lock invariant).** Each run's guard follows
 its usable pages inside its extent, and live extents are pairwise apart
 (`huge::Inner::wf`). `Inner::theorem_run_guards` (`huge/mod.rs`)
-states the consequence for every value the huge lock admits, and for
-nothing per call: the usable pages of a live run
-share no page with the guard pages of any live run, its own included.
+states the consequence for every value the huge lock admits: the usable
+pages of a live run share no page with the guard pages of any live run,
+its own included.
+
+Per live block (chainguard-project-theseus/challoc#1055;
+`heap/live.rs`):
+
+```rust
+pub proof fn theorem_run_guards(tracked &mut self, tracked other: &RunToken)   // Live
+    requires
+        old(self).wf(),
+        old(self).run_opt() is Some,
+        other.wf(),
+    ensures
+        /* theorem_apart's frame: wf, addr, len, mem, claims, and the run's start and npages */
+        disjoint(final(self).addr() as int, final(self).len(),
+            page_addr(other.start() + other.npages() - GUARD_PAGES),
+            GUARD_PAGES * page_size()),
+        page_addr(final(self).run_opt()->0.start() + final(self).run_opt()->0.npages() - GUARD_PAGES)
+            == final(self).addr() + final(self).len(),
+```
+
+(Line breaks added.) A huge allocation's result carries its run token
+in its `Live` token (`Live::from_run`, from `alloc_run`'s token). No
+usable byte of that block lies in the guard pages of any well-formed
+run token: another live block's run, or one the huge lock's value
+holds. The page the block's run token counts as its guard starts at
+the end of its usable bytes; that `Huge::prepare` guards that page is
+read from its body (no `ensures` states the guarded address). The proof is `RunToken::theorem_token_guards` (page indices) scaled by
+the page size, with `Live::run_of`'s `page_addr(start) == addr` and
+`Live::len`'s `run_usable(npages)`.
+
+**Seams of `Live::theorem_run_guards`** (chainguard-project-theseus/challoc#1055).
+
+| Seam | Kind | Why |
+|---|---|---|
+| none added | | Ghost only: the theorem takes the block's run token out of the `Live`, runs `theorem_token_guards`, and puts it back. |
+
+**Mutations** (`cargo verus focus -- --verify-module heap::live`; main
+has no such theorem, so each is PR-only):
+
+| | Mutation | PR |
+|---|---|---|
+| M1 | the `theorem_token_guards` call removed | rejected (the byte arithmetic's `requires`) |
+| M2 | the other token's guard one byte longer, `GUARD_PAGES * page_size() + 1` | rejected (`ensures`) |
+| M3 | the own guard placed after the whole extent, `page_addr(start + npages)` | rejected (`ensures`) |
+
+Ghost only: the release library's machine code is unchanged.
 
 **Premises beyond the common ones.**
 - `heap::shared::axiom_shared_built` (`heap/shared.rs`) also states the
@@ -2031,10 +2078,13 @@ share no page with the guard pages of any live run, its own included.
   and `RunToken::theorem_token_guards` (`huge/mod.rs`) is the per-call
   form of `theorem_run_guards` over two such tokens: one run's usable
   pages share no page with the other's guard pages
-  ([same-region overflow reach](#same-region-overflow-reach-guards-on)).
-  No entry point states it of its result: the C entry points return a
-  pointer, and the run token stays in the block's `Live` token
-  (`heap/live.rs`). A freed run's guard is made read-write again, or its marker
+  ([same-region overflow reach](#same-region-overflow-reach-guards-on)),
+  and `Live::theorem_run_guards` states it in bytes of the result's
+  block. No entry point's `ensures` carries it: the C entry points
+  return a pointer, and the run token stays in the block's `Live` token
+  (`heap/live.rs`). A slot against a huge run's guard page is not
+  stated: `Live::wf` puts a run's usable bytes in the huge region, not
+  its guard page. A freed run's guard is made read-write again, or its marker
   removed, so its VMA merges back; freed runs' guards are not modelled
   (`theorem_huge_commit_avoids_guards` covers live runs' guards only).
 - `theorem_guard_free` says that a pointer into a guard slab aborts,
@@ -11833,8 +11883,13 @@ of another token's, the per-call form of
 `huge::Inner::theorem_run_guards` (which holds of the descriptors at the
 huge lock invariant), over the tokens the paths hand around. That the
 guard follows the run's usable pages, so a write off the end of a huge
-block reaches it before the next run, is read from the run layout, not
-proved. How the guard is protected depends on the mode, read from
+block reaches it before the next run, is proved of the page a live
+block's token counts as its guard: `Live::theorem_run_guards` (theorem
+7) states that it starts at the block's end, and that the block's bytes
+miss every other token's guard pages. That `prepare` guards that page
+(the marker or `PROT_NONE` at `s + usable`, with `alloc_aligned`
+passing `need - GUARD_PAGES` usable pages) is read from its body: no
+`ensures` or lock invariant states the guarded address of a run. How the guard is protected depends on the mode, read from
 `Huge::prepare`: with `MADV_GUARD_INSTALL` the guard page is committed
 and carries a guard marker, and `split_guard` makes it `PROT_NONE` only
 when the marker is refused; in fallback mode (no marker) `split_guard`
@@ -15809,10 +15864,12 @@ alone):
   excludes the guard slabs, so every `fits` (the R column) and every
   `free_target` (the B column) states it per result: `theorem_guard_pages` and
   `theorem_guard_free` (`heap/theorems.rs`). For huge runs it is
-  stated only of the huge lock's values (`Inner::theorem_run_guards`,
-  `huge/mod.rs`): `alloc_run` returns the run's token, but
-  no lemma states the guard exclusion per result over it, and
-  fallback-mode stale `PROT_NONE` guards are not modelled.
+  stated of the huge lock's values (`Inner::theorem_run_guards`,
+  `huge/mod.rs`) and of each live block's run token
+  (`Live::theorem_run_guards`, `heap/live.rs`: its bytes miss every
+  run token's guard pages), but no entry point's `ensures` carries it,
+  a slot against a run's guard is not stated, and fallback-mode stale
+  `PROT_NONE` guards are not modelled.
 - I5: theorem 19. Every flush discards
   only bytes its batch's ghost `free` admits (`purge::discard`). Huge
   purges admit pages of no live run, proved against the run tokens
@@ -15902,8 +15959,11 @@ What each partial or missing cell leaves out, and what it rests on:
   exactly (`theorem_stored_zero_iff_null`; the queries' `p != 0 ==>
   0 < r`).
 - **I4, huge runs**: `Inner::theorem_run_guards` is stated of the huge
-  lock's values; `Huge::alloc_run`'s result comes with its run token,
-  but no lemma states the guard exclusion per result over it.
+  lock's values, and `Live::theorem_run_guards` of each live block's
+  run token (no usable byte in any run token's guard pages), but the
+  entry points take and return no token, so their `ensures` do not
+  carry it (as for the **U** cells), and a slot against a run's guard
+  page is not stated.
 - **I5, slabs**: class batches admit only slabs idle in the class lock's
   ghost state; the link from idleness to the slot tokens needs the
   descriptor's `live` counter as ghost-tracked state. Theorem 6's purge

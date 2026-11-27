@@ -129,8 +129,10 @@ first byte or the region's edge within `m` page groups going up and
 `m + 1` going down, `m + 1` the class's guard interval
 (`heap::theorem_guard_reach`). For huge runs only page separation is
 proved: a run's guard pages are no other live run's usable page
-(`huge::RunToken::theorem_token_guards`). That the guard follows the
-usable pages and faults is read from `Huge::prepare`, and under
+(`huge::RunToken::theorem_token_guards`), and the page a live block's
+run token counts as its guard starts at the block's end
+(`heap::live::Live::theorem_run_guards`). That `Huge::prepare` guards
+that page, and that it faults, is read from `Huge::prepare`, and under
 `guards:false` the guard page is read-write.
 
 **Premises and limits.**
