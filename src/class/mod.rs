@@ -998,6 +998,52 @@ impl SlotToks {
         }
     }
 
+    /// A batch `out[..n]` whose tokens `self` holds has no duplicate
+    /// entries: each entry has a token of the table's authority, and two
+    /// such tokens are disjoint ([`lemma_keyed_distinct`]). The tokens are
+    /// borrowed for the comparison and put back under their keys.
+    pub proof fn lemma_owns_distinct(tracked &mut self, t: SlabTable, out: Seq<*mut u8>, n: int)
+        requires
+            0 <= n <= out.len(),
+            old(self).owns(t, out, 0, 0, n),
+        ensures
+            final(self).owns(t, out, 0, 0, n),
+            final(self).bits == old(self).bits,
+            final(self).frame(*old(self), 0, n),
+            out.subrange(0, n).no_duplicates(),
+    {
+        let ghost s0 = *self;
+        let ghost a = ptr_addrs(out.subrange(0, n));
+        let ghost loc = t.spec_slots().loc;
+        s0.lemma_owns_keyed(t, out, n);
+        lemma_keyed_distinct(&mut self.toks, a, loc, 0, n);
+        self.lemma_owns_keyed(t, out, n);
+        assert(keyed_frame(self.toks, s0.toks, 0, n));
+        assert forall|i: int, j: int| 0 <= i < n && 0 <= j < n && i != j implies out.subrange(0, n)[i] != out.subrange(0, n)[j] by {
+            if i < j {
+                assert(a[i] != a[j]);
+            } else {
+                assert(a[j] != a[i]);
+            }
+        }
+    }
+
+    /// [`SlotToks::frame`] composes.
+    pub proof fn lemma_frame_trans(c: SlotToks, b: SlotToks, a: SlotToks, n: int)
+        requires
+            c.frame(b, 0, n),
+            b.frame(a, 0, n),
+        ensures
+            c.frame(a, 0, n),
+    {
+        assert forall|j: int| !(0 <= j < n) && a.bits.contains_key(j) implies #[trigger] c.bits[j] == a.bits[j] by {
+            assert(b.bits.contains_key(j));
+        }
+        assert forall|j: int| !(0 <= j < n) && a.toks.contains_key(j) implies #[trigger] c.toks[j] == a.toks[j] by {
+            assert(b.toks.contains_key(j));
+        }
+    }
+
     /// [`SlotToks::owns`] of claimed bits.
     pub proof fn lemma_owns_of_real(self, t: SlabTable, out: Seq<*mut u8>, base: int, n: int)
         requires
@@ -1325,6 +1371,81 @@ pub open spec fn keyed_frame(new: Map<int, GhostSingleton<int>>, old: Map<int, G
     forall|k: int| #![trigger new.contains_key(k)] #![trigger old.contains_key(k)] !(lo <= k < hi) ==> {
         &&& new.contains_key(k) == old.contains_key(k)
         &&& old.contains_key(k) ==> new[k] == old[k]
+    }
+}
+
+/// `t`'s value is none of `a[lo..hi]`, when `m` holds their tokens of
+/// `t`'s authority: two tokens of one authority are disjoint
+/// (`GhostSingleton::disjoint`).
+pub proof fn lemma_token_apart(tracked t: &mut GhostSingleton<int>, tracked m: &Map<int, GhostSingleton<int>>, a: Seq<int>, lo: int, hi: int)
+    requires
+        keyed(*m, a, old(t).id(), lo, hi),
+    ensures
+        final(t).id() == old(t).id(),
+        final(t)@ == old(t)@,
+        forall|j: int| lo <= j < hi ==> a[j] != old(t)@,
+    decreases hi - lo,
+{
+    if lo < hi {
+        lemma_keyed_at(*m, a, t.id(), lo, hi, lo);
+        t.disjoint(m.tracked_borrow(lo));
+        lemma_token_apart(t, m, a, lo + 1, hi);
+    }
+}
+
+/// No address repeats in `a[lo..hi]` when `m` holds their tokens of one
+/// authority under keys `lo..hi`. Unlike [`gather`] it consumes no
+/// tokens: each is removed for the comparison and put back under its key,
+/// so `m` still holds them ([`keyed`]) and keeps its other keys.
+pub proof fn lemma_keyed_distinct(tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd::resource::Loc, lo: int, hi: int)
+    requires
+        keyed(*old(m), a, loc, lo, hi),
+    ensures
+        keyed(*final(m), a, loc, lo, hi),
+        keyed_frame(*final(m), *old(m), lo, hi),
+        distinct(a, lo, hi),
+    decreases hi - lo,
+{
+    if lo < hi {
+        let ghost m0 = *m;
+        lemma_keyed_at(m0, a, loc, lo, hi, lo);
+        let tracked mut t = m.tracked_remove(lo);
+        let ghost m1 = *m;
+        assert(keyed(m1, a, loc, lo + 1, hi)) by {
+            assert forall|i: int| #![trigger m1.contains_key(i)] #![trigger m1[i]] lo + 1 <= i < hi implies m1.contains_key(i) && m1[i].id() == loc && m1[i]@ == a[i] by {
+                lemma_keyed_at(m0, a, loc, lo, hi, i);
+            }
+        }
+        lemma_token_apart(&mut t, m, a, lo + 1, hi);
+        m.tracked_insert(lo, t);
+        let ghost m2 = *m;
+        assert(keyed(m2, a, loc, lo + 1, hi)) by {
+            assert forall|i: int| #![trigger m2.contains_key(i)] #![trigger m2[i]] lo + 1 <= i < hi implies m2.contains_key(i) && m2[i].id() == loc && m2[i]@ == a[i] by {
+                assert(m1.contains_key(i));
+            }
+        }
+        lemma_keyed_distinct(m, a, loc, lo + 1, hi);
+        let ghost m3 = *m;
+        assert(m3.contains_key(lo) && m3[lo] == m2[lo]);
+        assert(keyed(m3, a, loc, lo, hi)) by {
+            assert forall|i: int| #![trigger m3.contains_key(i)] #![trigger m3[i]] lo <= i < hi implies m3.contains_key(i) && m3[i].id() == loc && m3[i]@ == a[i] by {
+                if i > lo {
+                    lemma_keyed_at(m3, a, loc, lo + 1, hi, i);
+                }
+            }
+        }
+        assert forall|k: int| #![trigger m3.contains_key(k)] #![trigger m0.contains_key(k)] !(lo <= k < hi) implies {
+            &&& m3.contains_key(k) == m0.contains_key(k)
+            &&& m0.contains_key(k) ==> m3[k] == m0[k]
+        } by {
+            assert(m3.contains_key(k) == m2.contains_key(k));
+            assert(m2.contains_key(k) == m1.contains_key(k) || k == lo);
+        }
+        assert forall|i: int, j: int| lo <= i < j < hi implies a[i] != a[j] by {
+            if i > lo {
+                assert(distinct(a, lo + 1, hi));
+            }
+        }
     }
 }
 
@@ -4228,9 +4349,17 @@ impl ClassState {
             final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+            final(out)@.subrange(0, r.0.n as int).no_duplicates(),
     {
         let tracked mut ex: Ghost<(Inner, Map<nat, usize>)> = Ghost(arbitrary());
-        self.claim_with(meta, out, None, Tracked(toks), Tracked(&mut ex), pubw, Tracked(ord))
+        let ghost o0 = *toks;
+        let r = self.claim_with(meta, out, None, Tracked(toks), Tracked(&mut ex), pubw, Tracked(ord));
+        proof {
+            let ghost t1 = *toks;
+            toks.lemma_owns_distinct(self.spec_table(), out@, r.0.n as int);
+            SlotToks::lemma_frame_trans(*toks, t1, o0, r.0.n as int);
+        }
+        r
     }
 
     /// [`claim_random`] with the zero tokens of the slots it wrote
@@ -4266,6 +4395,7 @@ impl ClassState {
             final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
             final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+            final(out)@.subrange(0, r.0.n as int).no_duplicates(),
             // The pre-shuffle batch and the shuffle's starting state.
             final(pre)@.0.len() == old(out)@.len(),
             slots_in(final(pre)@.0, self.spec_class() as int, 0, r.0.n as int),
@@ -4332,6 +4462,13 @@ impl ClassState {
             // The pre-shuffle batch and the state the shuffle started from
             // (`out[n..]` is framed by the slice borrow's spec).
             *pre = Ghost((mid, st));
+            assert(toks.frame(o0, 0, c.n as int));
+        }
+        proof {
+            // No entry of the batch handed out repeats: their tokens.
+            let ghost t2 = *toks;
+            toks.lemma_owns_distinct(self.spec_table(), out@, c.n as int);
+            SlotToks::lemma_frame_trans(*toks, t2, o0, c.n as int);
         }
         (c, Tracked(z))
     }

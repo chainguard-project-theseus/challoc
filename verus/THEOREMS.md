@@ -2741,11 +2741,68 @@ reordered by the draws from `st` and nothing else. `Heap::claim` passes
 `pre` on to its callers (below). The slot
 tokens (theorem 5) and zero tokens (theorem 6) of each entry move with
 it, so `claim_random_zero` ensures the same token postconditions as
-`claim_tokens`. That the batch has no duplicates in the first place
-follows from its slot tokens (`keyed`: one token of the class's
-authority per entry, and two such tokens are disjoint), but no lemma
-states it for the claimed batch; `class::gather` derives it when a
-batch's tokens are collected.
+`claim_tokens`. Since chainguard-project-theseus/challoc#1038, both
+also state that the batch has no duplicates in the first place, so
+`theorem_shuffle_permutation`'s last clause applies to it:
+
+```rust
+pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], /* ghost */) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    ensures
+        // ... slots_in, owns, frame, claim_zero_ok as before ...
+        final(out)@.subrange(0, r.0.n as int).no_duplicates(),
+
+pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, /* ghost */) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    ensures
+        // ... as before ...
+        final(out)@.subrange(0, r.0.n as int).no_duplicates(),
+
+// SlotToks
+pub proof fn lemma_owns_distinct(tracked &mut self, t: SlabTable, out: Seq<*mut u8>, n: int)
+    requires
+        0 <= n <= out.len(),
+        old(self).owns(t, out, 0, 0, n),
+    ensures
+        final(self).owns(t, out, 0, 0, n),
+        final(self).bits == old(self).bits,
+        final(self).frame(*old(self), 0, n),
+        out.subrange(0, n).no_duplicates(),
+
+pub proof fn lemma_keyed_distinct(tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<int>, loc: Loc, lo: int, hi: int)
+    requires
+        keyed(*old(m), a, loc, lo, hi),
+    ensures
+        keyed(*final(m), a, loc, lo, hi),
+        keyed_frame(*final(m), *old(m), lo, hi),
+        distinct(a, lo, hi),
+```
+
+The proof is the tokens'. `claim_tokens` ends with, and
+`claim_random_zero` ends after the shuffle with, the token of each
+`out[i]` (`i < n`) under key `i`, of the class's slot authority
+(`SlotToks::owns`, `keyed` of their addresses). `lemma_keyed_distinct`
+removes key `lo`'s token, compares it with each later key's token in
+turn (`lemma_token_apart`, by vstd's `GhostSingleton::disjoint`: two
+tokens of one authority never hold the same value), puts it back
+under its key and recurses. So the addresses are pairwise distinct,
+and with them the pointers. Unlike `class::gather`, which derives the
+same fact while it collects the tokens into a bag, it consumes no
+token: the map still holds every token under its key (the token values
+are put back, so the statement is `keyed` again, not equality of the
+map), and keys outside `0..n` are untouched (`keyed_frame`), which
+gives `owns` and `frame` back. Ghost only: the machine code is
+unchanged.
+
+Premises (seams): none added.
+
+Mutants: on the PR, dropping the
+`GhostSingleton::disjoint` call in `lemma_token_apart` fails its
+postcondition; dropping the `lemma_owns_distinct` call in
+`claim_tokens` fails the new `no_duplicates` postcondition. No
+executable mutant discriminates: one that writes a duplicate entry
+(`out[1] = out[0]` after the shuffle in `claim_random_zero`) is already
+rejected on main by the `owns` and `fisher_yates` postconditions, since
+the token postconditions imply the new clause. The PR states that
+consequence; it does not exclude any behaviour main allowed.
 
 **The order is the generator's** (`class/mod.rs`; the predictable
 allocation order class, `verus/VULN-CLASSES.md` CVE-2023-21366, #738):
